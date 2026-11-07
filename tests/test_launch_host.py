@@ -245,3 +245,49 @@ def test_the_output_directory_is_created_on_the_host(tmp_path):
     refused = subprocess.run(['sh', '-c', block.replace(str(tmp_path) + ' ', gone + ' ', 1)],
                              capture_output=True, text=True, timeout=60)
     assert refused.returncode == 2 and 'no work dir' in refused.stderr
+
+
+def test_a_lanes_ledger_is_never_overwritten_by_the_hosts_copy(tmp_path):
+    """math, 11-07, on moving its sweeps to the second machine: "never two live ledgers. This Mac
+    stays the single authority for IDEAS.jsonl, RESULTS.jsonl ... If anything ever writes a ledger
+    on the m5 side, the pull-back should refuse or flag it, not merge it."
+
+    When the work dir IS a lane, RESULTS.jsonl there is that append-only ledger, and rsync would
+    have replaced rows written here with the host's copy. The exclusion is keyed on the path, so
+    a job with its own work dir still gets its own RESULTS.jsonl back.
+    """
+    import shlex
+    text = LAUNCH.read_text()
+    assert "[[ ${dir:A:h:t} != lanes ]] || ledger=(--exclude='/RESULTS.jsonl')" in text
+    start = text.index('rsync -a --timeout')
+    command = text[start:text.index('\n', text.index('--exclude=', start))].replace('\\\n', ' ')
+    includes = [t for t in shlex.split(command)
+                if (t.startswith('--include=') or t.startswith('--exclude='))
+                and '${out:t}' not in t]
+    src, dst = tmp_path / 'host', tmp_path / 'here'
+    for d in (src, dst):
+        d.mkdir()
+    (src / 'RESULTS.jsonl').write_text('{"from": "the host"}\n')
+    (dst / 'RESULTS.jsonl').write_text('{"from": "this machine, authoritative"}\n')
+    (src / 'STATUS.md').write_text('You asked: ... I will: ...\n')
+    # A lane work dir: the ledger exclusion is in front of the include list.
+    subprocess.run(['rsync', '-a', "--exclude=/RESULTS.jsonl", *includes,
+                    str(src) + '/', str(dst) + '/'], check=True, timeout=60)
+    assert (dst / 'RESULTS.jsonl').read_text() == '{"from": "this machine, authoritative"}\n'
+    assert (dst / 'STATUS.md').exists()
+    # A job work dir: no exclusion, and the job's own results come home.
+    other = tmp_path / 'job'
+    other.mkdir()
+    subprocess.run(['rsync', '-a', *includes, str(src) + '/', str(other) + '/'],
+                   check=True, timeout=60)
+    assert (other / 'RESULTS.jsonl').read_text() == '{"from": "the host"}\n'
+
+
+def test_a_diverged_ledger_is_reported_rather_than_merged(tmp_path):
+    """Silence would mean rows sitting on a machine nobody reads, which is how a result is lost."""
+    text = LAUNCH.read_text()
+    assert 'LEDGER DIVERGED' in text
+    assert 'was NOT merged' in text
+    # The report goes through the same notifier the hard-rule lint uses, and a missing notifier
+    # must not fail a finished job.
+    assert 'LAUNCH_NOTIFY_COMMAND' in text.split('LEDGER DIVERGED')[1][:400]

@@ -662,6 +662,36 @@ def host_probe(host):
     return dict(cores=cores, free_gib=free_gib, busy=busy)
 
 
+def host_sync(cfg, host):
+    """Refresh the lane onto the host, one way, before any worker reads it. True when it worked.
+
+    math, 11-07, deciding how its sweeps move to the m5: "yes, but only as a one-way mirror, never
+    as two live ledgers. This Mac stays the single authority for IDEAS.jsonl, RESULTS.jsonl,
+    OUTREACH.jsonl, HANDOFF.md, SWEEP_RUNS.jsonl and reads/." So the controller pushes and the
+    host never pushes back: a worker there reads the current queue and the current SEEN_IDEAS
+    instead of whatever the lane looked like when it was last copied.
+
+    The run directory and the lane's allowed writes are excluded, because those hold the worker's
+    own outputs on the host and the pull brings back the parts the controller reads. No --delete,
+    for the same reason: this refreshes what the worker reads, it does not reach into what the
+    worker writes.
+    """
+    excludes = []
+    for name in [cfg.get('run_directory', '')] + list(cfg.get('allowed_writes') or []):
+        top = str(name).strip('/').split('/')[0]
+        if top and '--exclude=/' + top + '/' not in excludes:
+            excludes.append('--exclude=/' + top + '/')
+    source = str(cfg['cwd']).rstrip('/') + '/'
+    try:
+        out = subprocess.run(['rsync', '-a', '--timeout=120', '-e',
+                              os.environ.get('LAUNCH_SSH', 'ssh')] + excludes +
+                             [source, host + ':' + source],
+                             capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0
+
+
 def host_workdir_missing(host, cwd, names):
     """Which of `names` are missing or empty under `cwd` on `host`; None when it cannot be read.
 
@@ -785,6 +815,12 @@ def run_worker(spec, cfg):
     guard(cfg)
     host = execution_host(cfg)
     if host:
+        # Push before checking: the refresh is what makes the host's copy current, and the check
+        # then confirms it arrived. A failed push means the worker would read a stale lane, which
+        # is the failure this exists to prevent, so it refuses rather than running anyway.
+        if not host_sync(cfg, host):
+            raise ValueError('sweep refused: cannot refresh {} onto {} (workers read it there); '
+                             'not running against a stale copy'.format(cfg['cwd'], host))
         # A lane may already list INTAKE.toml among its rules files; dedupe so the refusal does not
         # name the same file twice.
         names = list(dict.fromkeys([Path(p).name for p, _ in cfg.get('rules', [])] + ['INTAKE.toml']))

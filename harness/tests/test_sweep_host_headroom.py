@@ -15,6 +15,7 @@ have passed that check and run a worker against a stub.
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 
 import pytest
@@ -178,6 +179,7 @@ def test_run_worker_refuses_before_spend_when_the_host_lacks_the_lane(cfg, tmp_p
     cfg.update(launcher_path=launcher, rules=[(str(tmp_path / 'RULES.md'), 'rules')],
                worker_timeout_minutes=1)
     monkeypatch.setattr(sweep, 'guard', lambda c: None)
+    monkeypatch.setattr(sweep, 'host_sync', lambda c, h: True)
     monkeypatch.setattr(sweep, 'host_workdir_missing',
                         lambda host, cwd, names: ['RULES.md', 'INTAKE.toml'])
     monkeypatch.setattr(sweep.subprocess, 'Popen',
@@ -185,3 +187,58 @@ def test_run_worker_refuses_before_spend_when_the_host_lacks_the_lane(cfg, tmp_p
     with pytest.raises(ValueError) as e:
         sweep.run_worker(spec, cfg)
     assert 'missing or empty: INTAKE.toml, RULES.md' in str(e.value)
+
+
+# --- the one-way mirror ------------------------------------------------------------------------
+
+def test_the_lane_is_pushed_to_the_host_before_a_worker_reads_it(cfg, tmp_path, monkeypatch):
+    """math, 11-07: "only as a one-way mirror, never as two live ledgers". The worker has to read
+    the current queue, so the controller refreshes the host before the run."""
+    lane, host_copy = tmp_path / 'lane', tmp_path / 'hostcopy'
+    lane.mkdir(); host_copy.mkdir()
+    (lane / 'IDEAS.jsonl').write_text('{"id": "A-1"}\n')
+    (lane / 'RULES.md').write_text('rules\n')
+    (lane / 'work').mkdir()
+    (lane / 'work/worker-output.txt').write_text('written on the host\n')
+    (host_copy / 'IDEAS.jsonl').write_text('stale\n')
+    (host_copy / 'work').mkdir()
+    (host_copy / 'work/worker-output.txt').write_text('the host wrote this; do not clobber it\n')
+    # A stub ssh for rsync: it rewrites the host-side path to the local copy, so a real rsync runs.
+    stub = tmp_path / 'rsync-ssh'
+    stub.write_text('#!/bin/sh\nshift\nexec /bin/sh -c "$*"\n')
+    stub.chmod(0o755)
+    monkeypatch.setenv('LAUNCH_SSH', str(stub))
+    cfg.update(cwd=str(lane), run_directory='work/runs', allowed_writes=['work/'])
+    calls = {}
+    real_run = subprocess.run
+
+    def fake_run(argv, **kwargs):
+        calls['argv'] = argv
+        return real_run([a.replace('m5:' + str(lane) + '/', str(host_copy) + '/') for a in argv],
+                        **kwargs)
+
+    monkeypatch.setattr(sweep.subprocess, 'run', fake_run)
+    assert sweep.host_sync(cfg, 'm5') is True
+    assert '--exclude=/work/' in calls['argv']
+    assert (host_copy / 'IDEAS.jsonl').read_text() == '{"id": "A-1"}\n'
+    assert (host_copy / 'RULES.md').exists()
+    # What the worker writes there is left alone: the mirror refreshes reads, it does not reach
+    # into the run directory, and it never deletes.
+    assert 'do not clobber' in (host_copy / 'work/worker-output.txt').read_text()
+
+
+def test_a_failed_refresh_refuses_instead_of_running_on_a_stale_lane(cfg, tmp_path, monkeypatch):
+    launcher = tmp_path / 'launcher'
+    launcher.write_text('#!/bin/sh\nexit 0\n')
+    spec = tmp_path / 'worker.md'
+    spec.write_text('fixture')
+    cfg.update(launcher_path=launcher, rules=[], worker_timeout_minutes=1)
+    monkeypatch.setattr(sweep, 'guard', lambda c: None)
+    monkeypatch.setattr(sweep, 'host_sync', lambda c, h: False)
+    monkeypatch.setattr(sweep, 'host_workdir_missing',
+                        lambda *a: pytest.fail('checked the host after a failed refresh'))
+    monkeypatch.setattr(sweep.subprocess, 'Popen',
+                        lambda *a, **k: pytest.fail('a worker ran against a stale lane'))
+    with pytest.raises(ValueError) as e:
+        sweep.run_worker(spec, cfg)
+    assert 'cannot refresh' in str(e.value) and 'stale copy' in str(e.value)

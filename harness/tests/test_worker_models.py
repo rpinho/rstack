@@ -174,6 +174,7 @@ def test_sweep_worker_environment_carries_the_lanes_execution_host(tmp_path):
     cfg=dict(launcher_path=launcher,cwd=tmp_path,cores=1,memory_gib=1,worker_timeout_minutes=1,host='m5')
     # The work dir on the host has its own tests; here it is a precondition, not the subject.
     with patch.object(sweep,'guard'),patch.object(sweep.subprocess,'Popen') as popen,\
+            patch.object(sweep,'host_sync',return_value=True),\
             patch.object(sweep,'host_workdir_missing',return_value=[]),\
             patch.object(sweep.os,'killpg'),patch.dict(os.environ,{},clear=False):
         os.environ.pop('LAUNCH_HOST',None)

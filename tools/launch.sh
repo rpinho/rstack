@@ -181,13 +181,34 @@ exec nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --d
     # both in this list, moving a lane to a host would have run all three stages, cost real money,
     # and then failed every one of them for a missing report or an unverifiable receipt, so the
     # lane would have looked broken rather than misconfigured.
+    # When the work dir IS the lane, RESULTS.jsonl there is the lane's append-only ledger and this
+    # machine is its only authority (math, 11-07: "never two live ledgers"). Pulling it would
+    # overwrite rows written here with the host's copy, so it is excluded and a divergence is
+    # reported instead of merged. For a job whose work dir is its own directory, RESULTS.jsonl is
+    # that job's output and still comes home.
+    ledger=()
+    [[ ${dir:A:h:t} != lanes ]] || ledger=(--exclude='/RESULTS.jsonl')  # the work dir IS a lane
     rsync -a --timeout=120 --max-size="${LAUNCH_PULL_MAX_SIZE:-4m}" -e "${LAUNCH_SSH:-ssh}" \
+      "${ledger[@]}" \
       --include='*/' --include='STATUS.md' --include='REPORT.md' --include='PLAN.md' \
       --include='RESULTS.jsonl' --include='*.selection.json' --include='*.report.md' \
       --include='prior-art-*.json' \
       --include="${out:t}" \
       --exclude='*' "$LAUNCH_HOST:$dir/" "$dir/" >> "$log.pull" 2>&1 ||
       print -- "pull from $LAUNCH_HOST failed rc $? (outputs are on the host) $(date)" >> "$log"
+    # Say so when the host wrote the ledger anyway. Silence here would mean rows exist on a
+    # machine nobody reads, which is how a result gets lost rather than merged wrongly.
+    if (( $#ledger )); then
+      ours=$(shasum -a 256 "$dir/RESULTS.jsonl" 2>/dev/null | cut -d' ' -f1)
+      theirs=$(${=${LAUNCH_SSH:-ssh}} -o BatchMode=yes "$LAUNCH_HOST" \
+        "shasum -a 256 ${(q)dir}/RESULTS.jsonl 2>/dev/null | cut -d' ' -f1" 2>/dev/null)
+      if [[ -n $theirs && $theirs != $ours ]]; then
+        msg="ledger diverged: RESULTS.jsonl on $LAUNCH_HOST differs from this machine's for lane $lane. This machine stays authoritative; the host copy was NOT merged and is still there."
+        print -- "LEDGER DIVERGED $LAUNCH_HOST $(date)" >> "$log"
+        print -- "$msg" >> "$log"
+        [[ -z ${LAUNCH_NOTIFY_COMMAND:-} ]] || "${LAUNCH_NOTIFY_COMMAND}" "$msg" >/dev/null 2>&1 || true
+      fi
+    fi
   fi
   cat "$attempt_log" >> "$log"
   print -- "exit $rc $(date)" >> "$log"
