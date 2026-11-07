@@ -128,3 +128,53 @@ def test_a_failed_pull_does_not_fail_the_job(tmp_path):
                        env_extra={'LAUNCH_PULL_MAX_SIZE': 'not-a-size'})
     assert proc.returncode == 0, proc.stderr
     assert 'pull from m5 failed' in log
+
+
+# --- the hard-rule lint AGENTS.md has claimed since 11-04 --------------------------------------
+
+def test_the_job_yield_ledger_records_both_hard_rule_lines(tmp_path):
+    """AGENTS.md says the launcher lints every job for the restate-ask and shipped lines into a
+    job-yield ledger. That was true of the host's own copy of launch.sh and not of this one, so
+    the repository documented an enforcement it did not run."""
+    work = tmp_path / 'work'
+    work.mkdir()
+    (work / 'STATUS.md').write_text('# a comment first\n\nYou asked: for a better bound. I will: try.\n')
+    (work / 'REPORT.md').write_text('Shipped: a bound of 0.2524 with a certificate.\n')
+    ledger = tmp_path / 'yield.jsonl'
+    proc, log, _ = run(tmp_path, workdir=work, env_extra={'LAUNCH_YIELD_LEDGER': str(ledger)})
+    assert proc.returncode == 0, proc.stderr
+    assert 'lint restate-ask=1 shipped-line=1' in log
+    row = json.loads(ledger.read_text().splitlines()[-1])
+    assert row['restated'] is True
+    assert row['shipped'].startswith('Shipped: a bound of 0.2524')
+
+
+def test_a_job_missing_the_lines_is_recorded_and_notified_without_failing(tmp_path):
+    """A job that skips the lines still exits on its own result: the lint reports, it does not
+    punish, and a missing notifier must not turn a finished job into a failed one."""
+    work = tmp_path / 'work'
+    work.mkdir()
+    (work / 'STATUS.md').write_text('Did some things.\n')
+    told = tmp_path / 'told.txt'
+    notifier = tmp_path / 'notify'
+    notifier.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> "$TOLD"\n')
+    notifier.chmod(0o755)
+    ledger = tmp_path / 'yield.jsonl'
+    proc, log, _ = run(tmp_path, workdir=work, env_extra={
+        'LAUNCH_YIELD_LEDGER': str(ledger), 'LAUNCH_NOTIFY_COMMAND': str(notifier),
+        'TOLD': str(told)})
+    assert proc.returncode == 0, proc.stderr
+    assert 'lint restate-ask=0 shipped-line=0' in log
+    row = json.loads(ledger.read_text().splitlines()[-1])
+    assert row['restated'] is False and row['shipped'] == ''
+    assert 'without the hard-rule lines' in told.read_text()
+
+
+def test_a_broken_notifier_does_not_fail_the_job(tmp_path):
+    work = tmp_path / 'work'
+    work.mkdir()
+    proc, log, _ = run(tmp_path, workdir=work, env_extra={
+        'LAUNCH_YIELD_LEDGER': str(tmp_path / 'y.jsonl'),
+        'LAUNCH_NOTIFY_COMMAND': str(tmp_path / 'does-not-exist')})
+    assert proc.returncode == 0, proc.stderr
+    assert 'lint restate-ask=0' in log

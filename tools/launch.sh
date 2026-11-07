@@ -182,4 +182,27 @@ exec nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --d
   tail -40 "$attempt_log" | grep -q 'at capacity' || break
   sleep $(( ${LAUNCH_RETRY_SECONDS:-300} * i ))
 done
+
+# HARD RULE check (AGENTS.md): did the job restate the ask, and does it say what shipped? AGENTS.md
+# has claimed since 11-04 that the launcher lints every job for these two lines into a job-yield
+# ledger, and that was true only of the host's own copy of this script, not of this one. A rule a
+# repository documents and does not run is the same failure as a rule nothing calls.
+# This runs after the loop, so a --host job has already had its STATUS.md and REPORT.md pulled back
+# and reads exactly like a local one.
+first_line() { grep -v -E '^[[:space:]]*(#.*)?$' "$1" 2>/dev/null | head -1; }
+asked=$(first_line "$dir/STATUS.md"); shipped=$(first_line "$dir/REPORT.md")
+ok_ask=0; [[ $asked == You\ asked:* ]] && ok_ask=1
+ok_ship=0; [[ $shipped == Shipped:* ]] && ok_ship=1
+print -- "lint restate-ask=$ok_ask shipped-line=$ok_ship $(date)" >> "$log"
+yield=${LAUNCH_YIELD_LEDGER:-$PWD/.runtime/job-yield.jsonl}
+mkdir -p "${yield:h}" 2>/dev/null
+python3 -I -c 'import json, sys, time
+print(json.dumps(dict(utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), job=sys.argv[1],
+                      rc=sys.argv[2], restated=sys.argv[3] == "1", shipped=sys.argv[4][:300])))' \
+  "$job" "$rc" "$ok_ask" "$shipped" >> "$yield" 2>/dev/null
+# The notification is optional and never fatal: a missing notifier must not turn a finished job
+# into a failed one.
+if (( ! ok_ask || ! ok_ship )) && [[ -n ${LAUNCH_NOTIFY_COMMAND:-} ]]; then
+  ${=LAUNCH_NOTIFY_COMMAND} "job $job ended without the hard-rule lines (You asked: $ok_ask, Shipped: $ok_ship)" >/dev/null 2>&1 || true
+fi
 exit "$rc"
