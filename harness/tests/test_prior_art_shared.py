@@ -24,11 +24,16 @@ LAUNCH = Path(__file__).resolve().parents[2] / 'tools/launch.sh'
 
 
 @pytest.fixture(autouse=True)
-def offline(monkeypatch):
+def offline(monkeypatch, tmp_path):
     def forbidden(*args, **kwargs):
         raise AssertionError('unexpected network/subprocess search')
     monkeypatch.setattr(receipt.urllib.request, 'urlopen', forbidden)
     monkeypatch.setattr(receipt, '_gh', forbidden)
+    # The paper chain caches on disk and shares a quota between lanes through files. Point both
+    # at this test's own directory: otherwise these tests would write to the real cache, and the
+    # second test to ask for a query would pass on a cache hit instead of exercising the search.
+    monkeypatch.setenv('RH_PAPER_CACHE', str(tmp_path / 'paper-cache'))
+    monkeypatch.delenv('RH_PAPER_CONTACT', raising=False)
 
 
 def response(data):
@@ -36,21 +41,39 @@ def response(data):
 
 
 @pytest.mark.parametrize('code,retry_after', [(429, '37971'), (429, '0'), (503, '37971')])
-def test_crossref_fallback(monkeypatch, code, retry_after):
+def test_rate_limited_openalex_falls_through_to_the_next_source(monkeypatch, code, retry_after):
+    # 11-07: Semantic Scholar, Europe PMC and arXiv now sit between OpenAlex and Crossref, so a
+    # spent OpenAlex allowance costs one more request rather than the whole chain. The receipt
+    # records which source answered, and nothing waits for a ten-hour quota reset.
     calls = []
     def urlopen(req, timeout):
         calls.append(req.full_url)
         if 'api.openalex.org' in req.full_url:
             raise urllib.error.HTTPError(req.full_url, code, 'limited', {'retry-after': retry_after}, None)
-        assert 'api.crossref.org' in req.full_url
-        return response({'message': {'items': [{'DOI': '10.1234/example'}, {'title': ['no DOI']}]}})
+        assert 'api.semanticscholar.org' in req.full_url
+        return response({'data': [{'paperId': 'p', 'externalIds': {'DOI': '10.1234/example'}},
+                                  {'paperId': 'q', 'externalIds': {}}]})
     monkeypatch.setattr(receipt.urllib.request, 'urlopen', urlopen)
     sleep = Mock(side_effect=AssertionError('fallback must not wait for quota reset'))
     monkeypatch.setattr('time.sleep', sleep)
-    assert receipt.papers('a harmless query', 2) == ['https://doi.org/10.1234/example']
+    assert receipt.papers('a harmless query', 2) == [
+        'https://doi.org/10.1234/example', 'https://www.semanticscholar.org/paper/q']
     assert len(calls) == 2
-    assert 'Crossref' in receipt.PAPER_SRC[0] and f'HTTP {code}' in receipt.PAPER_SRC[0]
+    assert receipt.PAPER_SRC[0] == 'Semantic Scholar'
+    assert f'OpenAlex: HTTP {code}' in receipt.PAPER_NOTE[0]
     sleep.assert_not_called()
+
+
+def test_crossref_is_still_the_last_resort(monkeypatch):
+    hosts = ['api.openalex.org', 'api.semanticscholar.org', 'ebi.ac.uk', 'export.arxiv.org']
+    def urlopen(req, timeout):
+        if any(h in req.full_url for h in hosts):
+            raise urllib.error.HTTPError(req.full_url, 429, 'limited', {'retry-after': '600'}, None)
+        assert 'api.crossref.org' in req.full_url
+        return response({'message': {'items': [{'DOI': '10.1234/example'}, {'title': ['no DOI']}]}})
+    monkeypatch.setattr(receipt.urllib.request, 'urlopen', urlopen)
+    assert receipt.papers('a harmless query', 2) == ['https://doi.org/10.1234/example']
+    assert receipt.PAPER_SRC[0] == 'Crossref'
 
 
 def test_paper_failure_does_not_invent_results(monkeypatch):

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Shared prior-art receipt generator.
 
-Runs GitHub, papers (OpenAlex with Crossref fallback), and leaderboard searches.
+Runs GitHub, papers (paper_search: OpenAlex, Semantic Scholar, Europe PMC, arXiv, then
+Crossref, through one shared cache and quota), and leaderboard searches.
 X uses only captured metadata from RH_XCAPTURE_ROOT/x_capture/KEY.jsonl.
 Missing X captures are explicitly skipped; the unchanged promote policy still
 requires captured X evidence. Failed network searches never produce a receipt.
@@ -9,8 +10,11 @@ requires captured X evidence. Failed network searches never produce a receipt.
 The positional CLI is compatible with team_queue/pa_receipt.py callers:
   prior_art_receipt.py KEY PRIOR_ART_MD --baseline TEXT --query Q [--paper-query Q]
 """
-import argparse, datetime as dt, hashlib, json, re, shutil, subprocess, urllib.parse, urllib.request
+import argparse, datetime as dt, hashlib, json, re, shutil, subprocess, sys, urllib.parse, urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import paper_search
 
 import os
 Q = Path(os.environ.get('RH_XCAPTURE_ROOT', str(Path.cwd())))  # dir holding x_capture/<key>.jsonl
@@ -49,24 +53,18 @@ def _gh(q, n):
                           '--jq', '.items[].html_url'], capture_output=True, text=True, timeout=60)
 
 
-PAPER_SRC = ['OpenAlex']
+PAPER_SRC = ['OpenAlex']   # which source actually answered; it goes into the receipt
+PAPER_NOTE = ['']          # and what it took to get there, including sources that refused
 
 
 def papers(q, n=6):
-    # 11-03: OpenAlex free quota is 1,000/day (429 with retry-after ~10 h). Fall back to Crossref, recorded in the note.
-    import urllib.error
-    try:
-        d = get('https://api.openalex.org/works?per-page=%d&search=%s' % (n, urllib.parse.quote(q)), tries=1)
-        PAPER_SRC[0] = 'OpenAlex'
-        return [w.get('doi') or w['id'] for w in d['results']]
-    except urllib.error.HTTPError as e:
-        retry_after = int(e.headers.get('retry-after') or 0) if e.headers else 0
-        if e.code != 429 and retry_after <= 300:
-            raise
-        reason = f'OpenAlex HTTP {e.code}, retry-after {retry_after}s'
-    d = get('https://api.crossref.org/works?rows=%d&query.bibliographic=%s' % (n, urllib.parse.quote(q)))
-    PAPER_SRC[0] = f'Crossref ({reason})'
-    return ['https://doi.org/' + w['DOI'] for w in d['message']['items'] if w.get('DOI')]
+    # 11-07: the chain, the 30-day cache and the quota shared between lanes all live in
+    # harness/paper_search.py, so every lane and every other paper lookup gets the same fix.
+    # Before that this function was OpenAlex with Crossref behind it and no cache, and one lane
+    # spending the 1,000/day allowance locked every other lane out for ten hours.
+    answer = paper_search.search(q, n)
+    PAPER_SRC[0], PAPER_NOTE[0] = answer.source, answer.note
+    return answer.hits
 
 
 def boards(q, n=4):
@@ -120,7 +118,8 @@ def main(argv=None):
     receipt = dict(schema=1, baseline=a.baseline.strip(), sources=dict(
         github=entry(a.query, gh, f'GitHub repository search, top {len(gh)} by best match.'),
         x=x,
-        papers=entry(pq, pp, f'{PAPER_SRC[0]} relevance search, top {len(pp)}; the worker reads them before modelling.'),
+        papers=entry(pq, pp, f'{PAPER_NOTE[0]}; the worker reads them before modelling.',
+                     source=PAPER_SRC[0]),
         leaderboards=entry(a.query, lb, 'Hugging Face spaces/datasets search and GitHub "<q> benchmark" repos.')))
     text = md.read_text() if md.exists() else ''
     text = re.sub(r'^```rh-prior-art[^\S\n]*\n.*?^```[^\S\n]*(?:\n|$)', '\n', text, flags=re.M | re.S).rstrip()
