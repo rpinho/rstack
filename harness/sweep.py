@@ -133,6 +133,7 @@ def load(lane, rh):
         ('testing_max_age_days', 3, 1, 365), ('max_load', 8, 1, 30),
         ('cores', 1, 1, 6), ('memory_gib', 6, 1, 6),
         ('min_free_gib', 30, 1, 1024), ('worker_timeout_minutes', 90, 1, 180),
+        ('controller_min_free_gib', 2, 1, 1024),
         ('kill_test_max_minutes', 30, 1, 30), ('stagger_seconds', 60, 0, 3600), ('load_wait_minutes', 30, 0, 240)):
         cfg.setdefault(key, default)
         if type(cfg[key]) is not int or not low <= cfg[key] <= high:
@@ -489,8 +490,42 @@ def check(paths, due, cfg=None, known_ids=None):
 DISK_MARK = settings.path('RH_SWEEP_DISK_MARK', Path('.runtime/sweep-disk-refused'))
 
 
+def host_free_bytes(host, path):
+    """Free bytes at `path` on `host`, or None when it cannot be determined.
+
+    None is not "fine": the caller refuses on it. A disk guard that passes when it cannot read
+    the disk is not a guard, and an unreachable host would fail the sweep a minute later anyway.
+    """
+    ssh = shlex.split(os.environ.get('LAUNCH_SSH', 'ssh'))
+    try:
+        out = subprocess.run(ssh + ['-o', 'BatchMode=yes', host, 'df -k ' + shlex.quote(str(path))],
+                             capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    lines = [l for l in out.stdout.splitlines() if l.strip()]
+    if len(lines) < 2:
+        return None
+    # df -k columns: Filesystem 1024-blocks Used Available ... Available is the fourth.
+    fields = lines[-1].split()
+    try:
+        return int(fields[3]) * 1024
+    except (IndexError, ValueError):
+        return None
+
+
 def disk_guard(cfg):
     """Refuse below the disk floor, and say so once per episode.
+
+    11-07: the floor checked the controller's disk, and the workers had just moved to another
+    machine. math's sweeps were refused for "less than 30 GiB free" while the machine actually
+    doing the work had hundreds of gigabytes spare, and the lane went to "deliverable cadence
+    STALLED" for it. So min_free_gib now applies to the machine that runs the workers, which is
+    the host when LAUNCH_HOST is set, and the controller keeps a smaller floor of its own
+    (controller_min_free_gib) because the specs, logs, receipts and pulled-back status files still
+    land here. The same variable that decides where the work runs decides which disk is measured;
+    two settings that could disagree about that would be worse than one wrong one.
 
     Why (2026-11-06): the daily sweep refused every lane on this floor for a whole day and
     nothing said so. The lanes looked stopped, the cause was one line in a log nobody reads,
@@ -500,8 +535,25 @@ def disk_guard(cfg):
     Once per episode, not once per lane per run: five lanes refusing the same full disk is one
     fact. The marker clears the first time the floor is met, so a new episode alerts again.
     """
-    free = shutil.disk_usage(cfg['cwd']).free
-    if free >= cfg['min_free_gib'] * 1024**3:
+    host = os.environ.get('LAUNCH_HOST', '').strip()
+    local = shutil.disk_usage(cfg['cwd']).free
+    if host:
+        remote = host_free_bytes(host, cfg['cwd'])
+        if remote is None:
+            raise ValueError('sweep refused: cannot read the disk on {} (workers run there); '
+                             'not assuming it has room'.format(host))
+        needed = cfg['min_free_gib']
+        floor = cfg['controller_min_free_gib']
+        short = ('{} ({:.1f} GiB free, workers need {} GiB)'.format(host, remote / 1024**3, needed)
+                 if remote < needed * 1024**3 else
+                 'this machine ({:.1f} GiB free, the controller needs {} GiB for specs, logs and '
+                 'pulled-back status)'.format(local / 1024**3, floor)
+                 if local < floor * 1024**3 else '')
+    else:
+        needed = cfg['min_free_gib']
+        short = ('this machine ({:.1f} GiB free, needs {} GiB)'.format(local / 1024**3, needed)
+                 if local < needed * 1024**3 else '')
+    if not short:
         try:
             DISK_MARK.unlink()
         except OSError:
@@ -516,11 +568,11 @@ def disk_guard(cfg):
         try:
             import lane_alerts
             lane_alerts.push(
-                'sweep refused on the disk floor: {:.1f} GiB free, needs {} GiB. Every lane '
-                'stays stopped until this clears.'.format(free / 1024**3, cfg['min_free_gib']))
+                'sweep refused on the disk floor: {}. Every lane stays stopped until this '
+                'clears.'.format(short))
         except (ImportError, OSError):
             pass
-    raise ValueError('sweep refused: less than {} GiB free'.format(cfg['min_free_gib']))
+    raise ValueError('sweep refused on the disk floor: ' + short)
 
 
 def cpu_busy():

@@ -219,14 +219,14 @@ def test_the_disk_floor_announces_itself_once_per_episode(tmp_path, monkeypatch)
     mark = tmp_path / 'mark'
     monkeypatch.setenv('RH_AGENT_ALERTS', str(queue))
     monkeypatch.setattr(sw, 'DISK_MARK', mark)
-    cfg = {'cwd': str(tmp_path), 'min_free_gib': 30}
+    cfg = {'cwd': str(tmp_path), 'min_free_gib': 30, 'controller_min_free_gib': 2}
 
     class Usage:
         free = 5 * 1024**3
 
     monkeypatch.setattr(sw.shutil, 'disk_usage', lambda p: Usage())
     for _ in range(3):  # five lanes refusing one full disk is one fact
-        with pytest.raises(ValueError, match='less than 30 GiB free'):
+        with pytest.raises(ValueError, match='this machine .5.0 GiB free, needs 30 GiB'):
             sw.disk_guard(cfg)
     rows = [json.loads(l) for l in queue.read_text().splitlines() if l.strip()]
     assert len(rows) == 1, 'alerted once, not once per lane'

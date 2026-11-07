@@ -61,6 +61,13 @@ provider-specific config directories before invocation.
 | `RH_REMOTE_RUNNER` | Deployed runner path on a pod; default relative `research-harness/pod/runner.py`; quote-safe in the SSH shell command. |
 | `RH_RUNNER_SOCKET` | Local pod-runner socket; default `.runtime/rh-pod-runner.sock`; CLI `--socket` overrides it. |
 
+`SWEEP.toml`'s `min_free_gib` (default 30) is the floor on **the machine that runs the workers**:
+the host when `LAUNCH_HOST` is set, otherwise the controller. `controller_min_free_gib` (default 2)
+is the controller's own floor, because specs, logs, receipts and pulled-back status files land
+there even when the work does not. If the host's disk cannot be read, the sweep refuses rather than
+assuming it has room. Before 11-07 the floor always measured the controller, so moving the workers
+to a second machine refused every sweep on a disk that was not doing the work.
+
 Capacity policy uses `mode = audit|enforce` and `enforce_lanes` drawn from
 `RH_POD_LANES`. Hooks are not installed automatically. Set `RH_ROOT` explicitly
 when using them in a deployment.
