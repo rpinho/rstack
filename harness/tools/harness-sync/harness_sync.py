@@ -24,7 +24,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
+import tempfile
 import subprocess
 import sys
 
@@ -173,6 +175,150 @@ def install(repo, root, ref, files, rows, backups):
     print('installed {} at {}'.format(ref, commit[:12]))
 
 
+
+# --- the same install, on another machine ------------------------------------------------------
+#
+# 11-07, general: "the m5's harness checkout is 16 commits behind main, and nothing keeps it
+# current." Half right, and the half that matters is elsewhere. A `--host` job does not run the
+# host's CHECKOUT: launch.sh runs $HOME/.local/share/research-harness/agent_executor.py there,
+# which is the host's INSTALLED harness. On 11-07 that was at 906efdc while main was at ff47140,
+# and the one commit between them touching agent_executor.py was a73a033, the codex sandbox fix.
+# So --host jobs were running an executor the controller had already fixed. Meanwhile the host's
+# checkout was at dee270d, OLDER than what was installed there, so having the host follow
+# origin/main and install for itself would have installed older code than it was already running.
+#
+# The one-source rule extends outward instead of being duplicated: this controller turns committed
+# main into installed files, here and on the host, and the host never installs for itself. Nothing
+# is removed on the host, because a deletion over ssh is a deletion nobody watched; a file the ref
+# no longer has is reported for a person.
+
+PROBE_LOOP = [
+    'while IFS= read -r rel; do',
+    '  [ -n "$rel" ] || continue',
+    '  if [ -f "$rel" ]; then',
+    '    oid=$(git hash-object -- "$rel") || oid=UNREADABLE',
+    '    if [ -x "$rel" ]; then ex=x; else ex=-; fi',
+    '    printf "%s %s %s\\n" "$oid" "$ex" "$rel"',
+    '  else',
+    '    printf "MISSING - %s\\n" "$rel"',
+    '  fi',
+    "done <<'HARNESS_SYNC_PATHS'",
+]
+
+
+def host_probe_program(root, paths):
+    """A shell program printing `blobid x|- rel` for each path under root on the host.
+
+    `git hash-object` computes exactly the blob id blob_id() computes here, so the two sides are
+    compared by content and neither side's bookkeeping has to be trusted.
+    """
+    head = 'cd ' + shlex.quote(str(root)) + ' 2>/dev/null || { echo NOROOT; exit 0; }'
+    return '\n'.join([head] + PROBE_LOOP + sorted(paths) + ['HARNESS_SYNC_PATHS', ''])
+
+
+def ssh_argv(ssh=None):
+    return shlex.split(ssh or os.environ.get('LAUNCH_SSH', 'ssh')) + ['-o', 'BatchMode=yes']
+
+
+def host_state(host, root, paths, ssh=None):
+    """{rel: (blob id or None, executable)} for `paths` on the host. Raises on an unusable host."""
+    out = subprocess.run(ssh_argv(ssh) + [host, 'sh -s'],
+                         input=host_probe_program(root, paths),
+                         capture_output=True, text=True, timeout=300)
+    if out.returncode != 0:
+        raise ValueError('cannot read the harness on {}: {}'.format(host, out.stderr.strip()[:200]))
+    if out.stdout.split('\n')[0].strip() == 'NOROOT':
+        raise ValueError('{} has no harness root at {}'.format(host, root))
+    state = {}
+    for line in out.stdout.splitlines():
+        parts = line.split(' ', 2)
+        if len(parts) != 3:
+            continue
+        oid, ex, rel = parts
+        state[rel] = (None if oid in ('MISSING', 'UNREADABLE') else oid, ex == 'x')
+    return state
+
+
+def host_receipt(host, root, ssh=None):
+    """The host's install receipt, or {} when it has none or it is unreadable."""
+    out = subprocess.run(ssh_argv(ssh) + [host, 'cat ' + shlex.quote(str(Path(root) / RECEIPT))],
+                         capture_output=True, text=True, timeout=120)
+    if out.returncode != 0:
+        return {}
+    try:
+        data = json.loads(out.stdout)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def host_plan(repo, ref, host, root, ssh=None):
+    """(files, rows) for the host, in plan()'s shape: (status, rel)."""
+    files = manifest(repo, ref)
+    state = host_state(host, root, files, ssh=ssh)
+    rows = []
+    for rel, (mode, oid) in sorted(files.items()):
+        have, executable = state.get(rel, (None, False))
+        if have is None:
+            rows.append(('missing', rel))
+        elif have != oid:
+            # No per-file history is kept for the host, so this says "not the ref" and no more.
+            # Calling it "edited" would claim to know something this cannot see.
+            rows.append(('behind', rel))
+        elif (mode == '100755') != executable:
+            rows.append(('behind', rel))
+    return files, rows
+
+
+def install_host(repo, root, ref, files, rows, host, ssh=None):
+    """Write the ref's files to the host, verified by hash there before the receipt is written."""
+    commit = git(repo, 'rev-parse', ref + '^{commit}').decode().strip()
+    todo = sorted({rel for status, rel in rows if status in ('missing', 'behind', 'edited')})
+    if not todo:
+        print('{}: already at {}'.format(host, commit[:12]))
+        return 0
+    blobs = contents(repo, sorted({files[rel][1] for rel in todo}))
+    rsh = ssh or os.environ.get('LAUNCH_SSH', 'ssh')
+    with tempfile.TemporaryDirectory() as staging:
+        stage = Path(staging)
+        for rel in todo:
+            mode, oid = files[rel]
+            dest = stage / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(blobs[oid])
+            os.chmod(dest, 0o555 if mode == '100755' else 0o444)
+        listing = stage / '.harness-sync-files'
+        listing.write_text('\n'.join(todo) + '\n')
+        send = subprocess.run(['rsync', '-a', '--timeout=120', '-e', rsh,
+                               '--files-from=' + str(listing), str(stage) + '/',
+                               host + ':' + str(root).rstrip('/') + '/'],
+                              capture_output=True, text=True, timeout=1800)
+    if send.returncode != 0:
+        raise ValueError('rsync to {} failed: {}'.format(host, send.stderr.strip()[:300]))
+    # Verified by content on the host, never by rsync's exit status: a transfer tool's exit code
+    # says it did what it decided to do. The receipt is written only after this passes, so a
+    # half-arrived install cannot claim a commit.
+    after = host_state(host, root, todo, ssh=ssh)
+    bad = [rel for rel in todo
+           if after.get(rel, (None, False))[0] != files[rel][1]
+           or after.get(rel, (None, False))[1] != (files[rel][0] == '100755')]
+    if bad:
+        raise ValueError('{}: {} file(s) did not arrive as the ref has them, so the receipt was '
+                         'NOT written: {}'.format(host, len(bad), ', '.join(bad[:5])))
+    receipt = dict(commit=commit, ref=ref,
+                   utc=dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
+                   repo=str(repo), files=len(files), installed_from='controller')
+    write = subprocess.run(ssh_argv(ssh) + [host, 'cat > ' + shlex.quote(str(Path(root) / RECEIPT))],
+                           input=json.dumps(receipt, indent=1) + '\n',
+                           capture_output=True, text=True, timeout=120)
+    if write.returncode != 0:
+        raise ValueError('{}: the files are installed but the receipt could not be written, so the '
+                         'host still reads as behind: {}'.format(host, write.stderr.strip()[:200]))
+    for rel in todo:
+        print('installed {}:{}'.format(host, rel))
+    print('{}: installed {} at {} ({} file(s))'.format(host, ref, commit[:12], len(todo)))
+    return 0
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--root', default='~/.local/share/research-harness', help='installed harness root')
@@ -183,9 +329,43 @@ def main(argv=None):
     mode.add_argument('--check', action='store_true', help='report drift, change nothing; exit 2 if any')
     mode.add_argument('--auto', action='store_true', help='install only a clean fast-forward; else exit 2')
     p.add_argument('--allow-running', action='store_true', help='install even while a harness job runs')
+    p.add_argument('--host', default='', help='install onto another machine over ssh, at the same '
+                                              'root; the host never installs for itself')
     a = p.parse_args(argv)
     root = Path(a.root).expanduser()
     repo = Path(a.repo).expanduser()
+
+    if a.host:
+        # The host's copy is only ever written from here, from a committed ref, and the controller
+        # has to be at that ref itself first: installing outward from a drifted controller would
+        # spread the drift rather than fix it.
+        own_files, own_receipt, own_rows = plan(repo, root, a.ref)
+        commit = git(repo, 'rev-parse', a.ref + '^{commit}').decode().strip()
+        if own_rows:
+            print('not installing onto {}: this machine is not at {} yet ({} file(s) differ). Run '
+                  'harness-sync here first.'.format(a.host, a.ref, len(own_rows)))
+            return 2
+        try:
+            files, rows = host_plan(repo, a.ref, a.host, root, ssh=None)
+        except ValueError as exc:
+            print('REFUSED: ' + str(exc))
+            return 2
+        remote = host_receipt(a.host, root)
+        print('repo {} {} | {} installed {}'.format(
+            a.ref, commit[:12], a.host, (remote.get('commit') or 'unknown')[:12]))
+        for status, rel in rows:
+            print('{:<9} {}:{}'.format(status.upper(), a.host, rel))
+        if not rows:
+            print('{} matches {} ({} files)'.format(a.host, a.ref, len(files)))
+            return 0
+        if a.check:
+            return 2
+        try:
+            return install_host(repo, root, a.ref, files, rows, a.host, ssh=None)
+        except ValueError as exc:
+            print('REFUSED: ' + str(exc))
+            return 2
+
     files, receipt, rows = plan(repo, root, a.ref)
     commit = git(repo, 'rev-parse', a.ref + '^{commit}').decode().strip()
     print('repo {} {} | installed {}'.format(a.ref, commit[:12], (receipt.get('commit') or 'unknown')[:12]))

@@ -833,6 +833,69 @@ def host_sync(cfg, host):
     return out.returncode == 0
 
 
+HARNESS_RECEIPT = '.harness-sync.json'
+
+
+def installed_commit(root):
+    """The commit an install receipt claims, or '' when there is none."""
+    try:
+        data = json.loads((Path(root) / HARNESS_RECEIPT).read_text())
+    except (OSError, ValueError):
+        return ''
+    return str(data.get('commit', '') or '') if isinstance(data, dict) else ''
+
+
+def host_harness_commit(host, root, ssh=None):
+    """The commit the host's installed harness claims, or None when it cannot be read."""
+    argv = shlex.split(ssh or os.environ.get('LAUNCH_SSH', 'ssh')) + ['-o', 'BatchMode=yes']
+    try:
+        out = subprocess.run(argv + [host, 'cat ' + shlex.quote(str(Path(root) / HARNESS_RECEIPT))],
+                             capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        data = json.loads(out.stdout)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not data.get('commit'):
+        return None
+    return str(data['commit'])
+
+
+def host_harness_mismatch(host, root=None, ssh=None):
+    """A refusal string when the host is not running the same harness as this machine, else ''.
+
+    11-07, general: a `--host` job runs the executor on the other machine, so it runs THAT
+    machine's harness. The m5's installed copy was at 906efdc while this one was at ff47140, and
+    the commit between them touching agent_executor.py was a73a033, the codex sandbox fix: jobs
+    were running an executor that had already been fixed here.
+
+    What is compared is what executes, which is each machine's INSTALLED harness, not a git
+    checkout. The m5's checkout was at dee270d, older still than what it was running, so comparing
+    checkouts would have pointed at the wrong file and following origin/main on the host would have
+    installed older code than it already had.
+
+    Unreadable is a refusal like every other host precondition here: a job that cannot be shown to
+    be running the right code is not run.
+    """
+    root = Path(root or Path(__file__).resolve().parent)
+    mine = installed_commit(root)
+    if not mine:
+        return ''        # Not an installed harness (a repo checkout, a test tree): nothing to compare.
+    theirs = host_harness_commit(host, root, ssh=ssh)
+    if theirs is None:
+        return ('cannot read the installed harness on {} (it runs the executor); not assuming it '
+                'matches this machine at {}'.format(host, mine[:12]))
+    if theirs != mine:
+        return ('{} runs harness {} and this machine runs {}. A --host job runs the executor '
+                'there, so it would run code this machine has already changed. Bring it up to '
+                'date with `harness-sync --host {}`, which installs the same committed ref '
+                'outward from here.'.format(host, theirs[:12], mine[:12], host))
+    return ''
+
+
 def host_workdir_missing(host, cwd, names):
     """Which of `names` are missing or empty under `cwd` on `host`; None when it cannot be read.
 
@@ -959,6 +1022,11 @@ def run_worker(spec, cfg):
         # Push before checking: the refresh is what makes the host's copy current, and the check
         # then confirms it arrived. A failed push means the worker would read a stale lane, which
         # is the failure this exists to prevent, so it refuses rather than running anyway.
+        # Before anything else about the host: is it running the same harness? A refreshed lane
+        # read by an older executor is still the wrong run.
+        drift = host_harness_mismatch(host)
+        if drift:
+            raise ValueError('sweep refused: ' + drift)
         if not host_sync(cfg, host):
             raise ValueError('sweep refused: cannot refresh {} onto {} (workers read it there); '
                              'not running against a stale copy'.format(cfg['cwd'], host))

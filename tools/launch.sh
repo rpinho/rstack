@@ -159,6 +159,22 @@ for (( i = start; i <= 5; i++ )); do
     # No path is silently rewritten: both machines are /Users/ricardo, and a host whose layout
     # differs is a separate change, not a guess made here.
     # $HOME in the default is expanded by the remote shell, so no host path enters the repo.
+    # A --host job runs the executor on the other machine, so it runs THAT machine's harness.
+    # 11-07: the m5's installed copy was at 906efdc while this one was at ff47140, and the commit
+    # between them touching agent_executor.py was the codex sandbox fix. What is compared is what
+    # executes: each machine's installed harness receipt, not a git checkout (the m5's checkout was
+    # older still than what it was running). Unreadable is a refusal, like every other host check.
+    hr=${LAUNCH_HARNESS_ROOT:-$HOME/.local/share/research-harness}/.harness-sync.json
+    if [[ -f $hr ]]; then
+      mine=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("commit",""))' "$hr" 2>/dev/null)
+      theirs=$(${=${LAUNCH_SSH:-ssh}} -o BatchMode=yes "$LAUNCH_HOST" "cat ${(q)hr}" 2>/dev/null \
+               | python3 -c 'import json,sys; print(json.load(sys.stdin).get("commit",""))' 2>/dev/null)
+      if [[ -n $mine && $mine != $theirs ]]; then
+        print -u2 -- "launch.sh --host $LAUNCH_HOST: it runs harness ${theirs:-unreadable} and this machine runs ${mine[1,12]}. The executor runs THERE, so this job would run code this machine has already changed. Fix with: harness-sync --host $LAUNCH_HOST"
+        print -- "exit 2 harness-drift $LAUNCH_HOST ${theirs:-unreadable} vs ${mine[1,12]} $(date)" >> "$log"
+        exit 2
+      fi
+    fi
     rexec=${LAUNCH_REMOTE_EXECUTOR:-'$HOME/.local/share/research-harness/agent_executor.py'}
     if ! [[ $rexec =~ '^[$A-Za-z0-9_/.~{}-]+$' ]]; then
       print -u2 -- "launch.sh: LAUNCH_REMOTE_EXECUTOR must be a plain path"; exit 2
