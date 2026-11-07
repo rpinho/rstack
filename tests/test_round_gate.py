@@ -53,10 +53,19 @@ def opened(lane, number, generator='BoltzGen', params=PARAMS, scorer='ipae', fam
                '--generator', generator, '--params', params, '--scorer', scorer).returncode == 0
 
 
+# Every round is now also asserted against the lane's SPEC.json (11-07, postmortem 3: 115 rounds
+# against the wrong allele). These tests are about the dry streak and the fingerprint, so they
+# declare the minimum honest spec: this fixture lane has no challenge page to pin.
+SPEC = json.dumps(dict(schema=1, challenge=None,
+                       no_challenge_reason='fixture lane; there is no challenge page to capture',
+                       ranking=[{'condition': 'selective hits', 'scored': True}]))
+
+
 @pytest.fixture
 def lane(tmp_path):
     d = tmp_path / 'lanes' / 'c5'
     d.mkdir(parents=True)
+    (d / 'SPEC.json').write_text(SPEC)
     # Round 1 needs a KB consult receipt; that rule predates this change and is not what is
     # under test here, so satisfy it once.
     assert cli(d, 'consult', '--source', 'index.md', '--took', 'the BoltzGen baseline').returncode == 0
@@ -155,6 +164,7 @@ def launcher(tmp_path, lane_name='c5', env_extra=None):
     fake.chmod(0o755)
     root = tmp_path / 'runtime'
     (root / 'lanes' / lane_name).mkdir(parents=True, exist_ok=True)
+    (root / 'lanes' / lane_name / 'SPEC.json').write_text(SPEC)
     # Round 1 needs a KB consult receipt. That rule predates this change and the launcher tests
     # are about the gate being called at all, so satisfy it once here.
     cli(root / 'lanes' / lane_name, 'consult', '--source', 'index.md', '--took', 'the baseline')

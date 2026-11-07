@@ -16,9 +16,18 @@ spec = importlib.util.spec_from_file_location('rounds', ROOT / 'harness/tools/ro
 rd = importlib.util.module_from_spec(spec); spec.loader.exec_module(rd)
 
 
+# Every round is now also asserted against the lane's SPEC.json (11-07, postmortem 3: 115 rounds
+# against the wrong allele). These tests are about the dry streak and the fingerprint, so they
+# declare the minimum honest spec: this fixture lane has no challenge page to pin.
+SPEC = json.dumps(dict(schema=1, challenge=None,
+                       no_challenge_reason='fixture lane; there is no challenge page to capture',
+                       ranking=[{'condition': 'selective hits', 'scored': True}]))
+
+
 def lane(tmp_path):
     d = tmp_path / 'lanes/c5'
     d.mkdir(parents=True)
+    (d / 'SPEC.json').write_text(SPEC)
     return d
 
 

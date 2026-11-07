@@ -50,6 +50,8 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import spec
 
 ROUNDS = 'ROUNDS.jsonl'
 DEAD_ENDS = 'DEAD_ENDS.jsonl'
@@ -170,6 +172,11 @@ def gate(lane, family, new_evidence='', limit=DRY_LIMIT, fp='', hypothesis='',
     lane = Path(lane)
     rows = read(lane / ROUNDS)
     errors, warnings = [], []
+    # 11-07, postmortem 3. Everything below this line compares the lane to itself: its own
+    # families, its own streak, its own receipts. All of it stayed green through 115 rounds scored
+    # against the wrong allele. The one check that would have caught it compares the lane's target
+    # to the captured challenge, so it runs first and refuses the round on its own.
+    errors.extend(spec.verify(lane))
     rounds = current(rows)
     # A round cannot begin while the one before it has no outcome. This is what makes the ledger
     # unavoidable rather than voluntary: skipping `log` blocks the next round instead of quietly
