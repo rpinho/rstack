@@ -109,6 +109,13 @@ has the full account, with every number, link and correction.
 - **Exoplanets.** Four candidate reports from NASA TESS data under review at RNAAS, all four
   corrected after a re-audit, corrected versions on Zenodo. Pipeline:
   [planet-hunt](https://github.com/rpinho/planet-hunt).
+- **Collected where each field can find it.** Two public hubs gather the work and the code behind
+  it: [ai-biology](https://github.com/rpinho/ai-biology) (protein design, the Arc Virtual Cell and
+  Virtual Embryo challenges, open drug-target discovery, and refereed bug reports on scientists'
+  published software) and [ai-physics](https://github.com/rpinho/ai-physics) (certified bounds on
+  published results, exact checks with independent referees, and bug reports on physics software).
+  Both went public on 7 November 2026. They are where the results above are indexed, not results in
+  their own right.
 - **The negative results were the useful ones.** In two protein design challenges the structure
   prediction models' own confidence scores could not rank designs; in a cell biology challenge a
   local score ranked two candidates in the opposite order to the official scorer.
