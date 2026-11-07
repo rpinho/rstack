@@ -113,6 +113,22 @@ has the full account, with every number, link and correction.
   prediction models' own confidence scores could not rank designs; in a cell biology challenge a
   local score ranked two candidates in the opposite order to the official scorer.
 
+## References
+
+rstack is not built from scratch. What each source gave it:
+
+- Lauren Tan (@poteto), **pstack** — [github.com/cursor/plugins/tree/main/pstack](https://github.com/cursor/plugins/tree/main/pstack) and her guides to it ([post](https://x.com/poteto/status/2102050467505430555)): the single stack-wide entry point, and the instinct to make a rule a lint rule instead of prose. rstack is named after it.
+- Lilian Weng, [Harness Engineering for Self-Improvement](https://lilianweng.github.io/posts/2026-07-04-harness/) (2026) — the field's literature review, and the open challenges the harness docs answer: negative results, weak evaluators, context lifecycle.
+- Cynthia Dwork et al., [Generalization in Adaptive Data Analysis and Holdout Reuse](https://arxiv.org/abs/1506.02629) (2015) — why a reused holdout stops being evidence; the harness records a holdout disposition.
+- Avrim Blum and Moritz Hardt, [The Ladder](https://arxiv.org/abs/1502.04585) (2015) — how repeated public feedback overfits a leaderboard.
+- Google DeepMind, [AlphaEvolve](https://arxiv.org/abs/2506.13131) (2025) — related work on proposing programs and scoring them automatically.
+- Edwin B. Wilson (1927), [the score interval](https://doi.org/10.1080/01621459.1927.10502953) — the role ranker ranks on its lower endpoint, z = 1.96.
+- Hugo Fernandes (2026-11-03) — the ten anti-overfitting practices mapped in [docs/overfitting.md](docs/overfitting.md).
+- Comparable systems, as related work rather than inputs: [AI Scientist](https://sakana.ai/ai-scientist/), [aviary](https://github.com/Future-House/aviary), [ScienceAgentBench](https://github.com/OSU-NLP-Group/ScienceAgentBench), [MLE-bench](https://github.com/openai/mle-bench), [CORE-bench](https://github.com/siegelz/core-bench).
+- The external tables its results were merged into: [Tao's table of optimization constants](https://github.com/teorth/optimizationproblems) and [codetables.de](https://www.codetables.de/).
+
+[docs/credits.md](docs/credits.md) states at length what is and is not implemented here.
+
 ## License
 
 [MIT](LICENSE). The design owes a debt to published work on holdout reuse and leaderboard

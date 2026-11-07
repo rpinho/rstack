@@ -181,3 +181,16 @@ Built from a personal knowledge base an agent has maintained daily for about a y
 The core belief: *your knowledge, decisions, and taste are portable career capital.* Keep them in files you own, in a format any agent can read, and let the agent do the filing. See `AGENTS.md` for the full operating manual.
 
 MIT licensed. Fork it, gut it, make it yours.
+
+## References
+
+The pattern this implements is not ours. Where it came from:
+
+- Andrej Karpathy's LLM wiki: [the original post](https://x.com/karpathy/status/2039805659525644595), [the gist announcement](https://x.com/karpathy/status/2040470801506541998), [the gist itself](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) and the [follow-up](https://x.com/karpathy/status/2041162213160091996) ("lets you skip writing but it doesn't let you skip reading and thinking").
+- [@jumperz](https://x.com/jumperz/status/2039826228224430323) — the clearest statement of the loop: dump sources, let the model organise, file answers back.
+- [@SebKrog](https://x.com/SebKrog/status/2111837281568874577) — six months of the same pattern on stock research; independent evidence that it holds up.
+- Steph Ango, [File over app](https://stephango.com/file-over-app) — why the context lives in plain files you own.
+- The counter-takes, kept because they set the limits: [@thomasmurphy__](https://x.com/thomasmurphy__/status/2040515487822442685) (you can't outsource metabolising what you read), [@rohit4verse](https://x.com/rohit4verse/status/2048081996841435596) (stacking markdown files isn't memory), [@_avichawla](https://x.com/_avichawla/status/2075489241245823325) (the more the agent remembers, the less it knows), [@0xaporia](https://x.com/0xaporia/status/2075533644114887069) (the knowledge base can't be smarter than the person building it).
+- Harvey's [post-training update](https://x.com/gabepereyra/article/2090453918547685537) — the case for knowledge in the weights rather than notes read at inference.
+- [Boris Cherny](https://x.com/bcherny/status/2077460395279692197) on encoding domain knowledge as infrastructure, and [Ali Ghodsi](https://x.com/a16z/status/2115118840388665644) on the "context problem" — the company-scale version of the same thing.
+- Lauren Tan (@poteto), [pstack](https://github.com/cursor/plugins/tree/main/pstack) — the enforcement idea: a rule in prose doesn't hold, a lint rule does.
