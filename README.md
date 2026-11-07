@@ -92,6 +92,9 @@ mechanism that enforces it, or an admission that there isn't one.
 - [**A guard must refuse, not crash**](rstack/principles/a-guard-must-refuse-not-crash.md): most
   hook systems block only on a specific exit code, so a guard that raises is no guard, and it fails
   silently. Five of twelve audited guards did exactly that.
+- [**A session's context is a resource**](rstack/principles/context-is-a-resource.md): content that
+  breaks a session, written into the files that session rereads, breaks it again on every start.
+  Compaction does not help, because the summary is rebuilt from those same files.
 
 The last two cost the most to learn. Read them before adding anything.
 
