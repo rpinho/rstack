@@ -39,6 +39,7 @@ The installed copy comes only from committed repo code; never edit it in place. 
 | Claim only the scoped verification level supported by the evidence; label whole results and finite components separately. | [Verification levels L0–L3](docs/verification.md), [row and receipt validation](harness/verification.py). |
 | No outreach without `rh outreach` approval. | [Draft/lint/approve/send ledger](harness/outreach.py), [email approval hook](tools/email-voice-gate.py). Install hooks at your send boundary; the harness cannot intercept arbitrary send tools. |
 | Bound every worker; let pods end themselves. | [Sweep time/process-tree limits](harness/sweep.py), [launcher retry limits](tools/launch.sh), [pod TTL/idle runner](harness/pod/runner.py), [pod reap](harness/pods.py). |
+| A method that produced nothing is not run again unchanged. A dry streak is evidence about the method, so the next round changes direction or says what is different and what it would show. | [Round gate](harness/tools/rounds.py) called from [launcher admission](tools/launch.sh) before any spend, and [DRY_STREAK](harness/tools/lane-yield/lane_yield.py). The repeat check hashes `(generator, params, scorer)`, so renaming the family does not pass it, and a round cannot start while the previous one has no logged outcome. |
 | Send deletions to Trash; never use destructive cleanup. | [Trash-only storage adapter](harness/storage.py). On Linux configure `RH_TRASH_COMMAND`; missing Trash refuses deletion. |
 
 ## Route requests

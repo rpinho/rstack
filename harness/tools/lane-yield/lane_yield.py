@@ -75,6 +75,14 @@ def dry_tail(rows):
     counting a crash as a fresh start is how seventeen dry rounds look like scattered bad luck.
     """
     rows = sorted(rows, key=lambda r: str(r.get('utc') or ''))
+    # One row per round, keeping the latest. `rounds.py start` opens a round with outcome
+    # "started" and the lane logs the real outcome afterwards, so without this collapse a single
+    # round contributes twice and a streak reads as double its true length. A round still open
+    # counts as not selective, for the same reason a crashed one does.
+    latest = {}
+    for row in rows:
+        latest[str(row.get('round') or id(row))] = row
+    rows = list(latest.values())
     streak, spend, families = 0, 0.0, []
     for row in reversed(rows):
         if row.get('outcome') == 'selective':

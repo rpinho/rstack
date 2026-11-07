@@ -25,8 +25,24 @@ the lane's dead-ends log and cannot be reopened without new evidence recorded ag
 
 A round is dry when it produced nothing selective: `--outcome dry`. The lane says which,
 because only the lane knows what selective means for its target.
+
+2026-11-07, the second time. c5 ran 66 more identical rounds ("same generator, same params, same
+scorer"), nothing has beaten v25 since 11-05, and the ask was for a third mechanism. There was no
+need: the rule above, lane-yield's DRY_STREAK, the direction file and the `rounds` globs in
+~/.config/lane-yield.json were all already in place. What was missing was any row at all. No lane
+had a ROUNDS.jsonl, nothing called `check` before a round, and nothing called `log` after one, so
+every check read an empty ledger and found nothing to object to. A rule nothing calls is prose with
+a shebang. Two changes fix that, and nothing else was added:
+
+  * `start` does the gate and writes the row in one step, so the launcher can make the write
+    unavoidable instead of asking the lane to volunteer it. A round cannot begin while the previous
+    one has no outcome, which is what turns logging from a courtesy into a precondition.
+  * the fingerprint is mechanical. `family` is a label the lane chooses, and a lane convinced it is
+    varying enough will keep choosing a new one; a hash of (generator, params, scorer) does not
+    care what the round is called. That is the specific hole c5's 66 rounds went through.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -40,6 +56,38 @@ DEAD_ENDS = 'DEAD_ENDS.jsonl'
 RECEIPTS = 'KB_CONSULTS.jsonl'
 OUTCOMES = ('selective', 'dry', 'failed')
 DRY_LIMIT = 3
+REPEAT_WINDOW = 5   # how far back an identical (generator, params, scorer) still counts as a repeat
+STARTED = 'started'  # written by `start`; replaced when the lane records the real outcome
+
+
+def fingerprint(generator='', params='', scorer=''):
+    """A hash of what the round actually does, not what it is called.
+
+    params is canonicalized when it parses as JSON, so {"a":1,"b":2} and {"b":2,"a":1} are the
+    same round. An empty fingerprint (nothing supplied) is never compared against anything: a lane
+    that cannot name its knobs should not be silently told its rounds all look alike.
+    """
+    if not any((generator, params, scorer)):
+        return ''
+    try:
+        canonical = json.dumps(json.loads(params), sort_keys=True, separators=(',', ':'))
+    except (ValueError, TypeError):
+        canonical = (params or '').strip()
+    blob = '\n'.join([(generator or '').strip(), canonical, (scorer or '').strip()])
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def current(rows):
+    """The last row per round id, in the order those rounds first appear.
+
+    `start` writes a 'started' row and the lane later logs the outcome, so without this a single
+    round would count twice in a dry streak and a streak would read as double its length.
+    """
+    out = {}
+    for row in rows:
+        key = str(row.get('round') or id(row))
+        out[key] = row
+    return list(out.values())
 
 
 def read(path):
@@ -74,7 +122,7 @@ def dry_streak(rows, family=None):
     either, and treating a crash as a fresh start is how a streak hides.
     """
     streak = 0
-    for row in reversed(rows):
+    for row in reversed(current(rows)):
         if family is not None and row.get('family') != family:
             continue
         if row.get('outcome') == 'selective':
@@ -112,7 +160,8 @@ def consulted_since(lane, rounds_rows):
     return bool(last_receipt) and last_receipt >= last_round
 
 
-def gate(lane, family, new_evidence='', limit=DRY_LIMIT):
+def gate(lane, family, new_evidence='', limit=DRY_LIMIT, fp='', hypothesis='',
+         window=REPEAT_WINDOW):
     """Return (errors, warnings) for starting a round in `family`.
 
     Errors refuse the round. The point is to redirect it, not to end the lane, so every error
@@ -121,6 +170,25 @@ def gate(lane, family, new_evidence='', limit=DRY_LIMIT):
     lane = Path(lane)
     rows = read(lane / ROUNDS)
     errors, warnings = [], []
+    rounds = current(rows)
+    # A round cannot begin while the one before it has no outcome. This is what makes the ledger
+    # unavoidable rather than voluntary: skipping `log` blocks the next round instead of quietly
+    # leaving the whole mechanism blind, which is how 66 rounds happened unseen.
+    if rounds and rounds[-1].get('outcome') == STARTED:
+        errors.append('UNCLOSED: round "{}" was started and never given an outcome. Record it '
+                      'first: `rounds.py --lane {} log --round {} --family {} --outcome '
+                      'selective|dry|failed`.'
+                      .format(rounds[-1].get('round'), lane, rounds[-1].get('round'),
+                              rounds[-1].get('family')))
+    if fp:
+        same = [r for r in rounds[-window:] if r.get('fingerprint') == fp]
+        if same and not hypothesis.strip():
+            errors.append('REPEAT: this exact (generator, params, scorer) already ran as {} of the '
+                          'last {} rounds ({}). Repeating a method is not a test of it. Either '
+                          'change a knob, or say what is different and what it would show: '
+                          '--hypothesis "<...>". c5 ran 66 rounds on one fingerprint.'
+                          .format(len(same), min(window, len(rounds)),
+                                  ', '.join(str(r.get('round')) for r in same)))
     if family in closed_families(lane) and not new_evidence.strip():
         errors.append('DEAD_END: method family "{}" was closed in {} after a dry streak. '
                       'Reopening it needs new evidence: --new-evidence "<what changed>".'
@@ -154,10 +222,19 @@ def main(argv=None):
     p.add_argument('--lane', required=True, type=Path, help='the lane directory')
     sub = p.add_subparsers(dest='action', required=True)
 
+    def knobs(sp):
+        # What the round actually does. The fingerprint is computed from these, so a lane cannot
+        # relabel its way past the repeat check.
+        sp.add_argument('--generator', default='', help='the generator or method, e.g. BoltzGen')
+        sp.add_argument('--params', default='', help='its parameters; JSON is canonicalized')
+        sp.add_argument('--scorer', default='', help='the scorer used to rank the output')
+        return sp
+
     log = sub.add_parser('log', help='one row per paid round')
     log.add_argument('--round', required=True)
     log.add_argument('--family', required=True, help='method family, the unit a dry streak closes')
     log.add_argument('--outcome', required=True, choices=OUTCOMES)
+    knobs(log)
     log.add_argument('--spend-usd', type=float, default=0.0)
     log.add_argument('--provider', default='')
     log.add_argument('--n-selective', type=int, default=0)
@@ -166,6 +243,15 @@ def main(argv=None):
     check = sub.add_parser('check', help='may a round in this family start?')
     check.add_argument('--family', required=True)
     check.add_argument('--new-evidence', default='')
+    check.add_argument('--hypothesis', default='', help='what is different and what it would show')
+    knobs(check)
+
+    start = sub.add_parser('start', help='check, then open the round in one step')
+    start.add_argument('--round', required=True)
+    start.add_argument('--family', required=True)
+    start.add_argument('--new-evidence', default='')
+    start.add_argument('--hypothesis', default='')
+    knobs(start)
 
     close = sub.add_parser('close-family', help='record a family as a dead end')
     close.add_argument('--family', required=True)
@@ -181,7 +267,9 @@ def main(argv=None):
     if a.action == 'log':
         row = dict(utc=now, round=a.round, family=a.family, outcome=a.outcome,
                    spend_usd=a.spend_usd, provider=a.provider, n_selective=a.n_selective,
-                   what=a.what)
+                   what=a.what,
+                   fingerprint=fingerprint(a.generator, a.params, a.scorer),
+                   generator=a.generator, scorer=a.scorer)
         append(a.lane / ROUNDS, row)
         print(json.dumps(row, sort_keys=True))
         return 0
@@ -194,12 +282,22 @@ def main(argv=None):
         append(a.lane / RECEIPTS, dict(utc=now, sources=a.source, took=a.took))
         print('recorded a KB consult over {} source(s)'.format(len(a.source)))
         return 0
-    errors, warnings = gate(a.lane, a.family, a.new_evidence)
+    fp = fingerprint(a.generator, a.params, a.scorer)
+    errors, warnings = gate(a.lane, a.family, a.new_evidence, fp=fp, hypothesis=a.hypothesis)
     for w in warnings:
         print('WARN: ' + w, file=sys.stderr)
     for e in errors:
         print('REFUSED: ' + e, file=sys.stderr)
-    return 2 if errors else 0
+    if errors:
+        return 2
+    if a.action == 'start':
+        # Only now, and in the same command, so a caller cannot gate and then run something else.
+        row = dict(utc=now, round=a.round, family=a.family, outcome=STARTED, fingerprint=fp,
+                   generator=a.generator, scorer=a.scorer, hypothesis=a.hypothesis,
+                   spend_usd=0.0, n_selective=0)
+        append(a.lane / ROUNDS, row)
+        print(json.dumps(row, sort_keys=True))
+    return 0
 
 
 if __name__ == '__main__':

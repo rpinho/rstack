@@ -13,6 +13,13 @@ LAUNCH_EFFORT=${LAUNCH_EFFORT:-high}
 # them and the host needs no lane state. The 16 GB controller ran out of memory under local
 # rounds on 11-01 and Claude Code killed the background shells; the heavy work belongs elsewhere.
 LAUNCH_HOST=${LAUNCH_HOST:-}
+# A paid round is admitted by the round ledger, not by the lane's own judgement (Ricardo, 11-07,
+# after c5 repeated the 11-06 failure: 66 rounds with the same generator, params and scorer).
+# Set LAUNCH_ROUND to put the job through harness/tools/rounds.py; the rest describe the round.
+LAUNCH_ROUND=${LAUNCH_ROUND:-}; LAUNCH_FAMILY=${LAUNCH_FAMILY:-}
+LAUNCH_GENERATOR=${LAUNCH_GENERATOR:-}; LAUNCH_PARAMS=${LAUNCH_PARAMS:-}
+LAUNCH_SCORER=${LAUNCH_SCORER:-}; LAUNCH_HYPOTHESIS=${LAUNCH_HYPOTHESIS:-}
+LAUNCH_NEW_EVIDENCE=${LAUNCH_NEW_EVIDENCE:-}
 backend=${AGENT_BACKEND:-codex}
 [[ $backend == (codex|claude) ]] || { print -u2 -- 'AGENT_BACKEND must be codex or claude'; exit 2; }
 [[ $LAUNCH_EFFORT == (low|medium|high|xhigh) ]] || { print -u2 -- 'bad LAUNCH_EFFORT'; exit 2; }
@@ -79,6 +86,29 @@ if [[ -z $LAUNCH_RESUME ]] && (( words > cap )); then
   fi
   print -- "spec over cap allowed ($words words): $SPEC_OVER_CAP $(date)" >> "$log"
 fi
+# The lane a job belongs to is its name up to the first separator (friends_new_x -> friends),
+# overridable with LAUNCH_LANE. Derived here rather than further down because the round gate needs
+# it, and the gate has to refuse before the registry write, the log and any spend.
+lane=${LAUNCH_LANE:-${${job:t}%%[-_]*}}
+lane_dir=${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-$PWD/.runtime}}/lanes/$lane
+# rounds.py has held this rule since the first c5 postmortem on 11-06: no repeat of a method that
+# just produced a dry streak, no reopening a closed dead end, no round 1 without reading the KB.
+# Nothing ever called it and no lane had written a single row, so every check read an empty ledger
+# and passed. Calling `start` here is what makes the write unavoidable: it gates and opens the
+# round in one command, and it refuses a fingerprint seen in the recent rounds, so relabelling the
+# same knobs as a new family does not get through.
+if [[ -n $LAUNCH_ROUND ]]; then
+  round_args=(--lane "$lane_dir" start --round "$LAUNCH_ROUND" --family "${LAUNCH_FAMILY:-$lane}"
+              --generator "$LAUNCH_GENERATOR" --params "$LAUNCH_PARAMS" --scorer "$LAUNCH_SCORER")
+  [[ -z $LAUNCH_HYPOTHESIS ]] || round_args+=(--hypothesis "$LAUNCH_HYPOTHESIS")
+  [[ -z $LAUNCH_NEW_EVIDENCE ]] || round_args+=(--new-evidence "$LAUNCH_NEW_EVIDENCE")
+  if ! python3 "${self:h:h}/harness/tools/rounds.py" "${round_args[@]}" >> "$log.round" 2>&1; then
+    print -u2 -- "launch.sh REFUSED $job: the round gate refused this round"
+    tail -20 "$log.round" >&2
+    print -- "exit 78 round-gate-refused $(date)" >> "$log"
+    exit 78
+  fi
+fi
 reg=${LAUNCH_STATE:-$PWD/.runtime/job-registry}
 mkdir -p "$reg"
 registry_name=${job//[^A-Za-z0-9_.-]/_}
@@ -95,12 +125,9 @@ else
   cx=${LAUNCH_CLAUDE:-claude}
 fi
 selector=${LAUNCH_SELECTOR:-${self:h:h}/harness/worker_models.py}
-# The lane a job belongs to is its name up to the first separator (friends_new_x -> friends),
-# overridable with LAUNCH_LANE. A missing GOAL.md or an unavailable `rh` is not fatal: a job
-# that cannot read its goal still runs, and the gap shows up in the prompt's absence rather
-# than as a dead lane.
-lane=${LAUNCH_LANE:-${${job:t}%%[-_]*}}
-lane_dir=${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-$PWD/.runtime}}/lanes/$lane
+# lane and lane_dir are derived above, with the round gate that needs them. A missing GOAL.md or
+# an unavailable `rh` is not fatal: a job that cannot read its goal still runs, and the gap shows
+# up in the prompt's absence rather than as a dead lane.
 lessons=$(rh --root "${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-$PWD/.runtime}}" lessons for "$lane" -n "${LAUNCH_LESSONS:-12}" 2>/dev/null)
 start=1; [[ -n $LAUNCH_RESUME ]] && start=2
 for (( i = start; i <= 5; i++ )); do
