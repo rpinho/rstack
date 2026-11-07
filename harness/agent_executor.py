@@ -28,12 +28,38 @@ def _kill_tree(proc):
 DEFAULT_TOOLS = 'Read,Write,Edit'
 
 
+CODEX_SANDBOXES = ('read-only', 'workspace-write', 'danger-full-access')
+
+
+def codex_sandbox(mode=None):
+    """How much a codex job may touch. Default `workspace-write`, as documented.
+
+    11-07: this is the one real behavioural difference between this executor and the launcher the
+    lanes actually run, which passes --dangerously-bypass-approvals-and-sandbox. Unifying the two
+    launchers without noticing would have moved every lane job into a sandbox it has never run in,
+    and these jobs write their transcript to -o OUTPUT, which sits outside the work dir. So the
+    mode is a setting, with the safe value as the default: a public tool should not ship with the
+    sandbox off, and a host that needs it off says so once.
+    """
+    import os
+    mode = mode or os.environ.get('LAUNCH_CODEX_SANDBOX', 'workspace-write')
+    if mode not in CODEX_SANDBOXES + ('bypass',):
+        raise ValueError('LAUNCH_CODEX_SANDBOX must be one of: ' +
+                         ', '.join(CODEX_SANDBOXES + ('bypass',)))
+    return mode
+
+
 def command(backend, executable, model, effort, directory, output, budget='1.00',
-            tools=DEFAULT_TOOLS):
+            tools=DEFAULT_TOOLS, sandbox=None):
     if backend == 'codex':
+        mode = codex_sandbox(sandbox)
+        # `bypass` is the single flag that turns off approvals AND the sandbox together; the other
+        # values are --sandbox levels. They are not interchangeable spellings of the same thing.
+        guard = (['--dangerously-bypass-approvals-and-sandbox'] if mode == 'bypass'
+                 else ['--sandbox', mode])
         return [executable, 'exec', '--ignore-user-config', '--skip-git-repo-check',
                 '--cd', str(directory), '-m', model, '-c', 'model_reasoning_effort='+effort,
-                '--sandbox', 'workspace-write', '-o', str(output), '-']
+                *guard, '-o', str(output), '-']
     if backend == 'claude':
         # `tools` widens what a job may do. The default is read/write/edit only: a research job
         # that has to run its own code needs more, and the caller says so explicitly rather than

@@ -46,6 +46,7 @@ provider-specific config directories before invocation.
 |---|---|
 | `AGENT_BACKEND` | `codex` (default) or `claude`; invalid values refuse. |
 | `LAUNCH_CLAUDE`, `LAUNCH_CLAUDE_BUDGET` | Claude executable and per-run dollar cap (default `1.00`); no automatic Claude retries. |
+| `LAUNCH_CODEX_SANDBOX` | How much a codex job may touch: `read-only`, `workspace-write` (the default), `danger-full-access`, or `bypass`. The first three become `--sandbox MODE`; `bypass` is the single `--dangerously-bypass-approvals-and-sandbox` flag, which turns off approvals and the sandbox together and is not a sandbox level. An unknown value refuses rather than being passed through. The default is deliberate: a job whose transcript is written outside its work dir needs a wider mode, and the host says so once rather than the tool shipping with the sandbox off. |
 | `RH_POD_GATE_CONFIG`, `RH_POD_GATE_AUDIT` | Capacity policy (default `$RH_ROOT/pod-gate.json`) and audit log (default `$RH_ROOT/.runtime/pod-gate-audit.jsonl`). |
 | `RH_HARVEST_STATE` | Snapshot state override; default `<root>/.harvest-state`. |
 | `RH_ENV_FILE` | Host env file of `KEY=VALUE` lines read once at import; default `$XDG_CONFIG_HOME/research-harness/env` (else `~/.config/...`). The real environment wins. Keep host paths here, never in the repo. See [harness sync](harness-sync.md). |

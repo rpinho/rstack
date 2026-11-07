@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'harness'))
-from agent_executor import command
+from agent_executor import codex_sandbox, command
 import pytest
 
 
@@ -108,3 +108,40 @@ def test_the_wall_clock_cap_stops_a_hanging_job_without_killing_the_launcher(tmp
                           capture_output=True, text=True, timeout=60)
     assert proc.returncode == 124, proc.stderr
     assert 'wall-clock cap' in proc.stderr
+
+
+def test_the_codex_sandbox_defaults_to_workspace_write(monkeypatch):
+    """A public tool must not ship with the sandbox off. 11-07: the launcher the lanes run passes
+    --dangerously-bypass-approvals-and-sandbox, and unifying the two launchers without noticing
+    would have moved every lane job into a sandbox it had never run in."""
+    monkeypatch.delenv('LAUNCH_CODEX_SANDBOX', raising=False)
+    assert '--sandbox' in command('codex', 'codex', 'm', 'high', '/w', '/o')
+    assert 'workspace-write' in command('codex', 'codex', 'm', 'high', '/w', '/o')
+    assert '--dangerously-bypass-approvals-and-sandbox' not in command(
+        'codex', 'codex', 'm', 'high', '/w', '/o')
+
+
+def test_bypass_is_one_flag_and_not_a_sandbox_level(monkeypatch):
+    """`bypass` turns off approvals AND the sandbox together; the others are --sandbox levels.
+    Emitting `--sandbox bypass` would be silently accepted as an unknown value by nothing."""
+    monkeypatch.delenv('LAUNCH_CODEX_SANDBOX', raising=False)
+    argv = command('codex', 'codex', 'm', 'high', '/w', '/o', sandbox='bypass')
+    assert '--dangerously-bypass-approvals-and-sandbox' in argv
+    assert '--sandbox' not in argv
+
+
+def test_the_host_can_set_the_sandbox_from_the_environment(monkeypatch):
+    monkeypatch.setenv('LAUNCH_CODEX_SANDBOX', 'bypass')
+    assert '--dangerously-bypass-approvals-and-sandbox' in command(
+        'codex', 'codex', 'm', 'high', '/w', '/o')
+    monkeypatch.setenv('LAUNCH_CODEX_SANDBOX', 'read-only')
+    assert ['--sandbox', 'read-only'] == command(
+        'codex', 'codex', 'm', 'high', '/w', '/o')[-5:-3]
+
+
+def test_an_unknown_sandbox_is_refused_rather_than_passed_through(monkeypatch):
+    monkeypatch.setenv('LAUNCH_CODEX_SANDBOX', 'off')
+    with pytest.raises(ValueError):
+        command('codex', 'codex', 'm', 'high', '/w', '/o')
+    with pytest.raises(ValueError):
+        codex_sandbox('--sandbox=none')
