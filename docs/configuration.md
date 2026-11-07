@@ -61,6 +61,17 @@ provider-specific config directories before invocation.
 | `RH_REMOTE_RUNNER` | Deployed runner path on a pod; default relative `research-harness/pod/runner.py`; quote-safe in the SSH shell command. |
 | `RH_RUNNER_SOCKET` | Local pod-runner socket; default `.runtime/rh-pod-runner.sock`; CLI `--socket` overrides it. |
 
+A sweep worker cannot reach X and cannot download. Two asks exist so that is not a dead end.
+A search worker may write one `X QUERY <ID>: <query>` line in its report; the sweep files it in the
+lane's `X_REQUESTS.jsonl`, adds it to `X_QUERIES.txt` for the general session's browser step, and
+one `rh intake x-search` with that query clears it. The receipt rule does not move: a lead with no
+X search is still incomplete and still unpromotable, so the ask is a way to get the search run, not
+a substitute for it. For data, [`inputs.py`](../harness/tools/inputs.py) stages a public file once,
+by hash, and the worker prompt now lists what is staged and how to get a path offline; a worker that
+needs an unstaged file says `BLOCKED: need <name> from <url or repo@commit and path>` and a person
+stages it. Before 11-07 neither was reachable from a sweep: a lead found during a run could never
+have its X query asked, and no prompt mentioned staged inputs at all.
+
 `SWEEP.toml`'s `host` (default empty, meaning here) is the machine a lane's workers run on, an
 ssh alias validated in the same shape `launch.sh` validates. It reaches the launcher as
 `LAUNCH_HOST`, so the work dir must exist at the same absolute path there. An explicit

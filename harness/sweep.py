@@ -68,7 +68,132 @@ def github_commands(cfg):
     return ['{}: {}'.format(label, shlex.join(argv)) for label, argv in commands]
 
 
+X_REQUESTS = 'X_REQUESTS.jsonl'
+X_REQUEST_LINE = re.compile(r'^X QUERY (' + ID_PATTERN + r'):[ \t]*(\S[^\n]*)$', re.M)
+
+
+def jsonl_rows(path):
+    """Rows of a JSONL ledger, skipping blank and corrupt lines. `rh` is a parameter everywhere
+    else in this module, and these two readers are called from x_query_text, which does not take
+    it; a local reader is less rope than threading rh through for two sets of strings."""
+    rows = []
+    try:
+        lines = Path(path).read_text(errors='replace').splitlines()
+    except OSError:
+        return rows
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+INPUTS = 'INPUTS.jsonl'
+
+
+def staged_inputs(lane):
+    """[(name, path, sha256)] public inputs someone has staged for this lane, newest row wins.
+
+    11-07, math's first m5 sweep: the kill test reported "BLOCKED: need locally supplied
+    witnesses/w396.txt", because allowed_tests forbid downloads and a worker must not fetch. The
+    answer was not to loosen allowed_tests. inputs.py has existed since 11-06 for exactly this,
+    staged by someone with network access and pinned by hash, and no prompt had ever mentioned it,
+    so every worker went on reporting the same block. A tool nothing tells the worker about is a
+    tool nobody uses.
+    """
+    rows = {}
+    for row in jsonl_rows(lane / INPUTS):
+        name = str(row.get('name', '') or '').strip()
+        if name and row.get('path'):
+            rows[name] = (name, str(row['path']), str(row.get('sha256', '')))
+    return [rows[k] for k in sorted(rows)]
+
+
+def inputs_text(lane):
+    """The lines a worker needs: what is here, and how to get a path without any network."""
+    staged = staged_inputs(lane)
+    if not staged:
+        return ('No public inputs are staged for this lane. You may NOT download one. If a test '
+                'needs a specific public file, say so as "BLOCKED: need <name> from <exact public '
+                'url or repo@commit and path>", and a person stages it with inputs.py; the next '
+                'pass then has it. ')
+    listing = '; '.join('{} ({}, sha256 {})'.format(n, Path(pth).name, sha[:12]) for n, pth, sha in staged)
+    return ('Public inputs already staged for this lane, offline and hash-pinned: ' + listing + '. '
+            'Get a path with `inputs.py --lane <lane> path --name <name>`, or read the recorded '
+            'path directly; never download anything yourself. A staged input that fails its hash '
+            'is a refusal, not something to work around. ')
+
+
+def x_answered(lane):
+    """Queries already recorded by `rh intake x-search`, lowercased for comparison."""
+    answered = set()
+    for row in jsonl_rows(lane / 'X_SEARCHES.jsonl'):
+        query = str(row.get('query', '') or '').strip().lower()
+        if query:
+            answered.add(query)
+    return answered
+
+
+def x_requests(lane):
+    """[(idea, query)] a worker asked for and nobody has run yet, oldest first, deduped."""
+    answered = x_answered(lane)
+    out, seen = [], set()
+    for row in jsonl_rows(lane / X_REQUESTS):
+        query = str(row.get('query', '') or '').strip()
+        key = query.lower()
+        if not query or key in answered or key in seen:
+            continue
+        seen.add(key)
+        out.append((str(row.get('idea', '') or ''), query))
+    return out
+
+
+def record_x_requests(lane, report, rh):
+    """Store any `X QUERY <ID>: <query>` lines a search worker wrote. Returns the new ones.
+
+    11-07, math's first sweep on the m5. The run failed on prior-art "x: blocked" for a lead the
+    worker had just found (Erdos #531 Folkman). It was right to record it blocked: workers have no
+    route to X, and the receipt needs a real X search. But X_QUERIES.txt, the handoff the browser
+    session answers, was built only from `x_queries` in SWEEP.toml, so a lead discovered DURING a
+    sweep could never have an X query asked for it. "Stays queued for another pass" then meant
+    every later pass failing the same way, forever.
+
+    This is the missing link and nothing more: the worker may ASK, the ask reaches the browser
+    handoff, and `rh intake x-search` answering it clears the request. The receipt rule does not
+    move. A lead with no X search still cannot be promoted, which is the point.
+    """
+    try:
+        text = Path(report).read_text()
+    except OSError:
+        return []
+    known = {q.lower() for _, q in x_requests(lane)} | x_answered(lane)
+    new = []
+    for idea, query in X_REQUEST_LINE.findall(text):
+        query = query.strip()
+        if query.lower() in known:
+            continue
+        known.add(query.lower())
+        new.append((idea, query))
+        rh.append(lane / X_REQUESTS, dict(utc=rh.now(), idea=idea, query=query,
+                                          asked_by='sweep search worker'))
+    return new
+
+
 def x_query_text(lane, cfg):
+    # Requests a search worker filed for leads it found itself, until intake answers them. Without
+    # these the handoff only ever carried SWEEP.toml's standing queries, so a lead discovered
+    # during a sweep had no way to get its X search asked for, and its prior-art could never
+    # complete. They carry the idea id so the answer can be tied back to the lead that needs it.
+    pending = x_requests(lane)
+    asked = ('\n\n# Asked for by a search worker, for leads found during a sweep. Each needs one\n'
+             '# `rh intake x-search` outcome, which clears it from this list:\n'
+             + '\n'.join('{}   # for idea {}'.format(q, i or 'unknown') for i, q in pending)
+             if pending else '')
     capture = cfg.get('x_capture_path')
     capture_step = ('# Capture metadata in ' + str(capture) + '\n' if capture else
                     '# General must configure x_local_file in INTAKE.toml before capturing results.\n')
@@ -81,7 +206,8 @@ def x_query_text(lane, cfg):
             + '# Then run rh intake ' + shlex.quote(lane.name) + ' --live.\n'
             '# Results reach workers only through intake in IDEAS.jsonl.\n'
             + search_step
-            + '\n'.join(cfg.get('x_queries', [])) + '\n')
+            + '\n'.join(cfg.get('x_queries', []))
+            + asked + '\n')
 
 
 def stamp(value):
@@ -404,8 +530,13 @@ def generate(stage, lane, cfg, paths, day, due, failures=()):
                      + negative_receipt
                      + 'Use ONLY that captured metadata or the supplied dated outcomes; a missing/stale/inapplicable capture is blocked, never invent a search. '
                      'Record blocked sources honestly: incomplete coverage fails the compiler and stays queued for another pass. '
+                     'If a lead YOU found needs an X search that no intake has run, write one line '
+                     '"X QUERY <ID>: <the exact query a person should run>" in this report. It is filed for the '
+                     'general session, appears in X_QUERIES.txt, and is cleared by one rh intake x-search. '
+                     'That is an ask, not a substitute: the receipt stays incomplete and the lead stays queued until the search is run. '
                      'For competition leaderboards use only lane-permitted public methods/rules; never prohibited predictions or scores. '
                      'The receipt is machine-checked with idea_policy.prior_art; a source name without a query/outcome is insufficient.')
+    intro.append(inputs_text(lane))
     if stage == 'search':
         intro += ['Search outside sources for new methods, competitors, runnable public code, recent papers and community discussions. Read prior seen material first; append what you searched to the configured seen file if provided.',
                   'Follow the lane search spec verbatim, using the resolved report path. Use IDEA <id>: lines with URL, added signal, metric, first kill test and rules risk. IDs may be BOARD-n or UUID (32 hexadecimal digits or standard hyphenated UUID); preserve queue IDs exactly. With no new ideas, document the actual search and NOTHING NEW. End DONE or BLOCKED.']
@@ -431,7 +562,7 @@ def generate(stage, lane, cfg, paths, day, due, failures=()):
     return '\n\n'.join(intro) + '\n'
 
 
-def check(paths, due, cfg=None, known_ids=None):
+def check(paths, due, cfg=None, known_ids=None, lane=None):
     errors, texts = [], {}
     for stage, p in paths.items():
         try:
@@ -484,11 +615,21 @@ def check(paths, due, cfg=None, known_ids=None):
                                  and key.rsplit('-', 1)[0] not in cfg['boards'] for key in ids):
         errors.append('unknown idea board')
     if cfg.get('evidence_policy'):
+        # A lead still cannot be promoted without a real X search; that rule does not move. But
+        # the message has to distinguish "nobody has run this search yet, and here is the ask"
+        # from "the receipt is wrong", because the first one is answered by a person and the
+        # second by the worker. math's first m5 sweep spent a run learning that the hard way.
+        waiting = {idea: query for idea, query in x_requests(lane)} if lane else {}
         for key in ids:
             try:
                 idea_policy.prior_art(paths['search'].parent / ('prior-art-' + key + '.json'))
             except (OSError, ValueError, TypeError) as exc:
-                errors.append('prior-art {}: {}'.format(key, exc))
+                note = ''
+                if key in waiting and 'prior-art x' in str(exc):
+                    note = (' [waiting on an X search that has been asked for: {!r}. It is in '
+                            'X_QUERIES.txt; one `rh intake x-search` clears it and the next pass '
+                            'can complete this receipt.]'.format(waiting[key]))
+                errors.append('prior-art {}: {}{}'.format(key, exc, note))
     return errors
 
 
@@ -935,10 +1076,18 @@ def run_lane(lane, cfg, rh, dry=False):
                         worker_errors.append('{} worker exit {}'.format(stage, rc))
                 except (OSError, ValueError) as e:
                     worker_errors.append(stage + ': ' + str(e))
+                if stage == 'search':
+                    # Store any X query the worker asked for, before the receipts are checked, so
+                    # X_QUERIES.txt carries the ask on this same run rather than the next one.
+                    for idea, query in record_x_requests(lane, scratch['search'], rh):
+                        print('X query asked for idea {}: {}'.format(idea or 'unknown', query))
             # Freeze required reads at READ admission, but recognize genuine rows
             # arriving during any worker. Unjudged late arrivals wait for next run.
             queue = rh.latest(rh.rows(lane / 'IDEAS.jsonl'))
-            errors = worker_errors + check(scratch, due, cfg, queue)
+            # Rewritten here as well as before the workers: a request filed by this run's search
+            # worker belongs in the handoff now, not after the next sweep.
+            (lane / 'X_QUERIES.txt').write_text(x_query_text(lane, cfg))
+            errors = worker_errors + check(scratch, due, cfg, queue, lane)
             if not errors:
                 break
         if not errors:
