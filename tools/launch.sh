@@ -1,12 +1,18 @@
 #!/bin/zsh
 # Synchronous job runner: role selection, exit receipts and bounded capacity retries.
-# usage: launch.sh JOB WORKDIR [--role ROLE] [--model MODEL --model-override REASON]
+# usage: launch.sh JOB WORKDIR [--role ROLE] [--model MODEL --model-override REASON] [--host HOST]
 setopt pipefail
 (( $# >= 2 )) || { print -u2 -- 'usage: launch.sh JOB WORKDIR'; exit 2; }
 self=${0:A}
 job=$1; dir=$2; shift 2
 LAUNCH_ROLE=${LAUNCH_ROLE:-batch}; LAUNCH_MODEL=${LAUNCH_MODEL:-}; LAUNCH_MODEL_OVERRIDE=${LAUNCH_MODEL_OVERRIDE:-}
 LAUNCH_EFFORT=${LAUNCH_EFFORT:-high}
+# --host runs the executor on another machine (Ricardo, 11-07: "move the science runs to the m5").
+# Only that one step crosses the network. Admission, the spec word cap, the job registry, model
+# selection, the prompt and the log all stay on the controller, so there is still one source for
+# them and the host needs no lane state. The 16 GB controller ran out of memory under local
+# rounds on 11-01 and Claude Code killed the background shells; the heavy work belongs elsewhere.
+LAUNCH_HOST=${LAUNCH_HOST:-}
 backend=${AGENT_BACKEND:-codex}
 [[ $backend == (codex|claude) ]] || { print -u2 -- 'AGENT_BACKEND must be codex or claude'; exit 2; }
 [[ $LAUNCH_EFFORT == (low|medium|high|xhigh) ]] || { print -u2 -- 'bad LAUNCH_EFFORT'; exit 2; }
@@ -15,9 +21,14 @@ while (( $# )); do
     --role) (( $# >= 2 )) || exit 2; LAUNCH_ROLE=$2; shift 2;;
     --model) (( $# >= 2 )) || exit 2; LAUNCH_MODEL=$2; shift 2;;
     --model-override) (( $# >= 2 )) || exit 2; LAUNCH_MODEL_OVERRIDE=$2; shift 2;;
+    --host) (( $# >= 2 )) || exit 2; LAUNCH_HOST=$2; shift 2;;
     *) print -u2 -- "launch.sh: unknown argument $1"; exit 2;;
   esac
 done
+# An ssh alias, never a flag or a command: the host goes into an ssh argv and a remote shell line.
+if [[ -n $LAUNCH_HOST ]] && ! [[ $LAUNCH_HOST =~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$' ]]; then
+  print -u2 -- "launch.sh: --host must be an ssh alias, got '$LAUNCH_HOST'"; exit 2
+fi
 # Admission happens before registration, logs, model selection or the executor.
 if [[ -n $LAUNCH_IDEA ]]; then
   idea_args=(ideas show "$LAUNCH_IDEA")
@@ -102,13 +113,40 @@ for (( i = start; i <= 5; i++ )); do
     [[ ! -f $lane_dir/GOAL.md ]] || { printf -- '--- LANE GOAL (%s, the owner'\''s words; agents never edit it) ---\n' "$lane"; cat "$lane_dir/GOAL.md"; printf '\n---\n\n'; }
     [[ -z $lessons ]] || { printf -- '--- LESSONS THIS LANE ALREADY PAID FOR ---\n%s\n---\n\n' "$lessons"; }
     cat "$spec"; (( i > 1 )) && printf '\n\nRESUME (attempt %d): read STATUS.md, REPORT.md and existing files; continue completed work.\n' $i; } > "$log.prompt"
-  print -- "=== attempt $i model $m $(date)" >> "$log"
+  print -- "=== attempt $i model $m${LAUNCH_HOST:+ host $LAUNCH_HOST} $(date)" >> "$log"
   attempt_log="$log.attempt-$i"
-  nice -n 10 python3 "${self:h:h}/harness/agent_executor.py" --backend "$backend" \
-    --executable "$cx" --directory "$dir" --model "$m" --effort "$LAUNCH_EFFORT" \
-    --output "${spec:r}.last.md" --budget "${LAUNCH_CLAUDE_BUDGET:-1.00}" \
-    < "$log.prompt" > "$attempt_log" 2>&1
-  rc=$?
+  out=${spec:r}.last.md
+  if [[ -z $LAUNCH_HOST ]]; then
+    nice -n 10 python3 "${self:h:h}/harness/agent_executor.py" --backend "$backend" \
+      --executable "$cx" --directory "$dir" --model "$m" --effort "$LAUNCH_EFFORT" \
+      --output "$out" --budget "${LAUNCH_CLAUDE_BUDGET:-1.00}" \
+      < "$log.prompt" > "$attempt_log" 2>&1
+    rc=$?
+  else
+    # A remote run uses the SAME absolute paths on both machines, and refuses when the work dir
+    # is not there, rather than falling back to the remote $HOME and writing results nowhere.
+    # No path is silently rewritten: both machines are /Users/ricardo, and a host whose layout
+    # differs is a separate change, not a guess made here.
+    # $HOME in the default is expanded by the remote shell, so no host path enters the repo.
+    rexec=${LAUNCH_REMOTE_EXECUTOR:-'$HOME/.local/share/research-harness/agent_executor.py'}
+    if ! [[ $rexec =~ '^[$A-Za-z0-9_/.~{}-]+$' ]]; then
+      print -u2 -- "launch.sh: LAUNCH_REMOTE_EXECUTOR must be a plain path"; exit 2
+    fi
+    # POSIX `echo`, not zsh's `print`: the remote shell is whatever the host's login shell is.
+    missing="launch.sh --host $LAUNCH_HOST: no work dir $dir there"
+    remote="cd ${(q)dir} 2>/dev/null || { echo ${(q)missing} >&2; exit 2; }
+exec nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)${LAUNCH_CLAUDE_BUDGET:-1.00}}"
+    ${=${LAUNCH_SSH:-ssh}} "$LAUNCH_HOST" "$remote" < "$log.prompt" > "$attempt_log" 2>&1
+    rc=$?
+    # Status has to keep working from the controller: the heavy outputs stay on the host and
+    # only these few small bookkeeping files come back, so STATUS.md, REPORT.md, the receipts
+    # and event-watch read exactly as they did when the job ran here.
+    rsync -a --timeout=120 --max-size="${LAUNCH_PULL_MAX_SIZE:-4m}" -e "${LAUNCH_SSH:-ssh}" \
+      --include='*/' --include='STATUS.md' --include='REPORT.md' --include='PLAN.md' \
+      --include='RESULTS.jsonl' --include='*.selection.json' --include="${out:t}" \
+      --exclude='*' "$LAUNCH_HOST:$dir/" "$dir/" >> "$log.pull" 2>&1 ||
+      print -- "pull from $LAUNCH_HOST failed rc $? (outputs are on the host) $(date)" >> "$log"
+  fi
   cat "$attempt_log" >> "$log"
   print -- "exit $rc $(date)" >> "$log"
   python3 "$selector" --log "$log" --receipt "$log.selection.json" --outcome "$rc" || exit 2

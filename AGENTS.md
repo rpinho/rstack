@@ -26,6 +26,7 @@ The installed copy comes only from committed repo code; never edit it in place. 
 - Config lives at `ROOT/lanes/NAME/{INTAKE,SWEEP,CADENCE,OUTREACH}.toml`; new lanes also have frozen declarations and `RULES.md`. Runtime default: `.runtime/`. See [configuration](docs/configuration.md) for executor auth, routes and explicit paths. Provider CLIs require their own account; never copy credential files into a clone.
 - Record actual browser outcomes: `rh intake x-search LANE --query Q [--subject S] --result none|hits --n N` (requires `x_local_file`; records locally without searching).
 - Use `AGENT_BACKEND=codex|claude`; there is no model/backend substitution. The offline demo requires neither CLI nor login.
+- Heavy jobs run where there is memory and disk, not on the controller: `tools/launch.sh JOB WORKDIR --host HOST` runs the executor on another machine over ssh, with the work dir at the same absolute path there. Status and receipts still read on the controller. One flag, no per-lane variants: see [configuration](docs/configuration.md).
 
 - For retros and cross-lane learning, use [run-retro](.claude/skills/run-retro/SKILL.md) and [lessons](docs/lessons.md).
 
