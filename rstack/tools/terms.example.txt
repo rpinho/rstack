@@ -1,0 +1,14 @@
+# Example terms file for relay and reload-lint.py. Copy it somewhere private (for example
+# ~/.config/rstack/terms.txt), point RSTACK_TERMS_FILE at it, and replace every line.
+# Never commit your real one: the list itself describes what you work on.
+
+# Terms: one per line, case-insensitive.
+projectcodename
+internal-sku
+
+# Markers: working detail that makes a nearby term a problem (reload-lint only).
+marker run id = \brun-\d{3,}[a-z]?\b
+marker score delta = \bdelta\s*[=:]\s*[+-]?\d*\.\d+
+
+# Standalone: never right in a reloaded file, with or without a term (reload-lint only).
+standalone ticket dump = \bTKT-\d{6}\b

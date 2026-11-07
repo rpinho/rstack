@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""event-watch: wake a long-running session only when something happens.
+
+Why: it replaces an hourly /loop inside a big session. Every loop turn re-reads the whole context,
+and one overnight watcher spent about 3,300 turns and 19 compactions mostly confirming that nothing
+had changed. Here a plain script does the looking; the model is woken once per real event.
+
+Rules live in $EVENT_WATCH_CONF/<job>.conf (default ~/.config/event-watch), one per line, # comments:
+  new   <glob>               a new path matches (paths present at the first scan are baseline)
+  stale <glob> <minutes>     newest match not modified for N minutes (once; re-arms when it updates)
+  pid   <pid|pidfile>        that process is gone (kill -0 only; never reads command lines)
+  match <file> <regex>       a new line in <file> matches regex (offset-tracked; truncation-safe)
+  deadline <YYYY-MM-DDTHH:MM> the time has passed (local time, once)
+  push  on|off               also run $EVENT_WATCH_NOTIFY MESSAGE TITLE [PRIORITY] (default off)
+
+Usage:
+  event-watch wait <job> [--max-hours H] [--every S]
+      Blocks until the job has new events, prints them, exits 0. Run it as a background shell
+      task; the agent harness's completion notification wakes the session. After handling, run
+      it again. With --max-hours (default 6) it exits with a "quiet" line instead, so silence is
+      never mistaken for health. --every = scan interval in seconds (default 60).
+  event-watch scan [--orphans M] [job]   one pass over one or all jobs. Schedule it (launchd, cron)
+      every couple of minutes with --orphans 30: if a job's events sit unread for 30 minutes, the
+      waiting session is probably gone, and the notifier is called once.
+  event-watch list         jobs, rules, pending events
+Events: $EVENT_WATCH_STATE/<job>.events.jsonl (default $RSTACK_STATE_DIR/event-watch), cursor in
+<job>.cursor. Notifications carry only the job name, event kinds and file basenames, never log
+content. One waiter per job (scans are locked; the read cursor is not).
+"""
+import fcntl, glob, json, os, re, shlex, subprocess, sys, time
+from datetime import datetime
+
+
+
+def _state_root():
+    base = os.environ.get("RSTACK_STATE_DIR")
+    if not base:
+        base = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "rstack")
+    return os.path.expanduser(base)
+
+
+CONF = os.path.expanduser(os.environ.get("EVENT_WATCH_CONF") or os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "event-watch"))
+STATE = os.path.expanduser(os.environ.get("EVENT_WATCH_STATE") or os.path.join(_state_root(), "event-watch"))
+NOTIFY = os.path.expanduser(os.environ.get("EVENT_WATCH_NOTIFY") or "")
+
+
+def now():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def load_rules(job):
+    rules = []
+    with open(os.path.join(CONF, job + ".conf")) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                rules.append(shlex.split(line))
+    return rules
+
+
+def jpath(job, ext):
+    return os.path.join(STATE, f"{job}.{ext}")
+
+
+def load_state(job):
+    try:
+        return json.load(open(jpath(job, "state.json")))
+    except Exception:
+        return {}
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def scan(job):
+    os.makedirs(STATE, exist_ok=True)
+    with open(jpath(job, "lock"), "w") as lk:  # launchd scan and a session's wait may overlap
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        return _scan(job)
+
+
+def _scan(job):
+    rules = load_rules(job)
+    st = load_state(job)
+    events, push = [], False
+    for i, r in enumerate(rules):
+        kind, key = r[0], f"{i}:{' '.join(r)}"
+        s = st.setdefault(key, {})
+        try:
+            if kind == "push":
+                push = r[1:] == ["on"]
+            elif kind == "new":
+                cur = sorted(glob.glob(os.path.expanduser(r[1]), recursive=True))
+                if "seen" in s:
+                    for p in cur:
+                        if p not in s["seen"]:
+                            events.append({"kind": "new", "path": p})
+                s["seen"] = cur
+            elif kind == "stale":
+                paths = glob.glob(os.path.expanduser(r[1]), recursive=True)
+                newest = max((os.path.getmtime(p) for p in paths), default=None)
+                idle = None if newest is None else (time.time() - newest) / 60
+                if idle is not None and idle >= float(r[2]):
+                    if not s.get("fired"):
+                        events.append({"kind": "stale", "path": r[1], "idle_min": round(idle)})
+                        s["fired"] = True
+                else:
+                    s["fired"] = False
+            elif kind == "pid":
+                v = os.path.expanduser(r[1])
+                pid = int(open(v).read().split()[0]) if os.path.exists(v) else int(v)
+                if not alive(pid) and not s.get("fired"):
+                    events.append({"kind": "exited", "pid": pid})
+                    s["fired"] = True
+            elif kind == "match":
+                p = os.path.expanduser(r[1])
+                if os.path.exists(p):
+                    size, off = os.path.getsize(p), s.get("off")
+                    if off is None:
+                        off = size  # baseline: only lines written after the first scan
+                    if size < off:
+                        off = 0  # truncated or rotated
+                    with open(p, "rb") as f:
+                        f.seek(off)
+                        chunk = f.read()
+                    cut = chunk.rfind(b"\n") + 1  # leave a partial last line for next time
+                    for line in chunk[:cut].decode("utf-8", "replace").splitlines():
+                        if re.search(r[2], line):
+                            events.append({"kind": "match", "path": p, "line": line[:200]})
+                    s["off"] = off + cut
+            elif kind == "deadline":
+                if datetime.now() >= datetime.fromisoformat(r[1]) and not s.get("fired"):
+                    events.append({"kind": "deadline", "at": r[1]})
+                    s["fired"] = True
+            else:
+                s["error"] = f"unknown rule {kind}"
+        except Exception as e:  # one broken rule must not kill the watch
+            if s.get("error") != str(e):
+                events.append({"kind": "rule-error", "rule": " ".join(r), "error": str(e)[:200]})
+            s["error"] = str(e)
+    os.makedirs(STATE, exist_ok=True)
+    json.dump(st, open(jpath(job, "state.json"), "w"))
+    if events:
+        with open(jpath(job, "events.jsonl"), "a") as f:
+            for e in events:
+                f.write(json.dumps({"t": now(), **e}) + "\n")
+        if push and NOTIFY and os.path.exists(NOTIFY):
+            kinds = {}
+            for e in events:
+                kinds.setdefault(e["kind"], []).append(os.path.basename(str(e.get("path", e.get("pid", e.get("at", ""))))))
+            msg = "; ".join(f"{k}: {', '.join(sorted(set(v))[:4])}" for k, v in kinds.items())
+            subprocess.run([NOTIFY, msg[:300], f"event-watch {job}"], timeout=30)
+    return events
+
+
+def pending(job):
+    try:
+        lines = open(jpath(job, "events.jsonl")).read().splitlines()
+    except FileNotFoundError:
+        return [], 0
+    try:
+        cur = int(open(jpath(job, "cursor")).read())
+    except Exception:
+        cur = 0
+    return lines[cur:], len(lines)
+
+
+def orphan_check(job, minutes):
+    """Nobody has read this job's events for `minutes`: the waiting session is probably gone. Push once per backlog."""
+    p, n = pending(job)
+    if not p:
+        return
+    first = json.loads(p[0])["t"]
+    age = (datetime.now() - datetime.strptime(first, "%Y-%m-%d %H:%M:%S")).total_seconds() / 60
+    flag = jpath(job, "orphan")
+    if age >= minutes and (not os.path.exists(flag) or open(flag).read() != first):
+        if NOTIFY and os.path.exists(NOTIFY):
+            subprocess.run([NOTIFY, f"{len(p)} event(s) unread for {int(age)} min. Is its session still waiting?", f"event-watch {job}", "4"], timeout=30)
+        open(flag, "w").write(first)
+
+
+def jobs():
+    return sorted(os.path.basename(p)[:-5] for p in glob.glob(os.path.join(CONF, "*.conf")))
+
+
+def main(a):
+    if not a or a[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    if a[0] == "scan":
+        orphan_min = None
+        if "--orphans" in a:
+            i = a.index("--orphans"); orphan_min = float(a[i + 1]); a = a[:i] + a[i + 2:]
+        for j in a[1:] or jobs():
+            try:
+                for e in scan(j):
+                    print(j, json.dumps(e))
+                if orphan_min is not None:
+                    orphan_check(j, orphan_min)
+            except Exception as e:  # one broken job must not stop the others
+                print(j, "scan failed:", e, file=sys.stderr)
+        return 0
+    if a[0] == "list":
+        for j in jobs():
+            p, _ = pending(j)
+            print(f"{j}: {len(p)} pending")
+            for r in load_rules(j):
+                print("   ", " ".join(r))
+        return 0
+    if a[0] == "wait" and len(a) >= 2:
+        job, max_h, every = a[1], 6.0, 60
+        if "--max-hours" in a:
+            max_h = float(a[a.index("--max-hours") + 1])
+        if "--every" in a:
+            every = int(a[a.index("--every") + 1])
+        if not os.path.exists(os.path.join(CONF, job + ".conf")):
+            print(f"event-watch: no rules for {job} ({CONF}/{job}.conf)")
+            return 2
+        end = time.time() + max_h * 3600
+        while True:
+            scan(job)
+            p, n = pending(job)
+            if p:
+                for line in p:
+                    print(line)
+                open(jpath(job, "cursor"), "w").write(str(n))
+                return 0
+            if time.time() >= end:
+                print(json.dumps({"t": now(), "kind": "quiet", "hours": max_h}))
+                return 0
+            time.sleep(every)
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

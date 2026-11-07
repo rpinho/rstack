@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""relay: message the conductor session WITHOUT waking it for FYIs, and keep withheld terms out of it.
+
+Why a script: one long-lived conductor session coordinates many workers, and every wake replays
+its whole context. The owner's rule was that waking it should be done by scripts wherever
+possible, not by the model. So:
+
+  relay fyi "..."        filed only; the conductor reads the batch on its next real wake
+  relay decision "..."   filed, and a wake is requested (a choice the worker cannot make)
+  relay owner "..."      filed + wake (needs the owner: read, send, buy, approve; or it answers
+                         a request the owner made, whose answer must not sit unseen as an FYI)
+  relay break "..."      filed + wake (something broken that blocks the worker)
+
+Options: --from NAME (default $CLAUDE_SESSION_NAME or the cwd name), --summary "one safe line",
+--terms FILE (default $RSTACK_TERMS_FILE). The inbox is CONDUCTOR_INBOX_DIR (default
+$XDG_STATE_HOME/conductor-inbox): rows in inbox.jsonl, wake markers in wake/. Same layout as
+harness/tools/conductor-inbox, so the same reader and installer work.
+
+QUARANTINE. The conductor is a general-purpose session. Worker detail from a sensitive research
+domain, relayed into it, tripped a safety classifier and stalled it, repeatedly in one evening, and
+compaction did not help because the inbox is re-read on the next wake. So a message that matches
+a term in your terms file is NOT put into the conductor's context and is NOT lost: the full text
+goes to quarantine/ (mode 600), and the inbox row carries your --summary plus that path. The kind
+is kept, so an owner or break message still wakes the conductor.
+
+The row records a COUNT of matched terms, never the terms. The conductor re-reads its inbox on
+every wake, so naming them there would put the withheld vocabulary into the very context the
+quarantine protects; that was the second time the same session stalled. The sender is told the
+count too.
+
+No terms file: nothing is quarantined, and relay says so. A configured file that cannot be read
+quarantines everything until it is fixed, because a filter that silently became no filter is the
+failure this exists to prevent.
+
+Write the summary so the conductor can act without the detail: what is needed, from whom, and
+where the detail lives.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import time
+import uuid
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _terms  # noqa: E402
+
+KINDS = {'fyi': False, 'decision': True, 'owner': True, 'break': True}
+
+
+def inbox_dir():
+    explicit = os.environ.get('CONDUCTOR_INBOX_DIR')
+    if explicit:
+        return Path(explicit).expanduser()
+    return Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'conductor-inbox'
+
+
+def append_row(root, row):
+    payload = (json.dumps(row, ensure_ascii=False) + '\n').encode('utf-8')
+    fd = os.open(str(root / 'inbox.jsonl'), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        if os.write(fd, payload) != len(payload):     # one write: no interleaving
+            raise OSError('incomplete inbox append')
+    finally:
+        os.close(fd)
+
+
+def quarantine(root, sender, kind, text):
+    qdir = root / 'quarantine'
+    qdir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+    safe = re.sub(r'[^A-Za-z0-9_.-]', '_', sender)[:40] or 'sender'
+    path = qdir / '{}-{}-{}-{}.txt'.format(stamp, safe, kind, uuid.uuid4().hex[:8])
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(text)
+    return path
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    ap.add_argument('--from', dest='sender',
+                    default=os.environ.get('CLAUDE_SESSION_NAME') or Path.cwd().name)
+    ap.add_argument('--summary')
+    ap.add_argument('--terms')
+    ap.add_argument('kind', choices=sorted(KINDS))
+    ap.add_argument('text', nargs='+')
+    args = ap.parse_args(argv)
+    text = ' '.join(args.text)
+    root = inbox_dir()
+    root.mkdir(parents=True, exist_ok=True)
+
+    unreadable = False
+    try:
+        terms = _terms.load(args.terms)
+    except _terms.TermsUnreadable:
+        terms, unreadable = _terms.Terms(), True
+        print('relay: the configured terms file cannot be read, so this message is quarantined '
+              'whole until it is fixed.', file=sys.stderr)
+    if not terms and not unreadable:
+        print('relay: no terms file configured (--terms or {}); nothing is quarantined.'
+              .format(_terms.ENV), file=sys.stderr)
+
+    matched = len(terms.term_hits(text)) if terms else 0
+    row = {'utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+           'from': args.sender, 'kind': args.kind, 'text': text}
+
+    if matched or unreadable:
+        path = quarantine(root, args.sender, args.kind, text)
+        summary = args.summary
+        if summary and (unreadable or terms.term_hits(summary)):
+            summary, why = None, 'a --summary was given but it was withheld too'
+        elif not summary:
+            why = 'no --summary was given'
+        cause = ('{} withheld term(s)'.format(matched) if matched
+                 else 'the terms file could not be read')
+        if summary:
+            row['text'] = ('{}\n\n[{} sent detail kept out of this context ({}). Full text: {}. '
+                           'Do not read it into this session; ask {} directly.]'
+                           .format(summary, args.sender, cause, path, args.sender))
+        else:
+            row['text'] = ('{} has something for you ({}), and {}. Its detail is kept out of this '
+                           'context ({}). Full text: {}. Do not read it into this session; ask {} '
+                           'for a one-line summary: what is needed, from whom, where the detail '
+                           'lives.'.format(args.sender, args.kind, why, cause, path, args.sender))
+        row['quarantined'] = str(path)
+        row['quarantine_match_count'] = matched
+
+    append_row(root, row)
+    if KINDS[args.kind]:
+        (root / 'wake').mkdir(exist_ok=True)
+        # Sender and message text never become a filesystem path.
+        (root / 'wake' / '{}-{}'.format(time.time_ns(), uuid.uuid4().hex)).write_text(
+            row['text'][:200], encoding='utf-8')
+
+    tail = 'wake requested' if KINDS[args.kind] else 'filed for the next wake'
+    if 'quarantined' in row:
+        print('filed ({}) as a POINTER; {}. {} term(s) matched, so the text was quarantined to {}.'
+              .format(args.kind, tail, matched, row['quarantined']))
+        if not args.summary:
+            print('Next time pass --summary "what is needed, from whom, where the detail lives".')
+    else:
+        print('filed ({}); {}'.format(args.kind, tail))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

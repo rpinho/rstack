@@ -1,0 +1,323 @@
+#!/usr/bin/env python3
+"""egress-gate: the check that must PASS before anything leaves the machine (push, upload, publish).
+
+    egress-gate scan PATH...              scan files and directories (release dirs, evidence bundles)
+    egress-gate pre-push REMOTE URL       git pre-push hook mode (refs on stdin): every commit being
+                                          pushed: added lines, commit messages, author/committer
+    egress-gate check-text                scan stdin (a post, a form field)
+    egress-gate self-test                 prove each pattern class still fires
+
+Exit 0 = PASS, 2 = blocked (a human looks), 1 = usage error.
+
+Why: agents build public repositories, upload evidence bundles and write posts from a machine that
+also holds personal context. "Remember to check" is prose; this is the check, wired as a global
+git pre-push hook and run by hand on anything uploaded.
+
+What it looks for:
+  - built-in SECRET SHAPES (private keys, cloud and API token formats, card numbers that pass a
+    Luhn check, long credential assignments). These are public formats, not anyone's data.
+  - YOUR patterns: $RSTACK_EGRESS_DIR/patterns.txt (default ~/.config/rstack/egress), lines of
+    `label<TAB>python-regex`: your paths, hostnames, addresses, names.
+  - YOUR terms: $RSTACK_EGRESS_DIR/terms.txt, one plain word per line (project codenames).
+  - in pre-push mode, agent working files (handoffs, briefs, error logs) whatever their content:
+    $RSTACK_EGRESS_DIR/agent-files.gitignore, gitignore-style globs, label `agent-file`.
+  Per-repo exceptions: $RSTACK_EGRESS_DIR/allow.txt, `repo-glob<TAB>label<TAB>path-glob<TAB>reason`,
+  for content the owner decided may be public in that repo.
+
+Your patterns are NOT in this file, and must not be: a list of what you do not want published is
+itself a summary of your private context, so shipping it inside a copied script is the leak. With
+no pattern file it scans the built-in shapes only, and says so on every run. If RSTACK_EGRESS_DIR
+is set explicitly and its pattern file is missing, it refuses to pass blind.
+
+Encrypted reasoning blobs that some model providers write into session transcripts are base64 and
+spell token prefixes by chance; exactly that field is masked before matching.
+"""
+import fnmatch
+import gzip
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+SKIP_DIRS = {'.git', 'node_modules', '.venv', '__pycache__', '.cache', '.pytest_cache'}
+SKIP_SUFFIX = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4', '.mov', '.mp3', '.wav', '.m4a',
+               '.pt', '.npy', '.npz', '.zip', '.woff', '.woff2', '.ttf', '.ico', '.parquet', '.h5ad'}
+MAX_BYTES = 30 * 1024 * 1024
+
+# Public token formats. The prefixes are split so this file never matches its own shapes.
+SECRET_SHAPES = [
+    ('private-key', re.compile('-----BEGIN ' + r'(?:[A-Z]+ )*PRIVATE KEY-----')),
+    ('aws-key', re.compile(r'\b(?:AK' + r'IA|AS' + r'IA)[0-9A-Z]{16}\b')),
+    ('github-token', re.compile(r'\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_' + r'pat_[A-Za-z0-9_]{50,})')),
+    ('api-key', re.compile(r'\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{32,}')),
+    ('slack-token', re.compile(r'\bxo' + r'x[abprs]-[A-Za-z0-9-]{10,}')),
+    ('google-key', re.compile(r'\bAI' + r'za[0-9A-Za-z_-]{35}\b')),
+    ('card', re.compile(r'(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)')),
+    ('credential', re.compile(r'''(?i)\b(?:api[_-]?key|secret|token|passw(?:or)?d)\b["']?\s*[:=]\s*["']([^"'\s]{16,})["']''')),
+]
+PLACEHOLDER = re.compile(r'(?i)example|placeholder|dummy|changeme|redacted|your[_-]|x{6,}|\*{4,}|\$\{|<')
+
+CIPHERTEXT = re.compile(r'("encrypted_content"\s*:\s*")gAAAAA[A-Za-z0-9_=-]{40,}(")')
+
+
+def conf_dir():
+    return Path(os.environ.get('RSTACK_EGRESS_DIR') or '~/.config/rstack/egress').expanduser()
+
+
+def luhn(digits):
+    s, alt = 0, False
+    for d in reversed(digits):
+        d = int(d)
+        if alt:
+            d = d * 2 - 9 if d > 4 else d * 2
+        s += d
+        alt = not alt
+    return s % 10 == 0
+
+
+class Config:
+    def __init__(self):
+        d = conf_dir()
+        self.notes = []
+        self.patterns = list(SECRET_SHAPES)
+        pfile = d / 'patterns.txt'
+        if pfile.exists():
+            for n, line in enumerate(pfile.read_text(encoding='utf-8').splitlines(), 1):
+                if not line.strip() or line.lstrip().startswith('#'):
+                    continue
+                label, _, rx = line.partition('\t')
+                try:
+                    self.patterns.append((label.strip(), re.compile(rx.strip())))
+                except re.error as e:
+                    raise SystemExit('egress-gate: bad regex on {}:{}: {}'.format(pfile, n, e))
+        elif os.environ.get('RSTACK_EGRESS_DIR'):
+            print('egress-gate: BLOCKED, pattern file missing: {} (refusing to pass blind)'.format(pfile))
+            raise SystemExit(2)
+        else:
+            self.notes.append('built-in secret shapes only: no pattern file at {}'.format(pfile))
+        tfile = d / 'terms.txt'
+        if tfile.exists():
+            for line in tfile.read_text(encoding='utf-8').splitlines():
+                t = line.strip()
+                if t and not t.startswith('#'):
+                    left = r'\b' if t[:1].isalnum() else ''
+                    right = r'\b' if t[-1:].isalnum() else ''
+                    self.patterns.append(('term', re.compile(left + re.escape(t) + right, re.I)))
+        self.allow_file = d / 'allow.txt'
+        afile = d / 'agent-files.gitignore'
+        self.agent_globs = []
+        if afile.exists():
+            self.agent_globs = [l.strip().lower() for l in afile.read_text(encoding='utf-8').splitlines()
+                                if l.strip() and not l.lstrip().startswith('#')]
+        self.samples = d / 'self-test.txt'
+
+    def allow_rules(self, repo):
+        rules = []
+        if repo and self.allow_file.exists():
+            for line in self.allow_file.read_text(encoding='utf-8').splitlines():
+                if not line.strip() or line.startswith('#'):
+                    continue
+                parts = line.split('\t')
+                if len(parts) >= 3 and fnmatch.fnmatch(repo, parts[0].strip()):
+                    rules.append((parts[1].strip(), parts[2].strip()))
+        return rules
+
+    def say_notes(self, stream=sys.stdout):
+        for note in self.notes:
+            print('egress-gate: note: ' + note, file=stream)
+
+
+def hits_in(text, pats):
+    text = CIPHERTEXT.sub(r'\1<ciphertext>\2', text)
+    out = []
+    for label, rx in pats:
+        for m in rx.finditer(text):
+            if label == 'card':
+                digits = re.sub(r'\D', '', m.group(0))
+                if not (13 <= len(digits) <= 19 and luhn(digits)) or len(set(digits)) < 4:
+                    continue
+            if label == 'credential':
+                value = m.group(1)
+                if PLACEHOLDER.search(value) or not (re.search(r'\d', value) and re.search(r'[A-Za-z]', value)):
+                    continue
+            out.append((label, m.group(0)))
+    return out
+
+
+def is_agent_file(path, globs):
+    """gitignore subset: no slash matches any path component; trailing / a folder; else full path."""
+    parts = path.lower().split('/')
+    for g in globs:
+        if g.endswith('/'):
+            if any(fnmatch.fnmatchcase(c, g[:-1]) for c in parts[:-1]):
+                return True
+        elif '/' in g:
+            if fnmatch.fnmatchcase(path.lower(), g) or fnmatch.fnmatchcase(path.lower(), '*/' + g):
+                return True
+        elif any(fnmatch.fnmatchcase(c, g) for c in parts):
+            return True
+    return False
+
+
+def allowed(label, path, rules):
+    return any(label == l and fnmatch.fnmatch(path, g) for l, g in rules)
+
+
+def report(hits, where, cfg):
+    print('egress-gate: BLOCKED, {} signal(s) in {}:'.format(len(hits), where))
+    for path, ln, label, snippet in hits[:60]:
+        print('  [{}] {}:{}: {}'.format(label, path, ln, snippet[:160]))
+    if len(hits) > 60:
+        print('  ... and {} more'.format(len(hits) - 60))
+    print('Fix the content (or, if the owner decided it may be public, add a scoped rule to {}). '
+          'Do not bypass with --no-verify.'.format(cfg.allow_file))
+
+
+def scan_paths(paths):
+    cfg = Config()
+    cfg.say_notes()
+    hits, files = [], []
+    for p in map(Path, paths):
+        if p.is_file():
+            files.append(p)
+        elif p.is_dir():
+            for dp, dns, fns in os.walk(str(p)):
+                dns[:] = [d for d in dns if d not in SKIP_DIRS]
+                files += [Path(dp) / f for f in fns]
+        else:
+            print('egress-gate: not found: {}'.format(p))
+            return 1
+    for f in files:
+        if f.suffix.lower() in SKIP_SUFFIX or f.is_symlink():
+            continue
+        try:
+            if f.stat().st_size > MAX_BYTES:
+                print('egress-gate: not scanned (over {} MB): {}'.format(MAX_BYTES >> 20, f))
+                continue
+            raw = gzip.open(str(f)).read() if f.suffix == '.gz' else f.read_bytes()
+        except (OSError, EOFError):
+            continue
+        if b'\0' in raw[:8192]:
+            continue
+        for ln, line in enumerate(raw.decode('utf-8', 'replace').splitlines(), 1):
+            for label, _ in hits_in(line, cfg.patterns):
+                hits.append((str(f), ln, label, line.strip()))
+    if hits:
+        report(hits, ', '.join(paths), cfg)
+        return 2
+    print('egress-gate: PASS ({} file(s) scanned)'.format(len(files)))
+    return 0
+
+
+def git(*a):
+    return subprocess.run(['git', *a], capture_output=True, text=True, errors='replace').stdout
+
+
+def pre_push(remote, url):
+    cfg = Config()
+    cfg.say_notes(sys.stderr)
+    top = git('rev-parse', '--show-toplevel').strip()
+    rules = cfg.allow_rules(top) + cfg.allow_rules(url)
+    zero = '0' * 40
+    hits, ncommits = [], 0
+    for line in sys.stdin.read().splitlines():
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        _lref, lsha, _rref, rsha = parts
+        if lsha == zero:
+            continue  # branch deletion
+        rng = ['{}..{}'.format(rsha, lsha)] if rsha != zero else [lsha, '--not', '--remotes={}'.format(remote)]
+        commits = git('rev-list', *rng).split()
+        ncommits += len(commits)
+        for c in commits:
+            meta = git('show', '-s', '--format=%an <%ae>%n%cn <%ce>%n%B', c)
+            for label, m in hits_in(meta, cfg.patterns):
+                if not allowed(label, 'COMMIT_MESSAGE', rules):
+                    hits.append(('commit {} (message/identity)'.format(c[:9]), 0, label, m))
+            for path in git('diff-tree', '--no-commit-id', '-r', '--root', '--name-only',
+                            '--diff-filter=ACMR', c).splitlines():
+                if is_agent_file(path, cfg.agent_globs) and not allowed('agent-file', path, rules):
+                    hits.append(('{}:{}'.format(c[:9], path), 0, 'agent-file',
+                                 'agent working file; keep it local (git rm --cached)'))
+            diff = git('show', '--format=', '-p', '--no-color', '--no-ext-diff', c)
+            path, ln = '?', 0
+            for d in diff.splitlines():
+                if d.startswith('+++ '):
+                    path = d[6:] if d.startswith('+++ b/') else d[4:]
+                    continue
+                if d.startswith('@@'):
+                    mm = re.search(r'\+(\d+)', d)
+                    ln = int(mm.group(1)) - 1 if mm else 0
+                    continue
+                if d.startswith('+'):
+                    ln += 1
+                    for label, _ in hits_in(d[1:], cfg.patterns):
+                        if not allowed(label, path, rules):
+                            hits.append(('{}:{}'.format(c[:9], path), ln, label, d[1:].strip()))
+                elif not d.startswith('-'):
+                    ln += 1
+    if hits:
+        report(hits, 'push to {} ({}), {} commit(s)'.format(remote, url, ncommits), cfg)
+        return 2
+    print('egress-gate: PASS (push to {}, {} new commit(s) scanned)'.format(remote, ncommits), file=sys.stderr)
+    return 0
+
+
+def check_text():
+    cfg = Config()
+    cfg.say_notes(sys.stderr)
+    hits = [('stdin', 0, l, m) for l, m in hits_in(sys.stdin.read(), cfg.patterns)]
+    if hits:
+        report(hits, 'stdin', cfg)
+        return 2
+    print('egress-gate: PASS (stdin)')
+    return 0
+
+
+def self_test():
+    """Built-in shapes always; your samples file (`expected-label<TAB>sample`, or `none`) if present."""
+    cfg = Config()
+    samples = [
+        ('private-key', '-----BEGIN ' + 'OPENSSH PRIVATE KEY-----'),
+        ('aws-key', 'AK' + 'IA' + 'Q' * 16),
+        ('github-token', 'gh' + 'p_' + 'a1' * 18),
+        ('card', '3782' + ' 822463 ' + '10005'),   # a published test card number
+        ('credential', 'api_key = "' + 'q7' * 10 + '"'),
+        ('none', 'api_key = "your-key-here-placeholder"'),
+        ('none', 'order 1234 5678 shipped'),
+    ]
+    if cfg.samples.exists():
+        for line in cfg.samples.read_text(encoding='utf-8').splitlines():
+            if line.strip() and not line.startswith('#'):
+                want, _, sample = line.partition('\t')
+                samples.append((want.strip(), sample))
+    bad = 0
+    for want, sample in samples:
+        got = {l for l, _ in hits_in(sample, cfg.patterns)}
+        ok = (want == 'none' and not got) or (want != 'none' and want in got)
+        bad += not ok
+        print('{} expect={:14s} got={}'.format('ok  ' if ok else 'FAIL', want, sorted(got)))
+    print('egress-gate self-test:', 'PASS' if not bad else '{} FAILURE(S)'.format(bad))
+    return 0 if not bad else 2
+
+
+def main(a):
+    if not a or a[0] in ('-h', '--help'):
+        print(__doc__)
+        return 1
+    if a[0] == 'scan' and len(a) > 1:
+        return scan_paths(a[1:])
+    if a[0] == 'pre-push' and len(a) >= 2:
+        return pre_push(a[1], a[2] if len(a) > 2 else a[1])
+    if a[0] == 'check-text':
+        return check_text()
+    if a[0] == 'self-test':
+        return self_test()
+    print(__doc__)
+    return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

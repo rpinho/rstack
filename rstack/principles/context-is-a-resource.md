@@ -8,7 +8,7 @@ time it starts, and the obvious remedies do not touch it.
 classifier. The suspicion was that another session was leaking into it, which is not how
 sessions work. The real causes were duller:
 
-1. Worker sessions reported results into a shared inbox, and the general session read those
+1. Worker sessions reported results into a shared inbox, and the general-purpose session read those
    reports verbatim on its next wake.
 2. The index entry for one of those workers' write-ups carried the whole technical detail in a
    single table cell, and the index is reread at session start.
@@ -35,6 +35,14 @@ file. The alphabet it searched for is a subset of English letters, so ordinary c
 matched it. It now checks candidates against the system wordlist with light stemming, and applies
 two density thresholds by length. A lint that cries wolf gets disabled, which is worse than
 having none.
+
+**A filter must not log what it filters.** The first version of the relay named the matched terms in
+the inbox row it wrote: the row is the part the session reads on every wake, so the mechanism built to
+keep that vocabulary out of the session's context was writing a tidy list of it into the file the
+session rereads. The next wake was stopped again, by the fix. The row now carries a count. The terms
+stay in the quarantine file, which that session never opens, and in the sending worker's own output,
+which is its own context. Generalise it past this one script: a guard's log line, error message and
+metric label are all on the clean side of the boundary it enforces. Log what it did, not what it saw.
 
 **Two things the mechanisms caught that the hand fix did not.** A line the manual pass missed,
 and then the fact that the lint had been installed where nothing ran it: the repository sets

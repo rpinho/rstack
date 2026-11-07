@@ -41,6 +41,17 @@ Three parts of that live in this repository. Until recently they were three repo
 - **[`SKILL.md`](SKILL.md)** and **[`rstack/`](rstack/)**: the map itself. The layer manifest, the
   principles, and two scripts: `inventory.py` lists what exists, and `coverage.py` checks the map
   and the enforcement claims in it.
+- **[`rstack/hooks/`](rstack/hooks/README.md)** and **[`rstack/tools/`](rstack/tools/README.md)**:
+  the guards and tools themselves, made generic. Seven hooks that refuse rather than crash, an
+  event waiter that replaces polling, a relay that wakes the conductor only for decisions, an
+  egress scan, a clean-identity runner and a lint for the files every session rereads. Each ships
+  with the test that proves it refuses what it should. None ships a term list; you supply yours.
+
+**[`rstack/STACK.md`](rstack/STACK.md) is the system they came from**, counted on 7 November 2026:
+449 items across 16 hooks, 77 launch agents, 23 lints, 16 skills and 309 memory rules, every one
+mapped to a layer. 111 of the 317 rules have something enforcing them; 206 are still prose, and
+the page lists the ones broken most. It also goes through the main hooks and scheduled jobs with the
+failure that made each necessary.
 
 ## Using it
 

@@ -1,0 +1,98 @@
+#!/bin/bash
+# clean-room: run an agent whose OUTPUT WILL LEAVE THE MACHINE (public repos it builds, evidence
+# bundles, transcripts you upload) in an empty identity: no personal instructions, skills, memories,
+# plugins, MCP servers, settings, shell profile or history.
+#
+# Why: on a machine where every agent session loads the owner's personal context by design, an
+# agent asked to build something public writes from that context. The rule that works is "personal
+# by default, clean at the exit": keep context everywhere, and run the exit-bound agent in a room
+# with none of it, then pass its output through egress-gate.
+#
+#   clean-room [--root DIR] [--keep-path] -- codex exec [codex args...]
+#   clean-room [--root DIR] [--keep-path] -- claude -p [claude args...]
+#   clean-room --collect ROOT OUTDIR      copy the run's transcripts (never auth) to OUTDIR, then
+#                                         run egress-gate on it
+#
+# The room: ROOT/home (HOME), ROOT/codex (CODEX_HOME, auth.json symlinked to your login),
+# ROOT/claude (CLAUDE_CONFIG_DIR; auth from a long-lived token FILE passed as an env var, never
+# written into the room), ROOT/tmp. Default ROOT is a fresh $CLEAN_ROOM_BASE/<timestamp>-<pid>
+# (default ~/.agent-cleanroom), printed on stderr so the caller can --collect it later. The
+# environment is rebuilt with env -i: nothing from the calling session leaks in.
+#
+# Claude Code also loads CLAUDE.md from every ANCESTOR of the working directory, and $HOME is an
+# ancestor of most workspaces, so the personal ~/.claude/CLAUDE.md loaded even with a fresh config
+# dir. That was found in the first clean-room transcript. The room's settings exclude everything
+# above the workspace; the workspace's own CLAUDE.md still loads.
+#
+# Not a security sandbox: absolute paths stay readable. It guarantees context hygiene, and
+# egress-gate is the check that must pass before anything is uploaded.
+#
+# Configuration (all optional):
+#   CLEAN_ROOM_BASE              where rooms are created            (~/.agent-cleanroom)
+#   CLEAN_ROOM_CODEX_BIN         codex binary                       (codex on the caller's PATH)
+#   CLEAN_ROOM_CODEX_AUTH        codex login to link into the room  (~/.codex/auth.json)
+#   CLEAN_ROOM_CLAUDE_BIN        claude binary                      (claude on the caller's PATH)
+#   CLEAN_ROOM_CLAUDE_TOKEN_FILE file holding a `claude setup-token` token
+#                                                                   (~/.config/clean-room/claude-token)
+#   CLEAN_ROOM_EGRESS            egress-gate to run after --collect (the one beside this script)
+set -uo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+
+if [ "${1:-}" = --collect ]; then
+  root=${2:?usage: clean-room --collect ROOT OUTDIR}; out=${3:?usage: clean-room --collect ROOT OUTDIR}
+  mkdir -p "$out" "$root/tmp"
+  [ -d "$root/codex/sessions" ] && cp -R "$root/codex/sessions" "$out/codex-sessions"
+  [ -d "$root/claude/projects" ] && cp -R "$root/claude/projects" "$out/claude-projects"
+  find "$out" \( -name 'auth.json' -o -name '.credentials.json' -o -name '*token*' \) \
+       -exec mv {} "$root/tmp/" \; 2>/dev/null
+  echo "clean-room: collected into $out (auth never copied); running egress-gate" >&2
+  exec "${CLEAN_ROOM_EGRESS:-$here/egress-gate}" scan "$out"
+fi
+
+root="" keep_path=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --root) root=$2; shift 2 ;;
+    --keep-path) keep_path=1; shift ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+[ $# -ge 1 ] || { echo "usage: clean-room [--root DIR] -- codex|claude args..." >&2; exit 2; }
+tool=$1; shift
+
+case "$tool" in
+  codex)  bin=${CLEAN_ROOM_CODEX_BIN:-$(command -v codex || true)} ;;
+  claude) bin=${CLEAN_ROOM_CLAUDE_BIN:-$(command -v claude || true)} ;;
+  *) echo "clean-room: tool must be codex or claude" >&2; exit 2 ;;
+esac
+[ -n "$bin" ] && [ -x "$bin" ] || { echo "clean-room: no $tool binary found" >&2; exit 2; }
+
+root=${root:-${CLEAN_ROOM_BASE:-$HOME/.agent-cleanroom}/$(date +%Y%m%d-%H%M%S)-$$}
+mkdir -p "$root/home" "$root/codex" "$root/claude" "$root/tmp"
+chmod 700 "$root"
+echo "clean-room: root=$root" >&2
+
+path="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
+[ "$keep_path" = 1 ] && path="$PATH"
+base=(env -i HOME="$root/home" USER="${USER:-agent}" LOGNAME="${USER:-agent}" PATH="$path"
+      LANG=en_US.UTF-8 TERM="${TERM:-dumb}" TMPDIR="$root/tmp" XDG_CONFIG_HOME="$root/home/.config"
+      XDG_CACHE_HOME="$root/home/.cache" XDG_DATA_HOME="$root/home/.local/share")
+
+case "$tool" in
+  codex)
+    auth=${CLEAN_ROOM_CODEX_AUTH:-$HOME/.codex/auth.json}
+    [ -f "$auth" ] && ln -sfn "$auth" "$root/codex/auth.json"
+    [ -f "$root/codex/config.toml" ] || printf '# clean-room: intentionally empty\n' > "$root/codex/config.toml"
+    exec "${base[@]}" CODEX_HOME="$root/codex" "$bin" "$@"
+    ;;
+  claude)
+    [ -f "$root/claude/settings.json" ] || printf '{"claudeMdExcludes":["%s/.claude/**","%s/CLAUDE.md","%s/.claude/CLAUDE.md"],"autoMemoryEnabled":false}\n' \
+      "$HOME" "$HOME" "$HOME" > "$root/claude/settings.json"
+    tok=${CLEAN_ROOM_CLAUDE_TOKEN_FILE:-$HOME/.config/clean-room/claude-token}
+    [ -r "$tok" ] || { echo "clean-room: no Claude token at $tok (create one with: claude setup-token)" >&2; exit 2; }
+    exec "${base[@]}" CLAUDE_CONFIG_DIR="$root/claude" CLAUDE_CODE_OAUTH_TOKEN="$(cat "$tok")" \
+         CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 "$bin" "$@"
+    ;;
+esac
