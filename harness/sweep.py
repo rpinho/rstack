@@ -785,7 +785,9 @@ def run_worker(spec, cfg):
     guard(cfg)
     host = execution_host(cfg)
     if host:
-        names = [Path(p).name for p, _ in cfg.get('rules', [])] + ['INTAKE.toml']
+        # A lane may already list INTAKE.toml among its rules files; dedupe so the refusal does not
+        # name the same file twice.
+        names = list(dict.fromkeys([Path(p).name for p, _ in cfg.get('rules', [])] + ['INTAKE.toml']))
         missing = host_workdir_missing(host, cfg['cwd'], names)
         if missing is None:
             raise ValueError('sweep refused: cannot read {} on {} (workers run there)'
