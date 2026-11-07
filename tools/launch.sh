@@ -161,16 +161,28 @@ for (( i = start; i <= 5; i++ )); do
     fi
     # POSIX `echo`, not zsh's `print`: the remote shell is whatever the host's login shell is.
     missing="launch.sh --host $LAUNCH_HOST: no work dir $dir there"
+    # The executor writes --output, and for a sweep worker that path is inside the attempt
+    # directory the controller just created HERE: work/runs/<timestamp>-<hex>/. It does not exist
+    # on the host, so the executor's first write would fail with nothing run. The work dir itself
+    # is still a refusal, never created: that guard is what keeps a job out of the remote $HOME.
+    nodir="launch.sh --host $LAUNCH_HOST: cannot create ${out:h} there"
     remote="cd ${(q)dir} 2>/dev/null || { echo ${(q)missing} >&2; exit 2; }
+mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
 exec nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)${LAUNCH_CLAUDE_BUDGET:-1.00}}"
     ${=${LAUNCH_SSH:-ssh}} "$LAUNCH_HOST" "$remote" < "$log.prompt" > "$attempt_log" 2>&1
     rc=$?
     # Status has to keep working from the controller: the heavy outputs stay on the host and
     # only these few small bookkeeping files come back, so STATUS.md, REPORT.md, the receipts
     # and event-watch read exactly as they did when the job ran here.
+    #
+    # *.report.md is a sweep worker's whole deliverable: the controller reads <stage>.report.md to
+    # admit ideas and record reads and kills. Without it in this list, moving a lane to a host
+    # would have run all three stages and then failed every one of them for a missing report, and
+    # the lane would have looked broken rather than misconfigured.
     rsync -a --timeout=120 --max-size="${LAUNCH_PULL_MAX_SIZE:-4m}" -e "${LAUNCH_SSH:-ssh}" \
       --include='*/' --include='STATUS.md' --include='REPORT.md' --include='PLAN.md' \
-      --include='RESULTS.jsonl' --include='*.selection.json' --include="${out:t}" \
+      --include='RESULTS.jsonl' --include='*.selection.json' --include='*.report.md' \
+      --include="${out:t}" \
       --exclude='*' "$LAUNCH_HOST:$dir/" "$dir/" >> "$log.pull" 2>&1 ||
       print -- "pull from $LAUNCH_HOST failed rc $? (outputs are on the host) $(date)" >> "$log"
   fi

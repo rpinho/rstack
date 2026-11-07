@@ -178,3 +178,67 @@ def test_a_broken_notifier_does_not_fail_the_job(tmp_path):
         'LAUNCH_NOTIFY_COMMAND': str(tmp_path / 'does-not-exist')})
     assert proc.returncode == 0, proc.stderr
     assert 'lint restate-ask=0' in log
+
+
+def test_the_pull_brings_back_a_sweep_workers_report(tmp_path):
+    """A sweep worker's deliverable is <stage>.report.md: the controller reads it to admit ideas
+    and to record reads and kills. The first pull list did not include it, so a lane moved to a
+    host would have run all three stages and failed every one for a missing report.
+
+    The include list is read out of launch.sh and handed to a real rsync between two directories,
+    so this checks the patterns the launcher actually sends, not a copy of them.
+    """
+    import shlex
+    text = LAUNCH.read_text()
+    start = text.index('rsync -a --timeout')
+    command = text[start:text.index('\n', text.index('--exclude=', start))].replace('\\\n', ' ')
+    # Order matters to rsync, so the tokens are kept exactly as the launcher writes them. The one
+    # token this cannot pass on is the zsh expansion of the job's own output file.
+    includes = [token for token in shlex.split(command)
+                if (token.startswith('--include=') or token.startswith('--exclude='))
+                and '${out:t}' not in token]
+    assert '--include=*.report.md' in includes, includes
+    assert includes[-1] == '--exclude=*', includes
+    src, dst = tmp_path / 'host', tmp_path / 'here'
+    (src / 'work/runs/attempt').mkdir(parents=True)
+    (src / 'work/runs/attempt/search.report.md').write_text('IDEA X-1: ...\nDONE\n')
+    (src / 'work/runs/attempt/0-search.md').write_text('the spec')
+    (src / 'STATUS.md').write_text('You asked: ... I will: ...\n')
+    (src / 'huge.bin').write_bytes(b'0' * 1024)
+    dst.mkdir()
+    subprocess.run(['rsync', '-a', *includes, str(src) + '/', str(dst) + '/'],
+                   check=True, timeout=60)
+    assert (dst / 'work/runs/attempt/search.report.md').read_text().startswith('IDEA X-1')
+    assert (dst / 'STATUS.md').exists()
+    # The heavy outputs stay on the host: that is the point of the list.
+    assert not (dst / 'huge.bin').exists()
+    assert not (dst / 'work/runs/attempt/0-search.md').exists()
+
+
+def test_the_output_directory_is_created_on_the_host(tmp_path):
+    """A sweep worker's --output is inside the attempt directory the controller just made here,
+    which does not exist on the host. Without this the executor's first write fails and nothing
+    runs. The work dir itself is still never created: that refusal is a different rule."""
+    nested = tmp_path / 'jobs/runs/20261107T000000-abc'
+    nested.mkdir(parents=True)
+    (nested / 'stage-job.md').write_text(ASK)
+    jobs, env = harness(tmp_path)
+    env['LAUNCH_ARTIFACT_DIR'] = str(nested)
+    proc = subprocess.run(['zsh', str(LAUNCH), 'stage-job', str(tmp_path)],
+                          env=dict(env, LAUNCH_HOST='m5'), capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    # The command spans several lines, so the whole log is read: a per-line filter would see only
+    # the `cd` and miss everything after it.
+    sent = Path(env['SSH_LOG']).read_text()
+    assert 'mkdir -p ' + str(nested) in sent
+    # Run the command block with the output directory removed: it must recreate it, not refuse.
+    block = sent.split('cmd=', 1)[1].split('\nhost=', 1)[0]
+    import shutil as sh
+    sh.rmtree(nested)
+    remote = subprocess.run(['sh', '-c', block], capture_output=True, text=True, timeout=60)
+    assert nested.is_dir(), remote.stderr
+    # And the work dir is never created for you: a missing lane on the host stays a refusal.
+    gone = str(tmp_path / 'not-there')
+    refused = subprocess.run(['sh', '-c', block.replace(str(tmp_path) + ' ', gone + ' ', 1)],
+                             capture_output=True, text=True, timeout=60)
+    assert refused.returncode == 2 and 'no work dir' in refused.stderr
