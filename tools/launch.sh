@@ -175,13 +175,16 @@ exec nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --d
     # only these few small bookkeeping files come back, so STATUS.md, REPORT.md, the receipts
     # and event-watch read exactly as they did when the job ran here.
     #
-    # *.report.md is a sweep worker's whole deliverable: the controller reads <stage>.report.md to
-    # admit ideas and record reads and kills. Without it in this list, moving a lane to a host
-    # would have run all three stages and then failed every one of them for a missing report, and
-    # the lane would have looked broken rather than misconfigured.
+    # *.report.md and prior-art-*.json are a sweep worker's whole deliverable: the controller
+    # reads <stage>.report.md to admit ideas and to record reads and kills, and it reads
+    # prior-art-<ID>.json to admit each idea at all, then stores that path in the ledger. Without
+    # both in this list, moving a lane to a host would have run all three stages, cost real money,
+    # and then failed every one of them for a missing report or an unverifiable receipt, so the
+    # lane would have looked broken rather than misconfigured.
     rsync -a --timeout=120 --max-size="${LAUNCH_PULL_MAX_SIZE:-4m}" -e "${LAUNCH_SSH:-ssh}" \
       --include='*/' --include='STATUS.md' --include='REPORT.md' --include='PLAN.md' \
       --include='RESULTS.jsonl' --include='*.selection.json' --include='*.report.md' \
+      --include='prior-art-*.json' \
       --include="${out:t}" \
       --exclude='*' "$LAUNCH_HOST:$dir/" "$dir/" >> "$log.pull" 2>&1 ||
       print -- "pull from $LAUNCH_HOST failed rc $? (outputs are on the host) $(date)" >> "$log"

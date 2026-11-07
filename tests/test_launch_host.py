@@ -202,6 +202,7 @@ def test_the_pull_brings_back_a_sweep_workers_report(tmp_path):
     src, dst = tmp_path / 'host', tmp_path / 'here'
     (src / 'work/runs/attempt').mkdir(parents=True)
     (src / 'work/runs/attempt/search.report.md').write_text('IDEA X-1: ...\nDONE\n')
+    (src / 'work/runs/attempt/prior-art-X-1.json').write_text('{"schema": 1}')
     (src / 'work/runs/attempt/0-search.md').write_text('the spec')
     (src / 'STATUS.md').write_text('You asked: ... I will: ...\n')
     (src / 'huge.bin').write_bytes(b'0' * 1024)
@@ -209,6 +210,8 @@ def test_the_pull_brings_back_a_sweep_workers_report(tmp_path):
     subprocess.run(['rsync', '-a', *includes, str(src) + '/', str(dst) + '/'],
                    check=True, timeout=60)
     assert (dst / 'work/runs/attempt/search.report.md').read_text().startswith('IDEA X-1')
+    # The receipt admits the idea and its path goes in the ledger, so it has to be here too.
+    assert (dst / 'work/runs/attempt/prior-art-X-1.json').exists()
     assert (dst / 'STATUS.md').exists()
     # The heavy outputs stay on the host: that is the point of the list.
     assert not (dst / 'huge.bin').exists()
