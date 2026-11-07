@@ -123,3 +123,67 @@ class FakePopen:
 
     def wait(self, timeout=None):
         return 0
+
+
+# --- keeping the host current, from here -------------------------------------------------------
+
+import importlib.machinery
+import importlib.util
+
+_loader = importlib.machinery.SourceFileLoader(
+    'harness_sync_tool', str(ROOT / 'tools/harness-sync/harness_sync.py'))
+_spec = importlib.util.spec_from_loader('harness_sync_tool', _loader)
+hs = importlib.util.module_from_spec(_spec)
+_loader.exec_module(hs)
+
+
+def test_only_real_ssh_aliases_are_followed(monkeypatch):
+    monkeypatch.setenv('RH_HARNESS_HOSTS', 'm5, laptop  mini2')
+    assert hs.configured_hosts() == ['m5', 'laptop', 'mini2']
+    monkeypatch.setenv('RH_HARNESS_HOSTS', '-oProxyCommand=id, m5;id, m5')
+    assert hs.configured_hosts() == ['m5']
+    monkeypatch.delenv('RH_HARNESS_HOSTS')
+    assert hs.configured_hosts() == []
+
+
+def test_a_host_that_cannot_be_reached_is_reported_and_not_fatal(monkeypatch, capsys):
+    """The scheduled tick must not break because a second machine is asleep. The guarantee is the
+    refusal at use time, not this."""
+    monkeypatch.setenv('RH_HARNESS_HOSTS', 'm5')
+    monkeypatch.setattr(hs, 'host_plan',
+                        lambda *a, **k: (_ for _ in ()).throw(ValueError('m5 is asleep')))
+    assert hs.follow_hosts(Path('/repo'), Path('/root'), 'main') == 1
+    out = capsys.readouterr().out
+    assert 'NOT brought to main' in out and 'm5 is asleep' in out
+    assert 'will refuse until this is fixed' in out
+
+
+def test_a_host_already_at_the_ref_is_left_alone(monkeypatch, capsys):
+    monkeypatch.setenv('RH_HARNESS_HOSTS', 'm5')
+    monkeypatch.setattr(hs, 'host_plan', lambda *a, **k: ({'sweep.py': ('100644', 'abc')}, []))
+    monkeypatch.setattr(hs, 'install_host',
+                        lambda *a, **k: pytest.fail('reinstalled a host that already matched'))
+    assert hs.follow_hosts(Path('/repo'), Path('/root'), 'main') == 0
+    assert 'already matches main' in capsys.readouterr().out
+
+
+def test_the_host_install_verifies_on_the_host_before_writing_the_receipt(tmp_path, monkeypatch):
+    """A receipt is a claim that the files arrived. rsync's exit status is not evidence of that,
+    so the receipt is written only after the files are re-hashed on the host."""
+    source = (ROOT / 'tools/harness-sync/harness_sync.py').read_text()
+    verify = source.index('after = host_state(host, root, todo')
+    receipt = source.index("receipt = dict(commit=commit, ref=ref,\n                   utc=")
+    assert verify < receipt, 'the receipt must be written after the on-host verification'
+    assert 'the receipt was \\n                         \'NOT written' in source or \
+           'NOT written' in source
+
+
+def test_installing_outward_from_a_drifted_controller_is_refused(tmp_path, monkeypatch, capsys):
+    """Spreading this machine's drift to the host would be worse than leaving the host behind."""
+    monkeypatch.setattr(hs, 'plan', lambda repo, root, ref: ({}, {}, [('behind', 'sweep.py')]))
+    monkeypatch.setattr(hs, 'git', lambda *a, **k: b'f4c930e39481\n')
+    monkeypatch.setattr(hs, 'host_plan',
+                        lambda *a, **k: pytest.fail('looked at the host while this machine drifts'))
+    rc = hs.main(['--host', 'm5', '--root', str(tmp_path), '--repo', str(tmp_path)])
+    assert rc == 2
+    assert 'this machine is not at main yet' in capsys.readouterr().out

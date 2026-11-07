@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import tempfile
@@ -36,6 +37,7 @@ import storage  # noqa: E402  (Trash-only deletion; refuses when no Trash comman
 RECEIPT = '.harness-sync.json'
 CODE_SUFFIXES = {'.py', '.sh'}
 SKIP_DIRS = {'lanes', '__pycache__', 'alerts', '.pytest_cache'}
+HOST_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z')
 
 
 def git(repo, *args, data=None):
@@ -319,6 +321,36 @@ def install_host(repo, root, ref, files, rows, host, ssh=None):
     print('{}: installed {} at {} ({} file(s))'.format(host, ref, commit[:12], len(todo)))
     return 0
 
+def configured_hosts():
+    """Hosts this controller keeps up to date, from RH_HARNESS_HOSTS (comma or space separated).
+
+    Kept here rather than in a second scheduled job: the tick already runs `harness-sync --auto`,
+    and the machine that turns committed main into installed files is the only machine that should
+    be deciding what the host runs. A host that cannot be reached is reported, not fatal, because
+    the launch path refuses a drifted host at use time anyway, which is the guarantee that matters.
+    """
+    raw = os.environ.get('RH_HARNESS_HOSTS', '')
+    return [h for h in re.split(r'[,\s]+', raw) if h and HOST_RE.fullmatch(h)]
+
+
+def follow_hosts(repo, root, ref):
+    """Bring every configured host to `ref`. Returns the number that could not be brought there."""
+    bad = 0
+    for host in configured_hosts():
+        try:
+            files, rows = host_plan(repo, ref, host, root)
+            if not rows:
+                print('{} already matches {}'.format(host, ref))
+                continue
+            install_host(repo, root, ref, files, rows, host)
+        except (ValueError, subprocess.SubprocessError, OSError) as exc:
+            bad += 1
+            print('{}: NOT brought to {}: {}'.format(host, ref, str(exc)[:200]))
+            print('{}: --host jobs there will refuse until this is fixed, which is the intended '
+                  'outcome rather than running old code.'.format(host))
+    return bad
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--root', default='~/.local/share/research-harness', help='installed harness root')
@@ -373,6 +405,7 @@ def main(argv=None):
         print('{:<9} {}'.format(status.upper(), rel))
     if not rows:
         print('installed copy matches {} ({} files)'.format(a.ref, len(files)))
+        follow_hosts(repo, root, a.ref)
         return 0
     if a.check:
         return 2
@@ -386,6 +419,8 @@ def main(argv=None):
         print('not installing: harness job running: ' + ', '.join(jobs))
         return 2
     install(repo, root, a.ref, files, rows, Path(a.backups).expanduser())
+    # Outward, in the same breath: the hosts run what this machine just installed, or they refuse.
+    follow_hosts(repo, root, a.ref)
     return 0
 
 
