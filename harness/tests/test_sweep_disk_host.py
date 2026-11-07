@@ -120,3 +120,33 @@ def test_the_marker_clears_when_the_floor_is_met_again(cfg, tmp_path, monkeypatc
     local_free(monkeypatch, 31)
     sweep.disk_guard(cfg)
     assert not sweep.DISK_MARK.exists()
+
+
+def test_the_lane_says_where_its_workers_run(cfg, tmp_path, monkeypatch):
+    """11-07, general: "make m5 the default execution host for the compute-bound lanes". Where the
+    work runs belongs in the lane's config beside its cores and its memory cap, not in the
+    environment of whatever happened to start the sweep. The disk floor follows it."""
+    cfg['host'] = 'm5'
+    local_free(monkeypatch, 12)
+    fake_ssh(tmp_path, monkeypatch, avail_kb=800 * 1024 * 1024)
+    assert sweep.execution_host(cfg) == 'm5'
+    sweep.disk_guard(cfg)                                          # the m5's disk, not this one
+
+
+def test_an_explicit_env_host_still_wins_over_the_lane_setting(cfg, tmp_path, monkeypatch):
+    """That is how one run is moved without editing the lane."""
+    cfg['host'] = 'm5'
+    monkeypatch.setenv('LAUNCH_HOST', 'elsewhere')
+    assert sweep.execution_host(cfg) == 'elsewhere'
+
+
+def test_no_host_anywhere_means_here(cfg):
+    assert sweep.execution_host(cfg) == ''
+    assert sweep.execution_host({}) == ''
+
+
+def test_an_empty_env_host_does_not_shadow_the_lane_setting(cfg, monkeypatch):
+    """Scripts export LAUNCH_HOST= as "not set"; a lane that names a host must survive that."""
+    cfg['host'] = 'm5'
+    monkeypatch.setenv('LAUNCH_HOST', '  ')
+    assert sweep.execution_host(cfg) == 'm5'

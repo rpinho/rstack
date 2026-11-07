@@ -318,6 +318,24 @@ class SweepTests(unittest.TestCase):
         self.assertIn('REFUSED broken', err)
         self.worker.assert_not_called()
 
+    def test_execution_host_is_a_validated_lane_setting(self):
+        """A host becomes an ssh argv, so a bad one is a config error at load time, not a string
+        handed to ssh. Same shape launch.sh validates, so the two cannot disagree about what an
+        ssh alias is."""
+        self.cfg['host'] = 'm5'
+        self.save_cfg()
+        self.assertEqual(sweep.execution_host(self.loaded()), 'm5')
+        for bad in ('-oProxyCommand=x', 'host name', 'a' * 64, 'two;cmds', ''.join(['x', '\n'])):
+            self.cfg['host'] = bad
+            self.save_cfg()
+            with self.assertRaises(ValueError) as caught:
+                self.loaded()
+            self.assertIn('SWEEP host', str(caught.exception))
+
+    def test_a_lane_without_a_host_runs_here_as_before(self):
+        self.assertEqual(self.loaded()['host'], '')
+        self.assertEqual(sweep.execution_host(self.loaded()), '')
+
     def test_invalid_sweep_cli_and_traversal(self):
         for args in [(), ('test', '--all'), ('../test',), ('absent',)]:
             self.assertNotEqual(self.cli('sweep', *args)[0], 0)

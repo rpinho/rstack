@@ -164,3 +164,31 @@ def test_capacity_retry_stops_after_success_and_keeps_outcomes(fake_home):
               if line.startswith('MODEL_OUTCOME ')]
     assert [event['exit_code'] for event in events] == [1, 0]
     assert events[0]['selection_id'] != events[1]['selection_id']
+
+
+def test_sweep_worker_environment_carries_the_lanes_execution_host(tmp_path):
+    """The lane's `host` has to reach launch.sh, which only reads --host and LAUNCH_HOST. Without
+    this the setting would validate, measure the right disk, and still run the job on the m4."""
+    spec=tmp_path/'worker.md';spec.write_text('fixture')
+    launcher=tmp_path/'launcher';launcher.write_text('fixture')
+    cfg=dict(launcher_path=launcher,cwd=tmp_path,cores=1,memory_gib=1,worker_timeout_minutes=1,host='m5')
+    # The work dir on the host has its own tests; here it is a precondition, not the subject.
+    with patch.object(sweep,'guard'),patch.object(sweep.subprocess,'Popen') as popen,\
+            patch.object(sweep,'host_workdir_missing',return_value=[]),\
+            patch.object(sweep.os,'killpg'),patch.dict(os.environ,{},clear=False):
+        os.environ.pop('LAUNCH_HOST',None)
+        popen.return_value.poll.return_value=0;popen.return_value.returncode=0;popen.return_value.pid=123456
+        assert sweep.run_worker(spec,cfg)==0
+    assert popen.call_args.kwargs['env']['LAUNCH_HOST']=='m5'
+
+
+def test_a_lane_with_no_host_sends_an_empty_one(tmp_path):
+    spec=tmp_path/'worker.md';spec.write_text('fixture')
+    launcher=tmp_path/'launcher';launcher.write_text('fixture')
+    cfg=dict(launcher_path=launcher,cwd=tmp_path,cores=1,memory_gib=1,worker_timeout_minutes=1)
+    with patch.object(sweep,'guard'),patch.object(sweep.subprocess,'Popen') as popen,\
+            patch.object(sweep.os,'killpg'),patch.dict(os.environ,{},clear=False):
+        os.environ.pop('LAUNCH_HOST',None)
+        popen.return_value.poll.return_value=0;popen.return_value.returncode=0;popen.return_value.pid=123456
+        assert sweep.run_worker(spec,cfg)==0
+    assert popen.call_args.kwargs['env']['LAUNCH_HOST']==''

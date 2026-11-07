@@ -61,8 +61,14 @@ provider-specific config directories before invocation.
 | `RH_REMOTE_RUNNER` | Deployed runner path on a pod; default relative `research-harness/pod/runner.py`; quote-safe in the SSH shell command. |
 | `RH_RUNNER_SOCKET` | Local pod-runner socket; default `.runtime/rh-pod-runner.sock`; CLI `--socket` overrides it. |
 
+`SWEEP.toml`'s `host` (default empty, meaning here) is the machine a lane's workers run on, an
+ssh alias validated in the same shape `launch.sh` validates. It reaches the launcher as
+`LAUNCH_HOST`, so the work dir must exist at the same absolute path there. An explicit
+`LAUNCH_HOST` in the environment wins over it, which is how one run moves without editing the
+lane. Before 11-07 the only way to say where a lane's work ran was a flag on each launch.
+
 `SWEEP.toml`'s `min_free_gib` (default 30) is the floor on **the machine that runs the workers**:
-the host when `LAUNCH_HOST` is set, otherwise the controller. `controller_min_free_gib` (default 2)
+the lane's `host` when it has one, otherwise the controller. `controller_min_free_gib` (default 2)
 is the controller's own floor, because specs, logs, receipts and pulled-back status files land
 there even when the work does not. If the host's disk cannot be read, the sweep refuses rather than
 assuming it has room. Before 11-07 the floor always measured the controller, so moving the workers

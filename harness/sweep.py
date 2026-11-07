@@ -149,6 +149,11 @@ def load(lane, rh):
     cfg.setdefault('load_fallback', True)
     if type(cfg['load_fallback']) is not bool:
         raise ValueError('SWEEP load_fallback must be boolean')
+    # Where this lane's workers run. Validated here, in the same shape launch.sh validates, so a
+    # typo is a config error at sweep time rather than an ssh argument built from a bad string.
+    cfg.setdefault('host', '')
+    if not isinstance(cfg['host'], str) or (cfg['host'] and not HOST_RE.fullmatch(cfg['host'])):
+        raise ValueError('SWEEP host must be an ssh alias or empty, got ' + repr(cfg['host']))
     if 'boards' in cfg and (not isinstance(cfg['boards'], list) or not cfg['boards'] or
                            any(not isinstance(b, str) or not re.fullmatch(r'[A-Z0-9]+', b) for b in cfg['boards'])):
         raise ValueError('SWEEP boards must be nonempty uppercase board names')
@@ -490,15 +495,37 @@ def check(paths, due, cfg=None, known_ids=None):
 DISK_MARK = settings.path('RH_SWEEP_DISK_MARK', Path('.runtime/sweep-disk-refused'))
 
 
+HOST_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z')
+
+
+def execution_host(cfg):
+    """The machine this lane's workers run on: '' for here.
+
+    11-07: the science runs moved to a second machine with more memory and disk, and the only way
+    to say so was `--host` on each launch or LAUNCH_HOST in the environment of whatever started the
+    sweep. A lane whose data lives on the other machine should not depend on being remembered, so
+    where the work runs is a lane setting (`host` in SWEEP.toml) like the cores and the memory cap.
+
+    An explicit LAUNCH_HOST in the environment still wins, because that is how one run gets moved
+    without editing the lane. The lane setting is the default, not an override.
+
+    The work dir must exist at the same absolute path there; `launch.sh --host` refuses rather than
+    running in the remote home, so a wrong host here stops the lane instead of writing elsewhere.
+    """
+    env = os.environ.get('LAUNCH_HOST', '').strip()
+    if env:
+        return env
+    return str(cfg.get('host', '') or '').strip()
+
+
 def host_free_bytes(host, path):
     """Free bytes at `path` on `host`, or None when it cannot be determined.
 
     None is not "fine": the caller refuses on it. A disk guard that passes when it cannot read
     the disk is not a guard, and an unreachable host would fail the sweep a minute later anyway.
     """
-    ssh = shlex.split(os.environ.get('LAUNCH_SSH', 'ssh'))
     try:
-        out = subprocess.run(ssh + ['-o', 'BatchMode=yes', host, 'df -k ' + shlex.quote(str(path))],
+        out = subprocess.run(ssh_argv() + [host, 'df -k ' + shlex.quote(str(path))],
                              capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -535,7 +562,7 @@ def disk_guard(cfg):
     Once per episode, not once per lane per run: five lanes refusing the same full disk is one
     fact. The marker clears the first time the floor is met, so a new episode alerts again.
     """
-    host = os.environ.get('LAUNCH_HOST', '').strip()
+    host = execution_host(cfg)
     local = shutil.disk_usage(cfg['cwd']).free
     if host:
         remote = host_free_bytes(host, cfg['cwd'])
@@ -573,6 +600,88 @@ def disk_guard(cfg):
         except (ImportError, OSError):
             pass
     raise ValueError('sweep refused on the disk floor: ' + short)
+
+
+# Free memory, core count and CPU busy fraction, computed ON the machine that will run the work.
+# One ssh for all three: the guard loop asks again every time it waits, and three round trips per
+# wait would be three times the chance of a transient ssh failure stopping a lane.
+#
+# The macOS branch deliberately uses vm_stat alone, where the local probe takes the larger of
+# vm_stat and memory_pressure. A smaller free-memory figure can only make the guard wait; a larger
+# one could let a worker start on a machine that cannot hold it, and the m5 exists because the m4
+# could not hold these jobs.
+HOST_PROBE = r'''
+if [ -r /proc/meminfo ]; then
+  cores=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN)
+  free=$(awk '/^MemAvailable:/ {printf "%.3f", $2/1048576}' /proc/meminfo)
+else
+  cores=$(sysctl -n hw.ncpu)
+  free=$(vm_stat | awk '
+    /page size of/ { for (k = 1; k <= NF; k++) if ($k == "of") ps = $(k+1) }
+    $1 == "Pages" && $2 == "free:" { f = $3 }
+    $1 == "Pages" && $2 == "inactive:" { n = $3 }
+    $1 == "Pages" && $2 == "speculative:" { s = $3 }
+    END { gsub(/\./, "", f); gsub(/\./, "", n); gsub(/\./, "", s)
+          printf "%.3f", (f + n + s) * ps / 1073741824 }')
+fi
+busy=$(ps -A -o pcpu= 2>/dev/null | awk '{ s += $1 } END { printf "%.4f", s }')
+printf 'cores=%s\nfree_gib=%s\nbusy_pcpu=%s\n' "$cores" "$free" "$busy"
+'''
+
+
+def ssh_argv():
+    return shlex.split(os.environ.get('LAUNCH_SSH', 'ssh')) + ['-o', 'BatchMode=yes']
+
+
+def host_probe(host):
+    """{'cores', 'free_gib', 'busy'} for `host`, or None when any of it cannot be read.
+
+    None is a refusal at the caller, never an assumption of headroom: the same discipline as
+    host_free_bytes, and for the same reason. 11-07: the disk floor measured the controller while
+    the work ran on another machine, math's sweeps were refused on a disk nothing was writing to,
+    and the lane stalled for a day. Memory and CPU were measuring the wrong machine in exactly the
+    same way, in the other direction: a 16 GB controller can refuse work that a 48 GB host has
+    room for.
+    """
+    try:
+        out = subprocess.run(ssh_argv() + [host, 'sh -s'], input=HOST_PROBE,
+                             capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    values = dict(line.split('=', 1) for line in out.stdout.splitlines() if '=' in line)
+    try:
+        cores = int(values['cores'])
+        free_gib = float(values['free_gib'])
+        busy = float(values['busy_pcpu']) / (100 * cores)
+    except (KeyError, ValueError, ZeroDivisionError):
+        return None
+    if cores < 1 or free_gib < 0 or not 0 <= busy < float('inf'):
+        return None
+    return dict(cores=cores, free_gib=free_gib, busy=busy)
+
+
+def host_workdir_missing(host, cwd, names):
+    """Which of `names` are missing or empty under `cwd` on `host`; None when it cannot be read.
+
+    `launch.sh --host` checks only that the work dir EXISTS there, and on 11-07 that was not
+    enough: the m5 had directories at the lane paths holding five files and no IDEAS.jsonl, left
+    over from the move. A lane pointed at that host would have passed the existence check and run
+    a worker against a stub, which is worse than a refusal because the job would look like it ran.
+    The sweep already refuses a missing or empty rules file on the controller; this is the same
+    requirement, asked of the machine that will actually read them.
+    """
+    listing = '\n'.join('[ -s ' + shlex.quote(str(Path(cwd) / n)) + ' ] || echo ' + shlex.quote(n)
+                        for n in names)
+    try:
+        out = subprocess.run(ssh_argv() + [host, 'sh -s'], input=listing + '\nexit 0\n',
+                             capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return [line.strip() for line in out.stdout.splitlines() if line.strip()]
 
 
 def cpu_busy():
@@ -622,19 +731,33 @@ def guard(cfg):
     while True:
         cancelled(cfg)
         disk_guard(cfg)  # Preserve min_free_gib as the existing disk-space floor.
-        memory = free_memory_gib()
-        busy = cpu_busy()
+        # Memory and CPU headroom belong to the machine that runs the workers, like the disk floor.
+        # A lane on the m5 must not be held back by the controller's 16 GB, and must not start
+        # because the controller is idle while the m5 is full.
+        host = execution_host(cfg)
+        cores = os.cpu_count()
+        if host:
+            probe = host_probe(host)
+            if probe is None:
+                raise ValueError('sweep refused: cannot read memory or CPU on {} (workers run '
+                                 'there); not assuming it has headroom'.format(host))
+            memory, busy, cores = probe['free_gib'], probe['busy'], probe['cores']
+        else:
+            memory = free_memory_gib()
+            busy = cpu_busy()
         reasons = []
         if memory is None:
             reasons.append('free memory unavailable')
         elif memory < cfg.get('min_free_memory_gib', cfg.get('memory_gib', 6)):
             reasons.append('insufficient free memory')
         if busy is None:
+            # The load-average fallback reads this machine, so it is only a fallback for this
+            # machine. With a host, an unreadable probe already refused above.
             if not cfg.get('load_fallback', True):
                 reasons.append('CPU headroom unavailable (load fallback disabled)')
             elif os.getloadavg()[1] > cfg['max_load']:
                 reasons.append('fallback 5-min load above {}'.format(cfg['max_load']))
-        elif busy > min(cfg.get('max_cpu_busy_fraction', .85), 1 - cfg.get('cores', 1) / (os.cpu_count() or 1)):
+        elif busy > min(cfg.get('max_cpu_busy_fraction', .85), 1 - cfg.get('cores', 1) / (cores or 1)):
             reasons.append('insufficient CPU headroom')
         if not reasons:
             return
@@ -660,6 +783,17 @@ def run_worker(spec, cfg):
     configured run directory, without modifying the launcher or shared specs.
     """
     guard(cfg)
+    host = execution_host(cfg)
+    if host:
+        names = [Path(p).name for p, _ in cfg.get('rules', [])] + ['INTAKE.toml']
+        missing = host_workdir_missing(host, cfg['cwd'], names)
+        if missing is None:
+            raise ValueError('sweep refused: cannot read {} on {} (workers run there)'
+                             .format(cfg['cwd'], host))
+        if missing:
+            raise ValueError('sweep refused: {} on {} is missing or empty: {}. The work dir must be '
+                             'the lane, not a directory at the lane\'s path.'
+                             .format(cfg['cwd'], host, ', '.join(sorted(missing))))
     launcher = cfg['launcher_path']
     if not launcher.is_file():
         raise ValueError('launcher missing: ' + str(launcher))
@@ -669,7 +803,8 @@ def run_worker(spec, cfg):
                VECLIB_MAXIMUM_THREADS=str(cfg['cores']), NUMEXPR_NUM_THREADS=str(cfg['cores']))
     env.pop('FORCE_LAUNCH', None)
     env.update(LAUNCH_ROLE=cfg.get('worker_role', 'batch'), LAUNCH_MODEL=cfg.get('worker_model', ''),
-               LAUNCH_MODEL_OVERRIDE=cfg.get('model_override', ''))
+               LAUNCH_MODEL_OVERRIDE=cfg.get('model_override', ''),
+               LAUNCH_HOST=execution_host(cfg))
     with spec.with_suffix('.worker.log').open('a') as log:
         # 11-02: no nice here; launch.sh already runs codex at nice 10 and the daily plist runs rh at nice 10.
         # Stacked nices reached 20 and workers refused to run (lane sweep BLOCKED).
