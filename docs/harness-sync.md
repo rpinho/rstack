@@ -17,3 +17,28 @@ Run `--auto` from the same scheduled tick as `lane-rules-sync` and `lane-yield`.
 Host-specific values (paths, lane sets, notifier commands) never go in the repo. Put them in `~/.config/research-harness/env` (or `$RH_ENV_FILE`) as `KEY=VALUE` lines. `harness/settings.py` reads it at import, so every entry point sees the same values, and the real environment always wins. See [configuration](configuration.md) for the keys.
 
 Tests: `tests/test_harness_sync.py`, `tests/test_host_settings.py`.
+
+## The second machine
+
+A `--host` job runs the executor on the other machine, so it runs THAT machine's installed harness,
+not its git checkout. 11-07: the host's installed copy was at 906efdc while the controller was at
+ff47140, and the one commit between them touching `agent_executor.py` was the codex sandbox fix, so
+`--host` jobs ran an executor the controller had already fixed. The host's own checkout was at
+dee270d, older still than what it was running, so having the host follow `origin/main` and install
+for itself would have installed older code than it already had.
+
+One source, extended outward rather than duplicated:
+
+- `harness-sync --host HOST` installs the same committed ref onto the host from here. It refuses
+  unless this machine is already at that ref, because installing outward from a drifted controller
+  spreads the drift. It verifies every file by hash on the host with `git hash-object` before
+  writing the receipt, so a half-arrived install cannot claim a commit, and it removes nothing
+  there, because a deletion over ssh is a deletion nobody watched. `--host HOST --check` reports
+  and changes nothing.
+- `RH_HARNESS_HOSTS` (comma or space separated) names the hosts this controller keeps current.
+  After a local install, `harness-sync` installs outward to each, so the scheduled tick that
+  already runs `harness-sync --auto` keeps them current with no second schedule. A host it cannot
+  reach is reported, not fatal: a sleeping second machine must not break the tick.
+- The launchers and the sweep refuse a `--host` run when the two machines' receipts differ, naming
+  both commits and the command that fixes it. Unreadable is a refusal too: a job that cannot be
+  shown to be running the right code is not run.
