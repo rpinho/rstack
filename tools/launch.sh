@@ -112,7 +112,11 @@ fi
 reg=${LAUNCH_STATE:-$PWD/.runtime/job-registry}
 mkdir -p "$reg"
 registry_name=${job//[^A-Za-z0-9_.-]/_}
-print -l "dir=$dir" "pid=$$" > "$reg/$registry_name.job"
+# host= is what lets a stop reach the machine the executor is actually on. Without it,
+# 11-07: a --host job was stopped here, the local tmux session died and the log said
+# "exit stopped", while codex kept running on the host as an orphan nobody was watching.
+remote_marks=${LAUNCH_REMOTE_JOBS:-.local/state/research-harness/remote-jobs}
+print -l "dir=$dir" "pid=$$" ${LAUNCH_HOST:+"host=$LAUNCH_HOST"} ${LAUNCH_HOST:+"remote_marks=$remote_marks"} > "$reg/$registry_name.job"
 finished() {
   [[ ! -f $reg/$registry_name.job ]] || mv "$reg/$registry_name.job" "$reg/$registry_name.finished"
 }
@@ -166,8 +170,15 @@ for (( i = start; i <= 5; i++ )); do
     # on the host, so the executor's first write would fail with nothing run. The work dir itself
     # is still a refusal, never created: that guard is what keeps a job out of the remote $HOME.
     nodir="launch.sh --host $LAUNCH_HOST: cannot create ${out:h} there"
+    # The remote shell records its own pid immediately before exec, so the file holds the
+    # EXECUTOR's pid and not a wrapper's. remote-stop reads it to end a --host job for real.
+    # A marks path is taken as absolute when it starts with /, otherwise it is under the remote
+    # $HOME, which the remote shell expands: no host path is baked into the repo.
+    marks=$remote_marks; [[ $marks == /* ]] || marks='$HOME/'$remote_marks
     remote="cd ${(q)dir} 2>/dev/null || { echo ${(q)missing} >&2; exit 2; }
 mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
+mkdir -p ${(q)marks} 2>/dev/null || true
+echo \$\$ > ${(q)marks}/${(q)${job:t}}.pid 2>/dev/null || true
 exec nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)${LAUNCH_CLAUDE_BUDGET:-1.00}}"
     ${=${LAUNCH_SSH:-ssh}} "$LAUNCH_HOST" "$remote" < "$log.prompt" > "$attempt_log" 2>&1
     rc=$?

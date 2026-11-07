@@ -1,0 +1,69 @@
+#!/bin/sh
+# Stop a --host job's executor on the machine that is actually running it.
+# usage: remote-stop JOB [REGISTRY_DIR]
+#
+# 11-07, found by the math lane within hours of --host shipping, and it cost real money. A job was
+# launched with --host m5 on the wrong model, `job-stop` was run, and that killed the local tmux
+# session, wrote "exit stopped" to the log and removed the registry entry, while `codex exec` kept
+# running on the m5 as an orphan with nobody watching it. Killing the local ssh client does not
+# signal the remote command: the channel closes and the process carries on.
+#
+# So the launcher now records which host a job runs on, and the remote side records its own pid
+# before exec'ing the executor. This reads both and ends the remote process.
+#
+# Exit 0 when there is nothing remote to stop, so job-stop can call this unconditionally for every
+# job, local ones included. A job whose host is unreachable exits non-zero and says so: silently
+# reporting success would recreate exactly the orphan this exists to prevent.
+set -eu
+JOB=${1:?usage: remote-stop JOB [REGISTRY_DIR]}
+REG=${2:-${LAUNCH_STATE:-$HOME/.local/state/jobs}}
+ENTRY="$REG/$JOB.job"
+SSH=${LAUNCH_SSH:-ssh}
+# Where the remote side recorded its pid. The launcher writes the path it used into the registry
+# entry as remote_marks=, so the two cannot drift apart even if the default changes later; the
+# environment and the default are only fallbacks for an older entry.
+DEFAULT_MARKS=.local/state/research-harness/remote-jobs
+
+[ -f "$ENTRY" ] || { echo "remote-stop: no registry entry $ENTRY; nothing to do"; exit 0; }
+HOST=$(sed -n 's/^host=//p' "$ENTRY" | head -1)
+[ -n "${HOST:-}" ] || { echo "remote-stop: $JOB has no host; it ran here"; exit 0; }
+MARKS=$(sed -n 's/^remote_marks=//p' "$ENTRY" | head -1)
+[ -n "${MARKS:-}" ] || MARKS=${LAUNCH_REMOTE_JOBS:-$DEFAULT_MARKS}
+# The launcher names the marker after the job's BASENAME, because a sweep job is a relative path.
+BASE=${JOB##*/}
+
+# TERM first so the executor can write its own output, then KILL. The pid was recorded by the
+# remote shell immediately before `exec`, so it IS the executor rather than a wrapper.
+# shellcheck disable=SC2029  # the job name is deliberately expanded locally; it is validated below
+case $BASE in
+  *[!A-Za-z0-9_.-]*) echo "remote-stop: refusing a job name with shell characters: $BASE" >&2; exit 2;;
+esac
+case $MARKS in
+  *[!A-Za-z0-9_./-]*) echo "remote-stop: refusing a marks path with shell characters: $MARKS" >&2; exit 2;;
+esac
+case $HOST in
+  ''|-*|*[!A-Za-z0-9._-]*) echo "remote-stop: refusing a host that is not an ssh alias: $HOST" >&2; exit 2;;
+esac
+# An absolute marks path is used as given; otherwise it is under the remote home, which the
+# remote shell expands. Same rule the launcher applies when it writes the marker.
+case $MARKS in
+  /*) REMOTE_MARKS=$MARKS;;
+  *) REMOTE_MARKS="\$HOME/$MARKS";;
+esac
+# shellcheck disable=SC2086
+$SSH -o BatchMode=yes "$HOST" "
+  mark=$REMOTE_MARKS/$BASE.pid
+  [ -f \"\$mark\" ] || { echo 'remote-stop: no pid file on this host'; exit 0; }
+  pid=\$(cat \"\$mark\")
+  case \$pid in ''|*[!0-9]*) echo 'remote-stop: pid file is not a number'; rm -f \"\$mark\"; exit 0;; esac
+  if kill -0 \"\$pid\" 2>/dev/null; then
+    kill -TERM \"\$pid\" 2>/dev/null || true
+    n=0
+    while kill -0 \"\$pid\" 2>/dev/null && [ \$n -lt 10 ]; do sleep 1; n=\$((n+1)); done
+    kill -0 \"\$pid\" 2>/dev/null && kill -KILL \"\$pid\" 2>/dev/null || true
+    echo \"remote-stop: stopped pid \$pid\"
+  else
+    echo \"remote-stop: pid \$pid was already gone\"
+  fi
+  rm -f \"\$mark\"
+"
