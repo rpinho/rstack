@@ -29,6 +29,13 @@ EMAIL = re.compile(r'[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}')
 STAMP = re.compile(r'(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2})(?::\d{2})?Z?)?')
 UTC = dt.timezone.utc
 FIELDS_FROM_EVENTS = ('last_in', 'last_out', 'ball')
+# 11-08, the owner: "treat people like they want to be treated." A contact's `engagement` field
+# says, from their own words, how they prefer to be engaged. Someone who said "just send it" gets
+# the thing, not a question about whether or in what form to send it.
+JUST_SEND = re.compile(r"(?i)just send|no need to ask|don.t ask")
+PERMISSION_ASK = re.compile(r"(?i)(do you want (me|us) to|would you like (me|us) to|want me to|"
+                            r"should (i|we) (send|submit|open)|shall (i|we)|\bPR or (a )?patch\b|"
+                            r"\bpatch or (a )?PR\b|let me know if you('d)? (want|like))")
 USER_AGENT = 'research-harness contact finder (+https://github.com/rpinho/rstack)'
 
 
@@ -129,11 +136,27 @@ def merged(root, name):
             answered[event['question']] = event.get('source', '')
         elif kind == 'scrutiny':
             row['scrutiny'] = event['level']
+        elif kind == 'engagement':
+            row['engagement'] = event['text']
     row['addresses'] = list(book.values())
     row['answered'] = answered
     # A bounce queues a find; an address found after it answers the queue.
     row['needs_find'] = bool(last_bounce) and last_found <= last_bounce
     return row
+
+
+def engagement_findings(contact, text):
+    """(failures, notes): the contact's engagement preference, shown on every draft, and a
+    permission or format question refused when they asked to just be sent things."""
+    pref = (contact.get('engagement') or '').strip()
+    if not pref:
+        return [], []
+    notes = ['engagement: ' + pref]
+    ask = PERMISSION_ASK.search(text)
+    if JUST_SEND.search(pref) and ask:
+        return ['ENGAGEMENT: {} prefers "{}"; no permission or format questions, send the thing '
+                '(matched "{}")'.format(contact['name'], pref[:80], ask.group(0))], notes
+    return [], notes
 
 
 def live_addresses(row):
@@ -178,6 +201,8 @@ def pending(root):
             diff['answered'] = now['answered']
         if now.get('scrutiny') != base.get('scrutiny'):
             diff['scrutiny'] = now.get('scrutiny')
+        if now.get('engagement') != base.get('engagement'):
+            diff['engagement'] = now.get('engagement')
         if diff:
             out[name] = diff
     return out

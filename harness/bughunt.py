@@ -273,7 +273,10 @@ def findings(row, text, cfg, lane, rh, everyone, clock):
     same = [o for o in everyone if o.get('channel') == 'email' and o.get('to_key') == row.get('to_key')
             and (o['lane'], o['id']) != (row['lane'], row['id'])]
     recent = [o for o in same if sent_at(o) and clock - sent_at(o) < dt.timedelta(hours=24)]
-    if limit and len(recent) >= limit:
+    if limit and len(recent) >= limit and row.get('requested'):
+        # 11-08: a send the recipient explicitly asked for is a reply, not outreach.
+        warnings.append('DAILY_LIMIT not applied: they asked for this ({})'.format(row['requested']))
+    elif limit and len(recent) >= limit:
         failures.append('DAILY_LIMIT: {} email(s) to this contact in the last 24 h ({}); the next '
                         'one may go from {}'.format(len(recent), ', '.join(o['id'] for o in recent),
                                                     (min(sent_at(o) for o in recent) +
@@ -302,6 +305,9 @@ def findings(row, text, cfg, lane, rh, everyone, clock):
                             'rh outreach contact find {!r}'.format(contact['name']))
         elif contact.get('needs_find'):
             warnings.append('an address bounced; a find is queued for this contact')
+        found, notes = contacts_ledger.engagement_findings(contact, text)
+        failures += found
+        warnings += notes
         if contact.get('scrutiny') == 'extra':
             needs = []
             if 'code-speedup' in kinds:

@@ -464,3 +464,43 @@ def test_a_send_that_skipped_the_ledger_is_recorded_with_its_findings_kept(lane)
     assert any('TARGET_FAILED' in f for f in row['recorded_after_the_fact']['findings'])
     assert cli(lane[0], 'bounce', 'test', ident, '--address', 'alpha@lab.example.org')[0] == 0
     assert json.loads(cli(lane[0], 'stats', '--aggregate')[1])['bounced'] == 1
+
+
+# ---- engagement (11-08: "treat people like they want to be treated") ------------------------
+
+def test_engagement_is_shown_on_every_draft_and_a_just_send_contact_gets_no_permission_question(lane):
+    assert cli(lane[0], 'contact', 'engagement', 'Contact Alpha', 'Just send it, no need to ask first',
+               '--source', 'his reply of 11-08')[0] == 0
+    plain, _ = draft(lane, text=VARIED[0])
+    rc, out = lint(lane, plain)
+    assert rc == 0 and 'engagement: Just send it' in out
+    for ask in ('Do you want me to open a PR?', 'Would you prefer a PR or patch?', 'Shall I send the fix?'):
+        ident, _ = draft(lane, text=VARIED[1] + '\n\n' + ask)
+        rc, out = lint(lane, ident)
+        assert rc == 1 and 'ENGAGEMENT:' in out, ask
+
+
+def test_a_contact_who_likes_to_be_asked_can_be_asked(lane):
+    assert cli(lane[0], 'contact', 'engagement', 'Contact Alpha', 'Ask before sending code; prefers PRs',
+               '--source', 'email of 11-01')[0] == 0
+    ident, _ = draft(lane, text=VARIED[1] + '\n\nDo you want me to open a PR?')
+    rc, out = lint(lane, ident)
+    assert rc == 0 and 'engagement: Ask before sending' in out
+
+
+def test_engagement_lands_through_pending_like_every_other_contact_update(lane):
+    cli(lane[0], 'contact', 'engagement', 'Contact Beta', 'Prefers WhatsApp', '--source', 's')
+    assert contacts_ledger.pending(lane[0])['Contact Beta']['engagement'] == 'Prefers WhatsApp'
+
+
+def test_a_send_they_asked_for_is_a_reply_not_outreach_so_the_daily_limit_does_not_hold_it(lane):
+    config(lane, 'emails_per_contact_per_day = 1\n')
+    first, _ = draft(lane, text=VARIED[0])
+    send(lane, first)
+    unrequested, _ = draft(lane, text=VARIED[2])
+    assert 'DAILY_LIMIT:' in lint(lane, unrequested)[1]
+    asked, _ = draft(lane, text=VARIED[3], requested='"just send it" (his reply today)')
+    rc, out = lint(lane, asked)
+    assert rc == 0 and 'DAILY_LIMIT not applied: they asked for this' in out
+    send(lane, asked)
+    assert outreach.current(lane[1], rh)[asked]['status'] == 'sent'

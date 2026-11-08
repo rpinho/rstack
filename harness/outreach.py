@@ -477,7 +477,8 @@ def lint_rows(lane, selected, rh, allow_collision=None):
                     # An unreadable contacts file is the check above's business, not this one's.
                     language = None
         for other in ([] if row['channel'] in X_PUBLIC else collisions(row, everyone, clock)):
-            if not allow_collision:
+            # A send they asked for is a reply, not outreach (11-08); the request is the reason.
+            if not allow_collision and not row.get('requested'):
                 checks['collision'].append('recent send: {}/{}'.format(other['lane'], other['id']))
         evidence_warnings = []
         checks['links'] = link_errors(text)
@@ -705,6 +706,10 @@ def arguments(sub):
     p.add_argument('name')
     p.add_argument('question')
     p.add_argument('--source', required=True)
+    p = contact.add_parser('engagement', help='how this person prefers to be engaged, from their own words')
+    p.add_argument('name')
+    p.add_argument('text')
+    p.add_argument('--source', required=True)
     p = contact.add_parser('scrutiny')
     p.add_argument('name')
     p.add_argument('level', choices=('normal', 'extra'))
@@ -734,6 +739,7 @@ def arguments(sub):
             p.add_argument('--kind', action='append', default=[], choices=KINDS, help='what the email reports (required for email); repeat it for an email that carries more than one, e.g. bugs and a speedup')
             p.add_argument('--speedup', action='append', default=[], metavar='DIR', help='a verified speedup (SPEEDUP.json + VERIFY.json); code-speedup emails need one')
             p.add_argument('--overlap-checked', help='how we checked their own work on speed (asked them, read their open PRs)')
+            p.add_argument('--requested', help='the recipient asked for this send, in their words; a reply, not outreach, so the daily limit does not hold it')
             p.add_argument('--target', action='append', default=[], help='OWNER/REPO the email is about; gated on rh bughunt target-check')
             p.add_argument('--target-override', help='why an unchecked or failing target is written about anyway (the recipient asked)')
             p.add_argument('--recheck', action='append', default=[], metavar='DIR', help='a re-check directory with a verdict file; extra-scrutiny contacts need two')
@@ -861,6 +867,8 @@ def main(root, args, rh):
                 row['speedups'] = [str(Path(d).expanduser().resolve()) for d in args.speedup]
             if args.overlap_checked:
                 row['overlap_checked'] = safe(args.overlap_checked, 'overlap check')
+            if args.requested:
+                row['requested'] = safe(args.requested, 'their request')
             if args.asked_about:
                 # Only this module's own terms, so a typo cannot quietly turn the check off and
                 # the ledger records our word for the subject, never the recipient's wording.
@@ -999,10 +1007,10 @@ def main(root, args, rh):
                     recent = [o for o in all_rows(root, rh) if o.get('channel') == 'email'
                               and o.get('to_key') == row.get('to_key') and o['id'] != row['id']
                               and bughunt.sent_at(o) and abs(clock - bughunt.sent_at(o)) < dt.timedelta(hours=24)]
-                    if limit and len(recent) >= limit:
+                    if limit and len(recent) >= limit and not row.get('requested'):
                         raise ValueError('DAILY_LIMIT: already {} email(s) to this contact within 24 h ({}); '
                                          'batch them'.format(len(recent), ', '.join(o['id'] for o in recent)))
-                if row['channel'] not in X_PUBLIC and collisions(row, list(all_rows(root, rh)), time_of(rh.now())) and not row.get('lint', {}).get('allow_collision'):
+                if row['channel'] not in X_PUBLIC and collisions(row, list(all_rows(root, rh)), time_of(rh.now())) and not row.get('lint', {}).get('allow_collision') and not row.get('requested'):
                     raise ValueError('recent contact collision; lint with --allow-collision and obtain approval again')
             elif args.action == 'record-sent':
                 # A message that already left. Refusing to record it does not un-send it; it
@@ -1081,6 +1089,10 @@ def contact_main(root, args):
                                                 question=safe(args.question, 'question'),
                                                 source=safe(args.source, 'source')))
         print('{}: {!r} answered'.format(name, args.question))
+    elif args.contact_action == 'engagement':
+        contacts_ledger.append_event(root, dict(event='engagement', name=name, utc=now,
+                                                text=safe(args.text, 'engagement'), source=safe(args.source, 'source')))
+        print('{}: engagement {!r}'.format(name, args.text))
     elif args.contact_action == 'scrutiny':
         contacts_ledger.append_event(root, dict(event='scrutiny', name=name, utc=now, level=args.level))
         print('{}: scrutiny {}'.format(name, args.level))
