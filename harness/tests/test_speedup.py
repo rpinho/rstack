@@ -194,3 +194,25 @@ def test_old_rows_tagged_code_count_as_bug_reports(lane):
             dict(channel='email', to_key='A', kind='code-speedup', sent=dict(utc='2026-11-08T00:00:00+00:00'))]
     assert sorted(outreach.stats(rows)['total']['by_kind']) == ['code-bug', 'code-speedup']
     assert bughunt.kind_in('code-speedup', ['code']) and not bughunt.kind_in('paper', ['code'])
+
+
+def test_one_email_with_bugs_and_a_speedup_carries_both_kinds_and_both_rules(lane, tmp_path):
+    """11-08: a batched email to one person held two refereed bugs and a verified speedup."""
+    checked(lane)
+    ref1, ref2 = (tmp_path / 'ref1', tmp_path / 'ref2')
+    for d in (ref1, ref2):
+        d.mkdir()
+        (d / 'VERDICTS.md').write_text('| B1 | CONFIRMED |')
+    ident, _ = draft(lane, kind=['code-bug', 'code-speedup'], target='org/tool')
+    assert 'SPEEDUP_UNVERIFIED' in lint(lane, ident)[1], 'the speedup rules apply to a mixed email'
+    one = verified(tmp_path, 'run1')
+    ident, _ = draft(lane, to='Contact Gamma', kind=['code-bug', 'code-speedup'], target='org/tool',
+                     speedup=one, recheck=[ref1, ref2])
+    out = lint(lane, ident)[1]
+    assert 'verified runs of the same patch' in out and 're-checks with a confirmed verdict' not in out
+    row = outreach.current(lane[1], rh)[ident]
+    assert row['kinds'] == ['code-bug', 'code-speedup']
+    sent = dict(row, status='sent', sent=dict(utc=NOW.isoformat(), message_id='x', via='api'))
+    stats = outreach.stats([sent])['total']
+    assert stats['sent'] == 1, 'one email, counted once'
+    assert stats['by_kind']['code-bug']['sent'] == stats['by_kind']['code-speedup']['sent'] == 1

@@ -522,7 +522,7 @@ def lint_rows(lane, selected, rh, allow_collision=None):
         # contact); the daily limit and the required questions are on when OUTREACH.toml says so.
         bughunt_warnings = []
         if row['channel'] == 'email':
-            if row.get('kind') not in KINDS:
+            if not bughunt.kinds_of(row) or set(bughunt.kinds_of(row)) - set(KINDS):
                 checks['bughunt'].append('KIND_MISSING: every email draft says what it reports '
                                          '(--kind paper|code|other)')
             found, bughunt_warnings = bughunt.findings(row, text, cfg, lane, rh, everyone, clock)
@@ -592,12 +592,13 @@ def stats(rows, contact=None):
         out['reply_rate'] = round(out['replies'] / out['sent'], 3) if out['sent'] else None
         return out
 
-    def kind(r):
-        k = r.get('kind') or 'unknown'
-        return 'code-bug' if k == 'code' else k
+    # An email counts once in the totals and once under each kind it carries, so the kinds can
+    # add up to more than the total.
+    def kinds(r):
+        return bughunt.kinds_of(r) or ['unknown']
 
     def by_kind(group):
-        return {k: tally([r for r in group if kind(r) == k]) for k in sorted({kind(r) for r in group})}
+        return {k: tally([r for r in group if k in kinds(r)]) for k in sorted({k for r in group for k in kinds(r)})}
 
     people = {}
     for key in sorted({r['to_key'] for r in emails}):
@@ -619,15 +620,15 @@ def batch_draft(lane, rh, contact, out):
     parts = [body(r).strip() for r in rows]
     out = Path(out).expanduser().resolve()
     out.write_text(bughunt.MERGE_MARK + '\n\n' + '\n\n'.join(parts) + '\n')
-    kinds = {r.get('kind') for r in rows}
+    kinds = []
+    for r in rows:
+        kinds += [k for k in bughunt.kinds_of(r) if k not in kinds]
     merged = dict(id=uuid.uuid4().hex[:16], lane=lane.name, channel='email', to_name=rows[0]['to_name'],
                   to_key=contact, purpose=safe('batched: ' + '; '.join(r['purpose'] for r in rows), 'purpose')[:300],
                   draft_path=str(out), draft_sha256=sha(out), status='drafted', created=rh.now(),
                   batched_from=[r['id'] for r in rows])
-    if len(kinds) == 1 and None not in kinds:
-        merged['kind'] = kinds.pop()
-    elif kinds - {None}:
-        merged['kind'] = 'other'
+    if kinds:
+        merged.update(kind=kinds[0], kinds=kinds)
     for key in ('targets', 'claims', 'rechecks', 'attachments'):
         values = sorted({v for r in rows for v in r.get(key, [])})
         if values:
@@ -721,7 +722,7 @@ def arguments(sub):
             p.add_argument('--project', action='append', default=[], help='stable project tag for the 48 h series check')
             p.add_argument('--attach', action='append', default=[], help='attached results, checked with the configured science command')
             p.add_argument('--claim', action='append', default=[], help='claim directory this reports; gated on its independent re-check')
-            p.add_argument('--kind', choices=KINDS, help='what the email reports (required for email)')
+            p.add_argument('--kind', action='append', default=[], choices=KINDS, help='what the email reports (required for email); repeat it for an email that carries more than one, e.g. bugs and a speedup')
             p.add_argument('--speedup', action='append', default=[], metavar='DIR', help='a verified speedup (SPEEDUP.json + VERIFY.json); code-speedup emails need one')
             p.add_argument('--overlap-checked', help='how we checked their own work on speed (asked them, read their open PRs)')
             p.add_argument('--target', action='append', default=[], help='OWNER/REPO the email is about; gated on rh bughunt target-check')
@@ -837,7 +838,10 @@ def main(root, args, rh):
             if args.claim:
                 row['claims'] = [str(Path(c).expanduser().resolve()) for c in args.claim]
             if args.kind:
-                row['kind'] = args.kind
+                kinds = list(dict.fromkeys(args.kind))
+                row['kind'] = kinds[0]
+                if len(kinds) > 1:
+                    row['kinds'] = kinds
             if args.target:
                 row['targets'] = sorted({bughunt.normalise(t) for t in args.target})
             if args.target_override:
@@ -901,6 +905,7 @@ def main(root, args, rh):
                 raise ValueError('set-kind is for emails that went out; draft an unsent one again with --kind')
             row['kind_set'] = dict(utc=rh.now(), was=row.get('kind'), reason=safe(args.reason, 'reason'))
             row['kind'] = args.kind
+            row.pop('kinds', None)
             record(lane, row, rh)
             print('{} kind {}'.format(row['id'], row['kind']))
             return 0

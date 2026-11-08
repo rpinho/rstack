@@ -50,6 +50,13 @@ PERF = re.compile(r'\b(?:speed|fast(?:er)?|perf(?:ormance)?|optimi[sz]\w*|profil
                   r'vectori[sz]\w*|parallel\w*|numba|cython|gpu|benchmark\w*)\b', re.I)
 
 
+def kinds_of(row):
+    """Every kind an email carries. One email can hold refereed bugs AND a verified speedup
+    (11-08, a batched email to one person); stored 'code' is the pre-split name for code-bug."""
+    found = row.get('kinds') or ([row['kind']] if row.get('kind') else [])
+    return ['code-bug' if k == 'code' else k for k in found]
+
+
 def kind_in(kind, kinds):
     """KIND is listed, or KINDS says 'code' (both code kinds; the name before 11-08)."""
     return bool(kind) and (kind in kinds or (kind.startswith('code') and 'code' in kinds))
@@ -235,15 +242,16 @@ def findings(row, text, cfg, lane, rh, everyone, clock):
     """(failures, warnings) for an email draft. Codes lead each message."""
     failures, warnings = [], []
     root = lane.parent.parent
-    kind = row.get('kind')
+    kinds = kinds_of(row)
+    label = '+'.join(kinds) or 'unlabelled'
     if MERGE_MARK in text:
         failures.append('MERGE_UNEDITED: a batched draft still has its merge marker; make it one '
                         'email and delete the marker line')
     # 1. Target recency and activity.
     targets = row.get('targets', [])
-    if kind_in(kind, cfg['target_required_kinds']) and not targets:
+    if any(kind_in(k, cfg['target_required_kinds']) for k in kinds) and not targets:
         failures.append('TARGET_MISSING: a {} email names the code it is about with --target '
-                        'OWNER/REPO'.format(kind))
+                        'OWNER/REPO'.format(label))
     for target in targets:
         verdict = latest_verdict(lane, rh, target)
         problem = None
@@ -277,7 +285,7 @@ def findings(row, text, cfg, lane, rh, everyone, clock):
                                                lane.name, row.get('to_key')))
     # Speedups: verified, current, on their latest commit, not duplicating their own work.
     speed_count = 0
-    if kind == 'code-speedup':
+    if 'code-speedup' in kinds:
         found, notes, speed_count = speedup.findings(row, None, lane, rh, latest_verdict, cfg['extra_rechecks'])
         failures += found
         warnings += notes
@@ -295,22 +303,24 @@ def findings(row, text, cfg, lane, rh, everyone, clock):
         elif contact.get('needs_find'):
             warnings.append('an address bounced; a find is queued for this contact')
         if contact.get('scrutiny') == 'extra':
-            if kind == 'code-speedup':
+            needs = []
+            if 'code-speedup' in kinds:
                 # The re-check of a speedup is a second, separate run of the benchmark and the
                 # equality check on the same patch: another --speedup directory that passed.
-                count, what = speed_count, 'verified runs of the same patch (--speedup DIR)'
-            else:
-                count = len({str(Path(d).resolve()) for d in row.get('rechecks', []) if passing_verdict(d)})
-                what = 're-checks with a confirmed verdict (--recheck DIR)'
-            if count < cfg['extra_rechecks']:
-                failures.append('SECOND_RECHECK_MISSING: an extra-scrutiny contact needs {} '
-                                'independent {}; found {}'.format(cfg['extra_rechecks'], what, count))
+                needs.append((speed_count, 'verified runs of the same patch (--speedup DIR)'))
+            if set(kinds) - {'code-speedup'} or not kinds:
+                needs.append((len({str(Path(d).resolve()) for d in row.get('rechecks', []) if passing_verdict(d)}),
+                              're-checks with a confirmed verdict (--recheck DIR)'))
+            for count, what in needs:
+                if count < cfg['extra_rechecks']:
+                    failures.append('SECOND_RECHECK_MISSING: an extra-scrutiny contact needs {} '
+                                    'independent {}; found {}'.format(cfg['extra_rechecks'], what, count))
             review = row.get('text_review') or {}
             digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
             if review.get('verdict') != 'pass' or review.get('sha256') != digest:
                 failures.append('TEXT_REVIEW_MISSING: an extra-scrutiny contact needs a passing '
                                 'review of this exact text (rh outreach review)')
-    if kind_in(kind, cfg['required_questions_kinds']):
+    if any(kind_in(k, cfg['required_questions_kinds']) for k in kinds):
         answered = (contact or {}).get('answered', {})
         for name, keywords in zip(cfg['required_question_names'], cfg['required_questions']):
             if asks(text, keywords):
@@ -318,7 +328,7 @@ def findings(row, text, cfg, lane, rh, everyone, clock):
             if name in answered:
                 warnings.append('{!r} not asked: already answered ({})'.format(name, answered[name]))
             else:
-                failures.append('QUESTION_MISSING: a {} email asks {!r}'.format(kind, name))
+                failures.append('QUESTION_MISSING: a {} email asks {!r}'.format(label, name))
     return failures, warnings
 
 

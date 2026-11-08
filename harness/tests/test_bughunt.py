@@ -50,8 +50,8 @@ def draft(lane, text=VARIED[0], to='Contact Alpha', kind='code-bug', **options):
     path = root / ('body-{}.txt'.format(len(list(root.glob('body-*')))))
     path.write_text(text)
     args = ['draft', 'test', '--to', to, '--channel', 'email', '--purpose', 'Report a bug', '--file', path]
-    if kind:
-        args += ['--kind', kind]
+    for k in ([kind] if isinstance(kind, str) else kind or []):
+        args += ['--kind', k]
     for key, value in options.items():
         for item in value if isinstance(value, list) else [value]:
             args += ['--' + key.replace('_', '-'), item]
@@ -215,7 +215,7 @@ def test_unsent_drafts_to_one_person_are_merged_into_one(lane):
     merged = stdout.split()[0]
     rows = outreach.current(lane[1], rh)
     assert rows[a]['status'] == rows[b]['status'] == 'dropped'
-    assert rows[merged]['targets'] == ['org/one'] and rows[merged]['kind'] == 'other'
+    assert rows[merged]['targets'] == ['org/one'] and rows[merged]['kinds'] == ['code-bug', 'paper']
     assert 'MERGE_UNEDITED' in lint(lane, merged)[1], 'a concatenation is not an email'
     out.write_text(VARIED[0] + '\n\n' + VARIED[3])
     target_verdict(lane, 'org/one')
