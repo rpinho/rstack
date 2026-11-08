@@ -39,6 +39,9 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # the harness, for settings
+import settings
+
 BASELINES = 'BASELINES.jsonl'
 NUMBER = re.compile(r'[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?')
 DEFAULT_TOLERANCE = 1e-9
@@ -232,6 +235,22 @@ def main(argv=None):
     sub.add_parser('list', help='what this lane can reproduce')
 
     a = p.parse_args(argv)
+
+    # A bare lane name resolves under RH_ROOT/lanes, and a directory that is not a lane
+
+    # is refused. One resolver for every tool that takes --lane: all four took it as a
+
+    # bare path, and planets hit the trap on 11-07.
+
+    try:
+
+        a.lane = settings.lane_dir(a.lane)
+
+    except ValueError as exc:
+
+        print('REFUSED: ' + str(exc), file=sys.stderr)
+
+        return 2
     ledger = a.lane / BASELINES
     rows = read(ledger)
     cwd = a.cwd or a.lane

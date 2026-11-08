@@ -193,6 +193,21 @@ def approve(fid, scope='conversation'):
                  **({'mode': 'ro'} if r.get('kind') == 'host' else {})) for r in ok]})
         if code != 200:
             sys.exit(f'HTTP {code}: {out[:300]}')
+        # A 200 is not evidence the grant landed. 11-07: math's network approval and planets' host
+        # prompts both came back "accepted" and changed nothing, and the session then sat pending
+        # with nothing saying why. Whatever the cause, the check is the same: read the requests
+        # back, and if one this call claimed to approve is still pending, say so loudly instead of
+        # returning as though it worked. The one failure direction that wastes a whole session is
+        # a tool reporting success for a request nobody granted.
+        left = {r.get('requestId') for r in pending(fid)}
+        ignored = [r for r in ok if r.get('requestId') in left]
+        if ignored:
+            kinds = ', '.join(sorted({str(r.get('kind')) for r in ignored}))
+            sys.exit('resolve-input returned 200 and changed nothing: {} request(s) ({}) are still '
+                     'pending. Claude Science accepted the call and ignored it, which usually means '
+                     'the scope was wrong for the kind: it was sent as {!r}, and some kinds are only '
+                     'granted with "always". Nothing was approved; re-run with --scope always, or '
+                     'resolve it in the app.'.format(len(ignored), kinds, scope))
     return ok, pending(fid)
 
 

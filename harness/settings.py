@@ -76,3 +76,36 @@ def runpod_api_key():
     except OSError:
         key = ''
     return key or os.environ.get('RUNPOD_API_KEY', '').strip()
+
+def lane_dir(value, root=None):
+    """Resolve a --lane argument to a real lane directory, or raise ValueError.
+
+    11-07, planets: `baseline.py --lane planets` run from the harness root took the bare name as a
+    path, created ~/.local/share/research-harness/planets/BASELINES.jsonl beside the lanes
+    directory, and ran the lane's commands with cwd "planets", which failed with
+    FileNotFoundError. Four tools took --lane as a bare Path and all of them had the same trap, so
+    the fix is one resolver rather than four.
+
+    A bare name resolves under RH_ROOT/lanes. A path with a separator is taken as given. Either way
+    the directory has to exist already: a tool that writes a lane's ledger must not be able to
+    create a new directory by typo, which is what left a stray planets/ beside the lanes.
+
+    Existence is the whole test. Requiring an IDEAS.jsonl as well was tempting and wrong: a lane
+    created minutes ago has no ledger yet, and it would have refused every new lane and every test
+    fixture. The failure being fixed is a path that did not exist, not a directory that is not
+    furnished.
+    """
+    text = str(value).strip()
+    if not text:
+        raise ValueError('--lane is empty')
+    base = Path(root).expanduser() if root else path('RH_ROOT', Path(__file__).resolve().parent)
+    candidate = Path(text).expanduser()
+    if os.sep in text or text.startswith('~') or candidate.is_absolute():
+        lane = candidate
+    else:
+        lane = base / 'lanes' / text
+    lane = lane.expanduser()
+    if not lane.is_dir():
+        raise ValueError('no lane directory at {} (a bare name resolves under {})'
+                         .format(lane, base / 'lanes'))
+    return lane

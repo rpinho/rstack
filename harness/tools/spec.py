@@ -40,6 +40,9 @@ import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # the harness, for settings
+import settings
+
 SPEC = 'SPEC.json'
 TIMEOUT = 60
 MAX_BYTES = 32 * 1024 * 1024
@@ -246,6 +249,14 @@ def main(argv=None):
     sub.add_parser('diff', help='re-read the live page and compare (uses the network)')
     sub.add_parser('show', help='print the spec')
     a = p.parse_args(argv)
+    # A bare lane name resolves under RH_ROOT/lanes, and a directory that is not a lane
+    # is refused. One resolver for every tool that takes --lane: all four took it as a
+    # bare path, and planets hit the trap on 11-07.
+    try:
+        a.lane = settings.lane_dir(a.lane)
+    except ValueError as exc:
+        print('REFUSED: ' + str(exc), file=sys.stderr)
+        return 2
 
     if a.action == 'show':
         try:

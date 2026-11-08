@@ -29,23 +29,36 @@ def req(kind, **extra):
 
 @pytest.fixture
 def api(monkeypatch):
-    """Records the resolve-input payload instead of calling a daemon."""
+    """A daemon stub: records the resolve-input payload, and CLEARS what it granted.
+
+    Clearing matters. approve() now reads the requests back and refuses to report success for one
+    that is still pending, so a stub that never clears would fail every test for the right reason
+    and teach nothing. A stub that cannot succeed is as useless as one that cannot fail.
+    """
     sent = {}
+    granted = set()
 
     def call(path, data=None, form=False):
         if path.endswith('/resolve-input'):
             sent['payload'] = data
+            granted.update(r['requestId'] for r in data['responses'])
             return 200, '{"status": "accepted"}'
         raise AssertionError('unexpected call: ' + path)
 
+    def queue(rows):
+        monkeypatch.setattr(cs, 'pending',
+                            lambda fid: [r for r in rows if r['requestId'] not in granted])
+
     monkeypatch.setattr(cs, 'call', call)
+    sent['queue'] = queue
+    sent['granted'] = granted
     return sent
 
 
 def test_a_network_approval_is_sent_with_the_scope_the_api_requires(api, monkeypatch):
     """The 11-07 bug. If a network request ever reaches resolve-input, 'conversation' is a no-op."""
     monkeypatch.setattr(cs, 'AUTO_APPROVE', {'local_exec', 'network'})
-    monkeypatch.setattr(cs, 'pending', lambda fid: [req('network', target='annals.math.princeton.edu')])
+    api['queue']([req('network', target='annals.math.princeton.edu')])
     cs.approve('f1', scope='conversation')
     response = api['payload']['responses'][0]
     assert response['scope'] == 'always', 'conversation returns 200 and changes nothing'
@@ -53,9 +66,10 @@ def test_a_network_approval_is_sent_with_the_scope_the_api_requires(api, monkeyp
 
 
 def test_other_kinds_keep_the_scope_they_were_given(api, monkeypatch):
-    monkeypatch.setattr(cs, 'pending', lambda fid: [req('local_exec', code='print(1)')])
+    api['queue']([req('local_exec', code='print(1)')])
     cs.approve('f1', scope='conversation')
     assert api['payload']['responses'][0]['scope'] == 'conversation'
+    api['granted'].clear()
     cs.approve('f1', scope='always')
     assert api['payload']['responses'][0]['scope'] == 'always'
 
@@ -88,11 +102,18 @@ def test_a_read_only_host_request_needs_the_explicit_allowlist(monkeypatch, tmp_
     inside = tmp_path / 'papers'
     inside.mkdir()
     monkeypatch.setattr(cs, 'AUTO_READ', (str(tmp_path) + '/',))
-    monkeypatch.setattr(cs, 'pending',
-                        lambda fid: [req('host', requested_mode='ro', target=str(inside))])
     sent = {}
-    monkeypatch.setattr(cs, 'call',
-                        lambda path, data=None, form=False: (sent.setdefault('d', data), (200, '{}'))[1])
+    granted = set()
+
+    def call(path, data=None, form=False):
+        sent['d'] = data
+        granted.update(r['requestId'] for r in data['responses'])
+        return 200, '{}'
+
+    rows = [req('host', requested_mode='ro', target=str(inside))]
+    monkeypatch.setattr(cs, 'call', call)
+    monkeypatch.setattr(cs, 'pending',
+                        lambda fid: [r for r in rows if r['requestId'] not in granted])
     ok, _ = cs.approve('f1')
     assert [r['kind'] for r in ok] == ['host']
     assert sent['d']['responses'][0]['mode'] == 'ro'
@@ -103,3 +124,19 @@ def test_a_read_only_host_request_needs_the_explicit_allowlist(monkeypatch, tmp_
     monkeypatch.setattr(cs, 'pending',
                         lambda fid: [req('host', requested_mode='rw', target=str(inside))])
     assert cs.approve('f1')[0] == []
+
+
+def test_a_200_that_changed_nothing_is_a_loud_failure(monkeypatch, capsys):
+    """11-07, twice in one evening: math's network approval and planets' host prompts both came
+    back "accepted" and changed nothing, and the session then sat pending with nothing saying why.
+    Whatever the cause, reporting success for a request nobody granted is the failure direction
+    that wastes a whole session, so the requests are read back."""
+    row = req('local_exec', code='print(1)')
+    monkeypatch.setattr(cs, 'pending', lambda fid: [row])      # never clears: the daemon ignored it
+    monkeypatch.setattr(cs, 'call', lambda *a, **k: (200, '{"status": "accepted"}'))
+    with pytest.raises(SystemExit) as e:
+        cs.approve('f1', scope='conversation')
+    message = str(e.value)
+    assert 'returned 200 and changed nothing' in message
+    assert 'local_exec' in message and "'conversation'" in message
+    assert 'Nothing was approved' in message

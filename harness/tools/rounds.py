@@ -50,6 +50,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import settings
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import spec
 
@@ -270,6 +271,22 @@ def main(argv=None):
     consult.add_argument('--took', required=True, help='what this round takes from it')
 
     a = p.parse_args(argv)
+
+    # A bare lane name resolves under RH_ROOT/lanes, and a directory that is not a lane
+
+    # is refused. One resolver for every tool that takes --lane: all four took it as a
+
+    # bare path, and planets hit the trap on 11-07.
+
+    try:
+
+        a.lane = settings.lane_dir(a.lane)
+
+    except ValueError as exc:
+
+        print('REFUSED: ' + str(exc), file=sys.stderr)
+
+        return 2
     now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     if a.action == 'log':
         row = dict(utc=now, round=a.round, family=a.family, outcome=a.outcome,

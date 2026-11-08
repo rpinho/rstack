@@ -38,6 +38,9 @@ import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # the harness, for settings
+import settings
+
 INPUTS = 'INPUTS.jsonl'
 STORE = 'inputs'
 MAX_BYTES = 512 * 1024 * 1024
@@ -147,6 +150,22 @@ def main(argv=None):
     sub.add_parser('list', help='what is staged for this lane')
 
     a = p.parse_args(argv)
+
+    # A bare lane name resolves under RH_ROOT/lanes, and a directory that is not a lane
+
+    # is refused. One resolver for every tool that takes --lane: all four took it as a
+
+    # bare path, and planets hit the trap on 11-07.
+
+    try:
+
+        a.lane = settings.lane_dir(a.lane)
+
+    except ValueError as exc:
+
+        print('REFUSED: ' + str(exc), file=sys.stderr)
+
+        return 2
     ledger = a.lane / INPUTS
     rows = read(ledger)
 
