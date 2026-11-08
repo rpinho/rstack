@@ -55,7 +55,8 @@ def harness(tmp_path, lane='fixture'):
                LAUNCH_ARTIFACT_DIR=str(jobs), LAUNCH_STATE=str(tmp_path / 'registry'),
                RH_ROLES_FILE=str(roles), FORCE_LAUNCH='1', LAUNCH_LANE_ROOT=str(root),
                LAUNCH_SSH=str(ssh), SSH_LOG=str(tmp_path / 'ssh.log'),
-               LAUNCH_REMOTE_EXECUTOR=str(REPO / 'harness/agent_executor.py'))
+               LAUNCH_REMOTE_EXECUTOR=str(REPO / 'harness/agent_executor.py'),
+               LAUNCH_REMOTE_ATTEMPTS=str(tmp_path / 'remote-attempts'), LAUNCH_REMOTE_POLL_S='0.2')
     env.pop('LAUNCH_RESUME', None)
     env.pop('SPEC_OVER_CAP', None)
     env.pop('LAUNCH_HOST', None)
@@ -71,17 +72,16 @@ def run(tmp_path, *args, lane='fixture', workdir=None, env_extra=None):
     return proc, (log.read_text() if log.exists() else ''), Path(env['SSH_LOG'])
 
 
-def executor_block(sent):
-    """The executor's command block from the ssh log, skipping the host load probe.
+def staged(tmp_path, job='fixture-job'):
+    """The executor program as it landed on the host, and the prompt staged beside it.
 
-    Since 11-08 the first ssh of a --host launch reads the host's load, so "the first command" is
-    no longer the executor. The block can span lines, so it runs to the next host= line.
+    Since 11-08 the program reaches the host over stdin as run.sh in the attempt directory (it is
+    started detached there, so it outlives the ssh session), not as an ssh argument. So tests read
+    it where it lands, which is also the thing that runs.
     """
-    for chunk in sent.split('cmd=')[1:]:
-        block = chunk.split('\nhost=', 1)[0]
-        if 'vm.loadavg' not in block:
-            return block
-    raise AssertionError('no executor command was sent: ' + sent[-300:])
+    runs = sorted((tmp_path / 'remote-attempts' / job).glob('*/run.sh'))
+    assert runs, 'nothing was staged on the host'
+    return runs[-1].read_text(), (runs[-1].parent / 'prompt').read_text()
 
 
 def test_without_a_host_nothing_is_sent_anywhere(tmp_path):
@@ -98,7 +98,9 @@ def test_the_executor_runs_on_the_host_and_the_prompt_arrives_over_stdin(tmp_pat
     assert proc.returncode == 0, proc.stderr + log
     sent = ssh_log.read_text()
     assert 'host=m5' in sent
-    assert '--backend claude' in sent and '--directory ' + str(tmp_path) in sent
+    program, prompt = staged(tmp_path)
+    assert '--backend claude' in program and '--directory ' + str(tmp_path) in program
+    assert prompt == (tmp_path / 'jobs/fixture-job.log.prompt').read_text()
     # The agent only ever sees the prompt the controller built, and it built it from the spec.
     assert ASK in (tmp_path / 'jobs/fixture-job.log.prompt').read_text()
     assert (tmp_path / 'jobs/fixture-job.last.md').exists()
@@ -125,7 +127,7 @@ def test_a_missing_work_dir_on_the_host_refuses_instead_of_running_in_its_home(t
     """
     proc, _, ssh_log = run(tmp_path, '--host', 'm5')
     assert proc.returncode == 0, proc.stderr
-    sent = executor_block(ssh_log.read_text()).splitlines()[0]
+    sent = staged(tmp_path)[0].splitlines()[0]
     absent = str(tmp_path / 'not-there')
     assert str(tmp_path) in sent
     remote = subprocess.run(['sh', '-c', sent.replace(str(tmp_path), absent)],
@@ -254,10 +256,10 @@ def test_the_output_directory_is_created_on_the_host(tmp_path):
     assert proc.returncode == 0, proc.stderr
     # The command spans several lines, so the whole log is read: a per-line filter would see only
     # the `cd` and miss everything after it.
-    sent = Path(env['SSH_LOG']).read_text()
+    sent = staged(tmp_path, 'stage-job')[0]
     assert 'mkdir -p ' + str(nested) in sent
     # Run the command block with the output directory removed: it must recreate it, not refuse.
-    block = executor_block(sent)
+    block = sent
     import shutil as sh
     sh.rmtree(nested)
     remote = subprocess.run(['sh', '-c', block], capture_output=True, text=True, timeout=60)
@@ -338,8 +340,7 @@ def test_the_marker_lands_under_the_remote_home_and_not_in_a_directory_called_HO
                           env=dict(env, LAUNCH_HOST='m5'), capture_output=True, text=True,
                           timeout=120)
     assert proc.returncode == 0, proc.stderr
-    sent = Path(env['SSH_LOG']).read_text()
-    block = executor_block(sent)
+    block = staged(tmp_path)[0]
     # Run it the way the host would, with HOME pointing somewhere this test can inspect.
     run = subprocess.run(['sh', '-c', block],
                          env=dict(os.environ, HOME=str(home), EXECUTOR_RAN=str(tmp_path / 'ran')),

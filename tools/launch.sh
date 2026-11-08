@@ -222,7 +222,15 @@ mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
 mkdir -p $rmarks 2>/dev/null || true
 echo \$\$ > $rmarks/${(q)${job:t}}.pid 2>/dev/null || true
 exec nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)${LAUNCH_CLAUDE_BUDGET:-1.00}}"
-    ${=${LAUNCH_SSH:-ssh}} "$LAUNCH_HOST" "$remote" < "$log.prompt" > "$attempt_log" 2>&1
+    # 11-08: this was one foreground ssh, so the job lived exactly as long as the connection. A
+    # network blip ended a 5 h job, and the controller's reset at 22:16 took every job on the host
+    # with it. remote_run.py starts the executor detached THERE (nohup, files for stdio, a watcher
+    # that records the exit code), streams its output here, survives a dropped connection, and on a
+    # restarted launcher reattaches to the attempt in $log.remote.json instead of starting another.
+    print -r -- "$remote" > "$log.rcmd"
+    : > "$attempt_log"
+    python3 "${self:h:h}/harness/tools/remote_run.py" --host "$LAUNCH_HOST" --job "${job:t}" \
+      --log "$attempt_log" --prompt "$log.prompt" --command "$log.rcmd" --state "$log.remote.json"
     rc=$?
     # Status has to keep working from the controller: the heavy outputs stay on the host and
     # only these few small bookkeeping files come back, so STATUS.md, REPORT.md, the receipts
