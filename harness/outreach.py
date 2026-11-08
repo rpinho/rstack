@@ -5,6 +5,7 @@ import mixed_language
 import ops_mentions
 import bughunt
 import contacts_ledger
+import speedup
 import promise_words
 import datetime as dt
 import contextlib
@@ -225,7 +226,7 @@ def voice(text, channel):
         return ['xlint could not complete']
 
 
-def science_checks(text, attachments, language=None, claims=()):
+def science_checks(text, attachments, language=None, claims=(), kinds=()):
     """Optional lane check: stdin JSON, stdout FAIL: lines, nonzero means refusal.
 
     `language` carries the recipient's contact language so an installation's own checker can
@@ -236,7 +237,8 @@ def science_checks(text, attachments, language=None, claims=()):
     try:
         run = subprocess.run(SCIENCE_COMMAND, input=json.dumps({'text': text, 'language': language,
                                                                 'attachments': [str(p) for p in attachments],
-                                                                'claims': [str(c) for c in claims]}),
+                                                                'claims': [str(c) for c in claims],
+                                                                'kinds': list(kinds)}),
                              text=True, capture_output=True, timeout=30)
         errors = [line for line in run.stdout.splitlines() if line.startswith('FAIL:')]
         return errors or (['science checker could not complete'] if run.returncode else [])
@@ -492,9 +494,16 @@ def lint_rows(lane, selected, rh, allow_collision=None):
         # Mixed language: the technical paragraphs in English, the rest in the recipient's own.
         checks['language'], language_warnings = mixed_language.findings(
             text, language if row['channel'] == 'email' else None, row.get('attachments', []))
+        science_warnings = []
         if cfg.get('science_checks', False) and row['channel'] == 'email':
-            checks['science'] = science_checks(text, row.get('attachments', []), language,
-                                               row.get('claims', []))
+            attachments = row.get('attachments', [])
+            if 'code-speedup' in bughunt.kinds_of(row):
+                covered = speedup.covered_attachments(row)
+                attachments = [a for a in attachments if a not in covered]
+                science_warnings = ['{} is the verified speedup patch (VERIFY.json PASS); the result-claim '
+                                    'checks do not apply to it'.format(Path(a).name) for a in covered]
+            checks['science'] = science_checks(text, attachments, language, row.get('claims', []),
+                                               bughunt.kinds_of(row))
         # The two postmortem gates (Ricardo, 11-05): a result is sendable only once a separate
         # model has rebuilt it from the public inputs, and pod-touched evidence only once it has
         # been re-run after the host incident. Both read the lane's own re-check ledger.
@@ -528,7 +537,7 @@ def lint_rows(lane, selected, rh, allow_collision=None):
             found, bughunt_warnings = bughunt.findings(row, text, cfg, lane, rh, everyone, clock)
             checks['bughunt'] += found
         warnings = (list(language_warnings) + evidence_warnings + ops_warnings
-                    + promise_warnings + batch_warnings + bughunt_warnings)
+                    + promise_warnings + batch_warnings + bughunt_warnings + science_warnings)
         if row['channel'] in X_PUBLIC:
             checks['reach'], reach_warnings = x_checks(row, text, everyone, clock, selected, cfg)
             warnings += reach_warnings

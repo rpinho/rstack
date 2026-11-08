@@ -221,6 +221,49 @@ def current(directory):
     return row, None
 
 
+def patch_hashes(path):
+    """sha256 of every .diff/.patch in PATH: the file itself, or the members of a tar or zip."""
+    import tarfile
+    import zipfile
+    path = Path(path)
+    is_patch = lambda name: name.endswith(('.diff', '.patch'))
+    if is_patch(path.name):
+        return {sha(path)}
+    found = set()
+    try:
+        if tarfile.is_tarfile(str(path)):
+            with tarfile.open(str(path)) as bundle:
+                for member in bundle.getmembers():
+                    if member.isfile() and is_patch(member.name):
+                        found.add(hashlib.sha256(bundle.extractfile(member).read()).hexdigest())
+        elif zipfile.is_zipfile(str(path)):
+            with zipfile.ZipFile(str(path)) as bundle:
+                for name in bundle.namelist():
+                    if is_patch(name):
+                        found.add(hashlib.sha256(bundle.read(name)).hexdigest())
+    except (OSError, tarfile.TarError, zipfile.BadZipFile):
+        return set()
+    return found
+
+
+def covered_attachments(row):
+    """Attachments that are a verified speedup's own patch (alone or bundled with its scripts).
+
+    11-08: the patch bundle a recipient asked for went through the paper-result checks (adversarial
+    reviews, the useful-or-slop question), which are for claims about results. A patch whose bytes
+    are the ones VERIFY.json passed is already checked by its equality test and benchmark. Only an
+    exact hash match counts; anything else in the email still goes through the science check.
+    """
+    verified = set()
+    for d in row.get('speedups', []):
+        result, problem = current(d)
+        if result and not problem:
+            verified.add(result['patch_sha256'])
+    if not verified:
+        return []
+    return [a for a in row.get('attachments', []) if patch_hashes(a) & verified]
+
+
 def findings(row, contact, lane, rh, latest_verdict, extra_needed):
     """(failures, warnings, independent PASS count) for a code-speedup email."""
     failures, warnings, good = [], [], {}

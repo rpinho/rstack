@@ -216,3 +216,40 @@ def test_one_email_with_bugs_and_a_speedup_carries_both_kinds_and_both_rules(lan
     stats = outreach.stats([sent])['total']
     assert stats['sent'] == 1, 'one email, counted once'
     assert stats['by_kind']['code-bug']['sent'] == stats['by_kind']['code-speedup']['sent'] == 1
+
+
+def bundle(tmp_path, name, patch):
+    import tarfile
+    src = tmp_path / (name + '-src')
+    src.mkdir()
+    (src / 'patch.diff').write_text(patch)
+    (src / 'README.md').write_text('How to apply it and the benchmark.\n')
+    out = tmp_path / (name + '.tar.gz')
+    with tarfile.open(str(out), 'w:gz') as tar:
+        tar.add(str(src / 'patch.diff'), arcname='bundle/patch.diff')
+        tar.add(str(src / 'README.md'), arcname='bundle/README.md')
+    return out
+
+
+def test_the_verified_patch_bundle_is_not_held_to_the_paper_result_checks(lane, tmp_path):
+    """11-08: the patch bundle a recipient asked for failed the adversarial-review and slop-question
+    checks meant for result claims. The fixture science checker fails any attachment without that
+    question, so a PASS here means the bundle was not sent to it."""
+    checked(lane)
+    config_text = (lane[1] / 'OUTREACH.toml').read_text()
+    (lane[1] / 'OUTREACH.toml').write_text(config_text + 'science_checks = true\n')
+    d = verified(tmp_path, 'v')
+    ident, _ = draft(lane, kind='code-speedup', target='org/tool', speedup=d,
+                     attach=bundle(tmp_path, 'same', 'diff\n'))
+    rc, out = lint(lane, ident)
+    assert rc == 0, out
+    assert 'is the verified speedup patch' in out
+    ident, _ = draft(lane, kind='code-speedup', target='org/tool', speedup=d,
+                     attach=bundle(tmp_path, 'edited', 'diff, edited after verification\n'))
+    assert 'fixture attachment needs useful or slop question' in lint(lane, ident)[1]
+    extra = tmp_path / 'results.txt'
+    extra.write_text('A table of timings.\n')
+    ident, _ = draft(lane, kind='code-speedup', target='org/tool', speedup=d,
+                     attach=[bundle(tmp_path, 'again', 'diff\n'), extra])
+    assert 'fixture attachment needs useful or slop question' in lint(lane, ident)[1], \
+        'anything else attached is still checked'
