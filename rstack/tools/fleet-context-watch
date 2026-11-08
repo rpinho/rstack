@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""Keep every Claude Code session under its context limit, without anyone watching.
+
+Run it on a schedule (every 15 minutes is enough). For each tmux pane whose session name starts
+with the prefix, it reads that session's newest transcript and its context size:
+
+  - at ASK tokens or more, it types a request into the pane: save everything a fresh context needs,
+    then reply with one line, `SAVED <path>`;
+  - once a SAVED reply appears after that request and the transcript has been quiet for QUIET
+    seconds, it types `/compact Full saved state is in <path>`;
+  - it asks again after REASK seconds with no SAVED, and forgets a session once it drops below CLEAR.
+
+Typed keys run as a real command in the session; the same text sent as a message between sessions
+is only text, which is why this types into tmux.
+
+The bug its test pins (one fleet, 11-08): the first version read only the session's latest reply.
+Two busy sessions replied SAVED, then something woke them and a newer reply buried the SAVED line,
+so /compact never went in and they sat at 530k and 680k for hours. Any SAVED reply after the
+request counts. The log line that caught it: "asked" twice for one session, no "compacted".
+
+Settings (environment): FLEET_PREFIX (claude-), FLEET_SKIP (comma-separated session names never
+touched), FLEET_ASK (500000), FLEET_CLEAR (300000), FLEET_QUIET (120), FLEET_REASK (7200),
+FLEET_TMUX (tmux), FLEET_PROJECTS (~/.claude/projects), FLEET_STATE (~/.local/state/fleet-context),
+FLEET_LOG (FLEET_STATE/watch.log).
+
+    fleet-context-watch [--dry]      --dry prints what it would do and types nothing
+"""
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime
+
+SAVE_MSG = ('Context check: you are at {k}k tokens. Start nothing new. Save everything a fresh context '
+            'needs (open jobs, decisions, next steps) to your state or handoff file now, then reply with '
+            'one line: SAVED <path>. /compact will follow.')
+
+
+def settings(env=None):
+    env = os.environ if env is None else env
+    state = Path(os.path.expanduser(env.get('FLEET_STATE', '~/.local/state/fleet-context')))
+    return dict(
+        prefix=env.get('FLEET_PREFIX', 'claude-'),
+        skip={s.strip() for s in env.get('FLEET_SKIP', '').split(',') if s.strip()},
+        ask=int(env.get('FLEET_ASK', 500_000)), clear=int(env.get('FLEET_CLEAR', 300_000)),
+        quiet=float(env.get('FLEET_QUIET', 120)), reask=float(env.get('FLEET_REASK', 2 * 3600)),
+        tmux=env.get('FLEET_TMUX', 'tmux'),
+        projects=Path(os.path.expanduser(env.get('FLEET_PROJECTS', '~/.claude/projects'))),
+        state=state, log=Path(os.path.expanduser(env.get('FLEET_LOG', str(state / 'watch.log')))))
+
+
+def stamp(record):
+    try:
+        return datetime.fromisoformat(record.get('timestamp', '').replace('Z', '+00:00')).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def read_transcript(path):
+    """(context tokens of the last assistant turn, (newest SAVED line, its time)).
+
+    The newest SAVED anywhere in the transcript, not the last reply: a later reply must not hide it.
+    """
+    size, saved = None, ('', 0.0)
+    with open(path, errors='replace') as fh:
+        for line in fh:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            message = record.get('message')
+            if record.get('type') != 'assistant' or not isinstance(message, dict):
+                continue
+            usage = message.get('usage')
+            if usage:
+                size = (usage.get('input_tokens', 0) + usage.get('cache_read_input_tokens', 0)
+                        + usage.get('cache_creation_input_tokens', 0))
+            for block in message.get('content') or []:
+                if isinstance(block, dict) and block.get('type') == 'text':
+                    text = block.get('text', '').strip()
+                    if text.startswith('SAVED'):
+                        saved = (text.splitlines()[0], stamp(record))
+    return size, saved
+
+
+def decide(state, size, saved, quiet, now, cfg):
+    """(action, new state). action is 'ask', 'compact', 'reset' or None. Pure: no I/O."""
+    line, saved_at = saved
+    if size < cfg['clear']:
+        return ('reset' if state else None), {}
+    if size < cfg['ask'] and state.get('stage') != 'asked':
+        return None, state
+    # A minute of slack: the request and the reply can land in the same minute.
+    if state.get('stage') == 'asked' and line and saved_at >= state.get('at', 0) - 60 and quiet >= cfg['quiet']:
+        return 'compact', {'stage': 'compacted', 'at': now, 'path': line.split(None, 1)[1].strip() if ' ' in line else ''}
+    if state.get('stage') == 'compacted' and now - state['at'] < cfg['reask']:
+        return None, state
+    if state.get('stage') != 'asked' or now - state.get('at', 0) > cfg['reask']:
+        return 'ask', {'stage': 'asked', 'at': now}
+    return None, state
+
+
+def transcript_for(pane_path, projects):
+    """The newest transcript for a pane: by the directory Claude Code files it under, else by the
+    newest recent transcript whose last recorded cwd is the pane's (a session that cd'd after launch)."""
+    d = projects / re.sub(r'[/.]', '-', pane_path)
+    files = sorted(d.glob('*.jsonl'), key=lambda p: p.stat().st_mtime) if d.is_dir() else []
+    if files:
+        return files[-1]
+    needle = '"cwd":' + json.dumps(pane_path)
+    recent = [f for f in projects.glob('*/*.jsonl') if time.time() - f.stat().st_mtime < 2 * 86400]
+    for f in sorted(recent, key=lambda p: p.stat().st_mtime, reverse=True):
+        with open(f, 'rb') as fh:
+            fh.seek(max(0, f.stat().st_size - 20000))
+            cwds = re.findall(r'"cwd":"[^"]*"', fh.read().decode('utf-8', 'replace'))
+        if cwds and cwds[-1] == needle:
+            return f
+    return None
+
+
+def panes(cfg):
+    out = subprocess.run([cfg['tmux'], 'list-panes', '-a', '-F',
+                          '#{session_name}\t#{pane_id}\t#{pane_current_path}'],
+                         capture_output=True, text=True).stdout
+    for row in out.splitlines():
+        name, pane, path = row.split('\t')
+        if name.startswith(cfg['prefix']) and name not in cfg['skip']:
+            yield name, pane, path
+
+
+def type_into(cfg, pane, text):
+    subprocess.run([cfg['tmux'], 'send-keys', '-t', pane, '-l', '--', text])
+    time.sleep(1)
+    subprocess.run([cfg['tmux'], 'send-keys', '-t', pane, 'Enter'])
+
+
+def main(argv, cfg=None, now=None):
+    cfg = cfg or settings()
+    dry = '--dry' in argv
+    cfg['state'].mkdir(parents=True, exist_ok=True)
+    now = now or time.time()
+    for name, pane, path in panes(cfg):
+        f = transcript_for(path, cfg['projects'])
+        if not f:
+            continue
+        size, saved = read_transcript(f)
+        if size is None:
+            continue
+        sf = cfg['state'] / (name + '.json')
+        state = json.loads(sf.read_text()) if sf.exists() else {}
+        action, new = decide(state, size, saved, now - f.stat().st_mtime, now, cfg)
+        if action == 'ask' and not dry:
+            type_into(cfg, pane, SAVE_MSG.format(k=size // 1000))
+        elif action == 'compact' and not dry:
+            type_into(cfg, pane, '/compact Full saved state is in ' + (new['path'] or 'your state file'))
+        if action:
+            line = '{} {} {}k: {}'.format(time.strftime('%Y-%m-%d %H:%M'), name, size // 1000, action)
+            print(line)
+            if not dry:
+                with open(cfg['log'], 'a') as log:
+                    log.write(line + '\n')
+        if dry:
+            continue
+        if new:
+            sf.write_text(json.dumps(new))
+        elif sf.exists():
+            sf.unlink()   # its own small state file, rewritten every run; nothing to keep
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
