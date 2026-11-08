@@ -24,13 +24,34 @@ from those numbers, each rule with its count. "Short sentences" is a wish; "medi
 sentence, 90% under 14" is a rule an agent can follow and you can check. Keep the corpus and the
 guide private. Never publish your own phrases.
 
-## 2. Keep a slop list
+## 2. Write by paper-cut, not by composing
+
+A guide plus a lint still lets an agent compose freely and then tidy the result until it passes.
+The method that holds is cutting the draft from your own messages, like newspaper clippings:
+
+1. Keep a bank per language: whole messages you wrote, one JSON line each (`{"text": ...}`),
+   ideally with the move each one makes (ask, agree, thank, disagree, decline). Never translate
+   your messages in one language into another; a language with no bank has no drafts yet.
+2. Pick the move, find one to three of your messages that make it, and build the draft from
+   their exact words, swapping in the subject.
+3. Save the bank lines you cut from next to the draft, in `DRAFT.cuts`, one `BANK:LINE` per line.
+4. Run `rh voice-cuts DRAFT [--incoming THEIR_MESSAGE]`. It passes when the language matches a
+   cited bank and at least 70% of the words and 40% of the word pairs come from the cited lines.
+   Words from the message being answered don't count against you: they are the subject.
+
+Point `RH_VOICE_BANKS` at a JSON file naming your banks (`{"en": {"path": "en.jsonl", "lang":
+"en"}}`) and `rh outreach lint` requires the cuts on every draft, and the email send hook refuses
+a body that neither matches an approved draft nor passed `rh voice-cuts` as exactly that text.
+Don't lower the thresholds to let a composed draft through; if good cut drafts fail, measure on
+those and say why. Keep the banks private, like the corpus.
+
+## 3. Keep a slop list
 
 Every time a draft reads wrong to you, write down the phrase that did it. That list is what the
 lint checks. [slop.example.txt](../../../rstack/tools/slop.example.txt)
 has generic entries to start from; yours will be specific to you.
 
-## 3. Gate every outbound text with a lint
+## 4. Gate every outbound text with a lint
 
 The guide steers the draft. The lint refuses it:
 
@@ -46,6 +67,6 @@ fails the lint doesn't go.
 
 ## Using it when drafting
 
-Load the guide, write the draft, run the lint, fix what it finds, and show the result. Start with
+Load the guide, cut the draft, run both checks, fix what it finds, and show the result. Start with
 the actual thought. Stop when the thought is done. When the person pushes back on tone, the fix is
 a new line in the guide or the slop list, not a promise to do better.

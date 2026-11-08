@@ -851,6 +851,9 @@ def parser():
     a.add_argument('--hits-file', help='local JSONL fixture; never counts as an external read')
     a = sub.add_parser('cs-url', help="print a fresh Claude Science login link and the lane's project URL")
     a.add_argument('lane')
+    a = sub.add_parser('voice-cuts', help='check a draft is cut from the author\'s own messages (DRAFT.cuts)',
+                       add_help=False)
+    a.add_argument('rest', nargs=argparse.REMAINDER)
     a = sub.add_parser('answers-sync')
     a.add_argument('lane')
     a.add_argument('--answers-file', type=Path, default=settings.path('RH_ANSWERS_FILE', Path('.runtime/ANSWERS.md')))
@@ -862,6 +865,9 @@ def main(argv=None):
     if args.command == 'idea':
         args.command = 'ideas'
     try:
+        if args.command == 'voice-cuts':
+            import voice_cuts
+            return voice_cuts.main(args.rest)
         if args.command == 'lessons':
             return lessons.main(args.root, args, sys.modules[__name__])
         if args.command == 'retro':

@@ -111,3 +111,41 @@ def test_missing_xlint_fails_closed(ledger):
     with patch.object(gate, 'VOICE_COMMAND', [str(root / 'missing-checker')]), patch.object(sys, 'stdin', event), contextlib.redirect_stdout(out):
         assert gate.main() == 0
     assert json.loads(out.getvalue())['hookSpecificOutput']['permissionDecision'] == 'deny'
+
+
+def paper_cut_env(tmp_path, root):
+    bank = tmp_path / 'bank.jsonl'
+    bank.write_text(json.dumps({'text': 'thanks, that makes sense'}) + '\n')
+    spec = tmp_path / 'banks.json'
+    spec.write_text(json.dumps({'v2': {'path': str(bank), 'lang': 'en'}}))
+    state = tmp_path / 'cuts-state'
+    return dict(os.environ, RH_OUTREACH_ROOT=str(root), RH_OUTREACH_GATE='warn', RH_VOICE_BANKS=str(spec),
+                RH_VOICE_CUTS_STATE=str(state), RH_ENV_FILE=os.devnull), state
+
+
+def run_gate(env, text):
+    run = subprocess.run([sys.executable, str(GATE)], input=json.dumps({'tool_input': {'body': text}}),
+                         text=True, capture_output=True, env=env, timeout=10)
+    assert run.returncode == 0, run.stderr
+    return json.loads(run.stdout) if run.stdout else None
+
+
+def test_with_banks_a_body_needs_a_paper_cut_pass_or_an_approved_draft(ledger, tmp_path):
+    root, _, draft, _ = ledger
+    env, state = paper_cut_env(tmp_path, root)
+    denied = run_gate(env, 'thanks, that makes sense')
+    assert denied['hookSpecificOutput']['permissionDecision'] == 'deny' and 'paper-cut' in str(denied)
+    assert run_gate(env, draft.read_text()) is None, 'an approved draft already passed lint'
+    sys.path.insert(0, str(GATE.parents[1] / 'harness'))
+    import voice_cuts
+    voice_cuts.record_pass(tmp_path / 'x.txt', 'thanks, that makes sense', {'cuts': 1}, state=state)
+    result = run_gate(env, 'thanks,  that makes sense\n\nOn Mon, someone wrote:\n> old')
+    assert result is None or 'permissionDecision' not in str(result)
+
+
+def test_without_banks_the_paper_cut_rule_is_off(ledger, tmp_path):
+    root, _, _, _ = ledger
+    env, _ = paper_cut_env(tmp_path, root)
+    del env['RH_VOICE_BANKS']
+    result = run_gate(env, 'A different question?')
+    assert result is None or 'paper-cut' not in str(result)

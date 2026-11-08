@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""PreToolUse hook for email tools: configurable voice check and exact-byte outreach approval."""
+"""PreToolUse hook for email tools: configurable voice check, paper-cut check and exact-byte outreach approval.
+
+Paper-cut (voice_cuts.py, 11-08): when voice banks are configured (RH_VOICE_BANKS), a body must either
+match an approved outreach draft, whose lint ran the paper-cut check, or have passed `rh voice-cuts`
+as exactly this text in the last 24 hours. Like the voice check, this denies in both gate modes, and
+it refuses rather than allows when the check cannot run.
+"""
 import html
 import hashlib
 import json
@@ -13,6 +19,27 @@ import sys
 VOICE_COMMAND = shlex.split(os.environ.get('RH_VOICE_COMMAND', 'voice-check'))
 BODY_KEYS = ('body', 'text', 'plainText', 'plain_text', 'message', 'content', 'htmlBody', 'html_body', 'html')
 HARNESS = Path(os.environ.get('RH_OUTREACH_ROOT', str(Path(__file__).resolve().parents[1] / '.runtime')))
+CODE = Path(os.environ.get('RH_HARNESS_CODE', str(Path(__file__).resolve().parents[1] / 'harness')))
+
+
+def cuts_refusal(tool_input, text):
+    """None when the paper-cut rule is met or off; otherwise the reason to deny."""
+    try:
+        sys.path.insert(0, str(CODE))
+        import voice_cuts   # imports settings, which reads the host env file
+    except Exception:
+        return 'voice-cuts unavailable' if os.environ.get('RH_VOICE_BANKS') else None
+    if not os.environ.get('RH_VOICE_BANKS'):
+        return None
+    if approved_body(tool_input):
+        return None
+    try:
+        if voice_cuts.passed(text):
+            return None
+    except Exception:
+        return 'voice-cuts unavailable'
+    return ('no voice-cuts PASS for this text: cut it from the author\'s own messages, list the bank lines '
+            'in DRAFT.cuts, run `rh voice-cuts DRAFT`, then send exactly that text')
 
 
 def approved_body(tool_input, root=None):
@@ -77,6 +104,10 @@ def main():
     if fails:
         decision('Email voice gate (xlint): ' + '; '.join(fails)
                  + '. Rewrite and run the configured voice checker and retry.')
+        return 0
+    refusal = cuts_refusal(tool_input, text)
+    if refusal:
+        decision('Email voice gate (paper-cut): ' + refusal + '.')
         return 0
     if not approved_body(tool_input):
         decision('Outreach body has no current exact-byte approval. Run: '

@@ -6,6 +6,7 @@ import ops_mentions
 import bughunt
 import contacts_ledger
 import reciprocate
+import voice_cuts
 import speedup
 import promise_words
 import datetime as dt
@@ -94,6 +95,12 @@ def settings(lane, rh):
     if cfg['require_claims'] and not cfg['recheck_roots']:
         raise ValueError('OUTREACH require_claims needs recheck_roots to check against')
     bughunt.check_settings(cfg)
+    if cfg.setdefault('voice_cuts', 'auto') not in ('auto', 'on', 'off'):
+        raise ValueError('OUTREACH voice_cuts must be "auto" (on when RH_VOICE_BANKS is set), "on" or "off"')
+    for key, default in voice_cuts.defaults().items():
+        cfg.setdefault(key, default)
+        if type(cfg[key]) not in (int, float) or not 0 <= cfg[key] <= 1:
+            raise ValueError('OUTREACH ' + key + ' must be a fraction between 0 and 1')
     for key, default in x_defaults().items():
         cfg.setdefault(key, default)
         if type(default) is bool and type(cfg[key]) is not bool:
@@ -215,6 +222,35 @@ def recent_sent(row, days, clock):
 def collisions(row, everyone, clock):
     return [other for other in everyone if (other['lane'], other['id']) != (row['lane'], row['id']) and
             other.get('to_key', '').casefold() == row['to_key'].casefold() and recent_sent(other, 7, clock)]
+
+
+def cut_check(row, text, cfg, checks):
+    """Paper-cut (voice_cuts.py): the draft is built from the author's own messages, listed in
+    DRAFT.cuts. On whenever banks are configured, unless the lane says voice_cuts = "off"."""
+    if cfg['voice_cuts'] == 'off':
+        return []
+    try:
+        banks = voice_cuts.load_banks()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        checks['cuts'].append('VOICE_BANKS_MISSING: the banks file is unreadable ({})'.format(type(exc).__name__))
+        return []
+    if not banks:
+        if cfg['voice_cuts'] == 'on':
+            checks['cuts'].append('VOICE_BANKS_MISSING: the lane requires paper-cut drafts and RH_VOICE_BANKS is unset')
+        return []
+    incoming = ''
+    if row.get('incoming'):
+        try:
+            incoming = Path(row['incoming']).read_text()
+        except (OSError, UnicodeError):
+            pass
+    names = [n.strip() for n in os.environ.get('RH_SIGNATURE_NAMES', '').split(',') if n.strip()]
+    found, stats = voice_cuts.check(text, voice_cuts.cuts_for(row['draft_path']) if row.get('draft_path') else None,
+                                    incoming, banks,
+                                    {k: cfg[k] for k in voice_cuts.defaults()}, names)
+    checks['cuts'] += found
+    return ['cuts: {} lines, {:.0%} of words and {:.0%} of pairs from them'.format(
+        stats['cuts'], stats['word_cover'], stats['pair_cover'])] if stats else []
 
 
 def voice(text, channel):
@@ -451,13 +487,14 @@ def lint_rows(lane, selected, rh, allow_collision=None):
     results = {}
     for row in selected:
         checks = dict(voice=[], questions=[], contact=[], collision=[], links=[], science=[],
-                      language=[], evidence=[], ops=[], promise=[], bughunt=[], reciprocate=[])
+                      language=[], evidence=[], ops=[], promise=[], bughunt=[], reciprocate=[], cuts=[])
         try:
             text = body(row)
         except (OSError, UnicodeError):
             results[row['id']] = dict(ok=False, utc=rh.now(), checks={'draft': ['draft unreadable']})
             continue
         checks['voice'] = voice(text, row['channel'])
+        cut_stats = cut_check(row, text, cfg, checks)
         limit = cfg['question_limit'] if row['channel'] in ('email', 'linkedin') else cfg['x_question_limit']
         questions = URL.sub('', text).count('?')
         if questions > limit:
@@ -558,7 +595,7 @@ def lint_rows(lane, selected, rh, allow_collision=None):
             checks['bughunt'] += found
         warnings = (list(language_warnings) + evidence_warnings + ops_warnings
                     + promise_warnings + batch_warnings + bughunt_warnings + science_warnings
-                    + reciprocate_warnings)
+                    + reciprocate_warnings + cut_stats)
         if row['channel'] in X_PUBLIC:
             checks['reach'], reach_warnings = x_checks(row, text, everyone, clock, selected, cfg)
             warnings += reach_warnings
