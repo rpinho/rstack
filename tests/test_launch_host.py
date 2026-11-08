@@ -291,3 +291,43 @@ def test_a_diverged_ledger_is_reported_rather_than_merged(tmp_path):
     # The report goes through the same notifier the hard-rule lint uses, and a missing notifier
     # must not fail a finished job.
     assert 'LAUNCH_NOTIFY_COMMAND' in text.split('LEDGER DIVERGED')[1][:400]
+
+
+def test_the_marker_lands_under_the_remote_home_and_not_in_a_directory_called_HOME(tmp_path):
+    """The bug this file shipped with on 11-07, found by friends within the hour.
+
+    $HOME has to reach the REMOTE shell unquoted so it expands there. The first version quoted the
+    whole path with ${(q)}, which escapes the dollar, so the remote shell created a directory
+    literally named '$HOME' under the work dir and wrote the marker inside it. remote-stop then
+    found no pid file and a job-stop left the executor running on the host.
+
+    The test that let it through only checked that `echo $$` came before `exec`. Ordering was
+    never the risk. This runs the command the launcher actually builds, with a stand-in HOME, and
+    looks at where the file ends up: the one thing the old test did not do.
+    """
+    home = tmp_path / 'remote-home'
+    home.mkdir()
+    work = tmp_path / 'work'
+    work.mkdir()
+    (work / 'jobs').mkdir()
+    (tmp_path / 'jobs').mkdir(exist_ok=True)
+    jobs, env = harness(tmp_path)
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(work)],
+                          env=dict(env, LAUNCH_HOST='m5'), capture_output=True, text=True,
+                          timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    sent = Path(env['SSH_LOG']).read_text()
+    block = sent.split('cmd=', 1)[1].split('\nhost=', 1)[0]
+    # Run it the way the host would, with HOME pointing somewhere this test can inspect.
+    run = subprocess.run(['sh', '-c', block],
+                         env=dict(os.environ, HOME=str(home), EXECUTOR_RAN=str(tmp_path / 'ran')),
+                         capture_output=True, text=True, timeout=60, cwd=str(work))
+    marker = home / '.local/state/research-harness/remote-jobs/fixture-job.pid'
+    assert marker.is_file(), (
+        'the marker did not land under the remote HOME; stray paths: '
+        + repr(sorted(str(p.relative_to(work)) for p in work.rglob('*') if p.is_file()))
+        + ' / ' + run.stderr[-200:])
+    assert marker.read_text().strip().isdigit()
+    # And nothing named like a literal variable was created anywhere.
+    assert not (work / '$HOME').exists()
+    assert not list(work.glob('**/$HOME'))

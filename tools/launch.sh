@@ -190,11 +190,18 @@ for (( i = start; i <= 5; i++ )); do
     # EXECUTOR's pid and not a wrapper's. remote-stop reads it to end a --host job for real.
     # A marks path is taken as absolute when it starts with /, otherwise it is under the remote
     # $HOME, which the remote shell expands: no host path is baked into the repo.
-    marks=$remote_marks; [[ $marks == /* ]] || marks='$HOME/'$remote_marks
+    # $HOME has to reach the REMOTE shell unquoted so it expands THERE. Quoting the whole string,
+    # as this did when it shipped on 11-07, escapes the dollar: the remote shell then creates a
+    # directory literally named '$HOME' under the work dir and writes the marker inside it, so
+    # remote-stop finds no pid file and the executor survives a job-stop. friends found it within
+    # the hour. Only the relative part is quoted; an absolute path is quoted whole.
+    if [[ $remote_marks == /* ]]; then rmarks=${(q)remote_marks}
+    else rmarks='$HOME/'${(q)remote_marks}
+    fi
     remote="cd ${(q)dir} 2>/dev/null || { echo ${(q)missing} >&2; exit 2; }
 mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
-mkdir -p ${(q)marks} 2>/dev/null || true
-echo \$\$ > ${(q)marks}/${(q)${job:t}}.pid 2>/dev/null || true
+mkdir -p $rmarks 2>/dev/null || true
+echo \$\$ > $rmarks/${(q)${job:t}}.pid 2>/dev/null || true
 exec nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)${LAUNCH_CLAUDE_BUDGET:-1.00}}"
     ${=${LAUNCH_SSH:-ssh}} "$LAUNCH_HOST" "$remote" < "$log.prompt" > "$attempt_log" 2>&1
     rc=$?

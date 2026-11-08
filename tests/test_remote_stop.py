@@ -164,7 +164,7 @@ def test_the_remote_shell_records_the_executors_own_pid(tmp_path):
     exec were replaced by a plain call this would record the wrong process and the stop would
     signal a shell that had already gone."""
     text = LAUNCH.read_text()
-    i = text.index('mkdir -p ${(q)marks}')
+    i = text.index('mkdir -p $rmarks')
     block = text[i:i + 300]
     assert 'echo \\$\\$ >' in block
     assert block.index('exec nice') > block.index('echo \\$\\$ >')
