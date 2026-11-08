@@ -6,6 +6,7 @@ import ops_mentions
 import bughunt
 import contacts_ledger
 import reciprocate
+import science_email
 import voice_cuts
 import speedup
 import promise_words
@@ -95,6 +96,7 @@ def settings(lane, rh):
     if cfg['require_claims'] and not cfg['recheck_roots']:
         raise ValueError('OUTREACH require_claims needs recheck_roots to check against')
     bughunt.check_settings(cfg)
+    science_email.check_settings(cfg)
     if cfg.setdefault('voice_cuts', 'auto') not in ('auto', 'on', 'off'):
         raise ValueError('OUTREACH voice_cuts must be "auto" (on when RH_VOICE_BANKS is set), "on" or "off"')
     for key, default in voice_cuts.defaults().items():
@@ -222,6 +224,26 @@ def recent_sent(row, days, clock):
 def collisions(row, everyone, clock):
     return [other for other in everyone if (other['lane'], other['id']) != (row['lane'], row['id']) and
             other.get('to_key', '').casefold() == row['to_key'].casefold() and recent_sent(other, 7, clock)]
+
+
+def postmortem_check(row, text, cfg, lane, rh):
+    """science_email.py: what a science email to a person carries (on with science_email_rules)."""
+    try:
+        person = contacts_ledger.merged(lane.parent.parent, row['to_key'])
+    except (OSError, ValueError, KeyError):
+        person = {'name': row.get('to_name', '')}
+    incoming = ''
+    if row.get('incoming'):
+        try:
+            incoming = Path(row['incoming']).read_text()
+        except (OSError, UnicodeError):
+            pass
+    users_ok = any(((bughunt.latest_verdict(lane, rh, t) or {}).get('usage') or {}).get('verdict') == 'PASS'
+                   for t in row.get('targets', []))
+    overrides = dict(opener=row.get('opener_ok'), life=row.get('life_ok'), meaning=row.get('meaning_ok'),
+                     nocall=row.get('nocall_ok'), users=row.get('users_override'))
+    return science_email.findings(person, incoming, text, row.get('attachments', []), bughunt.kinds_of(row),
+                                  overrides, {k: cfg[k] for k in science_email.defaults()}, users_ok)
 
 
 def cut_check(row, text, cfg, checks):
@@ -487,7 +509,7 @@ def lint_rows(lane, selected, rh, allow_collision=None):
     results = {}
     for row in selected:
         checks = dict(voice=[], questions=[], contact=[], collision=[], links=[], science=[],
-                      language=[], evidence=[], ops=[], promise=[], bughunt=[], reciprocate=[], cuts=[])
+                      language=[], evidence=[], ops=[], promise=[], bughunt=[], reciprocate=[], cuts=[], postmortem=[])
         try:
             text = body(row)
         except (OSError, UnicodeError):
@@ -587,6 +609,8 @@ def lint_rows(lane, selected, rh, allow_collision=None):
                 checks['reciprocate'].append('RECIPROCATE_INCOMING_MISSING: this is a reply (the ball is with us, '
                                              'or they asked for it); draft it with --incoming THEIR_MESSAGE so it '
                                              'can mirror them')
+        if row['channel'] == 'email' and cfg['science_email_rules']:
+            checks['postmortem'] = postmortem_check(row, text, cfg, lane, rh)
         if row['channel'] == 'email':
             if not bughunt.kinds_of(row) or set(bughunt.kinds_of(row)) - set(KINDS):
                 checks['bughunt'].append('KIND_MISSING: every email draft says what it reports '
@@ -798,6 +822,9 @@ def arguments(sub):
             p.add_argument('--overlap-checked', help='how we checked their own work on speed (asked them, read their open PRs)')
             p.add_argument('--incoming', type=Path, help='their latest message, which a reply must mirror (reciprocate)')
             p.add_argument('--users-override', help="the recipient's own words that this code is in their current pipeline")
+            for flag, what in (('opener', 'opening with the result'), ('life', 'no line about your life'),
+                               ('meaning', 'a number without its meaning'), ('nocall', 'no call offer')):
+                p.add_argument('--{}-ok'.format(flag), help="the owner's words allowing {} (science_email.py)".format(what))
             p.add_argument('--requested', help='the recipient asked for this send, in their words; a reply, not outreach, so the daily limit does not hold it')
             p.add_argument('--target', action='append', default=[], help='OWNER/REPO the email is about; gated on rh bughunt target-check')
             p.add_argument('--target-override', help='why an unchecked or failing target is written about anyway (the recipient asked)')
@@ -930,6 +957,9 @@ def main(root, args, rh):
                 row['requested'] = safe(args.requested, 'their request')
             if args.users_override:
                 row['users_override'] = safe(args.users_override, 'users override')
+            for flag in ('opener_ok', 'life_ok', 'meaning_ok', 'nocall_ok'):
+                if getattr(args, flag, None):
+                    row[flag] = safe(getattr(args, flag), flag.replace('_', ' '))
             if args.incoming:
                 row['incoming'] = str(args.incoming.expanduser().resolve())
             if args.asked_about:

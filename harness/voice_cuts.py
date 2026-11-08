@@ -180,7 +180,7 @@ def cuts_for(draft_path):
 
 def record_pass(draft_path, text, stats, state=None):
     state = Path(state) if state else state_dir()
-    state.mkdir(parents=True, exist_ok=True)
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
     row = dict(utc=dt.datetime.now(dt.timezone.utc).isoformat(), draft=str(draft_path),
                draft_sha=hashlib.sha256(text.encode()).hexdigest()[:12], text_sha=text_sha(text), **stats)
     (state / 'pass.json').write_text(json.dumps(row))

@@ -37,6 +37,10 @@ A reply mirrors the message it answers ([reciprocate.py](../harness/reciprocate.
 
 When it is our move (the contact's ball is with us) or the draft has `--requested`, a draft without `--incoming` fails as `RECIPROCATE_INCOMING_MISSING`. The matching is lexical, English and Portuguese, so each finding is easy to check: it quotes their line and ours. It does not judge tone; the person approving still reads both.
 
+## Science emails
+
+From one lane's postmortem of its emails to scientists (11-08): a plain question first got 3 replies of 3, a paper result first 3 of 10, a bug report first 2 of 8, and every "no" was "this code isn't used" or "the number isn't the interesting part". With `science_email_rules = true` in OUTREACH.toml, an email that reports a result, a bound, a bug, a PR or a paper (by its words, its `--kind`, or a non-image attachment) fails as `SCIENCE_OPENER` when its first paragraph asks nothing (unless their message asked us something), `LIFE_LINE_MISSING` with no line about the sender's own life or work (`life_words` adds the lane's own words, such as places, kept in the private lane config), `USERS_MISSING` for a bug with no evidence of use (the contact's `users` field, a `--target` whose users check passed, or `--users-override`), `MEANING_MISSING` for a tighter number without what it means, and `CALL_MISSING` when the contact has replied before and no call is offered (`call_link`). `--opener-ok`, `--life-ok`, `--meaning-ok` and `--nocall-ok` take the owner's words. [science_email.py](../harness/science_email.py).
+
 ## Bug-hunt lane
 
 A lane that finds bugs in other people's research code and writes to them about it. Its rules are checks that refuse, each with a code and a test ([bughunt.py](../harness/bughunt.py), [contacts_ledger.py](../harness/contacts_ledger.py), [test_bughunt.py](../harness/tests/test_bughunt.py)); none is prose an agent may skip. An example lane config is in [examples/friends-lane](../examples/friends-lane/OUTREACH.toml).
