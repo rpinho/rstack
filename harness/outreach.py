@@ -85,7 +85,24 @@ def settings(lane, rh):
             raise ValueError('OUTREACH pod_incident_utc must be an ISO 8601 time')
     if cfg['require_claims'] and not cfg['recheck_roots']:
         raise ValueError('OUTREACH require_claims needs recheck_roots to check against')
+    for key, default in x_defaults().items():
+        cfg.setdefault(key, default)
+        if type(default) is bool and type(cfg[key]) is not bool:
+            raise ValueError('OUTREACH ' + key + ' must be true or false')
+        if type(default) is int and (type(cfg[key]) is not int or cfg[key] < 0):
+            raise ValueError('OUTREACH ' + key + ' must be a whole number of minutes, 0 or more')
     return cfg
+
+
+def x_defaults():
+    """The X pacing and approval settings, for a lane with no OUTREACH.toml or without the keys.
+
+    See docs/outreach.md, "Growing a small account on X". The original gap keeps its older
+    environment override, RH_X_MIN_GAP_MINUTES, so an installation that set it is unchanged.
+    """
+    return dict(x_original_gap_minutes=int(os.environ.get('RH_X_MIN_GAP_MINUTES', '') or 120),
+                x_reply_gap_minutes=3,
+                x_reply_human_approval=True)
 
 
 def contact_key(name):
@@ -284,17 +301,53 @@ def activity_time(row):
     return None
 
 
-def x_checks(row, text, everyone, clock, selected=()):
-    """Cross-lane reach checks; warnings never affect PASS. No network access."""
+# A post that is only a greeting. X's own product lead said posts like "gm" waste reach; a
+# greeting with anything real in it is not matched.
+FILLER = re.compile(r'^\W*(?:gm|gn|good\s+(?:morning|night|evening)|happy\s+(?:monday|tuesday|'
+                    r'wednesday|thursday|friday|saturday|sunday|weekend|new\s+week)|hello\s+'
+                    r'(?:world|everyone|x|twitter))(?:[\s,]+(?:everyone|all|friends|folks|x|twitter|'
+                    r'fam))?\W*$', re.I)
+
+
+def sent_time(row):
+    """When a row actually went out (or a posting attempt was made), never its approval time."""
+    for key in ('sent', 'gate_attempt'):
+        if row.get(key, {}).get('utc'):
+            return time_of(row[key]['utc'])
+    return None
+
+
+def x_checks(row, text, everyone, clock, selected=(), cfg=None, posting=False):
+    """Cross-lane reach checks; warnings never affect PASS. No network access.
+
+    cfg is the row's lane OUTREACH settings (defaults when None). posting=True is the posting
+    gate's call, at the moment a post would go out: only then are replies spaced, because a
+    round's replies are approved together and must not leave together.
+    """
     failures, warnings = [], []
     if row.get('channel') not in X_PUBLIC:
         return failures, warnings
+    cfg = dict(x_defaults(), **(cfg or {}))
     others = [r for r in everyone if not same_row(row, r)]
+    if posting and row['channel'] == 'x_reply' and cfg['x_reply_gap_minutes']:
+        gap = dt.timedelta(minutes=cfg['x_reply_gap_minutes'])
+        for other in others:
+            stamp = sent_time(other) if other.get('channel') == 'x_reply' else None
+            if stamp and abs(clock - stamp) < gap:
+                failures.append('x_reply within {} min of another reply ({}/{} at {}); post a '
+                                'round\'s replies spaced, not as a burst; next one from {}'.format(
+                                    cfg['x_reply_gap_minutes'], other['lane'], other['id'],
+                                    stamp.astimezone(UTC).strftime('%H:%MZ'),
+                                    (stamp + gap).astimezone(UTC).strftime('%H:%MZ')))
+    if original(row) and FILLER.match(X_URL.sub('', text)):
+        failures.append('filler post (a greeting with nothing in it); post when there is something '
+                        'real, or not at all')
     if original(row):
-        # 11-03: the daily limit was 1; now RH_X_ORIGINALS_PER_DAY (default 3) across
-        # all lanes, with RH_X_MIN_GAP_MINUTES (default 120) between originals so they don't land as a burst.
+        # 11-03: the daily limit was 1; now RH_X_ORIGINALS_PER_DAY (default 3) across all lanes,
+        # and x_original_gap_minutes (OUTREACH.toml; default 120, or RH_X_MIN_GAP_MINUTES) between
+        # originals so they don't land as a burst.
         limit = int(os.environ.get('RH_X_ORIGINALS_PER_DAY', '3'))
-        gap = dt.timedelta(minutes=int(os.environ.get('RH_X_MIN_GAP_MINUTES', '120')))
+        gap = dt.timedelta(minutes=cfg['x_original_gap_minutes'])
         today = []
         for other in others:
             if original(other):
@@ -460,7 +513,7 @@ def lint_rows(lane, selected, rh, allow_collision=None):
         warnings = (list(language_warnings) + evidence_warnings + ops_warnings
                     + promise_warnings + batch_warnings)
         if row['channel'] in X_PUBLIC:
-            checks['reach'], reach_warnings = x_checks(row, text, everyone, clock, selected)
+            checks['reach'], reach_warnings = x_checks(row, text, everyone, clock, selected, cfg)
             warnings += reach_warnings
         results[row['id']] = dict(warnings=warnings, ok=not any(checks.values()), utc=rh.now(), sha256=hashlib.sha256(text.encode('utf-8')).hexdigest(), checks=checks)
         if allow_collision:
@@ -658,8 +711,17 @@ def main(root, args, rh):
                 safe(args.quote, 'approval quote')
                 if args.quote == STANDING_APPROVAL and row['channel'] not in X_PUBLIC:
                     raise ValueError('standing approval is for public X posts/replies only; email and DMs need the owner\'s own words')
+                cfg = settings(lane, rh)
+                if (args.quote == STANDING_APPROVAL and row['channel'] == 'x_reply'
+                        and cfg['x_reply_human_approval']):
+                    # X removed 42,000 accounts that replied through chatbots with no human in
+                    # the loop (2026-07-24). A standing approval is exactly that loop with no
+                    # human in it, so replies need a person's approval of this round.
+                    raise ValueError('x_reply needs a person to approve this round '
+                                     '(x_reply_human_approval = true in OUTREACH.toml); a standing '
+                                     'approval is no human in the loop')
                 if row['channel'] in X_PUBLIC:
-                    failures, _ = x_checks(row, body(row), list(all_rows(root, rh)), time_of(rh.now()), selected)
+                    failures, _ = x_checks(row, body(row), list(all_rows(root, rh)), time_of(rh.now()), selected, cfg)
                     if failures:
                         raise ValueError('X reach changed; lint again: ' + '; '.join(failures))
             elif args.action == 'sent':
@@ -670,7 +732,8 @@ def main(root, args, rh):
                 # Once the posting gate recorded an attempt, this is a receipt,
                 # not another authorization. replied.json may already include it.
                 if row['channel'] in X_PUBLIC and not row.get('gate_attempt'):
-                    failures, _ = x_checks(row, body(row), list(all_rows(root, rh)), time_of(rh.now()))
+                    failures, _ = x_checks(row, body(row), list(all_rows(root, rh)), time_of(rh.now()),
+                                           cfg=settings(lane, rh))
                     if failures:
                         raise ValueError('X reach changed before sent: ' + '; '.join(failures))
                 if row['channel'] not in X_PUBLIC and collisions(row, list(all_rows(root, rh)), time_of(rh.now())) and not row.get('lint', {}).get('allow_collision'):

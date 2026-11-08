@@ -26,6 +26,15 @@ def _legacy_one_post_quota(monkeypatch):
     monkeypatch.setenv('RH_X_MIN_GAP_MINUTES', '0')
 
 
+@pytest.fixture(autouse=True)
+def _before_the_reply_rules(monkeypatch):
+    """These tests predate reply spacing and per-round reply approval (11-08) and post replies
+    back to back under the standing approval; test_x_growth.py tests those rules' defaults."""
+    defaults = outreach.x_defaults
+    monkeypatch.setattr(outreach, 'x_defaults', lambda: dict(
+        defaults(), x_reply_gap_minutes=0, x_reply_human_approval=False))
+
+
 HARNESS = Path(rh.__file__).resolve().parent
 # The PreToolUse hook that calls x_gate.hook_decision is installed outside this repository
 # (it brings its own shell tokenizer). Point RH_X_HOOK at it to pipe the hook tests; unset, they skip.

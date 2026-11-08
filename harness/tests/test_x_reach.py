@@ -22,6 +22,15 @@ def _legacy_one_post_quota(monkeypatch):
     monkeypatch.setenv('RH_X_MIN_GAP_MINUTES', '0')
 
 
+@pytest.fixture(autouse=True)
+def _before_the_reply_rules(monkeypatch):
+    """These tests predate reply spacing and per-round reply approval (11-08) and post replies
+    back to back under the standing approval; test_x_growth.py tests those rules' defaults."""
+    defaults = outreach.x_defaults
+    monkeypatch.setattr(outreach, 'x_defaults', lambda: dict(
+        defaults(), x_reply_gap_minutes=0, x_reply_human_approval=False))
+
+
 CLOCK = dt.datetime(2026, 11, 3, 19, 0, tzinfo=outreach.UTC)
 
 

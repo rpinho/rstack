@@ -22,4 +22,32 @@ Lint checks question count, links, recent contact collisions and similarity acro
 
 Approval requires a current passing lint hash and the operator's approval quote. Any byte change invalidates approval. `sent` requires matching approved bytes and records a message identifier; follow-ups become due after the configured interval. The optional email hook checks exact submitted bytes against the latest approved ledger entry. Approval enforcement defaults to warning; set `RH_OUTREACH_GATE=enforce` in the sending environment. Voice failures deny in both modes. The hook cannot authenticate the person behind an approval quote and matches message bodies, not recipient authorization.
 
+## Growing a small account on X
+
+A research account starts with no followers, and its first results reach nobody if it only posts originals. The advice below is Nikita Bier's, from his posts while he ran product at X (July 2025 to October 2026), which is the closest public source to the ranking team's own view. What the ledger can check is enforced; the rest is guidance, and this page says which is which.
+
+1. **Reply first, originals second.** Bier's ladder: 0 to 500 followers, be a reply guy; 501 to 2K, niche bangers [1]. Below about 500 followers, effort goes into replies under larger accounts in the lane's field, where there is a real thought or question. Above it, one strong original per real result, with its figure. A ranking change he announced in July 2026 had replies up 3.15% and small-account reach up 1.19% [2]. *Guidance, not checked: the ledger does not know the follower count.*
+2. **Space posts, never a burst.** The For You feed loads posts in batches and pushes extra posts from one author to later batches, so posts sent together lose reach (reported secondhand [7]). Originals are spaced by `x_original_gap_minutes` (default 120, or the older `RH_X_MIN_GAP_MINUTES`); lint, approve and the posting gate refuse one that falls inside the gap of another original from any lane. A round's replies are approved together but leave one at a time: the posting gate refuses a reply within `x_reply_gap_minutes` (default 3) of another reply's send or posting attempt, and its refusal names the time the next one may go. Approval is not counted for replies, only the moment one goes out.
+3. **One line to a light post.** "Never respond to playful humor with an essay" [3]. A joke or a one-liner. *Guidance, not checked: lint does not see the post being answered.*
+4. **No filler.** A greeting with nothing in it ("gm", "good morning", "happy Friday") fails lint as an original. A greeting with something real after it is not matched.
+5. **Original work, not reposted reach.** Bier said X would penalise big accounts reposting others' videos hours later, and reward original creators [4]. Short talking videos about one result are his top lever for small accounts [5]; they need the person on camera, so they are proposed to them, never generated.
+6. **A person approves replies.** In July 2026 X removed 42,000 accounts that automated replies with chatbots: "using AI to programmatically engage with users without a human in the loop runs counter to our mission" [6]. With `x_reply_human_approval = true` (the default), `approve` refuses an `x_reply` approved with the standing-approval quote, so each round's replies need a person's approval in their own words. A lane whose owner has decided otherwise sets it to `false` in its `OUTREACH.toml`, and that is the owner's decision to record, not the agent's.
+
+```toml
+# OUTREACH.toml (all optional; these are the defaults)
+x_original_gap_minutes = 120
+x_reply_gap_minutes = 3
+x_reply_human_approval = true
+```
+
+References:
+
+1. Nikita Bier, "Twitter Growth Strategy", 2022-03-03 (he reposted it in September 2025 as "Still true today"). https://x.com/nikitabier/status/1499452301185929216
+2. Nikita Bier, ranking change results, 2026-07-14. https://x.com/nikitabier/status/2076917480518558035
+3. Nikita Bier, reply on comms advice, 2026-02-05. https://x.com/nikitabier/status/2019346324173537337
+4. Nikita Bier, on reposted videos and original creators, 2026-05-25. https://x.com/nikitabier/status/2058810803625881883
+5. Nikita Bier, on talking videos, 2026-04-12. https://x.com/nikitabier/status/2043404323485589763
+6. Nikita Bier, 42,000 chatbot-reply accounts removed, 2026-07-24. https://x.com/nikitabier/status/2080747924380856519
+7. X trending summary on burst posting, where he called it "not ideal" (secondhand; the post itself not found). https://x.com/i/trending/2060629176668094923
+
 Code: [outreach.py](../harness/outreach.py), [email-voice-gate.py](../tools/email-voice-gate.py). Tests: [test_outreach.py](../harness/tests/test_outreach.py), [test_outreach_gate.py](../harness/tests/test_outreach_gate.py).

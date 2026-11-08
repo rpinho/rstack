@@ -105,6 +105,11 @@ class Ledger:
         return {r['id']: r for r in rows}
 
     @staticmethod
+    def config(path):
+        import toml_subset
+        return toml_subset.config(path)
+
+    @staticmethod
     def append(path, row):
         with path.open('a') as stream:
             stream.write(json.dumps(row, ensure_ascii=False) + '\n')
@@ -112,7 +117,9 @@ class Ledger:
             os.fsync(stream.fileno())
 
 
-def candidates(root, payload=None, browser=False, clock=None):
+def candidates(root, payload=None, browser=False, clock=None, blocked=None):
+    """Approved rows this post may claim. A row that matches but fails a reach check now (a
+    reply too soon after the last one) goes to `blocked`, so the refusal can say why."""
     clock = clock or dt.datetime.now(outreach.UTC)
     everyone = list(outreach.all_rows(root, Ledger))
     digest = hashlib.sha256(payload['text'].encode('utf-8')).hexdigest() if payload else None
@@ -140,8 +147,11 @@ def candidates(root, payload=None, browser=False, clock=None):
             # two concurrent hook calls from borrowing one approved browser reply.
             if row.get('gate_attempt'):
                 continue
-            failures, _ = outreach.x_checks(row, text, everyone, clock)
+            cfg = outreach.settings(root / 'lanes' / row['lane'], Ledger)
+            failures, _ = outreach.x_checks(row, text, everyone, clock, cfg=cfg, posting=True)
             if failures:
+                if blocked is not None:
+                    blocked.extend(failures)
                 continue
             yield row
         except (OSError, ValueError, KeyError, TypeError):
@@ -167,10 +177,13 @@ def check(root, path_name, payload=None, browser=False, claim=True):
     if not (root / 'lanes').is_dir():
         return None, log_block(path_name, 'outreach ledger root is unavailable', payload)
     with outreach.send_lock(root, 'sent'):
-        matches = list(candidates(root, payload, browser))
+        blocked = []
+        matches = list(candidates(root, payload, browser, blocked=blocked))
         if not matches:
             reason = ('no unused approved x_reply from the last 20 minutes (including current reach checks)'
                       if browser else 'no unused approved x_* row matching exact text, reply target and current reach checks')
+            if blocked:
+                reason += ': ' + blocked[0]
             return None, log_block(path_name, reason, payload)
         row = matches[0]
         if claim:
