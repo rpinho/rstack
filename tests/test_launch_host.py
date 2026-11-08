@@ -36,8 +36,18 @@ def harness(tmp_path, lane='fixture'):
     fake.chmod(0o755)
     # Stands in for ssh: records the host and the command, then runs the command locally.
     ssh = tmp_path / 'fake-ssh'
-    ssh.write_text('#!/bin/sh\nprintf "host=%s\\n" "$1" >> "$SSH_LOG"\n'
-                   'host=$1; shift\nprintf "cmd=%s\\n" "$*" >> "$SSH_LOG"\nexec sh -c "$*"\n')
+    # The launcher passes -o options on some calls and not others, so the stub skips them the way
+    # ssh does. Before 11-08 it took $1 as the host unconditionally, which made a call with options
+    # run "BatchMode=yes -o ... host cmd" through sh and look like a command that simply failed.
+    ssh.write_text('#!/bin/sh\n'
+                   'while [ "$1" = "-o" ]; do shift 2; done\n'
+                   'printf "host=%s\\n" "$1" >> "$SSH_LOG"\n'
+                   'host=$1; shift\nprintf "cmd=%s\\n" "$*" >> "$SSH_LOG"\n'
+                   'if [ -n "$FAKE_SSH_LOAD" ] && [ "${1#*vm.loadavg}" != "$1" ]; then\n'
+                   '  echo "$FAKE_SSH_LOAD"; exit 0\n'
+                   'fi\n'
+                   'if [ "$FAKE_SSH_DOWN" = 1 ]; then exit 255; fi\n'
+                   'exec sh -c "$*"\n')
     ssh.chmod(0o755)
     root = tmp_path / 'runtime'
     (root / 'lanes' / lane).mkdir(parents=True, exist_ok=True)
@@ -59,6 +69,19 @@ def run(tmp_path, *args, lane='fixture', workdir=None, env_extra=None):
                           env=env, capture_output=True, text=True, timeout=120)
     log = jobs / (lane + '-job.log')
     return proc, (log.read_text() if log.exists() else ''), Path(env['SSH_LOG'])
+
+
+def executor_block(sent):
+    """The executor's command block from the ssh log, skipping the host load probe.
+
+    Since 11-08 the first ssh of a --host launch reads the host's load, so "the first command" is
+    no longer the executor. The block can span lines, so it runs to the next host= line.
+    """
+    for chunk in sent.split('cmd=')[1:]:
+        block = chunk.split('\nhost=', 1)[0]
+        if 'vm.loadavg' not in block:
+            return block
+    raise AssertionError('no executor command was sent: ' + sent[-300:])
 
 
 def test_without_a_host_nothing_is_sent_anywhere(tmp_path):
@@ -102,8 +125,7 @@ def test_a_missing_work_dir_on_the_host_refuses_instead_of_running_in_its_home(t
     """
     proc, _, ssh_log = run(tmp_path, '--host', 'm5')
     assert proc.returncode == 0, proc.stderr
-    sent = [line[len('cmd='):] for line in ssh_log.read_text().splitlines()
-            if line.startswith('cmd=')][0]
+    sent = executor_block(ssh_log.read_text()).splitlines()[0]
     absent = str(tmp_path / 'not-there')
     assert str(tmp_path) in sent
     remote = subprocess.run(['sh', '-c', sent.replace(str(tmp_path), absent)],
@@ -235,7 +257,7 @@ def test_the_output_directory_is_created_on_the_host(tmp_path):
     sent = Path(env['SSH_LOG']).read_text()
     assert 'mkdir -p ' + str(nested) in sent
     # Run the command block with the output directory removed: it must recreate it, not refuse.
-    block = sent.split('cmd=', 1)[1].split('\nhost=', 1)[0]
+    block = executor_block(sent)
     import shutil as sh
     sh.rmtree(nested)
     remote = subprocess.run(['sh', '-c', block], capture_output=True, text=True, timeout=60)
@@ -317,7 +339,7 @@ def test_the_marker_lands_under_the_remote_home_and_not_in_a_directory_called_HO
                           timeout=120)
     assert proc.returncode == 0, proc.stderr
     sent = Path(env['SSH_LOG']).read_text()
-    block = sent.split('cmd=', 1)[1].split('\nhost=', 1)[0]
+    block = executor_block(sent)
     # Run it the way the host would, with HOME pointing somewhere this test can inspect.
     run = subprocess.run(['sh', '-c', block],
                          env=dict(os.environ, HOME=str(home), EXECUTOR_RAN=str(tmp_path / 'ran')),
@@ -331,3 +353,58 @@ def test_the_marker_lands_under_the_remote_home_and_not_in_a_directory_called_HO
     # And nothing named like a literal variable was created anywhere.
     assert not (work / '$HOME').exists()
     assert not list(work.glob('**/$HOME'))
+
+
+# The load guard, which until 11-08 measured the wrong machine. math: "c47r5 and c22br4 were
+# refused at load 77 (M4 at 89) while the m5 sat at 1.5. I relaunched with FORCE_LAUNCH=1."
+# planets hit the same thing in the same hour. FORCE_LAUNCH also turns off the disk and memory
+# floors, so a guard that measures the wrong machine does not just annoy: it talks lanes into
+# disabling the guards that were right.
+
+
+def test_a_host_job_is_gated_by_the_hosts_load_not_this_machines(tmp_path):
+    jobs, env = harness(tmp_path)
+    env.pop('FORCE_LAUNCH')
+    # A cap of 0 refuses any machine with load above 0, and this one always has some. The host
+    # reports 0.00, so only a launcher that reads the HOST lets this job through.
+    env['LAUNCH_MAX_LOAD'] = '0'
+    env['FAKE_SSH_LOAD'] = '0.00'
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path), '--host', 'm5'],
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    assert 'refused' not in proc.stderr
+
+
+def test_a_host_job_is_refused_when_the_host_is_the_busy_one(tmp_path):
+    jobs, env = harness(tmp_path)
+    env.pop('FORCE_LAUNCH')
+    env['LAUNCH_MAX_LOAD'] = '30'
+    env['FAKE_SSH_LOAD'] = '94.20'
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path), '--host', 'm5'],
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 75
+    assert 'load 94 on m5' in proc.stderr
+
+
+def test_a_host_whose_load_cannot_be_read_is_refused_not_measured_here(tmp_path):
+    """The whole class of bug: a precondition that cannot be evaluated on the execution host must
+    refuse. Falling back to the controller's number is what sent two lanes to FORCE_LAUNCH."""
+    jobs, env = harness(tmp_path)
+    env.pop('FORCE_LAUNCH')
+    env['FAKE_SSH_DOWN'] = '1'
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path), '--host', 'm5'],
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 75
+    assert 'cannot read the load on m5' in proc.stderr
+
+
+def test_a_local_job_still_reads_this_machine(tmp_path):
+    """No host, no ssh: the 10-30 failure that put the guard there was eight local jobs."""
+    jobs, env = harness(tmp_path)
+    env.pop('FORCE_LAUNCH')
+    env['LAUNCH_MAX_LOAD'] = '0'           # this machine's load is above 0 by definition
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path)],
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 75
+    assert 'on this machine' in proc.stderr
+    assert not Path(env['SSH_LOG']).exists(), 'a local job asked a host about its load'

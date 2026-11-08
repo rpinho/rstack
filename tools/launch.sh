@@ -58,9 +58,28 @@ sys.exit(0 if ok else 1)
 fi
 [[ $dir = /* ]] || dir=${LAUNCH_WORK_ROOT:-$PWD}/$dir
 cd "$dir" || exit 1
-load=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print int($2)}')
+# The load is read on the machine that will do the work. 11-08, math and planets within the hour:
+# this read the CONTROLLER's loadavg even for a --host job, refused two math rounds at "load 77"
+# while the host sat at 1.5, and both lanes got past it with FORCE_LAUNCH=1, which also turns off
+# the disk floor and the memory floor. A --host job's local cost is one ssh. Unreadable is a
+# refusal, like every other host precondition: falling back to this machine's number is the bug.
+# 1-minute load, from sysctl on a Mac and /proc/loadavg elsewhere; the field differs, so it is
+# asked for by name rather than parsed out of one format.
+remote_loadavg='if l=$(sysctl -n vm.loadavg 2>/dev/null); then echo $l | awk "{print \$2}"; else awk "{print \$1}" /proc/loadavg; fi'
+if [[ -n $LAUNCH_HOST ]]; then
+  load=$(${=${LAUNCH_SSH:-ssh}} -o BatchMode=yes -o ConnectTimeout=20 "$LAUNCH_HOST" \
+         "$remote_loadavg" 2>/dev/null | awk 'NF{print int($1); exit}')
+  load_where=$LAUNCH_HOST
+  if [[ $load != <-> ]]; then
+    print -u2 -- "launch.sh refused: cannot read the load on $LAUNCH_HOST. The executor runs there, so that is the load that decides, and a precondition this machine cannot measure is a refusal rather than a fallback to its own number."
+    exit 75
+  fi
+else
+  load=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print int($2)}')
+  load_where='this machine'
+fi
 if [[ $load == <-> ]] && (( load > ${LAUNCH_MAX_LOAD:-30} )) && [[ -z $FORCE_LAUNCH ]]; then
-  print -u2 -- "launch.sh refused: load $load"; exit 75
+  print -u2 -- "launch.sh refused: load $load on $load_where"; exit 75
 fi
 artifacts=${LAUNCH_ARTIFACT_DIR:-$PWD/.runtime/jobs}
 # Sweep passes a relative spec path; standalone jobs use the configured artifacts dir.
