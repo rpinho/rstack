@@ -4,6 +4,11 @@
 
 **The stack I run AI research agents on: the map, the principles, and the machinery, in one place.**
 
+**New to coding agents?** Most of this repo is more than you need. Clone it, run `claude` in it, and
+type `/onboard`. It asks whether you're a beginner, intermediate or advanced, checks that with three
+questions, and walks you through the part that fits: [beginner](docs/onboarding/beginner.md),
+[intermediate](docs/onboarding/intermediate.md), [advanced](docs/onboarding/advanced.md).
+
 Agents that do real work accumulate machinery. Guards, schedulers, linters, memory, publishing
 steps. The failure mode is not ignorance; it is changing the wrong part of the
 system: adding a note when what was needed was an automatic check, editing an installed copy when
