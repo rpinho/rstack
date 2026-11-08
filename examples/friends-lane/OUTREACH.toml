@@ -1,0 +1,24 @@
+# A bug-hunt lane: we find bugs in people's research code and write to them about it.
+# docs/outreach.md, "Bug-hunt lane", says what each setting checks. Contacts live in the private
+# file named by RH_CONTACTS; nothing about a person belongs in this file.
+question_limit = 2
+follow_up_days = 7
+
+# 1. A bug report names its repository, and the repository is recent and active.
+target_required_kinds = ["code"]
+target_max_age_days = 365
+target_check_valid_days = 7
+
+# 2. One email per person per day; merge the rest with `rh outreach batch`.
+emails_per_contact_per_day = 1
+
+# 4. Contacts marked `scrutiny: extra` need two independent re-checks and a review of the text.
+extra_rechecks = 2
+
+# 5. The question every bug report asks. Keyword sets, one per question; any language.
+required_questions_kinds = ["code"]
+required_question_names = ["uses AI", "useful or not"]
+required_questions = [["ai", "agents", "llm"], ["useful", "helpful"]]
+
+# Independent re-check ledgers (RECHECK.csv), read for every --claim.
+recheck_roots = []

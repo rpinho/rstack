@@ -3,6 +3,8 @@ import settings
 import claim_evidence
 import mixed_language
 import ops_mentions
+import bughunt
+import contacts_ledger
 import promise_words
 import datetime as dt
 import contextlib
@@ -24,6 +26,7 @@ CONTACTS = settings.path('RH_CONTACTS', Path('.runtime/contacts.json'))
 VOICE_COMMAND = settings.command('RH_VOICE_COMMAND', 'voice-check')
 SCIENCE_COMMAND = settings.command('RH_SCIENCE_CHECK_COMMAND', 'science-check')
 CHANNELS = ('email', 'x_reply', 'x_post', 'x_dm', 'linkedin')
+KINDS = ('paper', 'code', 'other')
 EMAIL = re.compile(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}')
 URL = re.compile(r'\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>]+|\bwww\.[^\s<>]+')
 UTC = dt.timezone.utc
@@ -85,6 +88,7 @@ def settings(lane, rh):
             raise ValueError('OUTREACH pod_incident_utc must be an ISO 8601 time')
     if cfg['require_claims'] and not cfg['recheck_roots']:
         raise ValueError('OUTREACH require_claims needs recheck_roots to check against')
+    bughunt.check_settings(cfg)
     for key, default in x_defaults().items():
         cfg.setdefault(key, default)
         if type(default) is bool and type(cfg[key]) is not bool:
@@ -441,7 +445,7 @@ def lint_rows(lane, selected, rh, allow_collision=None):
     results = {}
     for row in selected:
         checks = dict(voice=[], questions=[], contact=[], collision=[], links=[], science=[],
-                      language=[], evidence=[], ops=[], promise=[])
+                      language=[], evidence=[], ops=[], promise=[], bughunt=[])
         try:
             text = body(row)
         except (OSError, UnicodeError):
@@ -510,8 +514,18 @@ def lint_rows(lane, selected, rh, allow_collision=None):
                                           'as a template'.format(row['id'], other['id'], label, score))
             except (OSError, UnicodeError):
                 batch_warnings.append('comparison draft unreadable: ' + other['id'])
+        # The bug-hunt lane rules (docs/outreach.md, "Bug-hunt lane"). Those driven by the draft or
+        # the contact always apply (a kind, a named target, a dead address, an extra-scrutiny
+        # contact); the daily limit and the required questions are on when OUTREACH.toml says so.
+        bughunt_warnings = []
+        if row['channel'] == 'email':
+            if row.get('kind') not in KINDS:
+                checks['bughunt'].append('KIND_MISSING: every email draft says what it reports '
+                                         '(--kind paper|code|other)')
+            found, bughunt_warnings = bughunt.findings(row, text, cfg, lane, rh, everyone, clock)
+            checks['bughunt'] += found
         warnings = (list(language_warnings) + evidence_warnings + ops_warnings
-                    + promise_warnings + batch_warnings)
+                    + promise_warnings + batch_warnings + bughunt_warnings)
         if row['channel'] in X_PUBLIC:
             checks['reach'], reach_warnings = x_checks(row, text, everyone, clock, selected, cfg)
             warnings += reach_warnings
@@ -543,6 +557,73 @@ def health(lane, rh):
     return errors
 
 
+def note_contact(root, row, action):
+    """Keep the contact current from the ledger: a send moves the ball to them, a reply to us.
+    Written to the private update ledger, never to the contacts file (contacts_ledger)."""
+    try:
+        if action == 'reply':
+            contacts_ledger.record_reply(root, row['to_key'], row['reply']['utc'], row['reply']['summary'])
+        else:
+            contacts_ledger.record_sent(root, row['to_key'], row['sent']['utc'], row['purpose'], row['channel'])
+    except (OSError, ValueError, KeyError) as error:
+        print('  WARN: contact not updated: {}'.format(error))
+
+
+def stats(rows, contact=None):
+    """Emails sent, replies, reply rate, by kind, last in and out, per contact and in total."""
+    emails = [r for r in rows if r.get('channel') == 'email' and r.get('sent')]
+    if contact:
+        emails = [r for r in emails if r.get('to_key', '').casefold() == contact.casefold()]
+
+    def tally(group):
+        out = dict(sent=len(group), replies=sum(bool(r.get('reply')) for r in group),
+                   bounced=sum(r.get('status') == 'bounced' for r in group))
+        out['reply_rate'] = round(out['replies'] / out['sent'], 3) if out['sent'] else None
+        return out
+
+    def by_kind(group):
+        return {k: tally([r for r in group if (r.get('kind') or 'unknown') == k])
+                for k in sorted({r.get('kind') or 'unknown' for r in group})}
+
+    people = {}
+    for key in sorted({r['to_key'] for r in emails}):
+        mine = [r for r in emails if r['to_key'] == key]
+        last_out = max(r['sent']['utc'] for r in mine)
+        last_in = max([r['reply']['utc'] for r in mine if r.get('reply')] or [None], key=lambda v: v or '')
+        people[key] = dict(tally(mine), by_kind=by_kind(mine), last_out=last_out, last_in=last_in,
+                           ball='us' if last_in and last_in > last_out else 'them')
+    return dict(total=dict(tally(emails), by_kind=by_kind(emails), contacts=len(people)), contacts=people)
+
+
+def batch_draft(lane, rh, contact, out):
+    """Merge a contact's unsent email drafts into one new draft; the originals are dropped."""
+    rows = [r for r in current(lane, rh).values() if r.get('channel') == 'email'
+            and r.get('to_key') == contact and r['status'] in ('drafted', 'linted', 'approved')]
+    if len(rows) < 2:
+        raise ValueError('batch needs two or more unsent emails to {}; found {}'.format(contact, len(rows)))
+    rows.sort(key=lambda r: r['created'])
+    parts = [body(r).strip() for r in rows]
+    out = Path(out).expanduser().resolve()
+    out.write_text(bughunt.MERGE_MARK + '\n\n' + '\n\n'.join(parts) + '\n')
+    kinds = {r.get('kind') for r in rows}
+    merged = dict(id=uuid.uuid4().hex[:16], lane=lane.name, channel='email', to_name=rows[0]['to_name'],
+                  to_key=contact, purpose=safe('batched: ' + '; '.join(r['purpose'] for r in rows), 'purpose')[:300],
+                  draft_path=str(out), draft_sha256=sha(out), status='drafted', created=rh.now(),
+                  batched_from=[r['id'] for r in rows])
+    if len(kinds) == 1 and None not in kinds:
+        merged['kind'] = kinds.pop()
+    elif kinds - {None}:
+        merged['kind'] = 'other'
+    for key in ('targets', 'claims', 'rechecks', 'attachments'):
+        values = sorted({v for r in rows for v in r.get(key, [])})
+        if values:
+            merged[key] = values
+    overrides = [r['target_override'] for r in rows if r.get('target_override')]
+    if overrides:
+        merged['target_override'] = '; '.join(overrides)
+    return merged, rows
+
+
 @contextlib.contextmanager
 def send_lock(root, action):
     # Serialize cross-lane check + receipt, while preserving the usual per-lane append lock.
@@ -557,6 +638,40 @@ def send_lock(root, action):
 def arguments(sub):
     parser = sub.add_parser('outreach', help='draft, lint, approve and track outreach; never sends')
     actions = parser.add_subparsers(dest='action', required=True)
+    p = actions.add_parser('stats', help='emails sent, replies and reply rate, per contact and in total')
+    p.add_argument('lane', nargs='?')
+    p.add_argument('--contact')
+    p.add_argument('--json', action='store_true')
+    p.add_argument('--aggregate', action='store_true', help='totals and kinds only, no names (for publishing)')
+    p = actions.add_parser('batch', help="merge a contact's unsent emails into one draft")
+    p.add_argument('lane')
+    p.add_argument('contact')
+    p.add_argument('--file', required=True, type=Path, help='where to write the merged draft')
+    p = actions.add_parser('bounce', help='an email bounced: mark the address dead and queue a find')
+    p.add_argument('lane')
+    p.add_argument('id')
+    p.add_argument('--address', help='the address that bounced (default: every live one on record)')
+    p = actions.add_parser('review', help='record a review of the exact text of a draft')
+    p.add_argument('lane')
+    p.add_argument('id')
+    p.add_argument('--by', required=True, help='who or what reviewed it, not the drafter')
+    p.add_argument('--verdict', required=True, choices=('pass', 'fail'))
+    p.add_argument('--notes', default='')
+    contact = actions.add_parser('contact', help='contacts kept current').add_subparsers(dest='contact_action', required=True)
+    p = contact.add_parser('show')
+    p.add_argument('name')
+    p = contact.add_parser('find', help='look for current addresses in public sources')
+    p.add_argument('name')
+    p.add_argument('--url', action='append', default=[], help='a lab page or university profile to read')
+    p.add_argument('--record', action='append', default=[], metavar='ADDRESS', help='record this found address')
+    p = contact.add_parser('answered', help='record that the contact already answered a required question')
+    p.add_argument('name')
+    p.add_argument('question')
+    p.add_argument('--source', required=True)
+    p = contact.add_parser('scrutiny')
+    p.add_argument('name')
+    p.add_argument('level', choices=('normal', 'extra'))
+    contact.add_parser('pending', help='updates the contacts file does not have yet, for its owner to land')
     for action in ('draft', 'lint', 'approve', 'sent', 'record-sent', 'reply', 'close', 'drop', 'status', 'due'):
         p = actions.add_parser(action)
         if action == 'due':
@@ -579,6 +694,10 @@ def arguments(sub):
             p.add_argument('--project', action='append', default=[], help='stable project tag for the 48 h series check')
             p.add_argument('--attach', action='append', default=[], help='attached results, checked with the configured science command')
             p.add_argument('--claim', action='append', default=[], help='claim directory this reports; gated on its independent re-check')
+            p.add_argument('--kind', choices=KINDS, help='what the email reports: a paper, code, or other (required for email)')
+            p.add_argument('--target', action='append', default=[], help='OWNER/REPO the email is about; gated on rh bughunt target-check')
+            p.add_argument('--target-override', help='why an unchecked or failing target is written about anyway (the recipient asked)')
+            p.add_argument('--recheck', action='append', default=[], metavar='DIR', help='a re-check directory with a verdict file; extra-scrutiny contacts need two')
             p.add_argument('--asked-about', action='append', default=[], metavar='TERM',
                            help='an ops term the recipient raised themselves ({}); it drops to '
                                 'a warning so a reply can answer them. A term from this list, '
@@ -617,6 +736,24 @@ def main(root, args, rh):
     lane = root / 'lanes' / lane_name if lane_name else None
     if lane and not lane.is_dir():
         raise ValueError('lane directory missing')
+    if args.action == 'contact':
+        return contact_main(root, args)
+    if args.action == 'stats':
+        rows = list(current(lane, rh).values()) if lane else list(all_rows(root, rh))
+        result = stats(rows, args.contact)
+        if args.aggregate:
+            result = result['total']
+        if args.json or args.aggregate:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            total = result['total']
+            print('total: {sent} sent, {replies} replies, rate {reply_rate}, {contacts} contacts'.format(**total))
+            for kind, t in total['by_kind'].items():
+                print('  {}: {} sent, {} replies'.format(kind, t['sent'], t['replies']))
+            for name, t in result['contacts'].items():
+                print('{}: {} sent, {} replies, last out {}, last in {}, ball {}'.format(
+                    name, t['sent'], t['replies'], t['last_out'][:16], (t['last_in'] or '-')[:16], t['ball']))
+        return 0
     if args.action in ('status', 'due'):
         selected = list(current(lane, rh).values()) if lane else list(all_rows(root, rh))
         if args.action == 'due':
@@ -663,6 +800,14 @@ def main(root, args, rh):
                 row['attachments'] = [str(Path(p).expanduser().resolve()) for p in args.attach]
             if args.claim:
                 row['claims'] = [str(Path(c).expanduser().resolve()) for c in args.claim]
+            if args.kind:
+                row['kind'] = args.kind
+            if args.target:
+                row['targets'] = sorted({bughunt.normalise(t) for t in args.target})
+            if args.target_override:
+                row['target_override'] = safe(args.target_override, 'target override')
+            if args.recheck:
+                row['rechecks'] = [str(Path(d).expanduser().resolve()) for d in args.recheck]
             if args.asked_about:
                 # Only this module's own terms, so a typo cannot quietly turn the check off and
                 # the ledger records our word for the subject, never the recipient's wording.
@@ -675,6 +820,29 @@ def main(root, args, rh):
             print(row['id'])
             return 0
         have = current(lane, rh)
+        if args.action == 'batch':
+            key = contact_key(args.contact)
+            row, originals = batch_draft(lane, rh, key, args.file)
+            for old in originals:
+                record(lane, dict(old, status='dropped', updated=rh.now(), reason='batched into ' + row['id']), rh)
+            record(lane, row, rh)
+            print(row['id'])
+            print('  merged {} drafts into {}; edit it into one email, then lint'.format(len(originals), row['draft_path']))
+            return 0
+        if args.action in ('bounce', 'review'):
+            row = dict(have[args.id], updated=rh.now())
+            if args.action == 'bounce':
+                if row['channel'] != 'email' or not row.get('sent'):
+                    raise ValueError('bounce is for an email that was sent')
+                contacts_ledger.record_bounce(root, row['to_key'], rh.now(), args.address)
+                row.update(status='bounced', bounce=dict(utc=rh.now()))
+            else:
+                row['text_review'] = dict(utc=rh.now(), by=safe(args.by, 'reviewer'), verdict=args.verdict,
+                                          sha256=sha(row['draft_path']),
+                                          notes=args.notes.strip()[:500])
+            record(lane, row, rh)
+            print('{} {}'.format(row['id'], row['status'] if args.action == 'bounce' else 'reviewed ' + args.verdict))
+            return 0
         if args.action in ('lint', 'approve'):
             if bool(args.id) == bool(args.batch):
                 raise ValueError('select exactly one ID or --batch')
@@ -736,6 +904,15 @@ def main(root, args, rh):
                                            cfg=settings(lane, rh))
                     if failures:
                         raise ValueError('X reach changed before sent: ' + '; '.join(failures))
+                if row['channel'] == 'email':
+                    limit = settings(lane, rh)['emails_per_contact_per_day']
+                    clock = time_of(args.utc) if args.utc else time_of(rh.now())
+                    recent = [o for o in all_rows(root, rh) if o.get('channel') == 'email'
+                              and o.get('to_key') == row.get('to_key') and o['id'] != row['id']
+                              and bughunt.sent_at(o) and abs(clock - bughunt.sent_at(o)) < dt.timedelta(hours=24)]
+                    if limit and len(recent) >= limit:
+                        raise ValueError('DAILY_LIMIT: already {} email(s) to this contact within 24 h ({}); '
+                                         'batch them'.format(len(recent), ', '.join(o['id'] for o in recent)))
                 if row['channel'] not in X_PUBLIC and collisions(row, list(all_rows(root, rh)), time_of(rh.now())) and not row.get('lint', {}).get('allow_collision'):
                     raise ValueError('recent contact collision; lint with --allow-collision and obtain approval again')
             elif args.action == 'record-sent':
@@ -792,7 +969,43 @@ def main(root, args, rh):
                 row.update(status='closed' if args.action == 'close' else 'dropped', reason=safe(args.reason, 'reason'))
             record(lane, row, rh)
             print('{} {}'.format(row['id'], row['status']))
+            if row['channel'] == 'email' and args.action in ('sent', 'record-sent', 'reply'):
+                note_contact(root, row, args.action)
             if args.action == 'record-sent':
                 for finding in row['recorded_after_the_fact']['findings']:
                     print('  WARN: went out before it was recorded: ' + finding)
+    return 0
+
+
+def contact_main(root, args):
+    if args.contact_action == 'pending':
+        print(json.dumps(contacts_ledger.pending(root), indent=1, ensure_ascii=False))
+        return 0
+    name = contacts_ledger.resolve(args.name)['name']
+    now = dt.datetime.now(UTC).isoformat()
+    if args.contact_action == 'show':
+        print(json.dumps(contacts_ledger.merged(root, name), indent=1, ensure_ascii=False))
+    elif args.contact_action == 'answered':
+        contacts_ledger.append_event(root, dict(event='answered', name=name, utc=now,
+                                                question=safe(args.question, 'question'),
+                                                source=safe(args.source, 'source')))
+        print('{}: {!r} answered'.format(name, args.question))
+    elif args.contact_action == 'scrutiny':
+        contacts_ledger.append_event(root, dict(event='scrutiny', name=name, utc=now, level=args.level))
+        print('{}: scrutiny {}'.format(name, args.level))
+    elif args.contact_action == 'find':
+        if args.record:
+            found = contacts_ledger.find(name, args.url)
+            sources = {c['address']: c['source'] for c in found['candidates']}
+            for address in args.record:
+                address = address.strip().casefold()
+                if not contacts_ledger.EMAIL.fullmatch(address):
+                    raise ValueError('not an address: ' + address)
+                if address not in sources:
+                    raise ValueError('{} was not found in the sources read; give the page it is on with --url'.format(address))
+                contacts_ledger.append_event(root, dict(event='address', name=name, utc=now,
+                                                        address=address, source=sources[address]))
+                print('recorded {} ({})'.format(address, sources[address]))
+            return 0
+        print(json.dumps(contacts_ledger.find(name, args.url), indent=1, ensure_ascii=False))
     return 0

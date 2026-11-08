@@ -28,6 +28,7 @@ def env(tmp_path, monkeypatch):
     contacts = tmp_path / 'contacts.json'
     contacts.write_text(json.dumps([{'name': n} for n in ('Contact Alpha', 'Contact Beta')]))
     monkeypatch.setattr(outreach, 'CONTACTS', contacts)
+    monkeypatch.setattr(outreach.contacts_ledger, 'CONTACTS', contacts)
     monkeypatch.setattr(rh, 'get_url', lambda *a: pytest.fail('network forbidden'))
     return root, lane
 
@@ -44,6 +45,8 @@ def draft(env, text=None, to='Contact Alpha', channel='email', batch=None, lane_
     path = root / ('body-' + str(len(list(root.glob('body-*')))) + '.txt')
     path.write_text(text or VARIED[0])
     args = ['draft', lane_name, '--to', to, '--channel', channel, '--purpose', 'Learn a biological constraint', '--file', path]
+    if channel == 'email':
+        args += ['--kind', 'other']
     if batch:
         args += ['--batch', batch]
     if attach:

@@ -333,7 +333,8 @@ def test_public_x_standing_approval_and_email_dm_exclusion(state, monkeypatch):
     assert row['approval']['quote'] == 'standing-approval-10-30'
     monkeypatch.setattr(outreach, 'contact_key', lambda name: name)
     for channel in ('email', 'x_dm'):
-        ident, _ = draft(state, text='A separate thought about the graph.', channel=channel)
+        ident, _ = draft(state, text='A separate thought about the graph.', channel=channel,
+                         **({'kind': 'other'} if channel == 'email' else {}))
         assert lint(state, ident)[0] == 0
         assert cli(state[0], 'approve', 'a', ident, '--quote', outreach.STANDING_APPROVAL)[0] == 2
         assert cli(state[0], 'approve', 'a', ident, '--quote', 'Send this text')[0] == 0

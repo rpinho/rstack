@@ -29,6 +29,7 @@ import lessons
 import retro
 import x_searches
 import outreach
+import bughunt
 import cadence
 import lane_alerts
 import idea_policy
@@ -740,6 +741,7 @@ def parser():
     pods.arguments(sub)
     cadence.arguments(sub)
     outreach.arguments(sub)
+    bughunt.arguments(sub)
     publish_lint.arguments(sub)
     receipt = sub.add_parser('prior-art', help='shared prior-art searches and receipt').add_subparsers(dest='action', required=True)
     a = receipt.add_parser('receipt')
@@ -879,6 +881,8 @@ def main(argv=None):
             return lane_setup.main(args.root, args, sys.modules[__name__])
         if args.command == 'outreach':
             return outreach.main(args.root, args, sys.modules[__name__])
+        if args.command == 'bughunt':
+            return bughunt.main(args.root, args, sys.modules[__name__])
         if args.command == 'prior-art':
             command = [sys.executable, str(ROOT / 'tools' / 'prior_art_receipt.py'),
                        args.key, args.md, '--baseline', args.baseline, '--query', args.query]
