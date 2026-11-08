@@ -29,6 +29,7 @@ import urllib.error
 import urllib.request
 
 import contacts_ledger
+import speedup
 
 UTC = dt.timezone.utc
 API = 'https://api.github.com/'
@@ -43,6 +44,15 @@ UNMAINTAINED = re.compile(
 MERGE_MARK = '<<<MERGED DRAFT: edit these into one email, then delete this line>>>'
 PASSING = re.compile(r'(?<!NOT )\b(?:CONFIRMED(?:-MINOR)?|PASS(?:ED)?|REPRODUCED)\b')
 VERDICT_FILES = ('VERDICT.md', 'VERDICTS.md', 'RECHECK.csv', 'verdict.json')
+# Open work on speed in their repository: Ricardo 11-08, a lab already optimizing its own code is
+# asked first, so we do not duplicate their person's work.
+PERF = re.compile(r'\b(?:speed|fast(?:er)?|perf(?:ormance)?|optimi[sz]\w*|profil\w*|accelerat\w*|'
+                  r'vectori[sz]\w*|parallel\w*|numba|cython|gpu|benchmark\w*)\b', re.I)
+
+
+def kind_in(kind, kinds):
+    """KIND is listed, or KINDS says 'code' (both code kinds; the name before 11-08)."""
+    return bool(kind) and (kind in kinds or (kind.startswith('code') and 'code' in kinds))
 
 
 def defaults():
@@ -52,11 +62,13 @@ def defaults():
 
 
 def check_settings(cfg):
-    for key, default in defaults().items():
+    for key, default in dict(defaults(), **speedup.defaults()).items():
         cfg.setdefault(key, default)
         value = cfg[key]
         if type(default) is int and (type(value) is not int or value < 0):
             raise ValueError('OUTREACH ' + key + ' must be a whole number, 0 or more')
+        if type(default) is float and (type(value) not in (int, float) or value < 0):
+            raise ValueError('OUTREACH ' + key + ' must be a number, 0 or more')
         if type(default) is list and (type(value) is not list):
             raise ValueError('OUTREACH ' + key + ' must be a list')
     sets = cfg['required_questions']
@@ -135,6 +147,7 @@ def target_check(target, max_age_days=365, get=None, clock=None):
     branch = repo.get('default_branch') or 'main'
     commits = get('repos/{}/commits?sha={}&per_page=1'.format(target, branch)) or []
     last_commit = stamp(commits[0]['commit']['committer']['date']) if commits else None
+    head = commits[0].get('sha') if commits else None
     releases = get('repos/{}/releases?per_page=1'.format(target)) or []
     last_release = stamp(releases[0].get('published_at')) if releases else None
     if not last_release:
@@ -152,6 +165,11 @@ def target_check(target, max_age_days=365, get=None, clock=None):
     except (ValueError, TypeError):
         text = ''
     notice = UNMAINTAINED.search(text)
+    pulls = get('repos/{}/pulls?state=open&per_page=100'.format(target)) or []
+    branches = get('repos/{}/branches?per_page=100'.format(target)) or []
+    optimizing = (['PR #{}: {}'.format(p.get('number'), p.get('title', '')) for p in pulls
+                   if PERF.search(p.get('title') or '')] +
+                  ['branch ' + b['name'] for b in branches if PERF.search(b.get('name', '').replace('-', ' ').replace('_', ' '))])
     dated = [t for t in (last_commit, last_release) if t]
     newest = max(dated) if dated else None
     age = (clock - newest).days if newest else None
@@ -166,6 +184,7 @@ def target_check(target, max_age_days=365, get=None, clock=None):
         reasons.append('last commit or release {} days ago (limit {})'.format(age, max_age_days))
     numbers = dict(archived=bool(repo.get('archived')),
                    last_commit=last_commit.date().isoformat() if last_commit else None,
+                   last_commit_sha=head, optimizing=optimizing,
                    last_release=last_release.date().isoformat() if last_release else None,
                    commits_last_365_days=len(year) if len(year) < 100 else '100+',
                    last_issue_or_pr=last_issue.date().isoformat() if last_issue else None,
@@ -222,7 +241,7 @@ def findings(row, text, cfg, lane, rh, everyone, clock):
                         'email and delete the marker line')
     # 1. Target recency and activity.
     targets = row.get('targets', [])
-    if kind in cfg['target_required_kinds'] and not targets:
+    if kind_in(kind, cfg['target_required_kinds']) and not targets:
         failures.append('TARGET_MISSING: a {} email names the code it is about with --target '
                         'OWNER/REPO'.format(kind))
     for target in targets:
@@ -256,6 +275,12 @@ def findings(row, text, cfg, lane, rh, everyone, clock):
         warnings.append('{} other unsent email(s) to this contact ({}); merge them with rh outreach '
                         'batch {} {!r}'.format(len(waiting), ', '.join(o['id'] for o in waiting),
                                                lane.name, row.get('to_key')))
+    # Speedups: verified, current, on their latest commit, not duplicating their own work.
+    speed_count = 0
+    if kind == 'code-speedup':
+        found, notes, speed_count = speedup.findings(row, None, lane, rh, latest_verdict, cfg['extra_rechecks'])
+        failures += found
+        warnings += notes
     # 3. The address. 4. Scrutiny. 5. Required questions: these read the contact.
     try:
         contact = contacts_ledger.merged(root, row['to_key'])
@@ -270,17 +295,22 @@ def findings(row, text, cfg, lane, rh, everyone, clock):
         elif contact.get('needs_find'):
             warnings.append('an address bounced; a find is queued for this contact')
         if contact.get('scrutiny') == 'extra':
-            good = {str(Path(d).resolve()) for d in row.get('rechecks', []) if passing_verdict(d)}
-            if len(good) < cfg['extra_rechecks']:
+            if kind == 'code-speedup':
+                # The re-check of a speedup is a second, separate run of the benchmark and the
+                # equality check on the same patch: another --speedup directory that passed.
+                count, what = speed_count, 'verified runs of the same patch (--speedup DIR)'
+            else:
+                count = len({str(Path(d).resolve()) for d in row.get('rechecks', []) if passing_verdict(d)})
+                what = 're-checks with a confirmed verdict (--recheck DIR)'
+            if count < cfg['extra_rechecks']:
                 failures.append('SECOND_RECHECK_MISSING: an extra-scrutiny contact needs {} '
-                                'independent re-checks with a confirmed verdict (--recheck DIR); '
-                                'found {}'.format(cfg['extra_rechecks'], len(good)))
+                                'independent {}; found {}'.format(cfg['extra_rechecks'], what, count))
             review = row.get('text_review') or {}
             digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
             if review.get('verdict') != 'pass' or review.get('sha256') != digest:
                 failures.append('TEXT_REVIEW_MISSING: an extra-scrutiny contact needs a passing '
                                 'review of this exact text (rh outreach review)')
-    if kind in cfg['required_questions_kinds']:
+    if kind_in(kind, cfg['required_questions_kinds']):
         answered = (contact or {}).get('answered', {})
         for name, keywords in zip(cfg['required_question_names'], cfg['required_questions']):
             if asks(text, keywords):
@@ -301,6 +331,9 @@ def arguments(sub):
     p.add_argument('lane')
     p.add_argument('target', help='OWNER/REPO or its GitHub URL')
     p.add_argument('--json', action='store_true')
+    p = actions.add_parser('speedup-verify', help='apply a speedup patch to their commit, check equal outputs, benchmark')
+    p.add_argument('lane')
+    p.add_argument('dir', help='directory holding SPEEDUP.json')
     p = actions.add_parser('targets', help='stored verdicts, newest first')
     p.add_argument('lane')
     p.add_argument('--json', action='store_true')
@@ -315,6 +348,14 @@ def main(root, args, rh, get=None):
     if not lane.is_dir():
         raise ValueError('lane directory missing')
     cfg = outreach.settings(lane, rh)
+    if args.action == 'speedup-verify':
+        row = speedup.verify(args.dir, cfg)
+        print('{} {} {}x ({} s -> {} s)'.format(row['verdict'], row['target'], row.get('speedup'),
+                                             (row.get('median_seconds') or {}).get('before'),
+                                             (row.get('median_seconds') or {}).get('after')))
+        for code in row['codes']:
+            print('  ' + code)
+        return 0 if row['verdict'] == 'PASS' else 1
     if args.action == 'target-check':
         row = target_check(args.target, cfg['target_max_age_days'], get)
         with rh.locked(lane):

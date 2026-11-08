@@ -5,9 +5,13 @@ question_limit = 2
 follow_up_days = 7
 
 # 1. A bug report names its repository, and the repository is recent and active.
-target_required_kinds = ["code"]
+target_required_kinds = ["code-bug", "code-speedup"]
 target_max_age_days = 365
 target_check_valid_days = 7
+
+# Speedups: the faster version must be this much faster, by ratio and by seconds saved.
+speedup_min_ratio = 1.5
+speedup_min_seconds = 1.0
 
 # 2. One email per person per day; merge the rest with `rh outreach batch`.
 emails_per_contact_per_day = 1
@@ -16,7 +20,7 @@ emails_per_contact_per_day = 1
 extra_rechecks = 2
 
 # 5. The question every bug report asks. Keyword sets, one per question; any language.
-required_questions_kinds = ["code"]
+required_questions_kinds = ["code-bug", "code-speedup"]
 required_question_names = ["uses AI", "useful or not"]
 required_questions = [["ai", "agents", "llm"], ["useful", "helpful"]]
 

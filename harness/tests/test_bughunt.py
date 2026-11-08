@@ -45,7 +45,7 @@ def config(lane, text):
     (lane[1] / 'OUTREACH.toml').write_text('question_limit = 3\n' + text)
 
 
-def draft(lane, text=VARIED[0], to='Contact Alpha', kind='code', **options):
+def draft(lane, text=VARIED[0], to='Contact Alpha', kind='code-bug', **options):
     root = lane[0]
     path = root / ('body-{}.txt'.format(len(list(root.glob('body-*')))))
     path.write_text(text)
@@ -95,6 +95,8 @@ def fake_github(created='2019-01-01', commit='2026-10-01', release=None, tag=Non
             return dict(commit=dict(committer=dict(date=tag + 'T00:00:00Z')))
         if '/issues?' in path:
             return [dict(updated_at='2026-09-01T00:00:00Z')]
+        if '/pulls?' in path or '/branches?' in path:
+            return []
         if path.endswith('/readme'):
             return dict(content=base64.b64encode(readme.encode()).decode())
         raise AssertionError('unexpected GitHub path ' + path)
@@ -332,7 +334,7 @@ def test_a_bug_email_asks_the_required_questions(lane):
     config(lane, QUESTIONS)
     bare, _ = draft(lane)
     out = lint(lane, bare)[1]
-    assert "QUESTION_MISSING: a code email asks 'uses AI'" in out and "'useful or slop'" in out
+    assert "QUESTION_MISSING: a code-bug email asks 'uses AI'" in out and "'useful or slop'" in out
     asked, _ = draft(lane, text=VARIED[1] + '\n\nDo you use AI in your research, and is this useful or slop?')
     assert lint(lane, asked)[0] == 0
     pt, _ = draft(lane, text=VARIED[2] + '\n\nÉ útil ou é slop? Usas agentes de IA na tua investigação?')
@@ -360,7 +362,7 @@ def test_a_bad_setting_refuses(lane, line):
 # ---- 6. counts -------------------------------------------------------------------------------
 
 def test_stats_count_sends_replies_and_kinds(lane):
-    a, _ = draft(lane, kind='code')
+    a, _ = draft(lane, kind='code-bug')
     send(lane, a)
     assert cli(lane[0], 'reply', 'test', a, '--summary', 'Thanks, fixed')[0] == 0
     b, _ = draft(lane, to='Contact Gamma', kind='paper', recheck=[])
@@ -368,7 +370,7 @@ def test_stats_count_sends_replies_and_kinds(lane):
     rh.append(lane[1] / 'OUTREACH.jsonl', dict(rows[b], status='sent', sent=dict(utc=NOW.isoformat(), message_id='x', via='api')))
     result = json.loads(cli(lane[0], 'stats', 'test', '--json')[1])
     assert result['total']['sent'] == 2 and result['total']['replies'] == 1 and result['total']['reply_rate'] == 0.5
-    assert result['total']['by_kind']['code'] == dict(sent=1, replies=1, bounced=0, reply_rate=1.0)
+    assert result['total']['by_kind']['code-bug'] == dict(sent=1, replies=1, bounced=0, reply_rate=1.0)
     assert result['contacts']['Contact Alpha']['ball'] == 'us'
     aggregate = cli(lane[0], 'stats', '--aggregate')[1]
     assert 'Contact' not in aggregate and json.loads(aggregate)['contacts'] == 2
@@ -381,7 +383,7 @@ def test_the_example_lane_config_loads(tmp_path):
     example = Path(__file__).resolve().parents[2] / 'examples/friends-lane/OUTREACH.toml'
     (lane / 'OUTREACH.toml').write_text(example.read_text())
     cfg = outreach.settings(lane, rh)
-    assert cfg['emails_per_contact_per_day'] == 1 and cfg['target_required_kinds'] == ['code']
+    assert cfg['emails_per_contact_per_day'] == 1 and cfg['target_required_kinds'] == ['code-bug', 'code-speedup']
     assert len(cfg['required_questions']) == len(cfg['required_question_names']) == 2
 
 
@@ -392,12 +394,12 @@ def test_a_past_send_can_be_given_its_kind_for_the_counts_but_a_draft_cannot(lan
                                               sent=dict(utc=NOW.isoformat(), message_id='x', via='api')))
     assert json.loads(cli(lane[0], 'stats', '--aggregate')[1])['by_kind'] == {
         'unknown': dict(sent=1, replies=0, bounced=0, reply_rate=0.0)}
-    assert cli(lane[0], 'set-kind', 'test', sent, 'code', '--reason', 'a bug report')[0] == 0
+    assert cli(lane[0], 'set-kind', 'test', sent, 'code-bug', '--reason', 'a bug report')[0] == 0
     row = outreach.current(lane[1], rh)[sent]
-    assert row['kind'] == 'code' and row['kind_set']['was'] is None
-    assert list(json.loads(cli(lane[0], 'stats', '--aggregate')[1])['by_kind']) == ['code']
+    assert row['kind'] == 'code-bug' and row['kind_set']['was'] is None
+    assert list(json.loads(cli(lane[0], 'stats', '--aggregate')[1])['by_kind']) == ['code-bug']
     unsent, _ = draft(lane, kind=None)
-    rc, _, err = cli(lane[0], 'set-kind', 'test', unsent, 'code', '--reason', 'r')
+    rc, _, err = cli(lane[0], 'set-kind', 'test', unsent, 'code-bug', '--reason', 'r')
     assert rc != 0 and 'draft an unsent one again' in err
 
 
@@ -411,13 +413,13 @@ def test_a_hand_logged_send_is_adopted_into_the_counts_and_the_daily_limit(lane)
                                               to_key='Contact Alpha', purpose='bug report', draft_path=str(path),
                                               sent_at=when, sent_by='a session, browser', approved_by='the owner'))
     assert json.loads(cli(lane[0], 'stats', '--aggregate')[1])['sent'] == 0
-    rc, out, err = cli(lane[0], 'adopt', 'test', 'hand1', '--kind', 'code', '--reason', 'logged by hand on 11-08')
+    rc, out, err = cli(lane[0], 'adopt', 'test', 'hand1', '--kind', 'code-bug', '--reason', 'logged by hand on 11-08')
     assert rc == 0, err
     row = outreach.current(lane[1], rh)['hand1']
     assert row['status'] == 'sent' and 'approval' not in row and row['approved_by'] == 'the owner'
-    assert json.loads(cli(lane[0], 'stats', '--aggregate')[1])['by_kind']['code']['sent'] == 1
+    assert json.loads(cli(lane[0], 'stats', '--aggregate')[1])['by_kind']['code-bug']['sent'] == 1
     assert 'DAILY_LIMIT' in lint(lane, draft(lane, text=VARIED[6])[0])[1]
-    assert cli(lane[0], 'adopt', 'test', 'hand1', '--kind', 'code', '--reason', 'again')[0] != 0
+    assert cli(lane[0], 'adopt', 'test', 'hand1', '--kind', 'code-bug', '--reason', 'again')[0] != 0
 
 
 def test_a_draft_in_a_temporary_directory_is_refused(lane, monkeypatch):
@@ -427,7 +429,7 @@ def test_a_draft_in_a_temporary_directory_is_refused(lane, monkeypatch):
     path.write_text(VARIED[0])
     try:
         rc, _, err = cli(lane[0], 'draft', 'test', '--to', 'Contact Alpha', '--channel', 'email',
-                         '--purpose', 'p', '--file', path, '--kind', 'code')
+                         '--purpose', 'p', '--file', path, '--kind', 'code-bug')
     finally:
         path.unlink()
     assert rc != 0 and 'temporary directory' in err
@@ -438,9 +440,9 @@ def test_a_hand_logged_row_with_an_address_in_its_purpose_is_adopted_or_dropped_
                 sent_at=(NOW - dt.timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ'), sent_by='a session')
     rh.append(lane[1] / 'OUTREACH.jsonl', dict(base, id='resend', purpose='Resend to a@x.example.org'))
     rh.append(lane[1] / 'OUTREACH.jsonl', dict(base, id='bounce', purpose='BOUNCE from a@x.example.org'))
-    rc, _, err = cli(lane[0], 'adopt', 'test', 'resend', '--kind', 'code', '--reason', 'hand-logged')
+    rc, _, err = cli(lane[0], 'adopt', 'test', 'resend', '--kind', 'code-bug', '--reason', 'hand-logged')
     assert rc != 0 and 'email address' in err
-    assert cli(lane[0], 'adopt', 'test', 'resend', '--kind', 'code', '--reason', 'hand-logged',
+    assert cli(lane[0], 'adopt', 'test', 'resend', '--kind', 'code-bug', '--reason', 'hand-logged',
                '--purpose', 'Resend of the bug report')[0] == 0
     assert cli(lane[0], 'drop', 'test', 'bounce', '--reason', 'recorded with bounce instead',
                '--purpose', 'BOUNCE notice')[0] == 0

@@ -27,7 +27,9 @@ CONTACTS = settings.path('RH_CONTACTS', Path('.runtime/contacts.json'))
 VOICE_COMMAND = settings.command('RH_VOICE_COMMAND', 'voice-check')
 SCIENCE_COMMAND = settings.command('RH_SCIENCE_CHECK_COMMAND', 'science-check')
 CHANNELS = ('email', 'x_reply', 'x_post', 'x_dm', 'linkedin')
-KINDS = ('paper', 'code', 'other')
+# 11-08 addendum: code splits into the two things the bug-hunt skill delivers. Rows stored
+# before then as 'code' were all bug reports, and count as code-bug.
+KINDS = ('paper', 'code-bug', 'code-speedup', 'other')
 EMAIL = re.compile(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}')
 URL = re.compile(r'\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>]+|\bwww\.[^\s<>]+')
 UTC = dt.timezone.utc
@@ -590,9 +592,12 @@ def stats(rows, contact=None):
         out['reply_rate'] = round(out['replies'] / out['sent'], 3) if out['sent'] else None
         return out
 
+    def kind(r):
+        k = r.get('kind') or 'unknown'
+        return 'code-bug' if k == 'code' else k
+
     def by_kind(group):
-        return {k: tally([r for r in group if (r.get('kind') or 'unknown') == k])
-                for k in sorted({r.get('kind') or 'unknown' for r in group})}
+        return {k: tally([r for r in group if kind(r) == k]) for k in sorted({kind(r) for r in group})}
 
     people = {}
     for key in sorted({r['to_key'] for r in emails}):
@@ -716,7 +721,9 @@ def arguments(sub):
             p.add_argument('--project', action='append', default=[], help='stable project tag for the 48 h series check')
             p.add_argument('--attach', action='append', default=[], help='attached results, checked with the configured science command')
             p.add_argument('--claim', action='append', default=[], help='claim directory this reports; gated on its independent re-check')
-            p.add_argument('--kind', choices=KINDS, help='what the email reports: a paper, code, or other (required for email)')
+            p.add_argument('--kind', choices=KINDS, help='what the email reports (required for email)')
+            p.add_argument('--speedup', action='append', default=[], metavar='DIR', help='a verified speedup (SPEEDUP.json + VERIFY.json); code-speedup emails need one')
+            p.add_argument('--overlap-checked', help='how we checked their own work on speed (asked them, read their open PRs)')
             p.add_argument('--target', action='append', default=[], help='OWNER/REPO the email is about; gated on rh bughunt target-check')
             p.add_argument('--target-override', help='why an unchecked or failing target is written about anyway (the recipient asked)')
             p.add_argument('--recheck', action='append', default=[], metavar='DIR', help='a re-check directory with a verdict file; extra-scrutiny contacts need two')
@@ -837,6 +844,10 @@ def main(root, args, rh):
                 row['target_override'] = safe(args.target_override, 'target override')
             if args.recheck:
                 row['rechecks'] = [str(Path(d).expanduser().resolve()) for d in args.recheck]
+            if args.speedup:
+                row['speedups'] = [str(Path(d).expanduser().resolve()) for d in args.speedup]
+            if args.overlap_checked:
+                row['overlap_checked'] = safe(args.overlap_checked, 'overlap check')
             if args.asked_about:
                 # Only this module's own terms, so a typo cannot quietly turn the check off and
                 # the ledger records our word for the subject, never the recipient's wording.
