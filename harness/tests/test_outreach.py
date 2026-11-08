@@ -658,3 +658,47 @@ def test_record_sent_refuses_a_future_time_and_an_approved_draft(env):
     rc, _, err = cli(root, 'record-sent', 'test', approved, '--message-id', 'm', '--via', 'api',
                      '--utc', '2026-11-05T22:44:00+00:00', '--reason', 'r')
     assert rc != 0 and 'record it with `sent`' in err
+
+
+def test_the_standing_approval_token_cannot_approve_an_email(env):
+    """11-07/08: Ricardo gave the lane sessions a standing authorization for repo text, PRs, repo
+    settings and routine lane choices, and general asked for confirmation that this boundary had
+    not moved with it. It had not, and it had no test, which is how a rule quietly stops being one
+    at exactly the moment it starts carrying weight.
+
+    The token approves public X posts and replies only. An email or a DM needs his own words, and
+    "first emails to someone new under his name" is on the list the authorization explicitly keeps
+    for him.
+    """
+    ident, _ = draft(env, channel='email')
+    assert cli(env[0], 'lint', 'test', ident)[0] == 0
+    rc, _, err = cli(env[0], 'approve', 'test', ident, '--quote', outreach.STANDING_APPROVAL)
+    assert rc == 2, 'the standing token must not approve an email'
+    assert "owner's own words" in err
+    assert outreach.current(env[1], rh)[ident]['status'] == 'linted'
+    # His actual words do approve it, so the refusal is about the token and not about emails.
+    assert cli(env[0], 'approve', 'test', ident, '--quote', 'Yes, send that one')[0] == 0
+
+
+def test_the_standing_approval_token_cannot_approve_a_dm_either(env):
+    ident, _ = draft(env, to='@someone', channel='x_dm')
+    assert cli(env[0], 'lint', 'test', ident)[0] == 0
+    rc, _, err = cli(env[0], 'approve', 'test', ident, '--quote', outreach.STANDING_APPROVAL)
+    assert rc == 2 and "owner's own words" in err
+
+
+def test_the_standing_approval_token_does_approve_a_public_x_post(env):
+    """The token exists for a reason; this pins which side of the line it is on, so a later change
+    that narrowed or widened it would fail here rather than pass quietly."""
+    ident, _ = draft(env, to='@someone', channel='x_post')
+    assert cli(env[0], 'lint', 'test', ident)[0] == 0
+    assert cli(env[0], 'approve', 'test', ident, '--quote', outreach.STANDING_APPROVAL)[0] == 0
+    assert outreach.current(env[1], rh)[ident]['approval']['quote'] == outreach.STANDING_APPROVAL
+
+
+def test_an_approval_with_no_quote_is_not_a_command_at_all(env):
+    """--quote is required, so there is no path that records an approval without words in it."""
+    ident, _ = draft(env)
+    assert cli(env[0], 'lint', 'test', ident)[0] == 0
+    with pytest.raises(SystemExit):
+        cli(env[0], 'approve', 'test', ident)
