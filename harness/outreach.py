@@ -667,6 +667,7 @@ def arguments(sub):
     p.add_argument('--via', default='browser', choices=('api', 'browser'))
     p.add_argument('--message-id', default='not recorded')
     p.add_argument('--reason', required=True)
+    p.add_argument('--purpose', help='replace the purpose: a hand-logged purpose may hold an address, which no ledger row may')
     p = actions.add_parser('set-kind', help='bookkeeping: say what an email that already went out reported')
     p.add_argument('lane')
     p.add_argument('id')
@@ -747,6 +748,8 @@ def arguments(sub):
                 p.add_argument('--summary', required=True)
             else:
                 p.add_argument('--reason', required=True)
+                if action == 'drop':
+                    p.add_argument('--purpose', help='replace the purpose (a hand-logged row whose purpose holds an address)')
 
 
 def main(root, args, rh):
@@ -872,6 +875,8 @@ def main(root, args, rh):
                                                     adopted_from_hand_log=True),
                        follow_up_due=(sent_at + dt.timedelta(days=settings(lane, rh)['follow_up_days'])).isoformat())
             row.setdefault('to_name', row.get('to_key', ''))
+            if args.purpose:
+                row.update(purpose=safe(args.purpose, 'purpose'), purpose_replaced=rh.now())
             if row.get('draft_path') and Path(row['draft_path']).is_file():
                 row['draft_sha256'] = sha(row['draft_path'])
             record(lane, row, rh)
@@ -987,7 +992,7 @@ def main(root, args, rh):
                     raise ValueError('this draft is approved; record it with `sent`')
             elif args.action == 'reply' and row['status'] != 'sent':
                 raise ValueError('reply requires a sent message')
-            elif args.action in ('close', 'drop') and row['status'] in ('closed', 'dropped'):
+            elif args.action in ('close', 'drop') and row.get('status') in ('closed', 'dropped'):
                 raise ValueError('message already closed or dropped')
         for old in selected:
             row = dict(old, updated=rh.now())
@@ -1026,6 +1031,8 @@ def main(root, args, rh):
                 row.update(status='replied', reply=dict(utc=rh.now(), summary=summary))
             else:
                 row.update(status='closed' if args.action == 'close' else 'dropped', reason=safe(args.reason, 'reason'))
+                if getattr(args, 'purpose', None):
+                    row.update(purpose=safe(args.purpose, 'purpose'), purpose_replaced=rh.now())
             record(lane, row, rh)
             print('{} {}'.format(row['id'], row['status']))
             if row['channel'] == 'email' and args.action in ('sent', 'record-sent', 'reply'):

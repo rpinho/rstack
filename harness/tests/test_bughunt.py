@@ -431,3 +431,34 @@ def test_a_draft_in_a_temporary_directory_is_refused(lane, monkeypatch):
     finally:
         path.unlink()
     assert rc != 0 and 'temporary directory' in err
+
+
+def test_a_hand_logged_row_with_an_address_in_its_purpose_is_adopted_or_dropped_without_it(lane):
+    base = dict(lane='test', channel='email', to_name='Contact Alpha', to_key='Contact Alpha',
+                sent_at=(NOW - dt.timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ'), sent_by='a session')
+    rh.append(lane[1] / 'OUTREACH.jsonl', dict(base, id='resend', purpose='Resend to a@x.example.org'))
+    rh.append(lane[1] / 'OUTREACH.jsonl', dict(base, id='bounce', purpose='BOUNCE from a@x.example.org'))
+    rc, _, err = cli(lane[0], 'adopt', 'test', 'resend', '--kind', 'code', '--reason', 'hand-logged')
+    assert rc != 0 and 'email address' in err
+    assert cli(lane[0], 'adopt', 'test', 'resend', '--kind', 'code', '--reason', 'hand-logged',
+               '--purpose', 'Resend of the bug report')[0] == 0
+    assert cli(lane[0], 'drop', 'test', 'bounce', '--reason', 'recorded with bounce instead',
+               '--purpose', 'BOUNCE notice')[0] == 0
+    rows = outreach.current(lane[1], rh)
+    assert rows['resend']['status'] == 'sent' and rows['bounce']['status'] == 'dropped'
+    assert '@x.example.org' not in rows['resend']['purpose'] + rows['bounce']['purpose']
+
+
+def test_a_send_that_skipped_the_ledger_is_recorded_with_its_findings_kept(lane):
+    """A code email that went out before the rules existed, on a target that fails today."""
+    target_verdict(lane, 'org/old', 'FAIL')
+    ident, _ = draft(lane, target='org/old')
+    when = (NOW - dt.timedelta(hours=5)).isoformat()
+    rc, out, err = cli(lane[0], 'record-sent', 'test', ident, '--message-id', 'not recorded', '--via', 'browser',
+                       '--utc', when, '--reason', 'sent on 11-08 before it was logged')
+    assert rc == 0, err
+    row = outreach.current(lane[1], rh)[ident]
+    assert row['status'] == 'sent' and 'approval' not in row
+    assert any('TARGET_FAILED' in f for f in row['recorded_after_the_fact']['findings'])
+    assert cli(lane[0], 'bounce', 'test', ident, '--address', 'alpha@lab.example.org')[0] == 0
+    assert json.loads(cli(lane[0], 'stats', '--aggregate')[1])['bounced'] == 1
