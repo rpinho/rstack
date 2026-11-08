@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Measure your own voice, then gate outbound text against it.
+
+Agents write in a recognisable register: openers like "I hope this finds you well", em dashes,
+three hedged bullet points where one sentence would do. A style guide in prose does not stop it;
+a lint that refuses does. This is the generic half. The other half is yours and stays private:
+your own writing to measure, and your own slop list.
+
+    voice-lint --measure FILE...            profile your writing: sentence length, contractions,
+                                            lowercase starts, hedges, exclamations, em dashes
+    voice-lint --slop LIST [--allow-em-dash] [--max-exclamations N] < DRAFT
+                                            FAIL: lines and exit 1 on a slop phrase, an em dash,
+                                            or too many exclamation marks; exit 0 and PASS otherwise
+
+LIST is a text file, one phrase per line (case-insensitive), or `re: <regex>`; `#` starts a
+comment. slop.example.txt has generic entries to start from. In check mode an unknown flag such
+as `--reply` is ignored, so it works as the outreach voice command (RH_VOICE_COMMAND).
+"""
+import json
+import re
+import statistics
+import sys
+
+HEDGES = ('i think', 'probably', 'maybe', 'i guess', "i don't know", "i'm not sure", 'perhaps')
+CONTRACTION = re.compile(r"\b\w+'(?:s|t|re|ve|ll|d|m)\b", re.I)
+SENTENCE = re.compile(r'[^.!?\n]+[.!?]?')
+
+
+def measure(texts):
+    """A profile of one person's writing: the numbers a voice guide is written from."""
+    messages = [t.strip() for t in texts if t.strip()]
+    sentences = [s.strip() for t in messages for s in SENTENCE.findall(t) if s.strip()]
+    words = [len(s.split()) for s in sentences]
+    low = [t.lower() for t in messages]
+    rate = lambda n: round(n / len(messages), 3) if messages else 0.0
+    return dict(
+        messages=len(messages), sentences=len(sentences),
+        words_per_sentence=dict(median=statistics.median(words) if words else 0,
+                                p90=sorted(words)[int(0.9 * (len(words) - 1))] if words else 0),
+        contractions=rate(sum(bool(CONTRACTION.search(t)) for t in messages)),
+        lowercase_start=rate(sum(t[:1].islower() for t in messages)),
+        exclamation=rate(sum('!' in t for t in messages)),
+        em_dash=rate(sum('—' in t for t in messages)),
+        hedges={h: sum(t.count(h) for t in low) for h in HEDGES if any(h in t for t in low)})
+
+
+def load_slop(path):
+    rules = []
+    for line in open(path, encoding='utf-8'):
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if line.startswith('re:'):
+            rules.append((line, re.compile(line[3:].strip(), re.I)))
+        else:
+            rules.append((line, re.compile(r'(?<!\w)' + re.escape(line) + r'(?!\w)', re.I)))
+    return rules
+
+
+def check(text, slop, allow_em_dash=False, max_exclamations=1):
+    failures = []
+    for label, pattern in slop:
+        if pattern.search(text):
+            failures.append('slop: ' + label)
+    if not allow_em_dash and '—' in text:
+        failures.append('em dash ({}); use a comma, a colon or two sentences'.format(text.count('—')))
+    if text.count('!') > max_exclamations:
+        failures.append('{} exclamation marks (at most {})'.format(text.count('!'), max_exclamations))
+    return failures
+
+
+def main(argv):
+    if '--measure' in argv:
+        files = [a for a in argv if a != '--measure']
+        texts = []
+        for f in files:
+            texts += re.split(r'\n\s*\n', open(f, encoding='utf-8').read())
+        print(json.dumps(measure(texts), indent=2))
+        return 0
+    slop, allow, maxx = [], False, 1
+    i = 0
+    while i < len(argv):
+        if argv[i] == '--slop':
+            slop = load_slop(argv[i + 1]); i += 2; continue
+        if argv[i] == '--allow-em-dash':
+            allow = True
+        elif argv[i] == '--max-exclamations':
+            maxx = int(argv[i + 1]); i += 1
+        i += 1
+    failures = check(sys.stdin.read(), slop, allow, maxx)
+    for f in failures:
+        print('FAIL: ' + f)
+    if not failures:
+        print('PASS')
+    return 1 if failures else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

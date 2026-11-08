@@ -1,0 +1,13 @@
+# Generic agent register, as a starting point. Your real list comes from your own drafts that read
+# wrong to you, and stays private. One phrase per line, or "re: <regex>".
+I hope this finds you well
+I hope this email finds you well
+I would greatly appreciate
+exactly what I need
+Great question
+Nice work
+delve
+it's worth noting
+in today's fast-paced
+re: ^\s*(great|awesome|amazing)[,!]
+re: \b(game[- ]changer|cutting[- ]edge|revolutionary)\b

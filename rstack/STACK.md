@@ -37,6 +37,12 @@ is the queue for turning prose into checks. A selection from the top of it:
 The ranking is a heuristic over free text, and it prints the matched corrections so every entry
 can be checked by hand. It is a queue, not a measurement.
 
+Two rules keep this count honest. An enforcement column is allowed to say **nothing yet**: that is
+a tracked gap, written down as one, not a rule that happens to be unenforced. And anything new
+that nothing maps (a hook, a scheduled job, a skill, a memory) makes `coverage.py` fail, so the
+map can't quietly fall behind what's on disk. It was at 0 unmapped when these numbers were taken,
+and a new item breaks that the day it's added.
+
 ## Layers
 
 There are fourteen. Ten are about the machinery and are listed here. The other four cover my own
