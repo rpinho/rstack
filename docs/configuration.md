@@ -34,7 +34,8 @@ Use an isolated writable root with `python3 harness/rh.py --root PATH ...`. It c
 | `LAUNCH_SSH`, `LAUNCH_REMOTE_EXECUTOR`, `LAUNCH_PULL_MAX_SIZE` | With `--host`: the ssh command (default `ssh`), the remote `agent_executor.py` (default `$HOME/.local/share/research-harness/agent_executor.py`, expanded on the host) and the cap on each pulled-back file (default `4m`). After every attempt the heavy outputs stay on the host and only `STATUS.md`, `REPORT.md`, `PLAN.md`, `RESULTS.jsonl`, `*.selection.json` and the job's `.last.md` come back, so status reads here as it did before. A failed pull is logged and does not fail the run. |
 | `EVENT_WATCH_CONF`, `EVENT_WATCH_STATE`, `EVENT_WATCH_NOTIFY` | Watch rules (default `.runtime/event-watch/config`), cursor/event state (default `.runtime/event-watch/state`) and optional notification executable. |
 | `POLL_GUARD_STATE` | Private hook fingerprint directory; default `.runtime/poll-guard`. |
-| `CS_BASE`, `CS_BIN`, `CS_STATE`, `CS_AUTO_READ` | Optional local daemon URL, CLI, cookie directory (default `.runtime/cs`) and path-separated auto-readable roots. Auto-read roots default to empty. |
+| `CS_BASE`, `CS_BIN`, `CS_STATE`, `CS_AUTO_READ` | Optional daemon URL, CLI, cookie directory (default `.runtime/cs`) and path-separated auto-readable roots. Auto-read roots default to empty. No port is assumed when the URL is unset: the CLI is asked. |
+| `CS_HOST`, `CS_REMOTE_BIN`, `CS_TUNNEL_PORT` | Drive the daemon on another machine (an ssh alias) over a tunnel, for science whose data lives there. The auto-readable roots are then checked on that machine, and a prompt for a path missing there is held. |
 
 All data paths default to the current workspace/runtime, not a personal HOME.
 Absolute data paths are accepted when a caller supplies a documented setting,
