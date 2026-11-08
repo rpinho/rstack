@@ -82,7 +82,7 @@ def fake_github(created='2019-01-01', commit='2026-10-01', release=None, tag=Non
         if not exists:
             return None
         if path.startswith('repos/') and path.count('/') == 2:
-            return dict(archived=archived, default_branch='main', created_at=created)
+            return dict(archived=archived, default_branch='main', created_at=created, stargazers_count=50)
         if '/commits?' in path and 'since=' in path:
             return [{}] * (3 if (commit or '') >= '2025' else 0)
         if '/commits?' in path:
@@ -95,7 +95,7 @@ def fake_github(created='2019-01-01', commit='2026-10-01', release=None, tag=Non
             return dict(commit=dict(committer=dict(date=tag + 'T00:00:00Z')))
         if '/issues?' in path:
             return [dict(updated_at='2026-09-01T00:00:00Z')]
-        if '/pulls?' in path or '/branches?' in path:
+        if any(k in path for k in ('/pulls?', '/branches?', '/contributors?', '/forks?')):
             return []
         if path.endswith('/readme'):
             return dict(content=base64.b64encode(readme.encode()).decode())
@@ -134,10 +134,12 @@ def test_a_data_deposit_or_an_uncheckable_host_fails(target):
     assert row['verdict'] == 'FAIL'
 
 
-def target_verdict(lane, target, verdict='PASS', days_ago=0):
+def target_verdict(lane, target, verdict='PASS', days_ago=0, users='PASS'):
     rh.append(lane[1] / 'TARGETS.jsonl', dict(target=target, verdict=verdict, reasons=[] if verdict == 'PASS'
                                               else ['last commit or release 1569 days ago (limit 365)'],
-                                              utc=(NOW - dt.timedelta(days=days_ago)).isoformat()))
+                                              utc=(NOW - dt.timedelta(days=days_ago)).isoformat(),
+                                              usage=dict(verdict=users, signals=['40 outside accounts'] if users == 'PASS' else [],
+                                                         outside_accounts=40 if users == 'PASS' else 0, stars=0)))
 
 
 def test_the_cli_stores_the_verdict_and_lint_reads_it(lane, monkeypatch):
@@ -499,8 +501,54 @@ def test_a_send_they_asked_for_is_a_reply_not_outreach_so_the_daily_limit_does_n
     send(lane, first)
     unrequested, _ = draft(lane, text=VARIED[2])
     assert 'DAILY_LIMIT:' in lint(lane, unrequested)[1]
-    asked, _ = draft(lane, text=VARIED[3], requested='"just send it" (his reply today)')
+    theirs = lane[0] / 'their-reply.txt'
+    theirs.write_text(VARIED[3])
+    asked, _ = draft(lane, text=VARIED[3], requested='"just send it" (his reply today)', incoming=theirs)
     rc, out = lint(lane, asked)
     assert rc == 0 and 'DAILY_LIMIT not applied: they asked for this' in out
     send(lane, asked)
     assert outreach.current(lane[1], rh)[asked]['status'] == 'sent'
+
+
+
+# ---- users (11-08: "nobody cares about bugs in software that's really old and nobody uses") ----
+
+def github_with(issues=(), forks=(), contributors=('owner',), stars=0):
+    def get(path):
+        if path.endswith('/contributors?per_page=100'):
+            return [dict(login=c) for c in contributors]
+        if '/issues?state=all&per_page=100' in path:
+            return [dict(user=dict(login=u)) for u in issues]
+        if path.endswith('/forks?per_page=100'):
+            return [dict(owner=dict(login=u)) for u in forks]
+        return []
+    return get, dict(stargazers_count=stars, forks_count=len(forks))
+
+
+def test_only_the_maintainers_using_it_is_no_users():
+    get, repo = github_with(issues=['maintainer', 'owner'], forks=['maintainer', 'one-person'],
+                            contributors=['owner', 'maintainer'], stars=1)
+    assert bughunt.usage('owner/tool', repo, get)['verdict'] == 'FAIL'
+
+
+def test_outside_accounts_stars_or_downloads_are_users():
+    get, repo = github_with(issues=['a', 'b', 'dependabot[bot]'], forks=['c'])
+    assert bughunt.usage('owner/tool', repo, get)['outside_accounts'] == 3
+    assert bughunt.usage('owner/tool', repo, get)['verdict'] == 'PASS'
+    get, repo = github_with(stars=97)
+    assert bughunt.usage('owner/tool', repo, get)['verdict'] == 'PASS'
+    get, repo = github_with()
+    fetch = lambda url: {'data': {'last_month': 2400}} if 'pypistats' in url else None
+    used = bughunt.usage('owner/tool', repo, get, packages=['pypi:tool'], fetch_json=fetch)
+    assert used['verdict'] == 'PASS' and used['downloads'] == {'pypi:tool': 2400}
+
+
+def test_a_code_email_about_code_nobody_uses_is_refused_unless_they_said_they_use_it(lane):
+    target_verdict(lane, 'org/tool', users='FAIL')
+    ident, _ = draft(lane, target='org/tool')
+    assert 'TARGET_UNUSED' in lint(lane, ident)[1]
+    ident, _ = draft(lane, target='org/tool', users_override='"it runs in our current pipeline" (their email, 11-08)')
+    rc, out = lint(lane, ident)
+    assert rc == 0 and 'overridden' in out
+    ident, _ = draft(lane, kind='paper', target='org/tool')
+    assert 'TARGET_UNUSED' not in lint(lane, ident)[1], 'a paper email is not about their code'

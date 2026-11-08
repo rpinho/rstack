@@ -118,6 +118,8 @@ mechanism that enforces it, or an admission that there isn't one.
 - [**A session's context is a resource**](rstack/principles/context-is-a-resource.md): content that
   breaks a session, written into the files that session rereads, breaks it again on every start.
   Compaction does not help, because the summary is rebuilt from those same files.
+- [**Reciprocate**](rstack/principles/reciprocate.md): a reply mirrors the message it answers,
+  in length, greeting, warmth, questions and language. The outreach lint checks each one.
 
 The last two cost the most to learn. Read them before adding anything.
 

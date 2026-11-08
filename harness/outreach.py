@@ -5,6 +5,7 @@ import mixed_language
 import ops_mentions
 import bughunt
 import contacts_ledger
+import reciprocate
 import speedup
 import promise_words
 import datetime as dt
@@ -450,7 +451,7 @@ def lint_rows(lane, selected, rh, allow_collision=None):
     results = {}
     for row in selected:
         checks = dict(voice=[], questions=[], contact=[], collision=[], links=[], science=[],
-                      language=[], evidence=[], ops=[], promise=[], bughunt=[])
+                      language=[], evidence=[], ops=[], promise=[], bughunt=[], reciprocate=[])
         try:
             text = body(row)
         except (OSError, UnicodeError):
@@ -530,7 +531,25 @@ def lint_rows(lane, selected, rh, allow_collision=None):
         # The bug-hunt lane rules (docs/outreach.md, "Bug-hunt lane"). Those driven by the draft or
         # the contact always apply (a kind, a named target, a dead address, an extra-scrutiny
         # contact); the daily limit and the required questions are on when OUTREACH.toml says so.
-        bughunt_warnings = []
+        bughunt_warnings, reciprocate_warnings = [], []
+        # Reciprocate (11-08): a reply mirrors their latest message. Hard wherever we owe a reply:
+        # the contact's ball is with us, or they asked for this send.
+        if row['channel'] == 'email':
+            try:
+                person = contacts_ledger.merged(lane.parent.parent, row['to_key'])
+            except (OSError, ValueError, KeyError):
+                person = {'name': row.get('to_name', '')}
+            if row.get('incoming'):
+                try:
+                    found, notes = reciprocate.findings(Path(row['incoming']).read_text(), text, person, cfg)
+                    checks['reciprocate'] += found
+                    reciprocate_warnings += notes
+                except (OSError, UnicodeError):
+                    checks['reciprocate'].append('RECIPROCATE_INCOMING_MISSING: cannot read ' + row['incoming'])
+            elif person.get('ball') == 'us' or row.get('requested'):
+                checks['reciprocate'].append('RECIPROCATE_INCOMING_MISSING: this is a reply (the ball is with us, '
+                                             'or they asked for it); draft it with --incoming THEIR_MESSAGE so it '
+                                             'can mirror them')
         if row['channel'] == 'email':
             if not bughunt.kinds_of(row) or set(bughunt.kinds_of(row)) - set(KINDS):
                 checks['bughunt'].append('KIND_MISSING: every email draft says what it reports '
@@ -538,7 +557,8 @@ def lint_rows(lane, selected, rh, allow_collision=None):
             found, bughunt_warnings = bughunt.findings(row, text, cfg, lane, rh, everyone, clock)
             checks['bughunt'] += found
         warnings = (list(language_warnings) + evidence_warnings + ops_warnings
-                    + promise_warnings + batch_warnings + bughunt_warnings + science_warnings)
+                    + promise_warnings + batch_warnings + bughunt_warnings + science_warnings
+                    + reciprocate_warnings)
         if row['channel'] in X_PUBLIC:
             checks['reach'], reach_warnings = x_checks(row, text, everyone, clock, selected, cfg)
             warnings += reach_warnings
@@ -739,6 +759,8 @@ def arguments(sub):
             p.add_argument('--kind', action='append', default=[], choices=KINDS, help='what the email reports (required for email); repeat it for an email that carries more than one, e.g. bugs and a speedup')
             p.add_argument('--speedup', action='append', default=[], metavar='DIR', help='a verified speedup (SPEEDUP.json + VERIFY.json); code-speedup emails need one')
             p.add_argument('--overlap-checked', help='how we checked their own work on speed (asked them, read their open PRs)')
+            p.add_argument('--incoming', type=Path, help='their latest message, which a reply must mirror (reciprocate)')
+            p.add_argument('--users-override', help="the recipient's own words that this code is in their current pipeline")
             p.add_argument('--requested', help='the recipient asked for this send, in their words; a reply, not outreach, so the daily limit does not hold it')
             p.add_argument('--target', action='append', default=[], help='OWNER/REPO the email is about; gated on rh bughunt target-check')
             p.add_argument('--target-override', help='why an unchecked or failing target is written about anyway (the recipient asked)')
@@ -869,6 +891,10 @@ def main(root, args, rh):
                 row['overlap_checked'] = safe(args.overlap_checked, 'overlap check')
             if args.requested:
                 row['requested'] = safe(args.requested, 'their request')
+            if args.users_override:
+                row['users_override'] = safe(args.users_override, 'users override')
+            if args.incoming:
+                row['incoming'] = str(args.incoming.expanduser().resolve())
             if args.asked_about:
                 # Only this module's own terms, so a typo cannot quietly turn the check off and
                 # the ledger records our word for the subject, never the recipient's wording.

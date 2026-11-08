@@ -75,3 +75,14 @@ def test_every_image_the_tracks_show_exists():
     for page in (ROOT / 'docs/onboarding').glob('*.md'):
         for target in re.findall(r'!\[[^\]]*\]\(([^)]+)\)', page.read_text()):
             assert (page.parent / target).resolve().is_file(), (page.name, target)
+
+
+def test_the_beginner_track_starts_with_claude_science():
+    """The owner, 11-08: "A beginner should be: hey, you should try Claude Science. It's really easy.
+    It's a great first step for your research." The coding-agent install comes after it."""
+    text = (ROOT / 'docs/onboarding/beginner.md').read_text()
+    steps = [line for line in text.splitlines() if line.startswith('## ')]
+    assert 'Claude Science' in steps[0] and 'one of your papers' in steps[0]
+    assert text.index('Claude Science') < text.index('install.sh')
+    assert 'first step is the hardest' in text
+    assert 'Claude Science' in (ROOT / '.claude/skills/onboard/SKILL.md').read_text()

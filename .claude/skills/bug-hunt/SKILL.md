@@ -8,7 +8,9 @@ a patch, or a speedup that gives the same answers. Not a code review, and not a 
 
 1. **Target.** Only recent, active code: `rh bughunt target-check LANE OWNER/REPO` must PASS (a
    commit or release within the lane's limit, not archived, not marked unmaintained). A paper alone
-   does not make code a target. Hunt their latest commit.
+   does not make code a target. Someone outside the project must use it too: outside issue,
+   PR or fork accounts, stars, or downloads (`--package pypi:NAME`), or it fails as `TARGET_UNUSED`.
+   Hunt their latest commit.
 2. **Bugs.** Each bug gets a minimal repro that fails on their latest commit, a patch that makes it
    pass, and the effect on a result they published or would publish. A separate referee rebuilds
    each one from the repro and writes a verdict (CONFIRMED, CONFIRMED-MINOR, KNOWN, INTENDED, NOT

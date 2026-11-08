@@ -127,7 +127,8 @@ def verified(tmp_path, name, base='a' * 40, verdict='PASS', patch='diff\n'):
 
 def checked(lane, sha='a' * 40, optimizing=()):
     rh.append(lane[1] / 'TARGETS.jsonl', dict(target='org/tool', verdict='PASS', reasons=[], utc=NOW.isoformat(),
-                                              numbers=dict(last_commit_sha=sha, optimizing=list(optimizing))))
+                                              numbers=dict(last_commit_sha=sha, optimizing=list(optimizing)),
+                                              usage=dict(verdict='PASS', signals=['x'])))
 
 
 def test_a_speedup_email_names_a_verified_current_speedup(lane, tmp_path):

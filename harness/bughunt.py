@@ -29,6 +29,7 @@ import urllib.error
 import urllib.request
 
 import contacts_ledger
+import reciprocate
 import speedup
 
 UTC = dt.timezone.utc
@@ -68,8 +69,67 @@ def defaults():
                 required_question_names=[], required_questions_kinds=[])
 
 
+def usage_defaults():
+    return dict(usage_min_outside_accounts=3, usage_min_stars=25, usage_min_downloads_month=100,
+                usage_min_conda_downloads=1000)
+
+
+def downloads(packages, fetch_json):
+    """{'pypi:name': last-month downloads, ...} for the packages named; None where unreadable."""
+    out = {}
+    for spec in packages:
+        index, _, name = spec.partition(':')
+        try:
+            if index == 'pypi':
+                out[spec] = int(fetch_json('https://pypistats.org/api/packages/{}/recent'.format(name))['data']['last_month'])
+            elif index == 'cran':
+                out[spec] = int(fetch_json('https://cranlogs.r-pkg.org/downloads/total/last-month/' + name)[0]['downloads'])
+            elif index in ('bioconda', 'conda-forge'):
+                files = fetch_json('https://api.anaconda.org/package/{}/{}'.format(index, name)).get('files', [])
+                out[spec] = sum(int(f.get('ndownloads', 0)) for f in files)
+            else:
+                out[spec] = None
+        except (OSError, ValueError, KeyError, IndexError, TypeError):
+            out[spec] = None
+    return out
+
+
+def usage(target, repo, get, packages=(), fetch_json=None, cfg=None):
+    """Does anyone outside the project use it? 11-08, the owner: "nobody cares about bugs in software
+    that's really old and nobody uses." Recent commits are not users."""
+    cfg = dict(usage_defaults(), **(cfg or {}))
+    owner = target.split('/')[0]
+    contributors = {c.get('login', '').casefold() for c in (get('repos/{}/contributors?per_page=100'.format(target)) or [])}
+    insiders = contributors | {owner.casefold()}
+    issues = get('repos/{}/issues?state=all&per_page=100'.format(target)) or []
+    forks = get('repos/{}/forks?per_page=100'.format(target)) or []
+    outside = {i.get('user', {}).get('login', '').casefold() for i in issues} | \
+              {f.get('owner', {}).get('login', '').casefold() for f in forks}
+    outside = {a for a in outside if a and a not in insiders and not a.endswith('[bot]')}
+    stars = int(repo.get('stargazers_count') or 0)
+    counts = downloads(packages, fetch_json or json_get) if packages else {}
+    signals = []
+    if len(outside) >= cfg['usage_min_outside_accounts']:
+        signals.append('{} outside accounts opened issues or PRs or forked it'.format(len(outside)))
+    if stars >= cfg['usage_min_stars']:
+        signals.append('{} stars'.format(stars))
+    for spec, n in counts.items():
+        floor = cfg['usage_min_conda_downloads'] if spec.split(':')[0] in ('bioconda', 'conda-forge') \
+            else cfg['usage_min_downloads_month']
+        if n is not None and n >= floor:
+            signals.append('{} downloads ({})'.format(n, spec))
+    return dict(verdict='PASS' if signals else 'FAIL', signals=signals, outside_accounts=len(outside),
+                stars=stars, forks=int(repo.get('forks_count') or 0), downloads=counts)
+
+
+def json_get(url):
+    request = urllib.request.Request(url, headers={'User-Agent': 'research-harness bughunt', 'Accept': 'application/json'})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read().decode('utf-8'))
+
+
 def check_settings(cfg):
-    for key, default in dict(defaults(), **speedup.defaults()).items():
+    for key, default in dict(defaults(), **speedup.defaults(), **reciprocate.defaults(), **usage_defaults()).items():
         cfg.setdefault(key, default)
         value = cfg[key]
         if type(default) is int and (type(value) is not int or value < 0):
@@ -138,19 +198,20 @@ def stamp(value):
     return dt.datetime.fromisoformat(value.replace('Z', '+00:00')) if value else None
 
 
-def target_check(target, max_age_days=365, get=None, clock=None):
+def target_check(target, max_age_days=365, get=None, clock=None, packages=(), fetch_json=None, usage_cfg=None):
     """The verdict row for one target. Network only through `get` (default: github)."""
     get = get or github
     clock = clock or dt.datetime.now(UTC)
     target = normalise(target)
     row = dict(target=target, utc=clock.isoformat(), max_age_days=max_age_days)
+    unknown = dict(verdict='FAIL', signals=[], reason='not checked')
     if DEPOSIT.match(target):
-        return dict(row, verdict='FAIL', reasons=['a data deposit, not maintained code'])
+        return dict(row, verdict='FAIL', reasons=['a data deposit, not maintained code'], usage=unknown)
     if not re.fullmatch(r'[a-z0-9_.-]+/[a-z0-9_.-]+', target):
-        return dict(row, verdict='FAIL', reasons=['only GitHub repositories can be checked'])
+        return dict(row, verdict='FAIL', reasons=['only GitHub repositories can be checked'], usage=unknown)
     repo = get('repos/' + target)
     if repo is None:
-        return dict(row, verdict='FAIL', reasons=['repository not found'])
+        return dict(row, verdict='FAIL', reasons=['repository not found'], usage=unknown)
     branch = repo.get('default_branch') or 'main'
     commits = get('repos/{}/commits?sha={}&per_page=1'.format(target, branch)) or []
     last_commit = stamp(commits[0]['commit']['committer']['date']) if commits else None
@@ -196,7 +257,8 @@ def target_check(target, max_age_days=365, get=None, clock=None):
                    commits_last_365_days=len(year) if len(year) < 100 else '100+',
                    last_issue_or_pr=last_issue.date().isoformat() if last_issue else None,
                    age_days=age)
-    return dict(row, verdict='FAIL' if reasons else 'PASS', reasons=reasons, numbers=numbers)
+    return dict(row, verdict='FAIL' if reasons else 'PASS', reasons=reasons, numbers=numbers,
+                usage=usage(target, repo, get, packages, fetch_json, usage_cfg))
 
 
 def verdicts(lane, rh):
@@ -264,6 +326,18 @@ def findings(row, text, cfg, lane, rh, everyone, clock):
         elif clock - stamp(verdict['utc']) > dt.timedelta(days=cfg['target_check_valid_days']):
             problem = 'TARGET_STALE: {} last passed on {}, more than {} days ago; check it again'.format(
                 target, verdict['utc'][:10], cfg['target_check_valid_days'])
+        # Users: 11-08. Recent and active is not enough; somebody outside the project uses it.
+        if not problem and any(k.startswith('code') for k in kinds):
+            used = verdict.get('usage') or {}
+            if used.get('verdict') != 'PASS':
+                unused = ('TARGET_UNUSED: {} shows no users outside the project ({}); lead with something they '
+                          'care about now, or --users-override with their words that it is in their current '
+                          'pipeline'.format(target, used.get('reason') or 'outside accounts {}, stars {}'.format(
+                              used.get('outside_accounts', '?'), used.get('stars', '?'))))
+                if row.get('users_override'):
+                    warnings.append(unused + ' (overridden: {})'.format(row['users_override']))
+                else:
+                    failures.append(unused)
         if problem and row.get('target_override'):
             warnings.append(problem + ' (overridden: {})'.format(row['target_override']))
         elif problem:
@@ -346,6 +420,8 @@ def arguments(sub):
     p = actions.add_parser('target-check', help='read GitHub and store a PASS/FAIL verdict')
     p.add_argument('lane')
     p.add_argument('target', help='OWNER/REPO or its GitHub URL')
+    p.add_argument('--package', action='append', default=[], metavar='INDEX:NAME',
+                   help='a package to count downloads for: pypi:NAME, cran:NAME, bioconda:NAME, conda-forge:NAME')
     p.add_argument('--json', action='store_true')
     p = actions.add_parser('speedup-verify', help='apply a speedup patch to their commit, check equal outputs, benchmark')
     p.add_argument('lane')
@@ -373,7 +449,7 @@ def main(root, args, rh, get=None):
             print('  ' + code)
         return 0 if row['verdict'] == 'PASS' else 1
     if args.action == 'target-check':
-        row = target_check(args.target, cfg['target_max_age_days'], get)
+        row = target_check(args.target, cfg['target_max_age_days'], get, packages=args.package, usage_cfg=cfg)
         with rh.locked(lane):
             rh.append(lane / 'TARGETS.jsonl', row)
         if args.json:
@@ -381,6 +457,9 @@ def main(root, args, rh, get=None):
         else:
             print('{} {}{}'.format(row['verdict'], row['target'],
                                    (': ' + '; '.join(row['reasons'])) if row['reasons'] else ''))
+            used = row.get('usage') or {}
+            print('  users: {} ({})'.format(used.get('verdict'), '; '.join(used.get('signals') or []) or
+                                            'outside accounts {}, stars {}'.format(used.get('outside_accounts'), used.get('stars'))))
             for key, value in (row.get('numbers') or {}).items():
                 print('  {}: {}'.format(key, value))
         return 0 if row['verdict'] == 'PASS' else 1

@@ -1,13 +1,26 @@
-# Beginner: your first week with a coding agent
+# Beginner: your first week with AI on your research
 
-You don't need most of this repo yet. This page gets you from nothing to an agent that does useful
-work for you, and one skill that makes it sound like you. It takes about an hour.
+You don't need most of this repo yet. If you do research, start with Claude Science. It's really
+easy, and it's a great first step for your research. The first step is the hardest; after that
+it's fun.
 
 ![Three tracks: beginner, intermediate, advanced, and you move up by what you can do](../../assets/onboarding-tracks.png)
 
-## 1. Install it
+## 1. Try Claude Science with one of your papers
 
-Install Claude Code with one command (macOS or Linux), then check it runs:
+[Claude Science](https://support.claude.com/en/articles/16563838-get-started-with-claude-science) is
+Anthropic's desktop app for research (macOS and Linux, on a paid Claude plan). Install it, start a
+project, and give it two things: one of your own papers, and one question about it you never had
+time for. A check you always meant to run, an extension you sketched in the discussion, a dataset
+you wanted to try it on. Then read what it did, ask it to show the code, and push back where it's
+wrong.
+
+That's the whole first step. If it gives you something useful, you're ready for step 2.
+
+## 2. Install a coding agent
+
+When you want an agent working in your own files and code, install Claude Code with one command
+(macOS or Linux), then check it runs:
 
 ```sh
 curl -fsSL https://claude.ai/install.sh | bash
@@ -17,7 +30,7 @@ claude --version
 It needs a Claude account; the first run asks you to log in. If you use Codex instead, everything
 below works the same way, with `AGENTS.md` where it says `CLAUDE.md`.
 
-## 2. Give it a real task
+## 3. Give it a real task
 
 Open a terminal in a folder you actually work in, and start it there:
 
@@ -29,7 +42,7 @@ claude
 Ask for something small and real: "read this folder and tell me what it does", or "this script
 fails with this error, find out why". Watch what it does before you ask for more.
 
-## 3. The ten things that matter
+## 4. The ten things that matter
 
 These cover most of what you'll use. Everything else can wait.
 
@@ -44,7 +57,7 @@ These cover most of what you'll use. Everything else can wait.
 9. Commit with git before a big change, so you can always undo.
 10. When you're stuck on the tool itself, ask it. It knows how it works, and `/help` lists the commands.
 
-## 4. Your first skill: write like you
+## 5. Your first skill: write like you
 
 A skill is a folder with one file, `SKILL.md`, that teaches the agent how to do one thing your way.
 A voice skill is a good first one, because it's useful on day one and you can tell right away if
@@ -76,7 +89,7 @@ edit the rules and try again. That loop is most of what working with skills is.
 
 Move on to [intermediate](intermediate.md) when you can say yes to all three:
 
-- I've used it on real work several times, not only tried it.
+- I've used Claude Science or a coding agent on my own research several times, not only tried it.
 - I've asked for a plan first, and changed the plan before it ran.
 - My voice skill gets used, and I've edited it at least once after seeing what it wrote.
 

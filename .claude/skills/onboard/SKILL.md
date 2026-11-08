@@ -21,7 +21,9 @@ rest out of the way.
    Tell them the track in one sentence and why ("you've used Claude Code but haven't written a
    skill yet, so intermediate").
 4. Walk them through the track, one step at a time, doing the steps with them in their own setup:
-   - beginner: [docs/onboarding/beginner.md](../../../docs/onboarding/beginner.md)
+   - beginner: [docs/onboarding/beginner.md](../../../docs/onboarding/beginner.md). For a researcher,
+     step one is Claude Science, not an install: "try Claude Science with one of your papers and one
+     question you never had time for. It's easy, and the first step is the hardest." Claude Code comes second.
    - intermediate: [docs/onboarding/intermediate.md](../../../docs/onboarding/intermediate.md)
    - advanced: [docs/onboarding/advanced.md](../../../docs/onboarding/advanced.md)
 5. Each track ends with "Ready for the next one?". Ask those questions. They move up when they can
