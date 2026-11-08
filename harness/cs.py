@@ -43,6 +43,13 @@ def _discover_base():
 STATE = os.path.expanduser(os.environ.get('CS_STATE', '.runtime/cs')); os.makedirs(STATE, mode=0o700, exist_ok=True)
 JAR = os.path.join(STATE, 'cookies.txt')
 AUTO_APPROVE = {'local_exec'}
+# Kinds whose approval the API only honours with the 'always' scope. 11-07, math: a network
+# approval sent with scope 'conversation' returns 200 "accepted" and changes nothing, so the
+# session parks forever (C47 session 6660b62e sat on annals.math.princeton.edu until it was
+# resolved by hand). A 200 that does nothing is the worst kind of answer, so the scope the API
+# requires is sent regardless of what the caller asked for, rather than relaying a request that
+# will be silently dropped.
+SCOPE_ALWAYS = {'network'}
 AUTO_READ = tuple(os.path.abspath(os.path.expanduser(p)) + os.sep for p in os.environ.get('CS_AUTO_READ', '').split(os.pathsep) if p)
 CS_BIN = os.environ.get('CS_BIN', 'claude-science')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -181,7 +188,8 @@ def approve(fid, scope='conversation'):
     if ok:
         code, out = call(f'/api/frames/{fid}/resolve-input', {'responses': [
             dict(requestId=r['requestId'], approved=True) if r.get('kind') == 'usage_checkpoint' else
-            dict(requestId=r['requestId'], tool_id=r.get('tool_id'), approved=True, action='allow', scope=scope,
+            dict(requestId=r['requestId'], tool_id=r.get('tool_id'), approved=True, action='allow',
+                 scope='always' if r.get('kind') in SCOPE_ALWAYS else scope,
                  **({'mode': 'ro'} if r.get('kind') == 'host' else {})) for r in ok]})
         if code != 200:
             sys.exit(f'HTTP {code}: {out[:300]}')
@@ -246,6 +254,13 @@ def main(a):
         print(f'allowed {len(ok)}, held {len(held)}')
         for r in held:
             print('held:', r.get('kind'), r.get('tool'), str(r.get('code') or r.get('target', ''))[:200].replace('\n', ' '))
+            if r.get('kind') in SCOPE_ALWAYS:
+                # Say what clears it. math lost a session to this being silent: the request sat
+                # pending with nothing explaining that only a person can let it through, and that
+                # the API wants the Always scope when they do.
+                print('      network access waits for a person by design (Spend rule). When they '
+                      'allow it, the scope must be "always"; "conversation" returns 200 and '
+                      'changes nothing.')
     elif cmd == 'resume':
         print(call(f'/api/frames/{pos[0]}/resume', {})[0])
     elif cmd == 'cancel':
