@@ -1,3 +1,5 @@
+![rstack: the stack for AI research agents](assets/banner.png)
+
 # rstack
 
 **The stack I run AI research agents on: the map, the principles, and the machinery, in one place.**
