@@ -513,14 +513,15 @@ def test_a_send_they_asked_for_is_a_reply_not_outreach_so_the_daily_limit_does_n
 
 # ---- users (11-08: "nobody cares about bugs in software that's really old and nobody uses") ----
 
-def github_with(issues=(), forks=(), contributors=('owner',), stars=0):
+def github_with(issues=(), forks=(), contributors=('owner',), stars=0, created=None):
+    when = dict(created_at=created) if created else {}
     def get(path):
         if path.endswith('/contributors?per_page=100'):
             return [dict(login=c) for c in contributors]
         if '/issues?state=all&per_page=100' in path:
-            return [dict(user=dict(login=u)) for u in issues]
+            return [dict(user=dict(login=u), **when) for u in issues]
         if path.endswith('/forks?per_page=100'):
-            return [dict(owner=dict(login=u)) for u in forks]
+            return [dict(owner=dict(login=u), **when) for u in forks]
         return []
     return get, dict(stargazers_count=stars, forks_count=len(forks))
 
@@ -552,3 +553,20 @@ def test_a_code_email_about_code_nobody_uses_is_refused_unless_they_said_they_us
     assert rc == 0 and 'overridden' in out
     ident, _ = draft(lane, kind='paper', target='org/tool')
     assert 'TARGET_UNUSED' not in lint(lane, ident)[1], 'a paper email is not about their code'
+
+
+def test_old_forks_and_issues_are_not_users_now():
+    """friends, 11-08: a project with 7 outside accounts, all from years ago, and an author saying nobody used it."""
+    get, repo = github_with(issues=['a', 'b'], forks=['c', 'd'], created='2019-03-01T00:00:00Z')
+    used = bughunt.usage('owner/tool', repo, get, clock=CLOCK)
+    assert used['verdict'] == 'FAIL' and used['outside_accounts'] == 0 and used['outside_accounts_older'] == 4
+    get, repo = github_with(issues=['a', 'b'], forks=['c'], created=(CLOCK - dt.timedelta(days=200)).isoformat())
+    assert bughunt.usage('owner/tool', repo, get, clock=CLOCK)['verdict'] == 'PASS'
+
+
+def test_the_headline_fails_when_the_users_check_fails(lane, monkeypatch):
+    """friends read "PASS org/tool" on the first line of a target whose users line said FAIL."""
+    fake = fake_github(commit=(NOW - dt.timedelta(days=30)).date().isoformat())
+    monkeypatch.setattr(bughunt, 'github', lambda p: dict(fake(p), stargazers_count=0) if p == 'repos/org/tool' else fake(p))
+    rc, out, _ = rh_cli(lane, 'bughunt', 'target-check', 'test', 'Org/Tool')
+    assert rc == 1 and out.startswith('FAIL org/tool (recency PASS, users FAIL)')

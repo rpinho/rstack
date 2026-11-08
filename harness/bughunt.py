@@ -71,7 +71,7 @@ def defaults():
 
 def usage_defaults():
     return dict(usage_min_outside_accounts=3, usage_min_stars=25, usage_min_downloads_month=100,
-                usage_min_conda_downloads=1000)
+                usage_min_conda_downloads=1000, usage_window_days=1095)
 
 
 def downloads(packages, fetch_json):
@@ -94,23 +94,37 @@ def downloads(packages, fetch_json):
     return out
 
 
-def usage(target, repo, get, packages=(), fetch_json=None, cfg=None):
+def recent(item, since):
+    """Created on or after SINCE (an item with no date counts)."""
+    try:
+        return dt.datetime.fromisoformat(item['created_at'].replace('Z', '+00:00')) >= since
+    except (KeyError, AttributeError, TypeError, ValueError):
+        return True
+
+
+def usage(target, repo, get, packages=(), fetch_json=None, cfg=None, clock=None):
     """Does anyone outside the project use it? 11-08, the owner: "nobody cares about bugs in software
-    that's really old and nobody uses." Recent commits are not users."""
+    that's really old and nobody uses." Recent commits are not users, and neither are old forks: only
+    issues, pull requests and forks from the last usage_window_days count (a fork from years ago is
+    not someone using it now; one project had 7 such accounts and an author saying nobody used it)."""
     cfg = dict(usage_defaults(), **(cfg or {}))
+    since = (clock or dt.datetime.now(UTC)) - dt.timedelta(days=cfg['usage_window_days'])
     owner = target.split('/')[0]
     contributors = {c.get('login', '').casefold() for c in (get('repos/{}/contributors?per_page=100'.format(target)) or [])}
     insiders = contributors | {owner.casefold()}
     issues = get('repos/{}/issues?state=all&per_page=100'.format(target)) or []
     forks = get('repos/{}/forks?per_page=100'.format(target)) or []
-    outside = {i.get('user', {}).get('login', '').casefold() for i in issues} | \
-              {f.get('owner', {}).get('login', '').casefold() for f in forks}
-    outside = {a for a in outside if a and a not in insiders and not a.endswith('[bot]')}
+    accounts = [(i.get('user', {}).get('login', '').casefold(), recent(i, since)) for i in issues] + \
+               [(f.get('owner', {}).get('login', '').casefold(), recent(f, since)) for f in forks]
+    accounts = [(a, new) for a, new in accounts if a and a not in insiders and not a.endswith('[bot]')]
+    outside = {a for a, new in accounts if new}
+    older = {a for a, _ in accounts} - outside
     stars = int(repo.get('stargazers_count') or 0)
     counts = downloads(packages, fetch_json or json_get) if packages else {}
     signals = []
     if len(outside) >= cfg['usage_min_outside_accounts']:
-        signals.append('{} outside accounts opened issues or PRs or forked it'.format(len(outside)))
+        signals.append('{} outside accounts opened issues or PRs or forked it in the last {} days'.format(
+            len(outside), cfg['usage_window_days']))
     if stars >= cfg['usage_min_stars']:
         signals.append('{} stars'.format(stars))
     for spec, n in counts.items():
@@ -119,7 +133,7 @@ def usage(target, repo, get, packages=(), fetch_json=None, cfg=None):
         if n is not None and n >= floor:
             signals.append('{} downloads ({})'.format(n, spec))
     return dict(verdict='PASS' if signals else 'FAIL', signals=signals, outside_accounts=len(outside),
-                stars=stars, forks=int(repo.get('forks_count') or 0), downloads=counts)
+                outside_accounts_older=len(older), stars=stars, forks=int(repo.get('forks_count') or 0), downloads=counts)
 
 
 def json_get(url):
@@ -258,7 +272,7 @@ def target_check(target, max_age_days=365, get=None, clock=None, packages=(), fe
                    last_issue_or_pr=last_issue.date().isoformat() if last_issue else None,
                    age_days=age)
     return dict(row, verdict='FAIL' if reasons else 'PASS', reasons=reasons, numbers=numbers,
-                usage=usage(target, repo, get, packages, fetch_json, usage_cfg))
+                usage=usage(target, repo, get, packages, fetch_json, usage_cfg, clock))
 
 
 def verdicts(lane, rh):
@@ -455,14 +469,18 @@ def main(root, args, rh, get=None):
         if args.json:
             print(json.dumps(row, indent=2))
         else:
-            print('{} {}{}'.format(row['verdict'], row['target'],
-                                   (': ' + '; '.join(row['reasons'])) if row['reasons'] else ''))
+            # The headline is the whole verdict: friends read "PASS" on a target whose users line said FAIL.
             used = row.get('usage') or {}
+            both = 'PASS' if row['verdict'] == 'PASS' and used.get('verdict') == 'PASS' else 'FAIL'
+            print('{} {} (recency {}, users {}){}'.format(both, row['target'], row['verdict'], used.get('verdict'),
+                                                        (': ' + '; '.join(row['reasons'])) if row['reasons'] else ''))
             print('  users: {} ({})'.format(used.get('verdict'), '; '.join(used.get('signals') or []) or
-                                            'outside accounts {}, stars {}'.format(used.get('outside_accounts'), used.get('stars'))))
+                                            'outside accounts {} recent, {} older; stars {}'.format(
+                                                used.get('outside_accounts'), used.get('outside_accounts_older'),
+                                                used.get('stars'))))
             for key, value in (row.get('numbers') or {}).items():
                 print('  {}: {}'.format(key, value))
-        return 0 if row['verdict'] == 'PASS' else 1
+        return 0 if row['verdict'] == 'PASS' and (row.get('usage') or {}).get('verdict') == 'PASS' else 1
     rows = sorted(verdicts(lane, rh), key=lambda r: r['utc'], reverse=True)
     if args.json:
         print(json.dumps(rows, indent=2))
