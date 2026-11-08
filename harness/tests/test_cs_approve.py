@@ -101,6 +101,7 @@ def test_a_usage_checkpoint_at_a_boundary_still_waits(monkeypatch):
 def test_a_read_only_host_request_needs_the_explicit_allowlist(monkeypatch, tmp_path):
     inside = tmp_path / 'papers'
     inside.mkdir()
+    monkeypatch.setattr(cs, 'CS_HOST', '')     # the paths are local; a host env file must not move them
     monkeypatch.setattr(cs, 'AUTO_READ', (str(tmp_path) + '/',))
     sent = {}
     granted = set()
@@ -140,3 +141,58 @@ def test_a_200_that_changed_nothing_is_a_loud_failure(monkeypatch, capsys):
     assert 'returned 200 and changed nothing' in message
     assert 'local_exec' in message and "'conversation'" in message
     assert 'Nothing was approved' in message
+
+
+def clock():
+    t = [0.0]
+    return (lambda: t[0]), (lambda s: t.__setitem__(0, t[0] + s))
+
+
+def test_wait_names_a_prompt_it_will_not_answer_and_stops_when_it_stays(monkeypatch, capsys):
+    """11-08, planets: review 71a4312f sat an hour on a one-time contact_email prompt while
+    `cs.py wait --approve` printed nothing. A session waiting for a click stays 'processing', so
+    from outside, parked and working looked the same."""
+    row = req('contact_email')
+    monkeypatch.setattr(cs, 'pending', lambda fid: [row])
+    monkeypatch.setattr(cs, 'call', lambda *a, **k: (_ for _ in ()).throw(AssertionError('answered')))
+    monkeypatch.setattr(cs, 'frame', lambda fid: {'status': 'processing'})
+    now, sleep = clock()
+    status = cs.wait('f1', timeout=7200, auto=True, held_limit=600, sleep=sleep, now=now)
+    err = capsys.readouterr().err
+    assert status == 'parked'
+    assert now() < 7200, 'it waited out the whole timeout on a prompt nobody was going to click'
+    assert err.count('waiting on a person: contact_email') == 1, 'named once, when first seen'
+    assert "the owner's personal data" in err
+
+
+def test_wait_does_not_call_a_prompt_parked_while_it_is_being_cleared(monkeypatch):
+    """Local compute is approved as it comes; a session that keeps asking for it is working."""
+    n = [0]
+
+    def pending(fid):
+        n[0] += 1
+        return [req('local_exec', requestId='r{}'.format(n[0]))] if n[0] < 80 else []
+    monkeypatch.setattr(cs, 'pending', pending)
+    monkeypatch.setattr(cs, 'approve', lambda fid: ([{'requestId': 'x'}], []))
+    state = {'status': 'processing'}
+    monkeypatch.setattr(cs, 'frame', lambda fid: state)
+    now, sleep = clock()
+
+    def sleep_then_finish(s):
+        sleep(s)
+        if now() > 3000:
+            state['status'] = 'completed'
+            monkeypatch.setattr(cs, 'approve', lambda fid: ([], []))
+    assert cs.wait('f1', timeout=7200, auto=True, held_limit=600, sleep=sleep_then_finish,
+                   now=now) == 'completed'
+
+
+def test_a_held_prompt_that_someone_clicks_is_forgotten(monkeypatch):
+    """A person answering in the app resets the clock; only a prompt that stays pending parks."""
+    rows = [[req('network', requestId='a')]] * 5 + [[]] * 5 + [[req('network', requestId='b')]] * 30
+    it = iter(rows)
+    monkeypatch.setattr(cs, 'pending', lambda fid: next(it))
+    monkeypatch.setattr(cs, 'frame', lambda fid: {'status': 'processing'})
+    now, sleep = clock()
+    assert cs.wait('f1', timeout=7200, auto=False, held_limit=600, sleep=sleep, now=now) == 'parked'
+    assert 300 + 600 <= now() <= 300 + 600 + 30, 'the clock restarted when the first prompt cleared'

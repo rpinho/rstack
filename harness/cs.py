@@ -22,7 +22,8 @@ is kept in the configured CS_STATE/cookies.txt (0600). Writes need Origin + x-op
   cs.py resume SESSION                restart a cancelled session where it stopped
   cs.py read SESSION [--all]          print the assistant's final text (or every assistant text block)
   cs.py wait SESSION [--timeout S] [--approve]   block until the session stops processing, then print the final text;
-                                      a session waiting on a prompt stays 'processing', so --approve clears them as they come
+                                      a session waiting on a prompt stays 'processing', so --approve clears them as they come;
+                                      a prompt it will not answer is named at once, and after CS_WAIT_HELD_S (600) wait exits 3 'parked'
 
 Text arguments may be '@file' to read the prompt from a file.
 """
@@ -393,6 +394,52 @@ def approve(fid, scope='conversation'):
     return ok, pending(fid)
 
 
+# Kinds this tool never answers, with what clears them. A held prompt is named the first time
+# wait sees it, because 11-08 planets' review sat an hour on a contact_email prompt while
+# `wait --approve` printed nothing: the session stays 'processing' while it waits for a click, so
+# from outside a parked session and a working one looked the same.
+HELD_HINT = {
+    'network': 'network access waits for a person by design (Spend rule); allowed with scope '
+               '"always".',
+    'contact_email': "a contact address for NCBI/EBI/OurResearch is the owner's personal data, not a "
+                     'lane call: answer it in the app, or ask general.',
+}
+WAIT_HELD_S = float(os.environ.get('CS_WAIT_HELD_S', '') or 600)
+
+
+def describe(r):
+    return '{} {} {}'.format(r.get('kind'), r.get('tool'),
+                             str(r.get('code') or r.get('target', ''))[:200].replace('\n', ' '))
+
+
+def wait(fid, timeout, auto, held_limit=None, sleep=time.sleep, now=time.time):
+    """The session's final status, or 'parked' when a prompt this call will not answer has been
+    pending for held_limit seconds (CS_WAIT_HELD_S, default 600). Waiting the full timeout on a
+    prompt nobody is going to click is the failure; the caller decides what to do about it."""
+    held_limit = WAIT_HELD_S if held_limit is None else held_limit
+    end, seen = now() + timeout, {}
+    while now() < end:
+        cleared, left = approve(fid) if auto else ([], pending(fid))
+        for r in left:
+            if r.get('requestId') not in seen:
+                seen[r.get('requestId')] = now()
+                print('waiting on a person:', describe(r), file=sys.stderr)
+                if r.get('kind') in HELD_HINT:
+                    print('      ' + HELD_HINT[r.get('kind')], file=sys.stderr)
+        ids = {r.get('requestId') for r in left}
+        stuck = [r for r in left if now() - seen[r.get('requestId')] >= held_limit]
+        if stuck:
+            print('parked {:.0f} s on: {}'.format(held_limit, '; '.join(describe(r) for r in stuck)),
+                  file=sys.stderr)
+            return 'parked'
+        for k in [k for k in seen if k not in ids]:
+            del seen[k]
+        if not cleared and frame(fid).get('status') != 'processing':
+            break
+        sleep(30)  # local daemon status check; no remote polling
+    return frame(fid).get('status')
+
+
 def assistant_texts(fid):
     texts = []
     for m in messages(fid):
@@ -466,13 +513,10 @@ def main(a):
         t = assistant_texts(pos[0])
         print('\n\n'.join(t) if '--all' in rest else (t[-1] if t else ''))
     elif cmd == 'wait':
-        end = time.time() + float(opts.get('timeout', 7200))
-        while time.time() < end:
-            cleared = approve(pos[0])[0] if '--approve' in rest else []
-            if not cleared and frame(pos[0]).get('status') != 'processing':
-                break
-            time.sleep(30)  # local daemon status check; no remote polling
-        print(frame(pos[0]).get('status'))
+        status = wait(pos[0], float(opts.get('timeout', 7200)), '--approve' in rest)
+        print(status)
+        if status == 'parked':
+            sys.exit(3)
         t = assistant_texts(pos[0]); print(t[-1] if t else '')
     else:
         sys.exit(__doc__)
