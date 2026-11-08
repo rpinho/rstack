@@ -246,6 +246,39 @@ def postmortem_check(row, text, cfg, lane, rh):
                                   overrides, {k: cfg[k] for k in science_email.defaults()}, users_ok)
 
 
+def awaiting_reply(row, text, everyone, lane):
+    """AWAITING_REPLY (friends postmortem, 11-08): no new science email to someone whose last one has no
+    reply yet, follow-ups included. A send they asked for (--requested) is a reply and passes, and so
+    does a contact whose cadence is "fast" (they said they don't mind)."""
+    if row.get('requested') or not science_email.is_science(text, row.get('attachments', []), bughunt.kinds_of(row)):
+        return []
+    try:
+        person = contacts_ledger.merged(lane.parent.parent, row['to_key'])
+    except (OSError, ValueError, KeyError):
+        person = {}
+    if person.get('cadence') == 'fast':
+        return []
+    key = row['to_key'].casefold()
+    mine = [r for r in everyone if r.get('to_key', '').casefold() == key and r.get('channel') == 'email'
+            and (r['lane'], r['id']) != (row['lane'], row['id'])]
+    science = [sent_time(r) for r in mine if r.get('sent') and set(bughunt.kinds_of(r)) & set(science_email.SCIENCE_KINDS)]
+    science = [t for t in science if t]
+    if not science:
+        return []
+    last = max(science)
+    replies = [time_of(r['reply']['utc']) for r in mine if (r.get('reply') or {}).get('utc')]
+    try:
+        if person.get('last_in'):
+            replies.append(time_of(person['last_in']))
+    except (ValueError, TypeError):
+        pass
+    if any(t and t >= last for t in replies):
+        return []
+    return ['AWAITING_REPLY: the last science email to {} ({}) has no reply yet; wait for it, or draft with '
+            '--requested "their words" if they asked for this'.format(row.get('to_name') or row['to_key'],
+                                                                      last.isoformat()[:10])]
+
+
 def cut_check(row, text, cfg, checks):
     """Paper-cut (voice_cuts.py): the draft is built from the author's own messages, listed in
     DRAFT.cuts. On whenever banks are configured, unless the lane says voice_cuts = "off"."""
@@ -610,7 +643,7 @@ def lint_rows(lane, selected, rh, allow_collision=None):
                                              'or they asked for it); draft it with --incoming THEIR_MESSAGE so it '
                                              'can mirror them')
         if row['channel'] == 'email' and cfg['science_email_rules']:
-            checks['postmortem'] = postmortem_check(row, text, cfg, lane, rh)
+            checks['postmortem'] = postmortem_check(row, text, cfg, lane, rh) + awaiting_reply(row, text, everyone, lane)
         if row['channel'] == 'email':
             if not bughunt.kinds_of(row) or set(bughunt.kinds_of(row)) - set(KINDS):
                 checks['bughunt'].append('KIND_MISSING: every email draft says what it reports '

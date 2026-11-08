@@ -72,3 +72,20 @@ def test_lint_applies_them_when_the_lane_turns_them_on(lane):
     config(lane, 'science_email_rules = true\n')
     out = lint(lane, ident)[1]
     assert 'SCIENCE_OPENER' in out and 'LIFE_LINE_MISSING' in out and 'MEANING_MISSING' in out
+
+
+def test_no_second_science_email_until_they_answer(lane):
+    """friends postmortem (a): one science email until they answer, follow-ups included."""
+    from test_bughunt import cli, send
+    first, _ = draft(lane, kind='paper', text='Hi Contact,\n\nI read your paper on growth rates.\n\nSam\n')
+    send(lane, first)
+    config(lane, 'science_email_rules = true\nlife_words = ["growth"]\n')
+    nxt, _ = draft(lane, kind='paper', text='Hi Contact,\n\nDid you see the arxiv note? I read your growth paper.\n\nSam\n')
+    assert 'AWAITING_REPLY' in lint(lane, nxt)[1]
+    asked, _ = draft(lane, kind='paper', requested='"send me the note" (their email)',
+                     text='Hi Contact,\n\nDid you see the arxiv note? I read your growth paper.\n\nSam\n')
+    assert 'AWAITING_REPLY' not in lint(lane, asked)[1], 'a send they asked for is a reply'
+    other, _ = draft(lane, kind='other', text='Hi Contact,\n\nHow was the trip?\n\nSam\n')
+    assert 'AWAITING_REPLY' not in lint(lane, other)[1], 'a plain message is not a science email'
+    assert cli(lane[0], 'reply', 'test', first, '--summary', 'Thanks')[0] == 0
+    assert 'AWAITING_REPLY' not in lint(lane, nxt)[1]
