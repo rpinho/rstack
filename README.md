@@ -55,6 +55,11 @@ mapped to a layer. 111 of the 317 rules have something enforcing them; 206 are s
 the page lists the ones broken most. It also goes through the main hooks and scheduled jobs with the
 failure that made each necessary.
 
+![When a rule keeps breaking, move it up: architecture, then compiler and tests, then CI and lint, then bot rules, then prose](assets/rule-ladder.png)
+
+When a rule keeps breaking, it moves up a rung, after poteto's hierarchy. See
+[architecture, not prose](rstack/principles/architecture-not-prose.md).
+
 ## Using it
 
 Point a coding agent at [`SKILL.md`](SKILL.md); that is the entry point and it explains how to route
