@@ -8,7 +8,7 @@ A claim directory holds CLAIM.md (or RESULT.md). The lint enforces three rules (
 2. Normal first ("Please let's do normal things unless they don't work"). A `Standard method:` line, and a
    `Deviations:` line that is `none` or says where the standard method failed (`standard failed: ...`).
 3. Baselines before predictive claims. If the claim reports a predictive metric, BASELINES.json must give the
-   trivial, simple and method scores on the same split, and its `sbs` must match tools/sbs/sbs.py.
+   trivial, simple and method scores on the same split, and its `sbs` must match harness/tools/sbs.py.
 4. Scooped and scale. A `yes` needs a `Cited by:` line from the forward-citation check (tools/cited-by): the
    citing-paper count, the paper's year and the closest citing paper or `none`. Old, well-cited papers are where
    someone else got there first. And a `Kind:` line from a fixed scale, so nobody has to guess how big it is:
@@ -86,7 +86,7 @@ def lint(d, new_only=False):
     if METRIC.search(text):
         b = d / 'BASELINES.json'
         if not b.is_file():
-            errs.append('predictive metric found: needs BASELINES.json (trivial, simple, method, sbs) from tools/sbs/sbs.py')
+            errs.append('predictive metric found: needs BASELINES.json (trivial, simple, method, sbs) from harness/tools/sbs.py')
         else:
             try:
                 rows = json.loads(b.read_text())
