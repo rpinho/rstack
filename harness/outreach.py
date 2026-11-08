@@ -651,6 +651,11 @@ def arguments(sub):
     p.add_argument('lane')
     p.add_argument('id')
     p.add_argument('--address', help='the address that bounced (default: every live one on record)')
+    p = actions.add_parser('set-kind', help='bookkeeping: say what an email that already went out reported')
+    p.add_argument('lane')
+    p.add_argument('id')
+    p.add_argument('kind', choices=KINDS)
+    p.add_argument('--reason', required=True)
     p = actions.add_parser('review', help='record a review of the exact text of a draft')
     p.add_argument('lane')
     p.add_argument('id')
@@ -828,6 +833,17 @@ def main(root, args, rh):
             record(lane, row, rh)
             print(row['id'])
             print('  merged {} drafts into {}; edit it into one email, then lint'.format(len(originals), row['draft_path']))
+            return 0
+        if args.action == 'set-kind':
+            # Bookkeeping for counts, never a change to what was checked: an unsent draft's kind
+            # decides which rules lint applies, so it is set at draft time and only there.
+            row = dict(have[args.id], updated=rh.now())
+            if not row.get('sent'):
+                raise ValueError('set-kind is for emails that went out; draft an unsent one again with --kind')
+            row['kind_set'] = dict(utc=rh.now(), was=row.get('kind'), reason=safe(args.reason, 'reason'))
+            row['kind'] = args.kind
+            record(lane, row, rh)
+            print('{} kind {}'.format(row['id'], row['kind']))
             return 0
         if args.action in ('bounce', 'review'):
             row = dict(have[args.id], updated=rh.now())

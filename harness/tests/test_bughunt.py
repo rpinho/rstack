@@ -383,3 +383,19 @@ def test_the_example_lane_config_loads(tmp_path):
     cfg = outreach.settings(lane, rh)
     assert cfg['emails_per_contact_per_day'] == 1 and cfg['target_required_kinds'] == ['code']
     assert len(cfg['required_questions']) == len(cfg['required_question_names']) == 2
+
+
+def test_a_past_send_can_be_given_its_kind_for_the_counts_but_a_draft_cannot(lane):
+    sent, _ = draft(lane, kind=None)
+    rows = outreach.current(lane[1], rh)
+    rh.append(lane[1] / 'OUTREACH.jsonl', dict(rows[sent], status='sent',
+                                              sent=dict(utc=NOW.isoformat(), message_id='x', via='api')))
+    assert json.loads(cli(lane[0], 'stats', '--aggregate')[1])['by_kind'] == {
+        'unknown': dict(sent=1, replies=0, bounced=0, reply_rate=0.0)}
+    assert cli(lane[0], 'set-kind', 'test', sent, 'code', '--reason', 'a bug report')[0] == 0
+    row = outreach.current(lane[1], rh)[sent]
+    assert row['kind'] == 'code' and row['kind_set']['was'] is None
+    assert list(json.loads(cli(lane[0], 'stats', '--aggregate')[1])['by_kind']) == ['code']
+    unsent, _ = draft(lane, kind=None)
+    rc, _, err = cli(lane[0], 'set-kind', 'test', unsent, 'code', '--reason', 'r')
+    assert rc != 0 and 'draft an unsent one again' in err
