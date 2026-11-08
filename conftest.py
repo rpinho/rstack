@@ -24,12 +24,15 @@ for key in ('RH_ROLES_FILE', 'RH_CONTACTS', 'RH_DECIDED_BY', 'CLAUDE_CODE_SESSIO
             'RH_TRANSCRIPTS_ROOT', 'RH_CS_DB_ROOT', 'RH_HARVEST_STATE', 'RH_POD_GATE_CONFIG', 'RH_POD_GATE_AUDIT', 'LAUNCH_MODEL', 'LAUNCH_MODEL_OVERRIDE',
             'RH_OWNER_ALIASES', 'RH_DISK_FLOOR_BYTES', 'RH_ENV_FILE', 'RH_INTAKE_LANES', 'RH_RUNPOD_KEY_FILE', 'RUNPOD_API_KEY',
             'RH_X_ACCOUNT', 'RH_X_GATE', 'RH_X_GATE_LOG', 'RH_X_REPLIED', 'RH_OUTREACH_ROOT',
-            'RH_XLINT', 'RH_SIGNATURE_NAMES', 'RH_X_ORIGINALS_PER_DAY', 'RH_X_MIN_GAP_MINUTES'):
+            'RH_XLINT', 'RH_SIGNATURE_NAMES', 'RH_X_ORIGINALS_PER_DAY', 'RH_X_MIN_GAP_MINUTES',
+            'RH_CONTACT_UPDATES'):
     os.environ.pop(key, None)
 _RUNTIME = Path(_TEST_HOME.name) / 'runtime'
 _RUNTIME.mkdir()
 os.environ['RH_ROOT'] = str(_RUNTIME)
 os.environ['AGENT_BACKEND'] = 'codex'
+# Test drafts live under the system temp dir, which outreach refuses for real drafts.
+os.environ['RH_DRAFT_TEMP_OK'] = '1'
 FIXTURE = Path(__file__).parent / 'tests/fixtures/check.py'
 os.environ['RH_VOICE_COMMAND'] = shlex.join([sys.executable, str(FIXTURE), 'voice'])
 os.environ['RH_SCIENCE_CHECK_COMMAND'] = shlex.join([sys.executable, str(FIXTURE), 'science'])

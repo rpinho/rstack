@@ -399,3 +399,35 @@ def test_a_past_send_can_be_given_its_kind_for_the_counts_but_a_draft_cannot(lan
     unsent, _ = draft(lane, kind=None)
     rc, _, err = cli(lane[0], 'set-kind', 'test', unsent, 'code', '--reason', 'r')
     assert rc != 0 and 'draft an unsent one again' in err
+
+
+def test_a_hand_logged_send_is_adopted_into_the_counts_and_the_daily_limit(lane):
+    """11-08: fifteen sends were appended by hand (sent_at, no status) and nothing counted them."""
+    config(lane, 'emails_per_contact_per_day = 1\n')
+    path = lane[0] / 'hand.txt'
+    path.write_text(VARIED[5])
+    when = (NOW - dt.timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    rh.append(lane[1] / 'OUTREACH.jsonl', dict(id='hand1', lane='test', channel='email', to_name='Contact Alpha',
+                                              to_key='Contact Alpha', purpose='bug report', draft_path=str(path),
+                                              sent_at=when, sent_by='a session, browser', approved_by='the owner'))
+    assert json.loads(cli(lane[0], 'stats', '--aggregate')[1])['sent'] == 0
+    rc, out, err = cli(lane[0], 'adopt', 'test', 'hand1', '--kind', 'code', '--reason', 'logged by hand on 11-08')
+    assert rc == 0, err
+    row = outreach.current(lane[1], rh)['hand1']
+    assert row['status'] == 'sent' and 'approval' not in row and row['approved_by'] == 'the owner'
+    assert json.loads(cli(lane[0], 'stats', '--aggregate')[1])['by_kind']['code']['sent'] == 1
+    assert 'DAILY_LIMIT' in lint(lane, draft(lane, text=VARIED[6])[0])[1]
+    assert cli(lane[0], 'adopt', 'test', 'hand1', '--kind', 'code', '--reason', 'again')[0] != 0
+
+
+def test_a_draft_in_a_temporary_directory_is_refused(lane, monkeypatch):
+    """11-08: drafts kept in a session scratchpad under /tmp vanished at the 11-07 reset."""
+    monkeypatch.delenv('RH_DRAFT_TEMP_OK')
+    path = Path('/tmp') / 'rh-test-draft-{}.txt'.format(id(lane))
+    path.write_text(VARIED[0])
+    try:
+        rc, _, err = cli(lane[0], 'draft', 'test', '--to', 'Contact Alpha', '--channel', 'email',
+                         '--purpose', 'p', '--file', path, '--kind', 'code')
+    finally:
+        path.unlink()
+    assert rc != 0 and 'temporary directory' in err

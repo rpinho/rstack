@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import unicodedata
 from urllib.parse import urlsplit
 import uuid
@@ -557,6 +558,14 @@ def health(lane, rh):
     return errors
 
 
+def in_temp_dir(path):
+    if os.environ.get('RH_DRAFT_TEMP_OK') == '1':
+        return False
+    roots = {os.path.realpath(d) for d in ('/tmp', '/var/folders', tempfile.gettempdir())}
+    real = os.path.realpath(str(path))
+    return any(real == r or real.startswith(r.rstrip('/') + '/') for r in roots)
+
+
 def note_contact(root, row, action):
     """Keep the contact current from the ledger: a send moves the ball to them, a reply to us.
     Written to the private update ledger, never to the contacts file (contacts_ledger)."""
@@ -651,6 +660,13 @@ def arguments(sub):
     p.add_argument('lane')
     p.add_argument('id')
     p.add_argument('--address', help='the address that bounced (default: every live one on record)')
+    p = actions.add_parser('adopt', help='bookkeeping: make a hand-logged send (sent_at, no status) a sent row')
+    p.add_argument('lane')
+    p.add_argument('id')
+    p.add_argument('--kind', required=True, choices=KINDS)
+    p.add_argument('--via', default='browser', choices=('api', 'browser'))
+    p.add_argument('--message-id', default='not recorded')
+    p.add_argument('--reason', required=True)
     p = actions.add_parser('set-kind', help='bookkeeping: say what an email that already went out reported')
     p.add_argument('lane')
     p.add_argument('id')
@@ -778,6 +794,11 @@ def main(root, args, rh):
             name = safe(args.to, 'recipient')
             key = contact_key(name) if args.channel == 'email' else name
             path = args.file.expanduser().resolve()
+            if in_temp_dir(path):
+                # 11-08: two sent drafts of 11-03 lived in a session scratchpad under /tmp; the
+                # 11-07 reset emptied it, and every lint since warns that it cannot compare them.
+                raise ValueError('the draft is in a temporary directory, which a restart empties and '
+                                 'the ledger then loses its text; keep drafts in the lane\'s outbox')
             row = dict(id=uuid.uuid4().hex[:16], lane=lane.name, channel=args.channel, to_name=name, to_key=key,
                        purpose=safe(args.purpose, 'purpose'), draft_path=str(path), draft_sha256=sha(path),
                        status='drafted', created=rh.now())
@@ -833,6 +854,28 @@ def main(root, args, rh):
             record(lane, row, rh)
             print(row['id'])
             print('  merged {} drafts into {}; edit it into one email, then lint'.format(len(originals), row['draft_path']))
+            return 0
+        if args.action == 'adopt':
+            # 11-08: fifteen sends were appended to the ledger by hand, with sent_at and no status,
+            # so counts, the daily limit and follow-ups never saw them. This makes such a row an
+            # ordinary sent row. Bookkeeping like record-sent: no `approval` is added, so it can
+            # never authorize a send.
+            row = dict(have[args.id], updated=rh.now())
+            if row.get('status') or row.get('sent') or not row.get('sent_at'):
+                raise ValueError('adopt is for a hand-logged send: a row with sent_at and no status')
+            sent_at = time_of(row['sent_at'])
+            if sent_at > time_of(rh.now()):
+                raise ValueError('sent_at is in the future')
+            row.update(status='sent', kind=args.kind, created=row.get('created') or sent_at.isoformat(),
+                       sent=dict(utc=sent_at.isoformat(), message_id=safe(args.message_id, 'message id'), via=args.via),
+                       recorded_after_the_fact=dict(utc=rh.now(), reason=safe(args.reason, 'reason'),
+                                                    adopted_from_hand_log=True),
+                       follow_up_due=(sent_at + dt.timedelta(days=settings(lane, rh)['follow_up_days'])).isoformat())
+            row.setdefault('to_name', row.get('to_key', ''))
+            if row.get('draft_path') and Path(row['draft_path']).is_file():
+                row['draft_sha256'] = sha(row['draft_path'])
+            record(lane, row, rh)
+            print('{} sent ({}, adopted)'.format(row['id'], row['kind']))
             return 0
         if args.action == 'set-kind':
             # Bookkeeping for counts, never a change to what was checked: an unsent draft's kind
