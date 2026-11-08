@@ -252,7 +252,9 @@ def covered_attachments(row):
     11-08: the patch bundle a recipient asked for went through the paper-result checks (adversarial
     reviews, the useful-or-slop question), which are for claims about results. A patch whose bytes
     are the ones VERIFY.json passed is already checked by its equality test and benchmark. Only an
-    exact hash match counts; anything else in the email still goes through the science check.
+    exact hash match counts, and every patch in a bundle must be one: a bundle that also carries
+    other patches (bug fixes, say) is not covered by a speedup's verification and is checked whole.
+    Anything else in the email still goes through the science check.
     """
     verified = set()
     for d in row.get('speedups', []):
@@ -261,7 +263,12 @@ def covered_attachments(row):
             verified.add(result['patch_sha256'])
     if not verified:
         return []
-    return [a for a in row.get('attachments', []) if patch_hashes(a) & verified]
+    covered = []
+    for a in row.get('attachments', []):
+        found = patch_hashes(a)
+        if found and found <= verified:
+            covered.append(a)
+    return covered
 
 
 def findings(row, contact, lane, rh, latest_verdict, extra_needed):

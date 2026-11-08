@@ -218,7 +218,7 @@ def test_one_email_with_bugs_and_a_speedup_carries_both_kinds_and_both_rules(lan
     assert stats['by_kind']['code-bug']['sent'] == stats['by_kind']['code-speedup']['sent'] == 1
 
 
-def bundle(tmp_path, name, patch):
+def bundle(tmp_path, name, patch, extra_patch=None):
     import tarfile
     src = tmp_path / (name + '-src')
     src.mkdir()
@@ -228,6 +228,9 @@ def bundle(tmp_path, name, patch):
     with tarfile.open(str(out), 'w:gz') as tar:
         tar.add(str(src / 'patch.diff'), arcname='bundle/patch.diff')
         tar.add(str(src / 'README.md'), arcname='bundle/README.md')
+        if extra_patch:
+            (src / 'bugfix.patch').write_text(extra_patch)
+            tar.add(str(src / 'bugfix.patch'), arcname='bundle/bugfix.patch')
     return out
 
 
@@ -253,3 +256,16 @@ def test_the_verified_patch_bundle_is_not_held_to_the_paper_result_checks(lane, 
                      attach=[bundle(tmp_path, 'again', 'diff\n'), extra])
     assert 'fixture attachment needs useful or slop question' in lint(lane, ident)[1], \
         'anything else attached is still checked'
+
+
+def test_a_bundle_that_also_carries_other_patches_is_checked_whole(lane, tmp_path):
+    """friends, 11-08: a bundle held the verified speedup patch and two bug patches; the first
+    version exempted the whole bundle because one patch in it matched."""
+    checked(lane)
+    (lane[1] / 'OUTREACH.toml').write_text((lane[1] / 'OUTREACH.toml').read_text() + 'science_checks = true\n')
+    d = verified(tmp_path, 'v')
+    mixed = bundle(tmp_path, 'mixed', 'diff\n', extra_patch='a bug fix\n')
+    ident, _ = draft(lane, kind=['code-bug', 'code-speedup'], target='org/tool', speedup=d, attach=mixed)
+    out = lint(lane, ident)[1]
+    assert 'is the verified speedup patch' not in out
+    assert 'fixture attachment needs useful or slop question' in out
