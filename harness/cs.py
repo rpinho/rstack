@@ -143,7 +143,13 @@ def _discover_base():
         # m5." The science compute lives there, so the instance that reads the science filesystem
         # has to be the one on that machine. The CLI there is asked for its live port and a tunnel
         # is kept to it; nothing here assumes a port.
-        return 'http://127.0.0.1:{}'.format(_tunnel(_remote_status()['port']))
+        global _ORIGIN
+        port = _remote_status()['port']
+        # The daemon checks Origin against its OWN address and answers a write from any other with
+        # 403 "forbidden origin" (11-08: every write through the tunnel failed that way while reads
+        # worked). Requests go to the tunnel; the Origin names the daemon as it sees itself.
+        _ORIGIN = 'http://localhost:{}'.format(port)
+        return 'http://127.0.0.1:{}'.format(_tunnel(port))
     try:
         out = subprocess.run([CS_BIN, 'status'], capture_output=True, text=True, timeout=20).stdout
         d = json.loads(out)
@@ -189,6 +195,14 @@ def model_for(project, opts):
         sys.exit('{} is banned (configured model policy): use {} (alternate {})'.format(model, rh.CS_DEFAULT_MODEL, rh.CS_ALTERNATE_MODEL))
     return model
 _BASE = None
+_ORIGIN = None
+
+
+def origin():
+    """The Origin header a write must carry: the daemon's own address, which under CS_HOST is not
+    the address the request goes to."""
+    url = base()
+    return _ORIGIN or url
 
 
 def base():
@@ -232,7 +246,7 @@ def call(path, data=None, form=False):
         else:
             body = json.dumps(data).encode()
             headers['Content-Type'] = 'application/json'
-        headers['Origin'] = base()
+        headers['Origin'] = origin()
         headers['x-operon-csrf'] = csrf()
     req = urllib.request.Request(base() + path, data=body, headers=headers, method='POST' if body else 'GET')
     try:
@@ -246,7 +260,7 @@ def call(path, data=None, form=False):
 def patch(path, data):
     body = json.dumps(data).encode()
     req = urllib.request.Request(base() + path, data=body, method='PATCH', headers={
-        'Content-Type': 'application/json', 'Origin': base(), 'x-operon-csrf': csrf()})
+        'Content-Type': 'application/json', 'Origin': origin(), 'x-operon-csrf': csrf()})
     try:
         with opener.open(req) as r:
             return r.status, r.read().decode()

@@ -189,3 +189,35 @@ def test_the_base_is_resolved_once_and_kept(monkeypatch):
     assert cs.base() == 'http://127.0.0.1:18000'
     assert cs.base() == 'http://127.0.0.1:18000'
     assert calls == [1]
+
+
+def test_a_write_through_the_tunnel_names_the_daemon_as_its_origin(tmp_path, monkeypatch):
+    """11-08: the daemon refused every write through the tunnel with 403 "forbidden origin",
+    because the Origin was the tunnel's 127.0.0.1:18000 and the daemon only accepts its own
+    address. Reads worked, so the first symptom was a project that could be listed and not made."""
+    cs = load(monkeypatch, CS_HOST='m5')
+    monkeypatch.setattr(cs, '_remote_status', lambda: {'running': True, 'port': 8123})
+    monkeypatch.setattr(cs, '_tunnel', lambda port: 18000)
+    assert cs.base() == 'http://127.0.0.1:18000'
+    assert cs.origin() == 'http://localhost:8123'
+    sent = {}
+
+    class Opener:
+        def open(self, req, timeout=None):
+            sent['origin'] = req.get_header('Origin')
+            sent['url'] = req.full_url
+            raise cs.urllib.error.HTTPError(req.full_url, 418, 'stop', {}, None)
+
+    monkeypatch.setattr(cs, 'opener', Opener())
+    monkeypatch.setattr(cs, 'save', lambda: None)
+    try:
+        cs.call('/api/projects', {'name': 'x'})
+    except Exception:
+        pass
+    assert sent['url'].startswith('http://127.0.0.1:18000/'), sent
+    assert sent['origin'] == 'http://localhost:8123', sent
+
+
+def test_without_a_host_the_origin_is_the_base(monkeypatch):
+    cs = load(monkeypatch, CS_BASE='http://localhost:8000')
+    assert cs.origin() == 'http://localhost:8000'
