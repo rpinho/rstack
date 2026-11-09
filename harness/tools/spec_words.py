@@ -39,8 +39,10 @@ from pathlib import Path
 
 # The compiler-failures block is the sweep's own output on a repair pass (planets, 11-08: it pushed a
 # 998-word first-pass spec to 1,094 and the repair pass was refused, so no repair could ever run).
-BEGIN = re.compile(r'^---\s*BEGIN (?:VERBATIM LANE POLICY|HARNESS COMPILER FAILURES)\b.*---\s*$')
-END = re.compile(r'^---\s*END (?:VERBATIM LANE POLICY|HARNESS COMPILER FAILURES)\s*---\s*$')
+# The stage-instructions block is the sweep's fixed text (planets, 11-08: about 900 of 1,011 counted
+# words were the harness's own; its size is held by a repo test instead, harness_words in test_sweep).
+BEGIN = re.compile(r'^---\s*BEGIN (?:VERBATIM LANE POLICY|HARNESS COMPILER FAILURES|HARNESS STAGE INSTRUCTIONS)\b.*---\s*$')
+END = re.compile(r'^---\s*END (?:VERBATIM LANE POLICY|HARNESS COMPILER FAILURES|HARNESS STAGE INSTRUCTIONS)\s*---\s*$')
 LESSONS = re.compile(r'^##\s+Shared lessons\s*$')
 HEADING = re.compile(r'^#{1,6}\s+\S')
 MANIFEST = re.compile(r'^[^:\[\]]{1,80}:\s*(\[.*\])\s*$')

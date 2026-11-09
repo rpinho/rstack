@@ -485,6 +485,39 @@ def lint(lane, rh):
     return errors, legacy
 
 
+class H(str):
+    """A paragraph the harness wrote into a stage prompt (not lane config, not the ask).
+
+    The launcher's 1,000-word cap is meant to catch a spec turning into process, and it counts
+    only what was asked for. On 11-08 the sweep's own fixed instructions (the prior-art receipt
+    rule, X policy, inputs, stage steps) came to about 900 words of planets' 1,011, so no trim of
+    the lane's config could get it under. These paragraphs are wrapped in a harness block that
+    spec_words excludes; their own size is held by a test (test_sweep: harness_words budget), so
+    harness text growing is still caught, in the repo instead of at launch."""
+    BEGIN = '--- BEGIN HARNESS STAGE INSTRUCTIONS ---'
+    END = '--- END HARNESS STAGE INSTRUCTIONS ---'
+
+    @classmethod
+    def all(cls, items):
+        return [cls(t) for t in items]
+
+    @classmethod
+    def join(cls, parts):
+        """Join prompt parts, wrapping each run of harness paragraphs in one marked block."""
+        out, run = [], []
+        for part in parts:
+            if isinstance(part, cls):
+                run.append(str(part))
+                continue
+            if run:
+                out.append(cls.BEGIN + '\n' + '\n\n'.join(run) + '\n' + cls.END)
+                run = []
+            out.append(part)
+        if run:
+            out.append(cls.BEGIN + '\n' + '\n\n'.join(run) + '\n' + cls.END)
+        return '\n\n'.join(out) + '\n'
+
+
 def generate(stage, lane, cfg, paths, day, due, failures=()):
     x_outcomes_policy = (
         ' Dated X search outcomes also arrive through intake in X_SEARCHES.jsonl; '
@@ -493,49 +526,49 @@ def generate(stage, lane, cfg, paths, day, due, failures=()):
     intro = [
         '# Harness outside search: {} / {} / {}'.format(lane.name, stage, day),
         'Working directory: ' + str(cfg['cwd']),
-        'This is the {} stage. Run synchronously; no background workers.'.format(stage),
-        'One worker at a time; low CPU priority (niceness 10 or higher is fine; never raise it, and never block because of it); <= {} cores; total process-tree RSS <= {} GiB; keep >= {} GiB free.'.format(
-            cfg['cores'], cfg['memory_gib'], cfg['min_free_gib']),
-        'Each kill test has at most {} minutes; GPU or larger jobs are BLOCKED.'.format(cfg['kill_test_max_minutes']),
-        'No submissions, posting, paid APIs, pods, secrets, or sealed-data/board scoring.',
-        'X POLICY (overrides all legacy source-spec X instructions): X results arrive ONLY through intake in IDEAS.jsonl.'
+        H('This is the {} stage. Run synchronously; no background workers.'.format(stage)),
+        H('One worker at a time; low CPU priority (niceness 10 or higher is fine; never raise it, and never block because of it); <= {} cores; total process-tree RSS <= {} GiB; keep >= {} GiB free.'.format(
+            cfg['cores'], cfg['memory_gib'], cfg['min_free_gib'])),
+        H('Each kill test has at most {} minutes; GPU or larger jobs are BLOCKED.'.format(cfg['kill_test_max_minutes'])),
+        H('No submissions, posting, paid APIs, pods, secrets, or sealed-data/board scoring.'),
+        H('X POLICY (overrides all legacy source-spec X instructions): X results arrive ONLY through intake in IDEAS.jsonl.'
         + x_outcomes_policy
-        + ' Workers have no other route to X. Do not search, browse, fetch or follow X/Twitter links, use any X API, or use web search, mirrors or proxies to reach X. Only the general session performs the browser step and supplies captured metadata through intake. Judge X intake metadata without opening its X source URL.',
-        'Do not edit harness code, lane configs or queue files. Write only configured artifacts; the harness records explicit read receipts.',
-        'Embedded source specs provide binding policy and formats. Execute only the current stage objective; other stages handle their own duties. Search/kill report line limits do not limit the READ report.',
-        'Resolved operational paths below replace legacy report/queue paths in the source specs; all binding scientific and safety rules still apply.',
+        + ' Workers have no other route to X. Do not search, browse, fetch or follow X/Twitter links, use any X API, or use web search, mirrors or proxies to reach X. Only the general session performs the browser step and supplies captured metadata through intake. Judge X intake metadata without opening its X source URL.'),
+        H('Do not edit harness code, lane configs or queue files. Write only configured artifacts; the harness records explicit read receipts.'),
+        H('Embedded source specs provide binding policy and formats. Execute only the current stage objective; other stages handle their own duties. Search/kill report line limits do not limit the READ report.'),
+        H('Resolved operational paths below replace legacy report/queue paths in the source specs; all binding scientific and safety rules still apply.'),
         'IDEAS queue: ' + str(lane / 'IDEAS.jsonl'),
     ]
-    intro += ['## Shared lessons', 'rh lessons for {} -n 12'.format(lane.name),
-              lessons.render(cfg.get('_lesson_rows', [])).rstrip() or '(no lessons yet)',
-              'Promoted lessons name the enforcing code in promoted_to; follow that code.']
+    intro += H.all(['Shared lessons (rh lessons for {} -n 12):'.format(lane.name),
+                    lessons.render(cfg.get('_lesson_rows', [])).rstrip() or '(no lessons yet)',
+                    'Promoted lessons name the enforcing code in promoted_to; follow that code.'])
     intro += ['{} report: {}'.format(k, v) for k, v in paths.items()]
     for key in ('search_targets', 'sources', 'banned_sources', 'allowed_tests', 'allowed_writes'):
         intro.append(key + ':\n' + '\n'.join('- ' + v for v in cfg[key]))
     commands = github_commands(cfg)
     if commands:
-        intro.append('First-class GitHub sources (search stage only; use the configured GitHub CLI):\n'
+        intro.append(H('First-class GitHub sources (search stage only; use the configured GitHub CLI):\n'
                      + '\n'.join(commands)
-                     + '\nRead public methods and source, not predictions or scores. These are bounded first pages; report coverage/rate-limit failures honestly, use further read-only pages only when needed, and inspect prior seen repositories for recent changes. Code-search matches are leads: read the file to verify an actual library import and deduplicate by repository. Do not execute discovered code without the lane screens.')
-    intro.append('X browser handoff for general only: ' + str(lane / 'X_QUERIES.txt')
-                 + '\n' + x_query_text(lane, cfg))
+                     + '\nRead public methods and source, not predictions or scores. These are bounded first pages; report coverage/rate-limit failures honestly, use further read-only pages only when needed, and inspect prior seen repositories for recent changes. Code-search matches are leads: read the file to verify an actual library import and deduplicate by repository. Do not execute discovered code without the lane screens.'))
+    intro.append(H('X browser handoff for general only: ' + str(lane / 'X_QUERIES.txt')
+                   + '\n' + x_query_text(lane, cfg)))
     if stage == 'search' and cfg.get('x_capture_path'):
         journal = lane / 'X_SEARCHES.jsonl'
         entries = x_searches.recent(journal)
-        intro.append('General-session X search outcomes from the last 14 days: ' + str(journal)
+        intro.append(H('General-session X search outcomes from the last 14 days: ' + str(journal)
                      + '\n' + '\n'.join(json.dumps(row, ensure_ascii=False) for row in entries)
                      + '\nThese are dated search receipts, not posts or permission to search X. '
                      'For a relevant result=none row, cite "X searched on <utc date>, none on topic" '
                      'with its exact query and optional subject. Only claim the recorded scope; '
                      'missing, stale or unrelated rows do not establish coverage. '
-                     'For result=hits use captured post metadata from intake; the hit count alone is not source evidence.')
+                     'For result=hits use captured post metadata from intake; the hit count alone is not source evidence.'))
     if stage == 'search' and cfg.get('evidence_policy'):
         negative_receipt = (
             'For a relevant dated result=none in X_SEARCHES.jsonl, instead copy that journal to the run directory '
             'and bind its capture_path/capture_sha256; set X status=none, hits=[], query and searched_at '
             'to the recorded query and utc, and cite its date/subject in note. '
             if cfg.get('x_capture_path') else '')
-        intro.append('For every IDEA <ID>, write ' + str(paths['search'].parent / 'prior-art-<ID>.json')
+        intro.append(H('For every IDEA <ID>, write ' + str(paths['search'].parent / 'prior-art-<ID>.json')
                      + ' as schema=1 JSON with baseline (best public method and number), sources {github, x, papers, leaderboards}. '
                      'Each source needs status hits|none, query, searched_at (UTC ISO), hits (URL list), note. '
                      'X additionally needs capture_path and capture_sha256 for the existing general-session intake capture. '
@@ -548,24 +581,24 @@ def generate(stage, lane, cfg, paths, day, due, failures=()):
                      'general session, appears in X_QUERIES.txt, and is cleared by one rh intake x-search. '
                      'That is an ask, not a substitute: the receipt stays incomplete and the lead stays queued until the search is run. '
                      'For competition leaderboards use only lane-permitted public methods/rules; never prohibited predictions or scores. '
-                     'The receipt is machine-checked with idea_policy.prior_art; a source name without a query/outcome is insufficient.')
-    intro.append(inputs_text(lane))
+                     'The receipt is machine-checked with idea_policy.prior_art; a source name without a query/outcome is insufficient.'))
+    intro.append(H(inputs_text(lane)))
     if stage == 'search':
-        intro += ['Search outside sources for new methods, competitors, runnable public code, recent papers and community discussions. Read prior seen material first; append what you searched to the configured seen file if provided.',
-                  'Follow the lane search spec verbatim, using the resolved report path. Use IDEA <id>: lines with URL, added signal, metric, first kill test and rules risk. IDs may be BOARD-n or UUID (32 hexadecimal digits or standard hyphenated UUID); preserve queue IDs exactly. With no new ideas, document the actual search and NOTHING NEW. End DONE or BLOCKED.']
+        intro += H.all(['Search outside sources for new methods, competitors, runnable public code, recent papers and community discussions. Read prior seen material first; append what you searched to the configured seen file if provided.',
+                  'Follow the lane search spec verbatim, using the resolved report path. Use IDEA <id>: lines with URL, added signal, metric, first kill test and rules risk. IDs may be BOARD-n or UUID (32 hexadecimal digits or standard hyphenated UUID); preserve queue IDs exactly. With no new ideas, document the actual search and NOTHING NEW. End DONE or BLOCKED.'])
     elif stage == 'read':
-        intro += ['Read and judge every listed queue id, follow its source within the lane rules except X/Twitter URLs (intake metadata only); also inspect newest intake rows from the last 3 days. A judged lead may be rejected; give the reason.',
+        intro += H.all(['Read and judge every listed queue id, follow its source within the lane rules except X/Twitter URLs (intake metadata only); also inspect newest intake rows from the last 3 days. A judged lead may be rejected; give the reason.',
                   'Required queue ids (all unmarked rows since stage start): ' + json.dumps(due),
                   'Write one explicit READ <queue-id>: <substantive judgment> per judged row, including every required id, to the read report. Do not mark a row you did not read. End DONE or BLOCKED.',
-                  'If configured, also append every judged id, one per line, to seen_ideas. This compatibility file alone does not satisfy harness lint.']
+                  'If configured, also append every judged id, one per line, to seen_ideas. This compatibility file alone does not satisfy harness lint.'])
     else:
-        intro += ['Read the search report and run the first kill test for EVERY IDEA, in order. Fix the numerical pass line in writing before each run under allowed_writes. Apply every lane screen before using any data.',
+        intro += H.all(['Read the search report and run the first kill test for EVERY IDEA, in order. Fix the numerical pass line in writing before each run under allowed_writes. Apply every lane screen before using any data.',
                   'Write RESULT <idea-id>: KILLED|SURVIVED|BLOCKED then the number and pass line (or the concrete blocking need). Preserve BOARD-n or UUID ids exactly. Results for existing queue ids are also accepted; never invent an id. With no results write RESULT NONE.',
                   'Do not re-test the settled queue ids below (closed, or already holding a recorded result) or write RESULT lines for them.',
                   'Settled queue ids: ' + json.dumps(cfg.get('_settled', [])),
                   'A RESULT ... BLOCKED line is a per-idea outcome, with its blocking need (a future data release, an input to stage). '
                   'Once every IDEA has its RESULT line, end the report DONE, even if some are BLOCKED. End BLOCKED only when the '
-                  'stage itself could not run.']
+                  'stage itself could not run.'])
     if cfg.get('boards'):
         intro.append('Boards: ' + ', '.join(cfg['boards']) + '; at most 2 ideas each; account for every board with ideas or NOTHING NEW for that board.')
     if cfg.get('search_max_lines'):
@@ -581,7 +614,7 @@ def generate(stage, lane, cfg, paths, day, due, failures=()):
                      + '\n--- END HARNESS COMPILER FAILURES ---')
     for name, text in cfg['rules']:
         intro.append('\n--- BEGIN VERBATIM LANE POLICY: {} ---\n{}\n--- END VERBATIM LANE POLICY ---'.format(name, text))
-    return '\n\n'.join(intro) + '\n'
+    return H.join(intro)
 
 
 def kill_covered(kill, search):

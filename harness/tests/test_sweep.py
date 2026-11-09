@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import io
 import json
+import re
 import os
 from pathlib import Path
 import shlex
@@ -122,6 +123,31 @@ class SweepTests(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertIn('required rules file missing or empty', err)
         self.worker.assert_not_called()
+
+    def test_the_harness_text_in_a_stage_prompt_has_a_budget_and_is_not_the_ask(self):
+        """planets, 11-08: about 900 of the 1,011 words launch.sh counted in its search spec were the
+        sweep's own fixed instructions, so no trim of the lane's config could get under the cap. They
+        are now marked and excluded from the cap; their size is held here instead, so harness text
+        that keeps growing still fails, in the repo rather than at launch."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('sw', Path(sweep.__file__).parent / 'tools/spec_words.py')
+        sw = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sw)
+        (self.lane / 'INTAKE.toml').write_text('keywords = []\narxiv_queries = []\nbiorxiv_pages = 0\n'
+                                               'x_local_file = "X_HITS.jsonl"\n')
+        self.cfg.update(evidence_policy=True, github_repo_queries=['"fixture library"'],
+                        github_watch_repos=['example/watched'])
+        self.save_cfg()
+        cfg = self.loaded()
+        budget = 1200   # harness-written words per stage prompt; raise it only on purpose
+        for stage in ('search', 'read', 'kill'):
+            text = sweep.generate(stage, self.lane, cfg, self.paths(), '2026-11-01', ['B-1', 'B-2'],
+                                  ['ideas without a result: B-1'] * 30)
+            blocks = re.findall(re.escape(sweep.H.BEGIN) + r'\n(.*?)\n' + re.escape(sweep.H.END), text, re.S)
+            harness_words = sum(len(b.split()) for b in blocks)
+            self.assertLess(harness_words, budget, stage)
+            self.assertLess(len(sw.job_specific(text).split()), 400, stage + ': the lane-controlled part is what counts')
+            self.assertIn('X POLICY', text, 'marked, not removed')
 
     def test_github_sources_generate_read_only_commands_in_every_stage(self):
         self.cfg.update(github_repo_queries=['"fixture library"'],
