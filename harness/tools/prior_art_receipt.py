@@ -114,7 +114,17 @@ def x_entry(key):
     if not stable.exists():
         shutil.copyfile(cap, stable)
     queries = sorted({r['query'] for r in rows})
-    hits = [r['source_url'] for r in rows if r.get('source_url', '').startswith('http')]
+    hits = []
+    for r in rows:
+        if isinstance(r.get('posts'), list):
+            # 11-09: a search row's source_url is the search itself; its posts are the hits. Three zero-post
+            # searches were reported as "hits, 3 posts".
+            for post in r['posts']:
+                url = (post.get('url') or post.get('source_url') or post.get('link') or '') if isinstance(post, dict) else str(post)
+                if url.startswith('http'):
+                    hits.append(url)
+        elif r.get('source_url', '').startswith('http'):
+            hits.append(r['source_url'])
     when = max(r['captured_at'] for r in rows)
     e = entry('; '.join(queries), hits, f'Captured X search (browser, {when}) for key {key}; '
               f'{len(hits)} posts. Key-level capture; no new X search was performed.',

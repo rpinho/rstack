@@ -247,3 +247,18 @@ def test_a_real_gh_error_still_fails(monkeypatch):
     monkeypatch.setattr(receipt.time if hasattr(receipt, 'time') else __import__('time'), 'sleep', lambda s: None)
     with pytest.raises(RuntimeError, match='github search failed'):
         receipt.github('q')
+
+
+def test_zero_post_x_searches_are_none_not_hits(tmp_path, monkeypatch):
+    """planets, 11-09: a capture of 3 searches that found 0 posts read as "hits, 3 posts"."""
+    monkeypatch.setattr(receipt, 'Q', tmp_path)
+    (tmp_path / 'x_capture').mkdir()
+    rows = [dict(query=q, captured_at='2026-11-09T20:25:33+00:00', source_type='x', posts=[],
+                 source_url='https://api.x.com/2/tweets/search/recent?query=' + q) for q in ('a', 'b', 'c')]
+    (tmp_path / 'x_capture/k1.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows))
+    e = receipt.x_entry('k1')
+    assert e['status'] == 'none' and e['hits'] == [] and '0 posts' in e['note']
+    rows[1]['posts'] = [{'url': 'https://x.com/someone/status/1'}, 'https://x.com/other/status/2']
+    (tmp_path / 'x_capture/k2.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows))
+    e = receipt.x_entry('k2')
+    assert e['status'] == 'hits' and e['hits'] == ['https://x.com/other/status/2', 'https://x.com/someone/status/1']

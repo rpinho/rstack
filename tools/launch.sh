@@ -2,6 +2,9 @@
 # Synchronous job runner: role selection, exit receipts and bounded capacity retries.
 # usage: launch.sh JOB WORKDIR [--role ROLE] [--model MODEL --model-override REASON] [--host HOST]
 setopt pipefail
+# 11-09 (planets on the m5): a non-login shell there has only the system PATH, the detached job inherits
+# it, and the executor (codex in /opt/homebrew/bin) was "command not found" (exit 127).
+for d in /opt/homebrew/bin $HOME/.local/bin; do [[ -d $d && :$PATH: != *:$d:* ]] && PATH=$d:$PATH; done; export PATH
 (( $# >= 2 )) || { print -u2 -- 'usage: launch.sh JOB WORKDIR'; exit 2; }
 self=${0:A}
 job=$1; dir=$2; shift 2
