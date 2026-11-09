@@ -409,3 +409,34 @@ def test_a_local_job_still_reads_this_machine(tmp_path):
     assert proc.returncode == 75
     assert 'on this machine' in proc.stderr
     assert not Path(env['SSH_LOG']).exists(), 'a local job asked a host about its load'
+
+
+def test_the_pull_brings_back_the_evidence_a_receipt_names(tmp_path):
+    """planets, 11-09: a worker on the m5 copied X_SEARCHES.jsonl into its run dir and bound the
+    receipt's capture_path to that copy, as the prior-art instruction asks. The pull brought back
+    the receipt and not the copy, so a receipt that was correct on the host failed here for a
+    missing file. The receipt names what it needs; only paths inside the work dir come back."""
+    sys.path.insert(0, str(REPO / 'harness/tools'))
+    import receipt_files
+    text = LAUNCH.read_text()
+    assert 'receipt_files.py' in text and '--files-from=-' in text
+    src, dst = tmp_path / 'host', tmp_path / 'here'
+    run_dir = src / 'sweep-work/runs/attempt'
+    run_dir.mkdir(parents=True)
+    (run_dir / 'X_SEARCHES.jsonl').write_text('{"result": "none"}\n')
+    (src / 'RESULTS.jsonl').write_text('{"host": 1}\n')
+    outside = tmp_path / 'secret.txt'
+    outside.write_text('not for the pull')
+    for i, path in enumerate([run_dir / 'X_SEARCHES.jsonl', outside, src / 'RESULTS.jsonl',
+                              str(run_dir) + '/../../../../secret.txt', 'relative.jsonl']):
+        (run_dir / 'prior-art-I{}.json'.format(i)).write_text(json.dumps(
+            dict(schema=1, sources=dict(x=dict(capture_path=str(path))))))
+    (run_dir / 'prior-art-bad.json').write_text('not json')
+    named = receipt_files.files(src)
+    assert named == ['sweep-work/runs/attempt/X_SEARCHES.jsonl'], named
+    # Same transfer the launcher makes, between two directories.
+    dst.mkdir()
+    subprocess.run(['rsync', '-a', '--files-from=-', str(src) + '/', str(dst) + '/'],
+                   input='\n'.join(named), text=True, check=True, timeout=60)
+    assert (dst / 'sweep-work/runs/attempt/X_SEARCHES.jsonl').read_text().startswith('{"result"')
+    assert not (dst / 'RESULTS.jsonl').exists()

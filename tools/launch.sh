@@ -257,6 +257,16 @@ exec nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --d
       --include="${out:t}" \
       --exclude='*' "$LAUNCH_HOST:$dir/" "$dir/" >> "$log.pull" 2>&1 ||
       print -- "pull from $LAUNCH_HOST failed rc $? (outputs are on the host) $(date)" >> "$log"
+    # A receipt binds the evidence it cites by path and hash: the X capture copy, or the
+    # X_SEARCHES.jsonl copy for a dated none-row, in the run directory. Those file names are the
+    # worker's, so the receipts pulled above say which files to bring back too. Without this a
+    # receipt that is correct on the host fails here for a missing file (planets, 11-09).
+    named=$(python3 -I "${self:h:h}/harness/tools/receipt_files.py" "$dir" 2>>"$log.pull")
+    if [[ -n $named ]]; then
+      print -r -- "$named" | rsync -a --timeout=120 --max-size="${LAUNCH_PULL_MAX_SIZE:-4m}" \
+        -e "${LAUNCH_SSH:-ssh}" --files-from=- "$LAUNCH_HOST:$dir/" "$dir/" >> "$log.pull" 2>&1 ||
+        print -- "pull of receipt evidence from $LAUNCH_HOST failed rc $? $(date)" >> "$log"
+    fi
     # Say so when the host wrote the ledger anyway. Silence here would mean rows exist on a
     # machine nobody reads, which is how a result gets lost rather than merged wrongly.
     if (( $#ledger )); then
