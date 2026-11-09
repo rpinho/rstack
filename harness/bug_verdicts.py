@@ -19,11 +19,12 @@ Three upgrades adopted 11-08 from published skill sets, compared against our own
 Commands:
     rh bughunt claims-check LANE CLAIMS.json         refuse claims refuted before
     rh bughunt referee-prompt LANE CLAIMS.json DIR   plant, shuffle, write DIR/claims.json + PROMPT.md
+                                                     (needs the hunter's family: "hunter" in the file or --hunter-family)
     rh bughunt verdicts LANE DIR/verdict.json        validate, check the plants, record
     rh bughunt referees LANE                         confirm rate and plant catch rate per referee
 
 Claims file (from the hunter):
-    {"target": "owner/repo", "commit": "<sha>", "claims": [{"id", "file", "function", "root_cause",
+    {"target": "owner/repo", "commit": "<sha>", "hunter": {"model", "family"}, "claims": [{"id", "file", "function", "root_cause",
      "observed", "expected", optional "file_sha256", optional "differs_from": {"fingerprint", "why"}}]}
 """
 import datetime as dt
@@ -44,6 +45,22 @@ SCHEMA = 'bug-verdicts/1'
 TEMPLATE = Path(__file__).resolve().parent / 'templates' / 'bug_referee.md'
 SHA = re.compile(r'^[0-9a-f]{7,40}$')
 TARGET = re.compile(r'^[a-z0-9_.-]+/[a-z0-9_.-]+$')
+# A referee from the hunter's own family shares its blind spots, so it does not count (11-09: a GPT-6 Codex
+# hunter was refereed by GPT-6 and the verdicts were accepted). Family is compared by maker, so GPT-5 vs GPT-6
+# or Opus vs Sonnet is still the same family.
+MAKERS = (('openai', r'gpt|codex|openai|\bo[1-9]\b|chatgpt'), ('anthropic', r'claude|opus|sonnet|haiku|fable|anthropic'),
+          ('google', r'gemini|gemma|google|palm'), ('deepseek', r'deepseek'), ('qwen', r'qwen|alibaba'),
+          ('xai', r'grok|xai'), ('meta', r'llama|meta'), ('mistral', r'mistral|mixtral|codestral'),
+          ('moonshot', r'kimi|moonshot'), ('zhipu', r'glm|zhipu'))
+
+
+def maker(*names):
+    """The model maker named by any of NAMES, else the first name, normalised."""
+    text = ' '.join(str(n or '') for n in names).casefold()
+    for name, pattern in MAKERS:
+        if re.search(pattern, text):
+            return name
+    return re.sub(r'[^a-z0-9]+', '', str(names[0] if names else '').casefold())
 
 
 def now():
@@ -211,10 +228,15 @@ def plants_for(claims, n, rng):
     return out[:n]
 
 
-def referee_prompt(lane, doc, workdir, plants=(), n_plants=1, rng=None, extra=''):
+def referee_prompt(lane, doc, workdir, plants=(), n_plants=1, rng=None, extra='', hunter_family=None):
     """Write WORKDIR/claims.json (real and planted, shuffled, renumbered) and WORKDIR/PROMPT.md.
-    The key (which ids are planted) goes to the lane's PLANTS.jsonl, never to WORKDIR."""
+    The key (which ids are planted) and the hunter's family go to the lane's PLANTS.jsonl, never to WORKDIR."""
     rng = rng or random.Random(secrets.randbits(64))
+    hunter = doc.get('hunter') if isinstance(doc.get('hunter'), dict) else {}
+    family = hunter_family or hunter.get('family')
+    if not text_field(family):
+        raise ValueError('HUNTER_UNDECLARED: say which model family found these claims ("hunter": {"model", '
+                         '"family"} in the claims file, or --hunter-family), so a same-family referee is refused')
     refused = claims_check(lane, doc)
     if refused:
         raise ValueError('; '.join(refused))
@@ -240,7 +262,8 @@ def referee_prompt(lane, doc, workdir, plants=(), n_plants=1, rng=None, extra=''
                                          verdicts=', '.join(VERDICTS), extra=extra)
     (workdir / 'PROMPT.md').write_text(prompt)
     append(lane, 'PLANTS.jsonl', dict(batch=batch, utc=now(), target=doc['target'], commit=doc['commit'],
-                                      workdir=str(workdir), key=key))
+                                      workdir=str(workdir), key=key, hunter_family=family,
+                                      hunter_model=hunter.get('model'), hunter_maker=maker(family, hunter.get('model'))))
     return batch, len(real), len(planted)
 
 
@@ -270,11 +293,18 @@ def record(lane, path):
     caught = [i for i in planted if (by_id.get(i) or {}).get('verdict') in ('REFUTED', 'BLOCKED')]
     counts = {v: sum(c['verdict'] == v for c in doc['claims'] if not key.get(c['id'], {}).get('planted')) for v in VERDICTS}
     referee = '{} ({})'.format(doc['referee']['model'], doc['referee']['family'])
-    ok = not missing and not fooled
+    hunter_maker = keys[-1].get('hunter_maker')
+    same = bool(hunter_maker) and maker(doc['referee']['family'], doc['referee']['model']) == hunter_maker
+    if same:
+        msgs.append('REFEREE_SAME_FAMILY: the hunter was {} and the referee is {}; nothing in this file counts. '
+                    'Run a referee from another family'.format(keys[-1].get('hunter_family'), referee))
+    elif not hunter_maker:
+        msgs.append('REFEREE_FAMILY_UNCHECKED: batch {} predates the hunter-family record'.format(doc['batch']))
+    ok = not missing and not fooled and not same
     append(lane, 'REFEREE.jsonl', dict(utc=now(), batch=doc['batch'], target=doc['target'], referee=referee,
                                        file=str(path.resolve()), sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                                        planted=len(planted), caught=len(caught), fooled=len(fooled), counts=counts,
-                                       accepted=ok))
+                                       same_family=same, accepted=ok))
     if fooled:
         msgs.append('REFEREE_FOOLED: the referee confirmed planted false claim(s) {}; nothing in this file counts. '
                     'Run a different referee'.format(', '.join(fooled)))

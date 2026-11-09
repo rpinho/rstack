@@ -495,6 +495,7 @@ def arguments(sub):
     p.add_argument('--plants', type=Path, help='a JSON list of false claims written for this target')
     p.add_argument('--plant', type=int, default=1, help='automatic plants to add (default 1)')
     p.add_argument('--extra', type=Path, help="a file of host notes appended to the prompt (toolchains, limits)")
+    p.add_argument('--hunter-family', help="the hunter's model family, when the claims file has no \"hunter\"")
     p = actions.add_parser('verdicts', help="validate a referee's verdict.json, check its plants, record it")
     p.add_argument('lane')
     p.add_argument('file', type=Path)
@@ -539,7 +540,8 @@ def verdict_commands(lane, args, rh):
     extra = args.extra.read_text() if args.extra else ''
     with rh.locked(lane):
         batch, real, planted = bug_verdicts.referee_prompt(lane, doc, args.workdir.expanduser().resolve(),
-                                                           plants, args.plant, extra=extra)
+                                                           plants, args.plant, extra=extra,
+                                                           hunter_family=args.hunter_family)
     print('batch {}: {} claims + {} planted in {}/claims.json; prompt {}/PROMPT.md'.format(
         batch, real, planted, args.workdir, args.workdir))
     return 0

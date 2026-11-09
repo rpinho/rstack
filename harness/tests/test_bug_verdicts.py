@@ -14,7 +14,7 @@ from test_bughunt import draft, lane, lint, rh_cli, target_verdict  # noqa: F401
 from test_outreach import env  # noqa: F401
 
 COMMIT = 'a' * 40
-CLAIMS = dict(target='org/tool', commit=COMMIT, claims=[
+CLAIMS = dict(target='org/tool', commit=COMMIT, hunter=dict(model='h-1', family='hunterfam'), claims=[
     dict(id='B1', file='src/fit.py', function='fit', root_cause='the last bin is dropped when n is odd',
          observed='9 bins', expected='10 bins'),
     dict(id='B2', file='src/io.py', function='read_table', root_cause='a header with spaces shifts every column',
@@ -134,6 +134,43 @@ def test_blocked_claims_are_kept_as_questions(ln, tmp_path):
                        else honest(c))
     assert bug_verdicts.record(ln, write_verdict(ln, work, judge))[0]
     assert bug_verdicts.ledger(ln, 'BLOCKED.jsonl')[0]['needs'] == 'which units the published runs used'
+
+
+def test_a_referee_from_the_hunters_family_does_not_count(ln, tmp_path):
+    """11-09: a GPT-6 Codex hunter was refereed by GPT-6 and the verdicts were accepted."""
+    gpt = dict(CLAIMS, hunter=dict(model='gpt-6.1-codex', family='GPT-6 Codex'))
+    bug_verdicts.referee_prompt(ln, gpt, tmp_path / 'a', rng=random.Random(6))
+    ok, msgs = bug_verdicts.record(ln, write_verdict(ln, tmp_path / 'a', honest, model='gpt-6.1-sol', family='GPT-6'))
+    assert not ok and msgs[0].startswith('REFEREE_SAME_FAMILY')
+    assert bug_verdicts.ledger(ln, 'REFEREE.jsonl')[-1]['same_family'] is True
+    assert not bug_verdicts.ledger(ln, 'REFUTED.jsonl'), 'a refused file leaves no refutations behind'
+    bug_verdicts.referee_prompt(ln, gpt, tmp_path / 'b', rng=random.Random(7))
+    ok, _ = bug_verdicts.record(ln, write_verdict(ln, tmp_path / 'b', honest, model='claude-opus-5-5', family='Claude'))
+    assert ok
+
+
+def test_the_hunter_family_is_required_and_compared_by_maker(ln, tmp_path):
+    bare = {k: v for k, v in CLAIMS.items() if k != 'hunter'}
+    with pytest.raises(ValueError, match='HUNTER_UNDECLARED'):
+        bug_verdicts.referee_prompt(ln, bare, tmp_path / 'w')
+    bug_verdicts.referee_prompt(ln, bare, tmp_path / 'w', hunter_family='Claude Opus', rng=random.Random(8))
+    assert bug_verdicts.ledger(ln, 'PLANTS.jsonl')[-1]['hunter_maker'] == 'anthropic'
+    assert 'hunter' not in json.loads((tmp_path / 'w/claims.json').read_text()), 'the referee is not told'
+    m = bug_verdicts.maker
+    assert m('GPT-5') == m('GPT-6 Codex') == m('o3') == 'openai'
+    assert m('Opus') == m('Sonnet 5.5') == m('Fable') == 'anthropic'
+    assert m('Gemini') != m('GPT-6') and m('DeepSeek V4') == 'deepseek' and m('Some Lab X') == 'somelabx'
+
+
+def test_a_batch_from_before_the_family_record_is_flagged_not_refused(ln, tmp_path):
+    bug_verdicts.referee_prompt(ln, CLAIMS, tmp_path / 'w', rng=random.Random(9))
+    rows = bug_verdicts.ledger(ln, 'PLANTS.jsonl')
+    for r in rows:
+        for k in ('hunter_family', 'hunter_model', 'hunter_maker'):
+            r.pop(k)
+    (ln / 'PLANTS.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows))
+    ok, msgs = bug_verdicts.record(ln, write_verdict(ln, tmp_path / 'w', honest))
+    assert ok and any(x.startswith('REFEREE_FAMILY_UNCHECKED') for x in msgs)
 
 
 def test_no_plant_possible_is_refused(ln, tmp_path):

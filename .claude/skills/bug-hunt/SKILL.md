@@ -21,8 +21,9 @@ a patch, or a speedup that gives the same answers. Not a code review, and not a 
    `rh bughunt referee-prompt LANE claims.json WORKDIR`, which mixes in planted false claims, and
    writes `verdict.json` (CONFIRMED, CONFIRMED-MINOR, KNOWN, INTENDED, REFUTED, BLOCKED). Run
    `rh bughunt verdicts LANE WORKDIR/verdict.json`: malformed output is run again, never repaired, and
-   a referee that confirms a planted claim is rejected whole. Use a referee from a different model
-   family than the hunter. Report only what it confirmed. A BLOCKED claim is never a bug in an
+   a referee that confirms a planted claim is rejected whole. The claims file names the hunter
+   (`"hunter": {"model", "family"}`, or `--hunter-family`), and a referee from the same maker's
+   family is rejected whole too (`REFEREE_SAME_FAMILY`). Report only what it confirmed. A BLOCKED claim is never a bug in an
    email; its one missing fact can be the question the email opens with.
 3. **Speedups.** Before starting, read their open pull requests and branches (the target check
    lists any about speed) and, if someone there is already optimizing, ask them first. Profile on a
