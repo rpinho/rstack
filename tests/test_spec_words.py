@@ -97,3 +97,15 @@ def test_prose_in_brackets_cannot_buy_room(tmp_path):
     assert sw.count(spec) == 5
     spec.write_text('Single: ["0123456789abcdef"]\n')
     assert sw.count(spec) == 2, 'a one-item list is not a worklist'
+
+
+def test_the_repair_pass_failure_list_is_harness_output_not_the_ask():
+    """planets, 11-08: the repair spec was the first pass plus the compiler's failures, and the
+    failures pushed it over the cap, so no repair pass could run on a lane near the limit."""
+    ask = ' '.join(['word'] * 50)
+    failures = '\n'.join('ideas without a result: ' + 'x' * 32 + ' and more words here' for _ in range(40))
+    spec_text = (ask + '\nONE REPAIR PASS. Correct the compiler failures below without relaxing policy.\n'
+                 '--- BEGIN HARNESS COMPILER FAILURES ---\n' + failures + '\n--- END HARNESS COMPILER FAILURES ---\n')
+    assert len(sw.job_specific(spec_text).split()) < 70
+    unbalanced = spec_text.replace('--- END HARNESS COMPILER FAILURES ---\n', '')
+    assert len(sw.job_specific(unbalanced).split()) > 200, 'unbalanced markers count everything'

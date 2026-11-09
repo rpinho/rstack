@@ -443,7 +443,10 @@ def intake_x_search(lane, args):
     if not isinstance(capture, str) or not capture.strip() or any(c in capture for c in '\r\n\0'):
         raise ValueError('intake x-search requires a configured x_local_file')
     row = dict(utc=now(), query=args.query, result=args.result, n_hits=args.n,
-               captured_by=os.environ.get('RH_CAPTURED_BY') or os.environ.get('USER') or 'general-session')
+               # Who ran the search: --captured-by, else RH_CAPTURED_BY. The OS user is only a last resort, and
+               # it named the owner for a search a lane session ran itself (planets, 11-08).
+               captured_by=getattr(args, 'captured_by', None) or os.environ.get('RH_CAPTURED_BY')
+               or os.environ.get('USER') or 'general-session')
     if args.subject is not None:
         row['subject'] = args.subject
     x_searches.validate(row)
@@ -845,6 +848,7 @@ def parser():
     a.add_argument('--subject', help='optional author or topic scope (x-search only)')
     a.add_argument('--result', choices=('none', 'hits'), help='recorded outcome (x-search only)')
     a.add_argument('--n', type=int, help='hit count: 0 for none, positive for hits (x-search only)')
+    a.add_argument('--captured-by', help='the session or person who ran the search (x-search only; default $RH_CAPTURED_BY)')
     group = a.add_mutually_exclusive_group()
     group.add_argument('--dry-run', action='store_true', help='default; no network and no writes')
     group.add_argument('--live', action='store_true', help='fetch metadata and append ideas/intake audit')

@@ -561,8 +561,8 @@ def generate(stage, lane, cfg, paths, day, due, failures=()):
     else:
         intro += ['Read the search report and run the first kill test for EVERY IDEA, in order. Fix the numerical pass line in writing before each run under allowed_writes. Apply every lane screen before using any data.',
                   'Write RESULT <idea-id>: KILLED|SURVIVED|BLOCKED then the number and pass line (or the concrete blocking need). Preserve BOARD-n or UUID ids exactly. Results for existing queue ids are also accepted; never invent an id. With no results write RESULT NONE.',
-                  'Settled queue ids, closed or already holding a recorded result: do not re-test them or write RESULT lines for them: '
-                  + json.dumps(cfg.get('_settled', [])),
+                  'Do not re-test the settled queue ids below (closed, or already holding a recorded result) or write RESULT lines for them.',
+                  'Settled queue ids: ' + json.dumps(cfg.get('_settled', [])),
                   'A RESULT ... BLOCKED line is a per-idea outcome, with its blocking need (a future data release, an input to stage). '
                   'Once every IDEA has its RESULT line, end the report DONE, even if some are BLOCKED. End BLOCKED only when the '
                   'stage itself could not run.']
@@ -574,7 +574,11 @@ def generate(stage, lane, cfg, paths, day, due, failures=()):
         if cfg.get(key):
             intro.append(key + ': ' + str(path_at(cfg[key], cfg['cwd'])))
     if failures:
-        intro.append('ONE REPAIR PASS. Correct these compiler failures without relaxing policy:\n' + '\n'.join(failures))
+        # The failures are the harness compiler's own output, marked so the launcher's word cap does not
+        # count them (planets, 11-08: a 998-word first pass became a 1,094-word repair spec and was refused).
+        intro.append('ONE REPAIR PASS. Correct the compiler failures below without relaxing policy.\n'
+                     '--- BEGIN HARNESS COMPILER FAILURES ---\n' + '\n'.join(failures)
+                     + '\n--- END HARNESS COMPILER FAILURES ---')
     for name, text in cfg['rules']:
         intro.append('\n--- BEGIN VERBATIM LANE POLICY: {} ---\n{}\n--- END VERBATIM LANE POLICY ---'.format(name, text))
     return '\n\n'.join(intro) + '\n'

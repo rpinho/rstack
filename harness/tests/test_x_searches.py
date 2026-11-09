@@ -68,6 +68,14 @@ def test_cli_records_negative_and_hits_without_url_or_queue_mutations(lane):
     assert not (lane / 'X_HITS.jsonl').exists()
 
 
+def test_the_capturing_session_can_name_itself(lane):
+    """planets, 11-08: it ran the search itself and the row named someone else."""
+    rc, out, err = cli(lane, 'x-search', 'test', '--query', 'fixture', '--result', 'none', '--n', '0',
+                       '--captured-by', 'planets')
+    assert rc == 0, out + err
+    assert rh.rows(lane / 'X_SEARCHES.jsonl')[-1]['captured_by'] == 'planets'
+
+
 def test_cli_subject_is_optional(lane):
     rc, out, err = cli(lane, 'x-search', 'test', '--query', 'fixture', '--result', 'none', '--n', '0')
     assert rc == 0, out + err

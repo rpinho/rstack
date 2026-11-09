@@ -37,8 +37,10 @@ import re
 import sys
 from pathlib import Path
 
-BEGIN = re.compile(r'^---\s*BEGIN VERBATIM LANE POLICY\b.*---\s*$')
-END = re.compile(r'^---\s*END VERBATIM LANE POLICY\s*---\s*$')
+# The compiler-failures block is the sweep's own output on a repair pass (planets, 11-08: it pushed a
+# 998-word first-pass spec to 1,094 and the repair pass was refused, so no repair could ever run).
+BEGIN = re.compile(r'^---\s*BEGIN (?:VERBATIM LANE POLICY|HARNESS COMPILER FAILURES)\b.*---\s*$')
+END = re.compile(r'^---\s*END (?:VERBATIM LANE POLICY|HARNESS COMPILER FAILURES)\s*---\s*$')
 LESSONS = re.compile(r'^##\s+Shared lessons\s*$')
 HEADING = re.compile(r'^#{1,6}\s+\S')
 MANIFEST = re.compile(r'^[^:\[\]]{1,80}:\s*(\[.*\])\s*$')
