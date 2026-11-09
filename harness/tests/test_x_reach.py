@@ -135,6 +135,24 @@ def test_originals_need_a_gap(state, monkeypatch):
     assert rc == 1 and 'within 120 min of another original' in out
 
 
+@pytest.mark.parametrize('extra', [{}, {'gate_attempt': {'utc': (CLOCK - dt.timedelta(hours=1)).isoformat()}}])
+def test_a_dropped_original_takes_no_slot(state, monkeypatch, extra):
+    """general, 11-09: an original that failed on a media upload and one refused because the video was
+    still processing were both dropped, yet the next original failed the 120-min gap against them."""
+    monkeypatch.setenv('RH_X_ORIGINALS_PER_DAY', '1')
+    monkeypatch.delenv('RH_X_MIN_GAP_MINUTES', raising=False)
+    history(state, ident='failed-upload', age=1, status='dropped', reason='media upload failed', **extra)
+    history(state, ident='failed-video', age=1, status='dropped', reason='video still processing',
+            gate_attempt={'utc': (CLOCK - dt.timedelta(minutes=30)).isoformat()})
+    ident, _ = draft(state)
+    rc, out, _ = lint(state, ident)
+    assert rc == 0, out
+    # An attempt that was not dropped still takes its slot: the hook cannot know it failed.
+    history(state, ident='attempted', age=1, status='approved', gate_attempt={'utc': (CLOCK - dt.timedelta(hours=1)).isoformat()})
+    rc, out, _ = lint(state, ident)
+    assert rc == 1 and 'attempted' in out
+
+
 def test_original_yesterday_does_not_consume_today(state):
     history(state, age=20)
     ident, _ = draft(state)

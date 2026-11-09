@@ -439,6 +439,11 @@ def mainly_question(text):
 
 def activity_time(row):
     # A posting attempt also consumes a slot: the hook cannot know whether the network succeeded.
+    # A dropped row does not: dropping it is the record that it never went out (general, 11-09: two
+    # originals that failed on a media upload and on a still-processing video, both dropped, kept
+    # the next original out for 120 min and counted toward the day's limit).
+    if row.get('status') == 'dropped':
+        return None
     for key in ('sent', 'gate_attempt'):
         if row.get(key, {}).get('utc'):
             return time_of(row[key]['utc'])
@@ -456,7 +461,10 @@ FILLER = re.compile(r'^\W*(?:gm|gn|good\s+(?:morning|night|evening)|happy\s+(?:m
 
 
 def sent_time(row):
-    """When a row actually went out (or a posting attempt was made), never its approval time."""
+    """When a row actually went out (or a posting attempt was made), never its approval time. A dropped
+    row never went out."""
+    if row.get('status') == 'dropped':
+        return None
     for key in ('sent', 'gate_attempt'):
         if row.get(key, {}).get('utc'):
             return time_of(row[key]['utc'])
