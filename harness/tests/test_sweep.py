@@ -530,6 +530,31 @@ class SweepTests(unittest.TestCase):
         p['search'].write_text('IDEA B-1: https://example.org new method\nDONE\n')
         self.assertIn('ideas without a result: B-1', sweep.check(p, [], known_ids=[key]))
 
+    def test_a_read_report_is_parsed_once_for_all_its_ideas(self):
+        """11-09: lint re-read and re-scanned one 2.4 MB report per idea (1,667 ideas), which kept
+        `rh pods check` on a full core for minutes every 15 minutes."""
+        keys = ['B-{}'.format(i) for i in range(1, 51)]
+        p = self.paths()
+        p['read'].write_text(''.join('READ {}: judged\n'.format(k) for k in keys) + 'DONE\n')
+        real, reads = Path.read_text, []
+        def counting(path, *a, **kw):
+            reads.append(path)
+            return real(path, *a, **kw)
+        with patch.object(Path, 'read_text', counting):
+            digests = {sweep.read_evidence(p['read'], k) for k in keys}
+            with self.assertRaisesRegex(ValueError, 'requires READ B-99'):
+                sweep.read_evidence(p['read'], 'B-99')
+        self.assertEqual(len(digests), 1)
+        self.assertEqual(len([r for r in reads if r == p['read']]), 1)
+        # A rewritten report is read again.
+        p['read'].write_text('READ B-99: judged later\nDONE\n')
+        self.assertTrue(sweep.read_evidence(p['read'], 'B-99'))
+        with self.assertRaisesRegex(ValueError, 'requires READ B-1:'):
+            sweep.read_evidence(p['read'], 'B-1')
+        p['read'].write_text('READ B-99: judged later\nnot finished\n')
+        with self.assertRaisesRegex(ValueError, 'final DONE'):
+            sweep.read_evidence(p['read'], 'B-99')
+
     def test_malformed_ids_fail_in_all_report_parsers(self):
         for key in ('not-an-id', 'a' * 31, 'g' * 32, 'B-1suffix'):
             with self.subTest(key=key):

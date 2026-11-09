@@ -323,13 +323,35 @@ def complete(text):
     return bool(re.search(r'(?:^|\n)DONE\s*$', text))
 
 
+READ_LINE = re.compile(r'^READ (' + ID_PATTERN + r'):[ \t]*\S[^\n]+$', re.M)
+_REPORTS = {}
+
+
+def report_reads(report):
+    """(DONE at the end, ids with a READ line, sha256) for one read report, parsed once per version.
+
+    Lint checks every read idea against its report. One report holds the READ lines for a whole
+    batch, so re-reading and re-scanning it per idea was quadratic: on 11-09 a 2.4 MB report and
+    1,667 read ideas kept `rh pods check` on a full core for over four minutes every 15 minutes."""
+    path = Path(report)
+    info = path.stat()
+    key = (str(path), info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+    if key not in _REPORTS:
+        text = path.read_text()
+        if len(_REPORTS) > 256:
+            _REPORTS.clear()
+        _REPORTS[key] = (complete(text), frozenset(m.group(1) for m in READ_LINE.finditer(text)),
+                         hashlib.sha256(text.encode()).hexdigest())
+    return _REPORTS[key]
+
+
 def read_evidence(report, idea_id):
     if not re.fullmatch(ID_PATTERN, idea_id):
         raise ValueError('invalid idea id: ' + idea_id)
-    text = Path(report).read_text()
-    if not complete(text) or not re.search(r'^READ ' + re.escape(idea_id) + r':[ \t]*\S[^\n]+$', text, re.M):
+    done, ids, digest = report_reads(report)
+    if not done or idea_id not in ids:
         raise ValueError('read evidence requires READ {}: <judgment> and final DONE'.format(idea_id))
-    return hashlib.sha256(text.encode()).hexdigest()
+    return digest
 
 
 def mark_read(lane, idea_id, report, rh):
