@@ -77,7 +77,7 @@ TASTE_RULE_FROM = '2026-11-02T13:30:00'
 
 def taste_error(decided_by):
     if not decided_by:
-        return ('who decided? pass --decided-by (claude-opus-5-5, claude-fable-5-1 or claude-science:<frame url>); '
+        return ('who decided? pass --decided-by (claude-opus-5-5, claude-fable-5-2 or claude-science:<frame url>); '
                 'GPT-6.1 Sol does mechanical checks only (role policy)')
     if not decided_by.startswith(taste_models()):
         return 'decided_by={!r}: novelty and worth calls need a top taste model ({}), not {}'.format(

@@ -19,7 +19,7 @@ RECEIPT_ERRORS = frozenset((
     'result lacks config and result hash receipt',
     'no silent close: pass --attempts N with distinct recorded configs, or explicit --no-test-reason',
 ))
-STRONG_DECIDERS = ('claude-opus-5-5', 'claude-fable-5-1', 'gpt-6-astra')
+STRONG_DECIDERS = ('claude-opus-5-5', 'claude-fable-5-2', 'claude-fable-5-1', 'gpt-6-astra')  # 5.2: 11-09
 
 
 def enabled(lane):
