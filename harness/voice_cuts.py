@@ -12,7 +12,8 @@ and passes when every cited line exists, the draft's language matches a cited ba
 translating the author's English into Portuguese), and at least `voice_cuts_min_words` (0.70) of its
 words and `voice_cuts_min_pairs` (0.40) of its word pairs come from the cited lines. Words that occur
 in the message being answered don't count against it: those are the subject swaps. Greeting and
-sign-off lines are left out.
+sign-off lines are left out, and so are links and @handles: they name a thing, like a subject word,
+and are not phrasing (a link self-reply cut from "Oh, it's here." failed on com, github, https, 11-09).
 
 The banks are private and never in this repo. `RH_VOICE_BANKS` names a JSON file mapping each bank
 name to its JSONL file (one {"text": ...} per line) and its language:
@@ -46,6 +47,8 @@ GREETING = re.compile(r"^\s*(ol[aá]|oi|hey|hi|hello|dear|querid[oa]|caro|cara)\
 SIGNOFF = re.compile(r"^\s*(abra[cç]o|abra[cç]os|beijinhos?|beijos?|um abra[cç]o|best|cheers|thanks|thank you|"
                      r"obrigad[oa]|best wishes|all the best|take care)[\s,.!]*$", re.I)
 CUT = re.compile(r'^(\w+):(\d+)$')
+# A link (with a scheme, www., or a domain followed by a path) or an @handle.
+REF = re.compile(r"(?:https?://|www\.)\S+|\b[\w-]+(?:\.[\w-]+)+/\S*|(?<![\w@])@\w+", re.I)
 QUOTE_START = re.compile(r'^\s*(on .+ wrote:|em .+ escreveu:|-----original message-----)', re.I)
 
 
@@ -100,7 +103,8 @@ def body(text, signature_names=()):
     if lines and GREETING.match(lines[0]):
         lines = lines[1:]
     names = {n.casefold() for n in signature_names}
-    return '\n'.join(l for l in lines if not SIGNOFF.match(l) and l.strip(' ,.!').casefold() not in names)
+    kept = '\n'.join(l for l in lines if not SIGNOFF.match(l) and l.strip(' ,.!').casefold() not in names)
+    return REF.sub(' ', kept)
 
 
 def text_sha(text):

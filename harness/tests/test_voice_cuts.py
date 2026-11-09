@@ -56,6 +56,18 @@ def test_no_translating_english_into_portuguese(banks):
     assert voice_cuts.check('Obrigado, faz sentido.', 'pt:2', '', banks)[0] == []
 
 
+def test_links_and_handles_are_not_scored(banks):
+    """11-09: a link self-reply cut from a short line failed on com, github, https."""
+    for draft in ('Thanks, that makes sense: https://github.com/example/tool',
+                  'thanks, that makes sense github.com/example/tool/pull/3',
+                  '@someone thanks, that makes sense www.example.org'):
+        assert voice_cuts.check(draft, 'v2:3', '', banks) == ([], dict(lang='en', cuts=1, word_cover=1.0, pair_cover=1.0))
+    # Composed words beside a link are still scored, and the link's parts are not listed as missing.
+    fails, _ = voice_cuts.check('Fascinating new tool here: https://github.com/example/tool', 'v2:3', '', banks)
+    words = [f for f in fails if f.startswith('VOICE_CUTS_WORDS')]
+    assert words and 'fascinating' in words[0] and 'github' not in words[0] and 'https' not in words[0]
+
+
 def test_bad_cuts_are_named(banks):
     fails, _ = voice_cuts.check('thanks, that makes sense', 'v2:99\nxx:1\nnonsense', '', banks)
     assert codes(fails).count('VOICE_CUTS_BAD') == 3
