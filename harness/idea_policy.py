@@ -67,7 +67,11 @@ def prior_art(path, x_pending_ok=False):
     if not isinstance(data, dict) or data.get('schema') != 1:
         raise ValueError('prior-art requires schema=1')
     if not isinstance(data.get('baseline'), str) or not data['baseline'].strip():
-        raise ValueError('prior-art baseline must name the best public method and its number')
+        # Say what was found: friends, 11-09, wrote an object here and spent a repair pass per stage
+        # learning that the field is one string.
+        found = type(data.get('baseline')).__name__ if 'baseline' in data else 'missing'
+        raise ValueError('prior-art baseline must be one string naming the best public method and its number '
+                         '(found {}; structured details may go in baseline_details)'.format(found))
     searches = data.get('sources')
     if not isinstance(searches, dict):
         raise ValueError('prior-art sources must cover GitHub, X, papers and leaderboards')

@@ -236,3 +236,14 @@ def test_the_prompt_carries_it(lane, tmp_path):
     for stage in ('search', 'read', 'kill'):
         text = sweep.generate(stage, lane, cfg, paths, '2026-11-07', [])
         assert 'w396' in text, stage
+
+
+def test_a_structured_baseline_is_refused_with_what_to_write(tmp_path):
+    """friends, 11-09: the first pass wrote baseline as an object and the only message was "must name
+    the best public method", which cost a repair pass per stage. The refusal stays; the message says
+    the field is one string and where the details can go."""
+    receipt = tmp_path / 'prior-art-A.json'
+    receipt.write_text(json.dumps(dict(schema=1, baseline=dict(method='HGS', value=27185), sources={})))
+    with pytest.raises(ValueError) as e:
+        idea_policy.prior_art(receipt)
+    assert 'one string' in str(e.value) and 'found dict' in str(e.value) and 'baseline_details' in str(e.value)

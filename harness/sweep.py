@@ -569,7 +569,7 @@ def generate(stage, lane, cfg, paths, day, due, failures=()):
             'to the recorded query and utc, and cite its date/subject in note. '
             if cfg.get('x_capture_path') else '')
         intro.append(H('For every IDEA <ID>, write ' + str(paths['search'].parent / 'prior-art-<ID>.json')
-                     + ' as schema=1 JSON with baseline (best public method and number), sources {github, x, papers, leaderboards}. '
+                     + ' as schema=1 JSON with baseline, ONE plain string naming the best public method and its number (structured details may go in baseline_details), sources {github, x, papers, leaderboards}. '
                      'Each source needs status hits|none, query, searched_at (UTC ISO), hits (URL list), note. '
                      'X additionally needs capture_path and capture_sha256 for the existing general-session intake capture. '
                      'First copy the general-session capture bytes to this run directory under allowed_writes and reference that stable copy. '
