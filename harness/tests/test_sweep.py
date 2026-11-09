@@ -449,6 +449,26 @@ class SweepTests(unittest.TestCase):
         for value in ('malformed', 'unfinished', 'BLOCKED'):
             self.assertIn(value, errors)
 
+    def test_per_idea_blocks_are_outcomes_not_a_blocked_stage(self):
+        """planets, 11-08: ideas waiting on a future data release are BLOCKED per idea, and failing the
+        whole sweep for them kept the lane STALLED every day."""
+        p = self.paths()
+        p['search'].write_text('IDEA B-1: https://example.org signal; metric; kill; risk\n'
+                               'IDEA B-2: https://example.org signal; metric; kill; risk\nDONE\n')
+        p['read'].write_text('DONE\n')
+        p['kill'].write_text('RESULT B-1: KILLED value=0.1; pass line > 1\n'
+                             'RESULT B-2: BLOCKED need the next public data release\nBLOCKED\n')
+        self.assertEqual(sweep.check(p, []), [])
+        p['kill'].write_text('RESULT B-1: KILLED value=0.1; pass line > 1\nBLOCKED\n')
+        self.assertIn('kill report BLOCKED', ' '.join(sweep.check(p, [])))
+
+    def test_settled_rows_are_named_so_the_kill_stage_skips_them(self):
+        result = self.lane / 'result.md'
+        result.write_text('measured\n')
+        queue = {'A': dict(status='closed'), 'B': dict(status='testing', result_path=str(result)),
+                 'C': dict(status='testing'), 'D': dict(status='new'), 'E': dict(status='shipped')}
+        self.assertEqual(sweep.settled(queue), ['A', 'B', 'E'])
+
     def test_empty_day_is_valid(self):
         p = self.paths()
         p['search'].write_text('Searched fixture repo and paper feed; NOTHING NEW\nDONE\n')

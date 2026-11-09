@@ -394,6 +394,19 @@ def obligations(lane, cfg, rh, clock=None, history=None):
     return due, errors, legacy
 
 
+def settled(queue):
+    """Queue ids a kill stage must not re-test: closed or shipped, or testing with a result on disk.
+    planets, 11-08: the 3-day window put five closed rows and four with recorded results back in front of
+    the kill worker, which re-ran them and reported the ones it could not redo as BLOCKED."""
+    out = []
+    for key, row in queue.items():
+        result = row.get('result_path')
+        recorded = bool(result and Path(result).expanduser().is_file() and Path(result).expanduser().stat().st_size)
+        if row.get('status') in ('closed', 'shipped') or (row.get('status') == 'testing' and recorded):
+            out.append(key)
+    return sorted(out)
+
+
 def stage_snapshot(lane, cfg, rh):
     """Freeze obligations from one queue read at the start of each stage."""
     history = rh.rows(lane / 'IDEAS.jsonl')
@@ -547,7 +560,12 @@ def generate(stage, lane, cfg, paths, day, due, failures=()):
                   'If configured, also append every judged id, one per line, to seen_ideas. This compatibility file alone does not satisfy harness lint.']
     else:
         intro += ['Read the search report and run the first kill test for EVERY IDEA, in order. Fix the numerical pass line in writing before each run under allowed_writes. Apply every lane screen before using any data.',
-                  'Write RESULT <idea-id>: KILLED|SURVIVED|BLOCKED then the number and pass line (or the concrete blocking need). Preserve BOARD-n or UUID ids exactly. Results for existing queue ids are also accepted; never invent an id. With no results write RESULT NONE. End DONE or BLOCKED.']
+                  'Write RESULT <idea-id>: KILLED|SURVIVED|BLOCKED then the number and pass line (or the concrete blocking need). Preserve BOARD-n or UUID ids exactly. Results for existing queue ids are also accepted; never invent an id. With no results write RESULT NONE.',
+                  'Settled queue ids, closed or already holding a recorded result: do not re-test them or write RESULT lines for them: '
+                  + json.dumps(cfg.get('_settled', [])),
+                  'A RESULT ... BLOCKED line is a per-idea outcome, with its blocking need (a future data release, an input to stage). '
+                  'Once every IDEA has its RESULT line, end the report DONE, even if some are BLOCKED. End BLOCKED only when the '
+                  'stage itself could not run.']
     if cfg.get('boards'):
         intro.append('Boards: ' + ', '.join(cfg['boards']) + '; at most 2 ideas each; account for every board with ideas or NOTHING NEW for that board.')
     if cfg.get('search_max_lines'):
@@ -562,6 +580,14 @@ def generate(stage, lane, cfg, paths, day, due, failures=()):
     return '\n\n'.join(intro) + '\n'
 
 
+def kill_covered(kill, search):
+    """Every IDEA in the search report has a RESULT line with its detail in the kill report. A report with
+    no RESULT at all that ends BLOCKED is a stage that could not run, not per-idea blocks."""
+    ids = set(re.findall(r'^IDEA (' + ID_PATTERN + r'):', search, re.M))
+    got = set(re.findall(r'^RESULT (' + ID_PATTERN + r'): (?:KILLED|SURVIVED|BLOCKED)[ \t]+\S', kill, re.M))
+    return bool(got) and ids <= got
+
+
 def check(paths, due, cfg=None, known_ids=None, lane=None):
     errors, texts = [], {}
     for stage, p in paths.items():
@@ -573,7 +599,11 @@ def check(paths, due, cfg=None, known_ids=None, lane=None):
         if not re.search(r'(?:^|\n)(DONE|BLOCKED)\s*$', texts[stage]):
             errors.append(stage + ' report unfinished')
         elif re.search(r'(?:^|\n)BLOCKED\s*$', texts[stage]):
-            errors.append(stage + ' report BLOCKED')
+            # A kill report whose every idea has a RESULT line was blocked per idea, not as a stage: those
+            # rows stay queued with their need (planets, 11-08: an external data release cannot be cleared,
+            # and failing the sweep for it kept the lane STALLED every day). Anything else is a stage block.
+            if not (stage == 'kill' and kill_covered(texts[stage], texts.get('search', ''))):
+                errors.append(stage + ' report BLOCKED')
     s, k, r = (texts.get(x, '') for x in ('search', 'kill', 'read'))
     ids = re.findall(r'^IDEA (' + ID_PATTERN + r'):[ \t]*\S[^\n]+$', s, re.M)
     malformed = [line for line in s.splitlines() if line.startswith('IDEA ') and not re.fullmatch(r'IDEA ' + ID_PATTERN + r':[ \t]*\S[^\n]+', line)]
@@ -896,6 +926,34 @@ def host_harness_mismatch(host, root=None, ssh=None):
     return ''
 
 
+def host_check_names(cfg, sample=5):
+    """The files whose presence on the host proves its copy of the work dir is real and current.
+
+    The lane's rules files and INTAKE.toml travel inside every worker prompt, verbatim, so a worker
+    never reads them on the host. What the check is for is the 11-07 stub: a directory at the lane's
+    path with a few files and no ledger. When the work dir is the lane (working_directory = "."),
+    the rules files are in it and are the natural names to ask for. When it is a project directory
+    elsewhere, they live in the lane directory and are in neither copy of the work dir (virtual-
+    embryo, 11-08: the guard could never pass), so the names are the work dir's own top-level files
+    on this machine, which host_sync has just pushed."""
+    cwd = Path(cfg['cwd']).resolve()
+    names = []
+    for path, _ in cfg.get('rules', []):
+        try:
+            names.append(str(Path(path).resolve().relative_to(cwd)))
+        except ValueError:
+            continue
+    if not names:
+        skip = {str(n).strip('/').split('/')[0] for n in [cfg.get('run_directory', '')] +
+                list(cfg.get('allowed_writes') or []) if str(n).strip('/')}
+        try:
+            names = sorted(f.name for f in cwd.iterdir() if f.is_file() and not f.name.startswith('.')
+                           and f.name not in skip and f.stat().st_size > 0)[:sample]
+        except OSError:
+            names = []
+    return list(dict.fromkeys(names))
+
+
 def host_workdir_missing(host, cwd, names):
     """Which of `names` are missing or empty under `cwd` on `host`; None when it cannot be read.
 
@@ -1030,16 +1088,14 @@ def run_worker(spec, cfg):
         if not host_sync(cfg, host):
             raise ValueError('sweep refused: cannot refresh {} onto {} (workers read it there); '
                              'not running against a stale copy'.format(cfg['cwd'], host))
-        # A lane may already list INTAKE.toml among its rules files; dedupe so the refusal does not
-        # name the same file twice.
-        names = list(dict.fromkeys([Path(p).name for p, _ in cfg.get('rules', [])] + ['INTAKE.toml']))
+        names = host_check_names(cfg)
         missing = host_workdir_missing(host, cfg['cwd'], names)
         if missing is None:
             raise ValueError('sweep refused: cannot read {} on {} (workers run there)'
                              .format(cfg['cwd'], host))
         if missing:
-            raise ValueError('sweep refused: {} on {} is missing or empty: {}. The work dir must be '
-                             'the lane, not a directory at the lane\'s path.'
+            raise ValueError('sweep refused: {} on {} is missing or empty: {}. The host copy of the work '
+                             'dir is incomplete or a stub, so the worker would not see what this machine has.'
                              .format(cfg['cwd'], host, ', '.join(sorted(missing))))
     launcher = cfg['launcher_path']
     if not launcher.is_file():
@@ -1133,6 +1189,7 @@ def run_lane(lane, cfg, rh, dry=False):
             worker_errors = []
             for stage in ('search', 'read', 'kill'):
                 stage_due, queue, _ = stage_snapshot(lane, cfg, rh)
+                cfg['_settled'] = settled(queue)
                 if stage == 'read':
                     due = stage_due
                 spec = attempt / ('{}-{}.md'.format(pass_number, stage))

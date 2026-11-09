@@ -242,3 +242,22 @@ def test_a_failed_refresh_refuses_instead_of_running_on_a_stale_lane(cfg, tmp_pa
     with pytest.raises(ValueError) as e:
         sweep.run_worker(spec, cfg)
     assert 'cannot refresh' in str(e.value) and 'stale copy' in str(e.value)
+
+
+def test_the_host_check_asks_for_files_the_work_dir_really_has(tmp_path):
+    """virtual-embryo, 11-08: its work dir is a project directory, and its rules files live in the lane
+    directory, in neither copy of the work dir, so asking the host for them could never pass. They
+    travel inside the prompt anyway; the check proves the host copy is not a stub."""
+    lane, project = tmp_path / 'lane', tmp_path / 'project'
+    lane.mkdir(); project.mkdir()
+    for name in ('SWEEP_KILL_RULES.md', 'INTAKE.toml'):
+        (lane / name).write_text('x\n')
+    rules = [(str(lane / 'SWEEP_KILL_RULES.md'), 'x'), (str(lane / 'INTAKE.toml'), 'x')]
+    assert sweep.host_check_names(dict(cwd=str(lane), rules=rules)) == ['SWEEP_KILL_RULES.md', 'INTAKE.toml']
+    (project / 'README.md').write_text('x\n')
+    (project / 'model.py').write_text('x\n')
+    (project / 'empty.txt').write_text('')
+    (project / '.hidden').write_text('x\n')
+    (project / 'runs').mkdir()
+    names = sweep.host_check_names(dict(cwd=str(project), rules=rules, run_directory='runs'))
+    assert names == ['README.md', 'model.py']
