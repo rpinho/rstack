@@ -376,7 +376,8 @@ def local_spelling(base, relative, seen, remember=False):
 
 
 def scope(pod):
-    declaration = [pod.get('results'), pod.get('harvest_dest')]
+    declaration = [pod.get('results'), pod.get('harvest_dest'),
+                   dict(environment_dirs=sorted(harvest_reader.ENVIRONMENT_DIRS))]
     if pod.get('harvest_exclude_dirs'):
         declaration.append(dict(exclude_dirs=sorted(pod['harvest_exclude_dirs'])))
     if pod.get('harvest_exclude_paths'):

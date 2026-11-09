@@ -943,6 +943,28 @@ def test_dependency_exclusions_are_explicit_recursive_and_preserve_project_files
     assert copied == {str(tmp_path / 'verification/clean/proof.lean'), str(tmp_path / 'receipts/check.json')}
 
 
+def test_environment_directories_are_never_walked(tmp_path, monkeypatch):
+    """11-03: every file of every pod .venv was listed (scipy test .wav files skipped one by one)."""
+    monkeypatch.setattr(reader, 'valid', lambda p: str(p).startswith(str(tmp_path)))
+    for relative in ['.venv/lib/python3.12/site-packages/scipy/io/tests/data/t.wav', 'venv/bin/tool',
+                     'src/__pycache__/fit.cpython-312.pyc', 'web/node_modules/pkg/index.js',
+                     'vendor/site-packages/x.py', 'results/fit.json', '.git/HEAD']:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'research')
+    walked = []
+    real = reader.os.walk
+    def spy(*a, **kw):
+        for item in real(*a, **kw):
+            walked.append(item[0])
+            yield item
+    monkeypatch.setattr(reader.os, 'walk', spy)
+    found = list(reader.manifest([str(tmp_path)]))
+    assert {r['path'] for r in found if 'sha256' in r} == {str(tmp_path / 'results/fit.json'), str(tmp_path / '.git/HEAD')}
+    assert sum(r.get('skip') == 'excluded_dependency_directory' for r in found) == 5
+    assert not any(part in w for w in walked for part in ('.venv', '/venv', '__pycache__', 'node_modules', 'site-packages'))
+
+
 def test_exclusion_policy_changes_scope_and_invalidates_freshness(setup):
     root, pod, *_ = setup
     original = h.scope(pod)

@@ -12,6 +12,11 @@ import sys
 
 MAX_BYTES = 200_000_000
 DEPENDENCY_DIRS = frozenset(('.lake', '.elan', '.cache'))
+# Always pruned, before listing or hashing: installed environments and bytecode, rebuilt from the
+# project's own lock files. On 11-03 the listing walked every file of every pod workspace's .venv
+# (scipy's test .wav files logged one by one as skipped media) into a 22 MB controller log. A .git
+# is not here: it can hold commits made on the pod and nowhere else.
+ENVIRONMENT_DIRS = frozenset(('.venv', 'venv', 'site-packages', '__pycache__', 'node_modules'))
 # 11-03: no '.ts' (TypeScript), and no host mimetypes guess (a pod's /etc/mime.types called a Snakemake
 # .smk file video/x-smacker and the harvest skipped it). Extensions here are unambiguous; MPEG-TS is caught by magic.
 MEDIA = frozenset('.mp3 .mp4 .m4a .m4v .wav .wave .avi .mov .mkv .webm .flac .ogg .oga .ogv .opus .aac .aiff .aif .wma .wmv .mpeg .mpg .3gp .mts .m2ts .mid .midi .amr .au'.split())
@@ -174,7 +179,7 @@ def manifest(roots, excluded_dirs=(), excluded_paths=()):
                         if name in dirs:
                             dirs.remove(name)
                         yield dict(path=path, skip='symlink')
-                    elif name in dirs and name in excluded_dirs:
+                    elif name in dirs and (name in excluded_dirs or name in ENVIRONMENT_DIRS):
                         dirs.remove(name)
                         yield dict(path=path, skip='excluded_dependency_directory')
                     elif name in files:
