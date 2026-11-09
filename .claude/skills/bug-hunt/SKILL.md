@@ -12,9 +12,18 @@ a patch, or a speedup that gives the same answers. Not a code review, and not a 
    PR or fork accounts, stars, or downloads (`--package pypi:NAME`), or it fails as `TARGET_UNUSED`.
    Hunt their latest commit.
 2. **Bugs.** Each bug gets a minimal repro that fails on their latest commit, a patch that makes it
-   pass, and the effect on a result they published or would publish. A separate referee rebuilds
-   each one from the repro and writes a verdict (CONFIRMED, CONFIRMED-MINOR, KNOWN, INTENDED, NOT
-   REPRODUCED). Report only what it confirmed.
+   pass, and the effect on a result they published or would publish. Write the claims as
+   `claims.json` (file, function, root cause, observed, expected) and run
+   `rh bughunt claims-check LANE claims.json`: a claim a referee refuted before is refused unless the
+   source changed or it says how it differs. Record what the round covered with
+   `rh bughunt coverage LANE record FILE`; one pass finds about half, so a target is not done until a
+   gap-fill round finds nothing new. The referee gets the standard prompt from
+   `rh bughunt referee-prompt LANE claims.json WORKDIR`, which mixes in planted false claims, and
+   writes `verdict.json` (CONFIRMED, CONFIRMED-MINOR, KNOWN, INTENDED, REFUTED, BLOCKED). Run
+   `rh bughunt verdicts LANE WORKDIR/verdict.json`: malformed output is run again, never repaired, and
+   a referee that confirms a planted claim is rejected whole. Use a referee from a different model
+   family than the hunter. Report only what it confirmed. A BLOCKED claim is never a bug in an
+   email; its one missing fact can be the question the email opens with.
 3. **Speedups.** Before starting, read their open pull requests and branches (the target check
    lists any about speed) and, if someone there is already optimizing, ask them first. Profile on a
    representative input (theirs where public) and name the hot spot with numbers. Write the change

@@ -30,6 +30,8 @@ import urllib.request
 
 import contacts_ledger
 import reciprocate
+import bug_coverage
+import bug_verdicts
 import speedup
 
 UTC = dt.timezone.utc
@@ -293,8 +295,15 @@ def sent_at(row):
     return None
 
 
-def passing_verdict(directory):
-    """The verdict file in DIRECTORY that records at least one confirmed result, or None."""
+def passing_verdict(directory, lane=None):
+    """The verdict file in DIRECTORY that records at least one confirmed result, or None.
+    A verdict.json (bug_verdicts.py) counts only when it was recorded and accepted in LANE."""
+    structured = Path(directory) / 'verdict.json'
+    if lane is not None and structured.is_file():
+        try:
+            return structured if bug_verdicts.accepted(structured, lane) and bug_verdicts.confirmed(structured) else None
+        except (OSError, ValueError, KeyError):
+            return None
     for name in VERDICT_FILES:
         path = Path(directory) / name
         try:
@@ -386,6 +395,36 @@ def findings(row, text, cfg, lane, rh, everyone, clock):
     except (OSError, ValueError, KeyError) as error:
         warnings.append('contact checks skipped: {}'.format(error))
         contact = None
+    # Structured referee verdicts (bug_verdicts.py, 11-08): a verdict.json counts only once recorded and
+    # accepted (plants caught), and a bug one referee refuted cannot go out on another's confirm alone.
+    if any(k in ('code-bug', 'code') for k in kinds):
+        refuted = bug_verdicts.ledger(lane, 'REFUTED.jsonl')
+        for directory in row.get('rechecks', []):
+            structured = Path(directory) / 'verdict.json'
+            if not structured.is_file():
+                continue
+            if not bug_verdicts.accepted(structured, lane):
+                failures.append('VERDICT_UNRECORDED: {} is not a recorded, accepted referee verdict; run rh bughunt '
+                                'verdicts {} {}'.format(structured, lane.name, structured))
+                continue
+            doc = json.loads(structured.read_text())
+            for c in bug_verdicts.confirmed(structured):
+                fp = bug_verdicts.fingerprint(doc['target'], c['file'], c['function'])
+                clash = [r for r in refuted if r['fingerprint'] == fp and r.get('batch') != doc['batch'] and
+                         not (r.get('file_sha256') and c.get('file_sha256') and r['file_sha256'] != c['file_sha256'])]
+                if clash:
+                    failures.append('BUG_REFUTED_BEFORE: {} {}:{} was refuted by {} on {} ("{}"); the referees '
+                                    'disagree, so a third one decides'.format(
+                                        c['id'], c['file'], c['function'], clash[-1].get('referee'),
+                                        clash[-1].get('utc', '')[:10], clash[-1].get('reason', '')))
+        for target in row.get('targets', []):
+            st = bug_coverage.status(lane, normalise(target))
+            if not st['rounds']:
+                warnings.append('COVERAGE_UNRECORDED: no hunt round on {} is recorded (rh bughunt coverage {} record '
+                                'FILE)'.format(target, lane.name))
+            elif not st['done']:
+                warnings.append('COVERAGE_ONE_PASS: {} has {} hunt round(s) at {} and is not done; one pass finds '
+                                'about half of what repeated passes do'.format(target, st['rounds'], (st['commit'] or '')[:10]))
     if contact is not None:
         book = contact.get('addresses', [])
         if book and not contacts_ledger.live_addresses(contact):
@@ -403,7 +442,7 @@ def findings(row, text, cfg, lane, rh, everyone, clock):
                 # equality check on the same patch: another --speedup directory that passed.
                 needs.append((speed_count, 'verified runs of the same patch (--speedup DIR)'))
             if set(kinds) - {'code-speedup'} or not kinds:
-                needs.append((len({str(Path(d).resolve()) for d in row.get('rechecks', []) if passing_verdict(d)}),
+                needs.append((len({str(Path(d).resolve()) for d in row.get('rechecks', []) if passing_verdict(d, lane)}),
                               're-checks with a confirmed verdict (--recheck DIR)'))
             for count, what in needs:
                 if count < cfg['extra_rechecks']:
@@ -443,6 +482,64 @@ def arguments(sub):
     p = actions.add_parser('targets', help='stored verdicts, newest first')
     p.add_argument('lane')
     p.add_argument('--json', action='store_true')
+    p = actions.add_parser('claims-check', help="refuse a hunter's claims that a referee refuted before")
+    p.add_argument('lane')
+    p.add_argument('claims', type=Path, help='claims.json from the hunter')
+    p = actions.add_parser('referee-prompt', help='the standard referee prompt, with planted false claims mixed in')
+    p.add_argument('lane')
+    p.add_argument('claims', type=Path, help='claims.json from the hunter')
+    p.add_argument('workdir', type=Path, help="the referee's working directory (gets claims.json and PROMPT.md)")
+    p.add_argument('--plants', type=Path, help='a JSON list of false claims written for this target')
+    p.add_argument('--plant', type=int, default=1, help='automatic plants to add (default 1)')
+    p.add_argument('--extra', type=Path, help="a file of host notes appended to the prompt (toolchains, limits)")
+    p = actions.add_parser('verdicts', help="validate a referee's verdict.json, check its plants, record it")
+    p.add_argument('lane')
+    p.add_argument('file', type=Path)
+    p = actions.add_parser('referees', help='confirm rate and plant catch rate per referee')
+    p.add_argument('lane')
+    p = actions.add_parser('coverage', help='what was already hunted in a repository')
+    p.add_argument('lane')
+    p.add_argument('what', choices=('record', 'show'))
+    p.add_argument('arg', help='record: a coverage JSON file; show: OWNER/REPO')
+
+
+def verdict_commands(lane, args, rh):
+    if args.action == 'referees':
+        for line in bug_verdicts.referees(lane) or ['no referee batches recorded']:
+            print(line)
+        return 0
+    if args.action == 'coverage':
+        if args.what == 'record':
+            with rh.locked(lane):
+                ok, msgs = bug_coverage.record(lane, json.loads(Path(args.arg).read_text()))
+            print('\n'.join(msgs))
+            return 0 if ok else 1
+        st = bug_coverage.status(lane, normalise(args.arg))
+        print('{} rounds at {}; {}'.format(st['rounds'], (st['commit'] or '-')[:10], 'done' if st['done'] else
+                                          'not done (two rounds, the last with no new candidate, nothing deferred)'))
+        for unit, cls in st['covered']:
+            print('  covered   {}  {}'.format(unit, cls))
+        for unit, cls in st['deferred']:
+            print('  deferred  {}  {}'.format(unit, cls))
+        return 0
+    if args.action == 'verdicts':
+        with rh.locked(lane):
+            ok, msgs = bug_verdicts.record(lane, args.file)
+        print('\n'.join(msgs))
+        return 0 if ok else 1
+    doc = json.loads(args.claims.read_text())
+    if args.action == 'claims-check':
+        found = bug_verdicts.claims_check(lane, doc)
+        print('\n'.join(found) if found else 'PASS: {} claims, none refuted before'.format(len(doc['claims'])))
+        return 1 if found else 0
+    plants = json.loads(args.plants.read_text()) if args.plants else []
+    extra = args.extra.read_text() if args.extra else ''
+    with rh.locked(lane):
+        batch, real, planted = bug_verdicts.referee_prompt(lane, doc, args.workdir.expanduser().resolve(),
+                                                           plants, args.plant, extra=extra)
+    print('batch {}: {} claims + {} planted in {}/claims.json; prompt {}/PROMPT.md'.format(
+        batch, real, planted, args.workdir, args.workdir))
+    return 0
 
 
 def main(root, args, rh, get=None):
@@ -454,6 +551,8 @@ def main(root, args, rh, get=None):
     if not lane.is_dir():
         raise ValueError('lane directory missing')
     cfg = outreach.settings(lane, rh)
+    if args.action in ('claims-check', 'referee-prompt', 'verdicts', 'referees', 'coverage'):
+        return verdict_commands(lane, args, rh)
     if args.action == 'speedup-verify':
         row = speedup.verify(args.dir, cfg)
         print('{} {} {}x ({} s -> {} s)'.format(row['verdict'], row['target'], row.get('speedup'),
