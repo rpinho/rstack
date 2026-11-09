@@ -262,11 +262,12 @@ exec nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --d
     # worker's, so the receipts pulled above say which files to bring back too. Without this a
     # receipt that is correct on the host fails here for a missing file (planets, 11-09).
     named=$(python3 -I "${self:h:h}/harness/tools/receipt_files.py" "$dir" 2>>"$log.pull")
-    if [[ -n $named ]]; then
-      print -r -- "$named" | rsync -a --timeout=120 --max-size="${LAUNCH_PULL_MAX_SIZE:-4m}" \
-        -e "${LAUNCH_SSH:-ssh}" --files-from=- "$LAUNCH_HOST:$dir/" "$dir/" >> "$log.pull" 2>&1 ||
-        print -- "pull of receipt evidence from $LAUNCH_HOST failed rc $? $(date)" >> "$log"
-    fi
+    # One file at a time: openrsync drops the whole list when one name is missing on the host.
+    for rel in ${(f)named}; do
+      print -r -- "$rel" | rsync -a --timeout=120 --max-size="${LAUNCH_PULL_MAX_SIZE:-4m}" -e "${LAUNCH_SSH:-ssh}" \
+        --files-from=- "$LAUNCH_HOST:$dir/" "$dir/" >> $log.pull 2>&1 ||
+        print -r -- "pull of receipt evidence $rel from $LAUNCH_HOST failed $(date)" >> $log
+    done
     # Say so when the host wrote the ledger anyway. Silence here would mean rows exist on a
     # machine nobody reads, which is how a result gets lost rather than merged wrongly.
     if (( $#ledger )); then

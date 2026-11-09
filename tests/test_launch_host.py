@@ -440,3 +440,22 @@ def test_the_pull_brings_back_the_evidence_a_receipt_names(tmp_path):
                    input='\n'.join(named), text=True, check=True, timeout=60)
     assert (dst / 'sweep-work/runs/attempt/X_SEARCHES.jsonl').read_text().startswith('{"result"')
     assert not (dst / 'RESULTS.jsonl').exists()
+
+
+def test_a_receipt_file_already_here_is_not_pulled(tmp_path):
+    """friends, 11-09: the work dir keeps receipts from runs made on this machine, whose capture
+    copies were never on the host. Naming one made the whole pull fail. A file here with the hash
+    the receipt binds stays off the list; a missing or different one is still pulled."""
+    import hashlib
+    sys.path.insert(0, str(REPO / 'harness/tools'))
+    import receipt_files
+    old, new = tmp_path / 'runs/old', tmp_path / 'runs/new'
+    for d in (old, new):
+        d.mkdir(parents=True)
+    (old / 'X.capture.jsonl').write_text('{"old": 1}\n')
+    sha = hashlib.sha256((old / 'X.capture.jsonl').read_bytes()).hexdigest()
+    for d, s in ((old, sha), (new, sha)):
+        (d / 'prior-art-A.json').write_text(json.dumps(dict(schema=1, sources=dict(x=dict(
+            capture_path=str(d / 'X.capture.jsonl'), capture_sha256=s)))))
+    assert receipt_files.files(tmp_path) == ['runs/new/X.capture.jsonl']
+    assert 'for rel in ${(f)named}' in LAUNCH.read_text()
