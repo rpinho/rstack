@@ -9,5 +9,6 @@ Standalone scripts (Python 3.9+ standard library, plus bash for `clean-room`). E
 - `egress-gate`: refuses to pass a directory, a push or a text that contains secret shapes or your own patterns and terms (exit 2). Agents build public output on a machine that holds private context, and checking by hand was prose.
 - `clean-room`: runs codex or claude in an empty identity for work that will leave the machine. A fresh config dir still loaded the personal CLAUDE.md from the home directory, an ancestor of the workspace.
 - `reload-lint.py`: blocks a commit that puts a configured term next to a configured working-detail marker in a file every session reloads, printing markers and counts, never the terms. An index line carrying a project's working detail stalled every general-purpose session that reloaded it.
+- `hook-audit`: feeds every registered PreToolUse guard malformed events (unparseable text, a string or list instead of an object, fields of the wrong type) shaped like the action it guards, and lists the ones that crash. Claude Code treats a crash as allow, so a guard that raises on input it cannot read is no guard. Its first run found three send gates on one machine that did exactly that.
 - `_terms.py`: the shared terms-file reader, and the reason there is no built-in list.
 - `terms.example.txt`: the terms-file format, with placeholder words only.

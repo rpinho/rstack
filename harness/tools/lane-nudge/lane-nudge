@@ -16,7 +16,9 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -53,11 +55,39 @@ def newest_transcript(path, projects):
 
 
 def cadence(rh):
+    """({owner_session: row}, None) or (None, error). A failed read is never all clear: one Mini ran
+    this under launchd with a bare `rh` that was not on launchd's PATH, every read failed for 8 hours,
+    and every lane read as fine. `rh lanes cadence` exits 1 when a lane is behind, so only output that
+    is not the JSON list counts as a failed read."""
     try:
-        out = subprocess.run([rh, 'lanes', 'cadence', '--json'], capture_output=True, text=True, timeout=120).stdout
-        return {r['owner_session']: r for r in json.loads(out) if r.get('owner_session')}
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return {}
+        run = subprocess.run([rh, 'lanes', 'cadence', '--json'], capture_output=True, text=True, timeout=120)
+        try:
+            data = json.loads(run.stdout)
+        except ValueError:
+            return None, 'exit {}, no JSON: {}'.format(run.returncode, (run.stderr or run.stdout).strip()[-200:])
+        rows = {r['owner_session']: r for r in data if isinstance(r, dict) and r.get('owner_session')}
+        return (rows, None) if rows else (None, 'no lanes in the cadence output')
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, '{}: {}'.format(type(exc).__name__, exc)
+
+
+def report_failure(error, state, alert, dry):
+    """Print a loud row on every failed run and push once per failure streak (ALERT, a command that
+    takes the message as its last argument); log recovery the same way."""
+    flag = state / 'cadence-failed.json'
+    if error:
+        line = 'CADENCE READ FAILED: {}. Every lane is UNKNOWN this run, not fine.'.format(error)
+        print(line, file=sys.stderr)
+        if not flag.exists() and not dry:
+            if alert:
+                subprocess.run(shlex.split(alert) + ['lane-nudge: ' + line], capture_output=True, timeout=60)
+            flag.write_text(json.dumps({'since': time.time(), 'error': error}))
+        return line
+    if flag.exists() and not dry:
+        if alert:
+            subprocess.run(shlex.split(alert) + ['lane-nudge: cadence read recovered'], capture_output=True, timeout=60)
+        flag.unlink()
+    return None
 
 
 def main():
@@ -72,12 +102,16 @@ def main():
     ap.add_argument('--rh', default=os.environ.get('RH_BIN', 'rh'))
     ap.add_argument('--projects', default=str(home / '.claude/projects'))
     ap.add_argument('--state', default=str(home / '.local/state/lane-nudge'))
+    ap.add_argument('--alert', default=os.environ.get('LANE_NUDGE_ALERT', ''),
+                    help='command run with one message argument when the cadence read fails (and on recovery)')
     ap.add_argument('--dry', action='store_true')
     a = ap.parse_args()
     skip = {s for s in a.skip.split(',') if s}
     state = Path(a.state)
     state.mkdir(parents=True, exist_ok=True)
-    cad = cadence(a.rh)
+    cad, error = cadence(a.rh)
+    report_failure(error, state, a.alert, a.dry)
+    cad = cad or {}
     for lane, pane, path in panes(a.tmux, a.prefix):
         if lane in skip:
             continue
@@ -93,6 +127,8 @@ def main():
         why = decide(idle, bool(RUNNING.search(tail)), c.get('status'), last, time.time(), a.idle_min, a.reask)
         if not why:
             continue
+        if error and why == 'quiet':
+            why = 'quiet (cadence unknown: the read failed)'
         text = MSG.format(lane=lane, why=why, idle=idle)
         print(f'{lane}: nudge ({why}; idle {idle} min)')
         if a.dry:

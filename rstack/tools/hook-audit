@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Feed every registered guard hook malformed events and list the ones that let the action through.
+
+Claude Code blocks a tool call only when a PreToolUse hook exits 2 or prints a deny/ask decision.
+Anything else, including a crash, allows it. So a guard that raises on input it cannot read is no
+guard, and nothing shows it until the day it matters. This reads the hooks registered in one or
+more settings files and runs each PreToolUse command on events shaped like the action it guards
+(its matcher's tool name) but broken: unparseable text, a JSON string or list instead of an
+object, tool_input as a string, fields of the wrong type. It reports, per hook and payload,
+refused, allowed, or CRASHED, and exits 1 if any hook crashed: a crash is not a decision, so the
+action goes through and nobody sees why.
+
+A hook that allows broken input cleanly can be correct: one wired to every shell command should not
+deny the whole session because its own input or state went bad, as long as it says so on stderr.
+Those are listed for a person to check against the case the hook guards; crashes are the finding.
+
+    hook-audit [SETTINGS.json ...] [--project DIR] [--timeout S] [--json]
+
+Default settings: ~/.claude/settings.json. --project sets CLAUDE_PROJECT_DIR for hooks that use it
+(and adds DIR/.claude/settings.json). Only PreToolUse hooks run: they are the guards, and hooks on
+other events may have side effects.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+PAYLOADS = (
+    ('unparseable text', lambda tool: 'not json {'),
+    ('a JSON string', lambda tool: json.dumps('tool_input')),
+    ('a JSON list', lambda tool: json.dumps([{'tool_name': tool}])),
+    ('tool_input a string', lambda tool: json.dumps({'tool_name': tool, 'tool_input': 'rm -rf /'})),
+    ('tool_input a list', lambda tool: json.dumps({'tool_name': tool, 'tool_input': [{'command': 'x'}]})),
+    ('fields of the wrong type', lambda tool: json.dumps({'tool_name': tool, 'tool_input': {
+        'command': ['x'], 'action_summary': {'a': 1}, 'actions': 'x', 'body': 3, 'file_path': None}})),
+)
+
+
+def hooks(paths):
+    out = []
+    for path in paths:
+        try:
+            cfg = json.loads(Path(path).expanduser().read_text())
+        except (OSError, ValueError) as exc:
+            print('could not read {}: {}'.format(path, type(exc).__name__), file=sys.stderr)
+            continue
+        for entry in (cfg.get('hooks') or {}).get('PreToolUse', []):
+            matcher = entry.get('matcher') or '*'
+            for h in entry.get('hooks', []):
+                if h.get('type') == 'command' and h.get('command'):
+                    out.append(dict(settings=str(path), matcher=matcher, command=h['command']))
+    return out
+
+
+def tool_for(matcher):
+    """A concrete tool name the matcher accepts (its first alternative)."""
+    first = matcher.split('|')[0]
+    return 'Bash' if first in ('*', '') else re.sub(r'[.*+?^$()\[\]{}\\]', '', first) or 'Bash'
+
+
+def decision(run):
+    if run.returncode == 2:
+        return 'refused'
+    try:
+        out = json.loads(run.stdout or '{}')
+        verdict = (out.get('hookSpecificOutput') or {}).get('permissionDecision') or out.get('decision')
+        if verdict in ('deny', 'ask', 'block'):
+            return 'refused'
+    except (ValueError, AttributeError):
+        pass
+    if run.returncode:
+        return 'CRASHED (exit {}): fails open'.format(run.returncode)
+    return 'allowed'
+
+
+def audit(found, project=None, timeout=20):
+    env = dict(os.environ)
+    if project:
+        env['CLAUDE_PROJECT_DIR'] = str(Path(project).expanduser())
+    rows = []
+    for h in found:
+        tool = tool_for(h['matcher'])
+        for label, make in PAYLOADS:
+            try:
+                run = subprocess.run(h['command'], shell=True, input=make(tool), capture_output=True, text=True,
+                                     timeout=timeout, env=env)
+                result = decision(run)
+            except subprocess.TimeoutExpired:
+                result = 'CRASHED (timed out): fails open'
+            rows.append(dict(h, tool=tool, payload=label, result=result))
+    return rows
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('settings', nargs='*')
+    ap.add_argument('--project')
+    ap.add_argument('--timeout', type=float, default=20)
+    ap.add_argument('--json', action='store_true')
+    a = ap.parse_args(argv)
+    paths = a.settings or [str(Path.home() / '.claude/settings.json')]
+    if a.project:
+        paths.append(str(Path(a.project).expanduser() / '.claude/settings.json'))
+    rows = audit(hooks(paths), a.project, a.timeout)
+    if a.json:
+        print(json.dumps(rows, indent=2))
+    else:
+        by = {}
+        for r in rows:
+            by.setdefault((r['command'], r['tool']), []).append(r)
+        for (command, tool), rs in by.items():
+            crashed = [r['payload'] + ': ' + r['result'] for r in rs if r['result'].startswith('CRASHED')]
+            allowed = [r['payload'] for r in rs if r['result'] == 'allowed']
+            state = 'CRASHES' if crashed else 'allows ' if allowed else 'refuses'
+            print('{}  [{}]  {}'.format(state, tool, command))
+            for line in crashed:
+                print('        ' + line)
+            if allowed and not crashed:
+                print('        allows cleanly: {} (fine if it is not this hook\'s action; check the guarded case '
+                      'by hand)'.format(', '.join(allowed)))
+    return 1 if any(r['result'].startswith('CRASHED') for r in rows) else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

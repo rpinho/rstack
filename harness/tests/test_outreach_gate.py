@@ -149,3 +149,12 @@ def test_without_banks_the_paper_cut_rule_is_off(ledger, tmp_path):
     del env['RH_VOICE_BANKS']
     result = run_gate(env, 'A different question?')
     assert result is None or 'paper-cut' not in str(result)
+
+
+@pytest.mark.parametrize('payload', ['not json', '"a string"', '[1, 2]', '{"tool_input": "text"}'])
+def test_unreadable_input_is_refused_not_allowed(ledger, payload):
+    """11-08 hook audit: a send gate that crashes or exits 0 on input it cannot read lets the send through."""
+    root, _, _, _ = ledger
+    env = dict(os.environ, RH_OUTREACH_ROOT=str(root), RH_ENV_FILE=os.devnull)
+    run = subprocess.run([sys.executable, str(GATE)], input=payload, text=True, capture_output=True, env=env, timeout=10)
+    assert run.returncode == 0 and json.loads(run.stdout)['hookSpecificOutput']['permissionDecision'] == 'deny'

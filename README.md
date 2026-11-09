@@ -118,6 +118,15 @@ mechanism that enforces it, or an admission that there isn't one.
 - [**A session's context is a resource**](rstack/principles/context-is-a-resource.md): content that
   breaks a session, written into the files that session rereads, breaks it again on every start.
   Compaction does not help, because the summary is rebuilt from those same files.
+- [**A failed read is never all clear**](rstack/principles/a-failed-read-is-not-all-clear.md): a
+  watchdog that cannot read a source says so loudly. One read failed for eight hours and every lane
+  read as fine.
+- [**Degrade, never suppress**](rstack/principles/degrade-never-suppress.md): ship a flagged partial
+  result, never nothing. Prose for now.
+- [**Verify before a destructive claim**](rstack/principles/verify-before-destructive-claims.md):
+  "unused" cites the check that showed it, or says it is an assumption.
+- [**Change direction after a dry streak**](rstack/principles/change-direction-after-a-dry-streak.md):
+  three tries with nothing usable, then a different method and the dead end written down.
 - [**Reciprocate**](rstack/principles/reciprocate.md): a reply mirrors the message it answers,
   in length, greeting, warmth, questions and language. The outreach lint checks each one.
 

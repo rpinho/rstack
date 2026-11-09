@@ -88,9 +88,15 @@ def body_of(tool_input):
 
 
 def main():
+    # Every tool this hook is wired to sends mail, so input it cannot read is still a send: refuse it.
+    # (A crash or exit 0 here would let the send through, which is what an audit of malformed events found.)
     try:
         event = json.load(sys.stdin)
     except ValueError:
+        decision('Email voice gate: the hook could not read this tool call (unparseable input); refusing the send.')
+        return 0
+    if not isinstance(event, dict) or not isinstance(event.get('tool_input') or {}, dict):
+        decision('Email voice gate: the tool call is not the shape this hook reads; refusing the send.')
         return 0
     tool_input = event.get('tool_input') or {}
     text = body_of(tool_input)
@@ -120,4 +126,8 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as exc:   # a guard refuses, never crashes: a crash would let the send through
+        decision('Email voice gate failed ({}); refusing the send.'.format(type(exc).__name__))
+        sys.exit(0)

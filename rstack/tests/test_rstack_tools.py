@@ -362,3 +362,21 @@ def test_no_tool_ships_a_term_list():
     for f in TOOLS.iterdir():
         if f.is_file():
             assert 'FALLBACK_TERMS' not in f.read_text(errors='replace'), f.name
+
+
+def test_hook_audit_reports_a_guard_that_crashes(tmp_path):
+    crash = tmp_path / 'crash.py'
+    crash.write_text('import json, sys\nd = json.load(sys.stdin)\nprint(d["tool_input"]["command"])\n')
+    refuse = tmp_path / 'refuse.py'
+    refuse.write_text('import json, sys\nprint(json.dumps({"hookSpecificOutput": {"permissionDecision": "deny"}}))\n')
+    settings = tmp_path / 'settings.json'
+    settings.write_text(json.dumps({'hooks': {'PreToolUse': [
+        {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': '{} {}'.format(sys.executable, crash)}]},
+        {'matcher': 'mcp__x__send|Other', 'hooks': [{'type': 'command', 'command': '{} {}'.format(sys.executable, refuse)}]}],
+        'PostToolUse': [{'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': 'false'}]}]}}))
+    r = py('hook-audit', str(settings))
+    assert r.returncode == 1
+    assert 'CRASHES  [Bash]' in r.stdout and 'refuses  [mcp__x__send]' in r.stdout
+    assert 'false' not in r.stdout, 'only PreToolUse guards run'
+    rows = json.loads(py('hook-audit', str(settings), '--json').stdout)
+    assert {r['result'] for r in rows if 'refuse' in r['command']} == {'refused'}
