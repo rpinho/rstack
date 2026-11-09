@@ -10,7 +10,8 @@ on a reply, checked against their latest message (`rh outreach draft ... --incom
                          that many words back, since a few words rarely carry a full answer.
                          The floor never exceeds reciprocate_floor_cap (120), the owner's cap on
                          a reply to a friend: above it the two rules could not both pass (friends,
-                         11-09, 189 words in). A shorter reply takes --short-ok in the owner's words.
+                         11-09, 189 words in), and to a friend there is no floor (friend_email.py).
+                         A shorter reply takes --short-ok in the owner's words.
   RECIPROCATE_GREETING   they greet, we greet, in the same register (hi/hey/hello/ola vs
                          dear/caro); they greet us by name, we greet them by name
   RECIPROCATE_SIGNOFF    they sign off, we sign off
@@ -27,6 +28,8 @@ Portuguese, deliberately simple, so a finding is easy to check and easy to argue
 """
 import re
 import unicodedata
+
+import friend_email
 
 import mixed_language
 
@@ -118,6 +121,8 @@ def findings(incoming, draft, contact=None, cfg=None, short_ok=''):
     ceiling = max(int(n_in * ratio_max), cfg['reciprocate_short_words'])
     floor = int(n_in * cfg['reciprocate_min_ratio']) if n_in >= cfg['reciprocate_short_words'] else 0
     floor = min(floor, cfg['reciprocate_floor_cap'])
+    if friend_email.is_friend(contact, cfg):
+        floor = 0   # a friend's sender writes one line back; a floor would push toward the paragraphs they spot
     if short_ok.strip():
         floor = 0
     if n_out > ceiling or n_out < floor:

@@ -14,7 +14,8 @@ fails lint when:
   CALL_MISSING       the contact has replied before and it offers no call (the lane's call_link)
 
 Each has an override in the owner's words (`--opener-ok`, `--life-ok`, `--meaning-ok`,
-`--nocall-ok`; `--users-override` for USERS_MISSING). On in a lane with `science_email_rules = true`
+`--nocall-ok`; `--users-override` for USERS_MISSING). To a friend (friend_email.py) the life line,
+meaning and call offer are optional, since they add length; the question first stays. On in a lane with `science_email_rules = true`
 in OUTREACH.toml; `life_words` adds the lane's own words for a life line (places, people), which
 belong in the private lane config, not here; `call_link` is the booking link to offer. The matching
 is lexical, English and Portuguese.
@@ -70,11 +71,14 @@ def is_science(draft, attachments=(), kinds=()):
     return bool(RESULT.search(draft) or docs or set(kinds) & set(SCIENCE_KINDS))
 
 
-def findings(contact, incoming, draft, attachments=(), kinds=(), overrides=None, cfg=None, users_ok=False):
+def findings(contact, incoming, draft, attachments=(), kinds=(), overrides=None, cfg=None, users_ok=False,
+             friend=False):
     """Failure strings for a science email; [] for any other message.
 
     OVERRIDES maps opener/life/meaning/nocall/users to the owner's words. USERS_OK is True when the
-    caller already has evidence of use (a target whose users check passed)."""
+    caller already has evidence of use (a target whose users check passed). For a FRIEND
+    (friend_email.py) the life line, meaning and call offer are optional: they add length, and
+    length is what a friend reads as AI."""
     cfg = check_settings(dict(cfg or {}))
     overrides = {k: (v or '').strip() for k, v in (overrides or {}).items()}
     contact = contact or {}
@@ -86,7 +90,7 @@ def findings(contact, incoming, draft, attachments=(), kinds=(), overrides=None,
         out.append('SCIENCE_OPENER: a science email opens with a plain question, not the result (question first '
                    'got 3 of 3 replies, result first 3 of 10); or --opener-ok in the owner\'s words')
     life = re.compile(r'(?i)\b(' + '|'.join([LIFE] + [re.escape(w) for w in cfg['life_words']]) + r')\b')
-    if not life.search(draft) and not overrides.get('life'):
+    if not life.search(draft) and not overrides.get('life') and not friend:
         out.append('LIFE_LINE_MISSING: add one line about your own life or work (5 of 8 who replied asked what '
                    'you do now); or --life-ok')
     if BUG.search(draft) and not (contact.get('users') or '').strip() and not users_ok and not overrides.get('users'):
@@ -94,11 +98,12 @@ def findings(contact, incoming, draft, attachments=(), kinds=(), overrides=None,
                    'field, a --target whose users check passed, or --users-override with their words (bug first '
                    'got 2 of 8, both "this code isn\'t used")')
     gain = NUMBER_GAIN.search(draft)
-    if gain and not MEANING.search(draft) and not overrides.get('meaning'):
+    if gain and not MEANING.search(draft) and not overrides.get('meaning') and not friend:
         out.append('MEANING_MISSING: a tighter number alone ("{}"): say what it means for their question; or '
                    '--meaning-ok'.format(gain.group(0)))
     call = re.compile(r'(?i)(' + (re.escape(cfg['call_link']) + '|' if cfg['call_link'] else '') + CALL + ')')
-    if (contact.get('last_in') or '').strip() and not call.search(draft) and not overrides.get('nocall'):
+    if (contact.get('last_in') or '').strip() and not call.search(draft) and not overrides.get('nocall') \
+            and not friend:
         out.append('CALL_MISSING: {} has replied before: offer a call{}; or --nocall-ok'.format(
             contact.get('name', 'they'), ' ({})'.format(cfg['call_link']) if cfg['call_link'] else ''))
     return out

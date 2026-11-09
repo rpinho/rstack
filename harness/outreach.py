@@ -5,6 +5,7 @@ import mixed_language
 import ops_mentions
 import bughunt
 import contacts_ledger
+import friend_email
 import reciprocate
 import science_email
 import voice_cuts
@@ -108,6 +109,7 @@ def settings(lane, rh):
         raise ValueError('OUTREACH require_claims needs recheck_roots to check against')
     bughunt.check_settings(cfg)
     science_email.check_settings(cfg)
+    friend_email.check_settings(cfg)
     if cfg.setdefault('voice_cuts', 'auto') not in ('auto', 'on', 'off'):
         raise ValueError('OUTREACH voice_cuts must be "auto" (on when RH_VOICE_BANKS is set), "on" or "off"')
     for key, default in voice_cuts.defaults().items():
@@ -255,7 +257,8 @@ def postmortem_check(row, text, cfg, lane, rh):
     overrides = dict(opener=row.get('opener_ok'), life=row.get('life_ok'), meaning=row.get('meaning_ok'),
                      nocall=row.get('nocall_ok'), users=row.get('users_override'))
     return science_email.findings(person, incoming, text, row.get('attachments', []), bughunt.kinds_of(row),
-                                  overrides, {k: cfg[k] for k in science_email.defaults()}, users_ok)
+                                  overrides, {k: cfg[k] for k in science_email.defaults()}, users_ok,
+                                  friend=friend_email.is_friend(person, cfg))
 
 
 def awaiting_reply(row, text, everyone, lane):
@@ -295,7 +298,7 @@ def awaiting_reply(row, text, everyone, lane):
 def cut_check(row, text, cfg, checks):
     """Paper-cut (voice_cuts.py): the draft is built from the author's own messages, listed in
     DRAFT.cuts. On whenever banks are configured, unless the lane says voice_cuts = "off"."""
-    if cfg['voice_cuts'] == 'off':
+    if cfg['voice_cuts'] == 'off' or row.get('owner_wrote'):
         return []
     try:
         banks = voice_cuts.load_banks()
@@ -599,7 +602,8 @@ def lint_rows(lane, selected, rh, allow_collision=None):
     results = {}
     for row in selected:
         checks = dict(voice=[], questions=[], contact=[], collision=[], links=[], science=[],
-                      language=[], evidence=[], ops=[], promise=[], bughunt=[], reciprocate=[], cuts=[], postmortem=[])
+                      language=[], evidence=[], ops=[], promise=[], bughunt=[], reciprocate=[], cuts=[], postmortem=[],
+                      friend=[])
         try:
             text = body(row)
         except (OSError, UnicodeError):
@@ -700,6 +704,9 @@ def lint_rows(lane, selected, rh, allow_collision=None):
                 checks['reciprocate'].append('RECIPROCATE_INCOMING_MISSING: this is a reply (the ball is with us, '
                                              'or they asked for it); draft it with --incoming THEIR_MESSAGE so it '
                                              'can mirror them')
+        # A friend reads a long, well-formed email as AI (a friend's call, 11-09): short, no lists.
+        if row['channel'] == 'email':
+            checks['friend'] = friend_email.findings(person, text, cfg, row.get('owner_wrote') or '')
         if row['channel'] == 'email' and cfg['science_email_rules']:
             checks['postmortem'] = postmortem_check(row, text, cfg, lane, rh) + awaiting_reply(row, text, everyone, lane)
         if row['channel'] == 'email':
@@ -917,6 +924,7 @@ def arguments(sub):
                                ('meaning', 'a number without its meaning'), ('nocall', 'no call offer')):
                 p.add_argument('--{}-ok'.format(flag), help="the owner's words allowing {} (science_email.py)".format(what))
             p.add_argument('--short-ok', help="the owner's words allowing a reply shorter than the reciprocate floor (reciprocate.py)")
+            p.add_argument('--owner-wrote', help="the owner's words that they wrote this text themselves; it is then not held to the paper-cut or friend-email checks (friend_email.py)")
             p.add_argument('--requested', help='the recipient asked for this send, in their words; a reply, not outreach, so the daily limit does not hold it')
             p.add_argument('--target', action='append', default=[], help='OWNER/REPO the email is about; gated on rh bughunt target-check')
             p.add_argument('--target-override', help='why an unchecked or failing target is written about anyway (the recipient asked)')
@@ -1049,7 +1057,7 @@ def main(root, args, rh):
                 row['requested'] = safe(args.requested, 'their request')
             if args.users_override:
                 row['users_override'] = safe(args.users_override, 'users override')
-            for flag in ('opener_ok', 'life_ok', 'meaning_ok', 'nocall_ok', 'short_ok'):
+            for flag in ('opener_ok', 'life_ok', 'meaning_ok', 'nocall_ok', 'short_ok', 'owner_wrote'):
                 if getattr(args, flag, None):
                     row[flag] = safe(getattr(args, flag), flag.replace('_', ' '))
             if args.incoming:
