@@ -127,6 +127,8 @@ def main():
         why = decide(idle, bool(RUNNING.search(tail)), c.get('status'), last, time.time(), a.idle_min, a.reask)
         if not why:
             continue
+        if c.get('last_sweep_refused'):
+            why += '; the last sweep was REFUSED, not idle: ' + c['last_sweep_refused'] + '. Fix that first'
         if error and why == 'quiet':
             why = 'quiet (cadence unknown: the read failed)'
         text = MSG.format(lane=lane, why=why, idle=idle)

@@ -259,6 +259,19 @@ class LaneHealthTests(unittest.TestCase):
         self.assertIsNone(row['last_delivery'])
         self.assertIn('STALLED',cadence.lint(self.lane,rh)[0])
 
+    def test_a_refused_sweep_is_named_on_a_stalled_lane(self):
+        """virtual-embryo, 11-07: a disk-floor refusal read as 57 h of STALLED, like an idle session."""
+        self.config()
+        runs = self.lane / 'SWEEP_RUNS.jsonl'
+        rh.append(runs, dict(id='r1', status='started', ok=None))
+        rh.append(runs, dict(id='r1', status='finished', ok=False,
+                             errors=['sweep refused on the disk floor: less than 30 GiB free']))
+        row = cadence.evaluate(self.lane, rh)
+        self.assertEqual(row['status'], 'STALLED')
+        self.assertIn('disk floor', row['last_sweep_refused'])
+        rh.append(runs, dict(id='r2', status='finished', ok=False, errors=['lane failed']))
+        self.assertNotIn('last_sweep_refused', cadence.evaluate(self.lane, rh))
+
     def test_cadence_window_exempt_before_open_and_at_close(self):
         for cfg in [dict(window_opens=(NOW+dt.timedelta(seconds=1)).isoformat()),
                     dict(window_closes=NOW.isoformat())]:

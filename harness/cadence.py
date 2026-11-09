@@ -118,6 +118,28 @@ def delivery_time(lane, cfg, clock):
     return newest
 
 
+def last_sweep_refusal(lane, rh):
+    """The refusal text of the lane's latest finished sweep, if it was refused before doing any work.
+
+    virtual-embryo, 11-07: its sweep refused instantly on the disk floor and the lane read as STALLED
+    for 57 hours, which looked like an idle session rather than a precondition nobody had fixed. The
+    status stays STALLED (alerts and lint key on it), and this says why. Only the harness's own
+    refusal messages are echoed, cut short."""
+    try:
+        rows = rh.rows(lane / 'SWEEP_RUNS.jsonl')
+    except (OSError, ValueError):
+        return None
+    for row in reversed(rows):
+        if row.get('status') != 'finished':
+            continue
+        if row.get('ok') is False:
+            for err in row.get('errors') or []:
+                if isinstance(err, str) and 'refused' in err:
+                    return err[:240]
+        return None
+    return None
+
+
 def evaluate(lane, rh, now=None):
     """One lane; no lane locks, worker config reads, mkdirs, alerts or pushes."""
     clock = stamp(now or rh.now())
@@ -147,6 +169,10 @@ def evaluate(lane, rh, now=None):
         # An interval anchored to the last delivery is stable across polls/days.
         # Missing evidence has a stable sentinel, never a poll-time bucket.
         result['stall_window'] = when.isoformat() if when else 'never'
+        if result['status'] != 'OK':
+            refused = last_sweep_refusal(lane, rh)
+            if refused:
+                result['last_sweep_refused'] = refused
     except (OSError, ValueError, TypeError, OverflowError, SyntaxError):
         # Do not echo TOML/evidence/parser errors: they may include private text.
         result.update(status='STALLED', broken=True, error='CADENCE configuration or evidence unreadable/invalid')
@@ -216,4 +242,6 @@ def main(root, args, rh):
     else:
         for row in rows:
             print('{} {}: {}'.format(row['status'], row['lane'], body(row).replace('\n', ' ').strip()))
+            if row.get('last_sweep_refused'):
+                print('  last sweep was refused, not idle: ' + row['last_sweep_refused'])
     return int(any(row['status'] == 'STALLED' for row in rows))
