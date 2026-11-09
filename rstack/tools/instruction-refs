@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Fail when an instruction file names a path, link, command or flag that no longer exists.
+
+An agent follows its instruction files over the code: a published study of 40 projects found a stale
+CLAUDE.md or AGENTS.md instruction followed about 90% of the time against 4% for what the code said
+(SmartScope, "stale instructions override code", 2026; via @undefinedKi). Ours have drifted the same
+way: a hook guarded a path deleted four months earlier, and a skill kept a posting limit after the code
+changed. So everything an instruction file names that can be resolved is resolved:
+
+  links       [text](relative/path) must exist, relative to the file
+  paths       `harness/x.py`, `docs/y.md` (repo-relative, with --repo) and `~/...` or `/...` (with
+              --local, for files that live on one machine) must exist; globs and <placeholders> skip
+  rh          `rh SUBCOMMAND [ACTION]` must be a real subcommand (and action) of the repo's rh, and
+              every --flag on that line must be defined somewhere in harness/*.py (with --repo)
+
+Numbers and limits in prose ("one post a day") cannot be resolved this way; keep those in the code
+and point the instruction file at it.
+
+    instruction-refs [--repo DIR] [--local] PATH...     PATH is a file or a directory of *.md
+    exit 0 PASS, 1 FAIL (one line per stale reference)
+"""
+import argparse
+import importlib.util
+import os
+from pathlib import Path
+import re
+import sys
+
+LINK = re.compile(r'!?\[[^\]]*\]\(([^)\s]+)\)')
+TICK = re.compile(r'`([^`\n]+)`')
+REPO_PATH = re.compile(r'^(?:\./)?((?:harness|tools|scripts|docs|rstack|selection|tests|examples|\.claude|'
+                       r'\.claude-plugin|hooks)/[\w./-]*[\w/])$')
+LOCAL_PATH = re.compile(r'^(~/|/(?:Users|opt|usr|etc|private)/)[\w./@+-]*[\w/]$')
+SKIP = re.compile(r'[*?<>{}$]|\.\.\.|YYYY|NAME|LANE|POSTID')
+
+
+def rh_commands(repo):
+    """{subcommand: set of actions or None} from the repo's own rh parser, or None if it cannot load."""
+    path = Path(repo) / 'harness/rh.py'
+    if not path.is_file():
+        return None
+    sys.path.insert(0, str(path.parent))
+    try:
+        spec = importlib.util.spec_from_file_location('rh_for_refs', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        top = module.parser()
+    except Exception as exc:  # a broken rh is reported, not a crash
+        print('instruction-refs: cannot load rh parser: {}: {}'.format(type(exc).__name__, exc), file=sys.stderr)
+        return None
+    out = {}
+
+    def walk(parser):
+        for a in parser._actions:
+            OPTIONS.update(o for o in a.option_strings if o.startswith('--'))
+            choices = getattr(a, 'choices', None)
+            for sub in (choices.values() if isinstance(choices, dict) else ()):
+                if hasattr(sub, '_actions'):
+                    walk(sub)
+    walk(top)
+    for action in top._actions:
+        choices = getattr(action, 'choices', None)
+        for name, sub in (choices.items() if isinstance(choices, dict) else ()):
+            actions = None
+            for a in sub._actions:
+                if isinstance(getattr(a, 'choices', None), dict) and a.dest in ('action', 'command', 'kind', 'what'):
+                    actions = set(a.choices)
+            out[name] = actions
+    return out
+
+
+OPTIONS = set()   # every --option of the parsed rh tree, filled by rh_commands
+
+
+def defined_flags(repo):
+    """Options rh's parser defines (including ones built as '--' + name), plus literal ones in
+    harness/*.py for subcommands that parse their own arguments."""
+    text = ''
+    for p in sorted((Path(repo) / 'harness').glob('*.py')):
+        text += p.read_text(errors='replace')
+    return set(re.findall(r"""['"](--[a-z][a-z0-9-]*)['"]""", text)) | OPTIONS
+
+
+def md_files(paths):
+    for p in map(Path, paths):
+        if p.is_dir():
+            yield from sorted(q for q in p.rglob('*.md') if '.git' not in q.parts and 'node_modules' not in q.parts)
+        elif p.is_file():
+            yield p
+
+
+def check_rh(span, commands, flags):
+    words = span.split()
+    if not words or words[0] != 'rh' or commands is None:
+        return []
+    i = 1
+    while i < len(words) and words[i].startswith('--'):   # rh --root DIR ...
+        i += 2 if i + 1 < len(words) and not words[i + 1].startswith('-') else 1
+    if i >= len(words) or SKIP.search(words[i]) or not re.fullmatch(r'[a-z][a-z0-9-]*', words[i]):
+        return []
+    sub = words[i]
+    if sub not in commands:
+        return ['rh has no subcommand {!r}'.format(sub)]
+    out = []
+    actions = commands[sub]
+    if actions and i + 1 < len(words) and re.fullmatch(r'[a-z][a-z0-9-]*', words[i + 1]) \
+            and words[i + 1] not in actions:
+        out.append('rh {} has no action {!r}'.format(sub, words[i + 1]))
+    for flag in re.findall(r'(?<![\w-])(--[a-z][a-z0-9-]*)', ' '.join(words[i:])):
+        if flags is not None and flag not in flags and flag != '--help':
+            out.append('no rh option {} is defined in harness/*.py'.format(flag))
+    return out
+
+
+def findings(paths, repo=None, local=False):
+    repo = Path(repo).resolve() if repo else None
+    commands = rh_commands(repo) if repo else None
+    flags = defined_flags(repo) if repo else None
+    out = []
+    for f in md_files(paths):
+        in_fence = False
+        for n, line in enumerate(f.read_text(errors='replace').splitlines(), 1):
+            if line.lstrip().startswith('```'):
+                in_fence = not in_fence
+                continue
+            spans = [line.strip()] if in_fence else TICK.findall(line)
+            for target in ([] if in_fence else LINK.findall(line)):
+                target = target.split('#')[0]
+                if not target or re.match(r'^[a-z][a-z0-9+.-]*:', target, re.I) or SKIP.search(target):
+                    continue
+                if not (f.parent / target).exists():
+                    out.append('{}:{}: link to {} does not exist'.format(f, n, target))
+            for span in spans:
+                token = span.strip().rstrip('.,;:)')
+                m = REPO_PATH.match(token)
+                # A skill names its own bundled files relative to its folder; the repo is the fallback.
+                if repo and m and not SKIP.search(token) and not any(
+                        (base / m.group(1)).exists() for base in (f.parent, f.parent.parent, repo)):
+                    out.append('{}:{}: {} does not exist in the repo'.format(f, n, token))
+                if local and LOCAL_PATH.match(token) and not SKIP.search(token) \
+                        and not Path(os.path.expanduser(token)).exists():
+                    out.append('{}:{}: {} does not exist on this machine'.format(f, n, token))
+                for problem in check_rh(span, commands, flags):
+                    out.append('{}:{}: {} ({})'.format(f, n, problem, span.strip()[:80]))
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('paths', nargs='+')
+    ap.add_argument('--repo', help='resolve repo-relative paths and rh commands against this checkout')
+    ap.add_argument('--local', action='store_true', help='also resolve ~/ and absolute paths on this machine')
+    a = ap.parse_args(argv)
+    out = findings(a.paths, a.repo, a.local)
+    for line in out:
+        print(line)
+    print('instruction-refs: {} ({} stale reference(s))'.format('FAIL' if out else 'PASS', len(out)))
+    return 1 if out else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

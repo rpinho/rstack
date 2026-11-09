@@ -141,6 +141,9 @@ mechanism that enforces it, or an admission that there isn't one.
   three tries with nothing usable, then a different method and the dead end written down.
 - [**Reciprocate**](rstack/principles/reciprocate.md): a reply mirrors the message it answers,
   in length, greeting, warmth, questions and language. The outreach lint checks each one.
+- [**Instructions name only what exists**](rstack/principles/instructions-name-only-what-exists.md):
+  agents follow a stale instruction file over the code about 90% of the time, so every path, link,
+  command and option an instruction file names is resolved by a test.
 
 The last two cost the most to learn. Read them before adding anything.
 
