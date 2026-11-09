@@ -108,34 +108,86 @@ def test_the_ask_does_not_satisfy_the_receipt(lane, tmp_path):
     assert 'prior-art x' in str(e.value)
 
 
-def test_the_failure_names_the_pending_ask_instead_of_only_blaming_the_receipt(lane, tmp_path):
-    """Same refusal, better message: this one is answered by a person, not by the worker."""
-    r = report(lane, 'IDEA MATH-1: x\nX QUERY MATH-1: {}\nDONE\n'.format(QUERY))
-    sweep.record_x_requests(lane, r, rh)
+def attempt_with(tmp_path, search_text, kill_text, x_entry, other_status='none'):
     attempt = tmp_path / 'attempt'
-    attempt.mkdir()
-    search = attempt / 'search.report.md'
-    search.write_text('IDEA MATH-1: a new lead with a metric, a kill test and no rules risk\nDONE\n')
-    paths = {'search': search, 'read': attempt / 'read.report.md', 'kill': attempt / 'kill.report.md'}
+    attempt.mkdir(exist_ok=True)
+    paths = {'search': attempt / 'search.report.md', 'read': attempt / 'read.report.md',
+             'kill': attempt / 'kill.report.md'}
+    paths['search'].write_text(search_text)
     paths['read'].write_text('READ MATH-1: judged\nDONE\n')
-    paths['kill'].write_text('RESULT MATH-1: KILLED value=0; pass line > 1\nDONE\n')
+    paths['kill'].write_text(kill_text)
     # The receipt the worker actually wrote: everything searched except X, which it cannot reach.
     (attempt / 'prior-art-MATH-1.json').write_text(json.dumps(dict(
         schema=1, baseline='best public bound 31',
         sources=dict(
-            [(s, dict(status='none', query='q', searched_at='2026-11-01T00:00:00Z', hits=[],
+            [(s, dict(status=other_status, query='q', searched_at='2026-11-01T00:00:00Z', hits=[],
                       note='searched, nothing')) for s in ('github', 'papers', 'leaderboards')] +
-            [('x', dict(status='blocked', query=QUERY, searched_at='2026-11-01T00:00:00Z',
-                        hits=[], note='no intake for this topic; workers may not search X'))]))))
+            ([('x', x_entry)] if x_entry else [])))))
+    return paths
+
+
+BLOCKED_X = dict(status='blocked', query=QUERY, searched_at='2026-11-01T00:00:00Z', hits=[],
+                 note='no intake for this topic; workers may not search X')
+LEAD = 'IDEA MATH-1: a new lead with a metric, a kill test and no rules risk\nX QUERY MATH-1: {}\n'.format(QUERY)
+
+
+def test_a_lead_waiting_on_its_own_x_query_is_pending_not_a_failure(lane, tmp_path):
+    """planets, 11-09: three sweeps in one night each found one fresh lead, asked for its X search,
+    and failed on that alone, so the lane never cleared in one pass. The lead now stays queued and
+    the sweep is delivered, like a per-idea BLOCKED kill row."""
+    paths = attempt_with(tmp_path, LEAD + 'DONE\n', 'RESULT MATH-1: KILLED value=0; pass line > 1\nDONE\n', BLOCKED_X)
+    sweep.record_x_requests(lane, paths['search'], rh)
+    cfg = dict(evidence_policy=True)
+    assert sweep.check(paths, [], cfg, None, lane) == []
+    assert cfg['_x_pending'] == ['MATH-1']
+
+
+def test_a_search_blocked_only_on_its_own_x_query_is_not_a_stage_block(lane, tmp_path):
+    paths = attempt_with(tmp_path, LEAD + 'BLOCKED\n', 'RESULT MATH-1: KILLED value=0; pass line > 1\nDONE\n', BLOCKED_X)
+    assert sweep.check(paths, [], dict(evidence_policy=True), None, lane) == []
+
+
+def test_pending_x_does_not_excuse_another_source(lane, tmp_path):
+    paths = attempt_with(tmp_path, LEAD + 'BLOCKED\n', 'RESULT MATH-1: KILLED v=0; pass > 1\nDONE\n', BLOCKED_X,
+                         other_status='blocked')
     errors = sweep.check(paths, [], dict(evidence_policy=True), None, lane)
-    pending = [e for e in errors if e.startswith('prior-art MATH-1')]
-    assert pending, errors
-    assert 'waiting on an X search that has been asked for' in pending[0]
-    assert QUERY in pending[0] and 'X_QUERIES.txt' in pending[0]
-    # And with no ask filed, the message stays the plain receipt failure.
-    errors = sweep.check(paths, [], dict(evidence_policy=True), None, None)
+    assert 'search report BLOCKED' in errors
+    assert any(e.startswith('prior-art MATH-1: prior-art github') for e in errors), errors
+
+
+def test_without_an_ask_a_blocked_x_still_fails_and_says_so(lane, tmp_path):
+    paths = attempt_with(tmp_path, 'IDEA MATH-1: a new lead with a metric and a kill test\nDONE\n',
+                         'RESULT MATH-1: KILLED v=0; pass > 1\nDONE\n', BLOCKED_X)
+    errors = sweep.check(paths, [], dict(evidence_policy=True), None, lane)
     plain = [e for e in errors if e.startswith('prior-art MATH-1')]
     assert plain and 'waiting on an X search' not in plain[0]
+
+
+def test_a_wrong_x_entry_is_not_pending(lane, tmp_path):
+    """Only a missing or blocked X source is pending. A claimed search with a bad capture is a wrong
+    receipt, answered by the worker."""
+    bad = dict(status='none', query=QUERY, searched_at='2026-11-01T00:00:00Z', hits=[], note='n',
+               capture_path=str(tmp_path / 'missing.jsonl'), capture_sha256='0' * 64)
+    paths = attempt_with(tmp_path, LEAD + 'DONE\n', 'RESULT MATH-1: KILLED v=0; pass > 1\nDONE\n', bad)
+    errors = sweep.check(paths, [], dict(evidence_policy=True), None, lane)
+    assert any('evidence file must exist' in e for e in errors), errors
+
+
+def test_a_pending_receipt_still_cannot_promote(lane, tmp_path):
+    paths = attempt_with(tmp_path, LEAD + 'DONE\n', 'DONE\n', BLOCKED_X)
+    receipt = paths['search'].parent / 'prior-art-MATH-1.json'
+    assert idea_policy.prior_art(receipt, x_pending_ok=True)['x_pending'] is True
+    with pytest.raises(ValueError) as e:
+        idea_policy.prior_art(receipt)
+    assert 'prior-art x' in str(e.value)
+
+
+def test_a_survivor_waiting_on_x_goes_back_in_the_queue(lane, tmp_path):
+    paths = attempt_with(tmp_path, LEAD + 'DONE\n', 'RESULT MATH-1: SURVIVED v=9; pass > 1\nDONE\n', BLOCKED_X)
+    assert sweep.carry_over(lane, paths, rh, rh.now()) == []
+    assert sweep.carry_over(lane, paths, rh, rh.now(), x_pending=['MATH-1']) == ['MATH-1']
+    row = [json.loads(l) for l in (lane / 'IDEAS.jsonl').read_text().splitlines()][-1]
+    assert row['prior_art'].endswith('prior-art-MATH-1.json')
 
 
 # --- staged public inputs: the other half of math's first m5 sweep -----------------------------

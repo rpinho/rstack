@@ -41,11 +41,17 @@ def file_hash(path):
     return str(path), hashlib.sha256(data).hexdigest()
 
 
-def prior_art(path):
+def prior_art(path, x_pending_ok=False):
     """Structured receipt, with a baseline and an honest disposition for every source.
 
     Markdown can embed one fenced rh-prior-art JSON block. Failed/incomplete
     searches may be preserved as blocked, but cannot satisfy promotion.
+
+    X_PENDING_OK is for the sweep compiler only, for a lead whose X search the worker asked for
+    with `X QUERY` (planets, 11-09: every pass found one fresh lead and failed on its X source
+    until someone ran the query). An X source that is missing or blocked is then accepted as
+    pending and every other source is still checked; the result says x_pending=True. Promotion
+    never passes it, so a lead with no X search still cannot be promoted.
     """
     path, sha = file_hash(path)
     text = Path(path).read_text()
@@ -65,8 +71,13 @@ def prior_art(path):
     searches = data.get('sources')
     if not isinstance(searches, dict):
         raise ValueError('prior-art sources must cover GitHub, X, papers and leaderboards')
+    pending = False
     for source in SOURCES:
         entry = searches.get(source)
+        if (source == 'x' and x_pending_ok
+                and (entry is None or (isinstance(entry, dict) and entry.get('status') == 'blocked'))):
+            pending = True
+            continue
         if not isinstance(entry, dict) or entry.get('status') not in ('hits', 'none'):
             raise ValueError('prior-art {}: list hits or searched, none (blocked/missing is incomplete)'.format(source))
         if not isinstance(entry.get('query'), str) or not entry['query'].strip():
@@ -89,7 +100,10 @@ def prior_art(path):
             capture, capture_sha = file_hash(entry.get('capture_path'))
             if capture_sha != entry.get('capture_sha256'):
                 raise ValueError('prior-art x capture hash mismatch')
-    return dict(path=path, sha256=sha, baseline=data['baseline'])
+    out = dict(path=path, sha256=sha, baseline=data['baseline'])
+    if pending:
+        out['x_pending'] = True
+    return out
 
 
 def frozen_payload(row):

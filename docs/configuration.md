@@ -67,7 +67,10 @@ A search worker may write one `X QUERY <ID>: <query>` line in its report; the sw
 lane's `X_REQUESTS.jsonl`, adds it to `X_QUERIES.txt` for the general session's browser step, and
 one `rh intake x-search` with that query clears it. The receipt rule does not move: a lead with no
 X search is still incomplete and still unpromotable, so the ask is a way to get the search run, not
-a substitute for it. For data, [`inputs.py`](../harness/tools/inputs.py) stages a public file once,
+a substitute for it. While the ask is open, that lead's receipt is pending rather than failed: if
+its X source is `blocked` and every other source is complete, the sweep is delivered and the lead
+stays queued (a SURVIVED one goes back in the queue), so one fresh lead does not fail every pass
+until someone runs its query. A wrong X entry, or any other incomplete source, still fails. For data, [`inputs.py`](../harness/tools/inputs.py) stages a public file once,
 by hash, and the worker prompt now lists what is staged and how to get a path offline; a worker that
 needs an unstaged file says `BLOCKED: need <name> from <url or repo@commit and path>` and a person
 stages it. Before 11-07 neither was reachable from a sweep: a lead found during a run could never

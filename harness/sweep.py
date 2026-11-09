@@ -580,6 +580,8 @@ def generate(stage, lane, cfg, paths, day, due, failures=()):
                      '"X QUERY <ID>: <the exact query a person should run>" in this report. It is filed for the '
                      'general session, appears in X_QUERIES.txt, and is cleared by one rh intake x-search. '
                      'That is an ask, not a substitute: the receipt stays incomplete and the lead stays queued until the search is run. '
+                     'Set that lead\'s X source to status "blocked" with the query, and still complete every other source. '
+                     'If the only gap is X searches you asked for this way, end the report DONE, not BLOCKED. '
                      'For competition leaderboards use only lane-permitted public methods/rules; never prohibited predictions or scores. '
                      'The receipt is machine-checked with idea_policy.prior_art; a source name without a query/outcome is insufficient.'))
     intro.append(H(inputs_text(lane)))
@@ -626,7 +628,7 @@ def kill_covered(kill, search):
 
 
 def check(paths, due, cfg=None, known_ids=None, lane=None):
-    errors, texts = [], {}
+    errors, texts, blocked, pending = [], {}, [], []
     for stage, p in paths.items():
         try:
             texts[stage] = p.read_text()
@@ -640,7 +642,7 @@ def check(paths, due, cfg=None, known_ids=None, lane=None):
             # rows stay queued with their need (planets, 11-08: an external data release cannot be cleared,
             # and failing the sweep for it kept the lane STALLED every day). Anything else is a stage block.
             if not (stage == 'kill' and kill_covered(texts[stage], texts.get('search', ''))):
-                errors.append(stage + ' report BLOCKED')
+                blocked.append(stage)
     s, k, r = (texts.get(x, '') for x in ('search', 'kill', 'read'))
     ids = re.findall(r'^IDEA (' + ID_PATTERN + r'):[ \t]*\S[^\n]+$', s, re.M)
     malformed = [line for line in s.splitlines() if line.startswith('IDEA ') and not re.fullmatch(r'IDEA ' + ID_PATTERN + r':[ \t]*\S[^\n]+', line)]
@@ -686,17 +688,40 @@ def check(paths, due, cfg=None, known_ids=None, lane=None):
         # the message has to distinguish "nobody has run this search yet, and here is the ask"
         # from "the receipt is wrong", because the first one is answered by a person and the
         # second by the worker. math's first m5 sweep spent a run learning that the hard way.
+        # A lead the worker found and asked an X search for (X QUERY) is pending, not a failure,
+        # when every other source of its receipt is complete: it stays queued and the next pass
+        # completes it (planets, 11-09: three sweeps in one night each found one fresh lead and
+        # failed only on that). Same shape as a per-idea BLOCKED kill row. It still cannot be
+        # promoted: promotion reads the receipt without x_pending_ok.
         waiting = {idea: query for idea, query in x_requests(lane)} if lane else {}
+        # This report's own asks count too: a query asked before under another idea id is deduped
+        # in the request list, and the lead asking it again is still waiting on the same search.
+        answered = x_answered(lane) if lane else set()
+        for idea, query in X_REQUEST_LINE.findall(s):
+            if query.strip().lower() not in answered:
+                waiting.setdefault(idea, query.strip())
+        receipt_errors = 0
         for key in ids:
             try:
-                idea_policy.prior_art(paths['search'].parent / ('prior-art-' + key + '.json'))
+                got = idea_policy.prior_art(paths['search'].parent / ('prior-art-' + key + '.json'),
+                                            x_pending_ok=key in waiting)
+                if got.get('x_pending'):
+                    pending.append(key)
             except (OSError, ValueError, TypeError) as exc:
+                receipt_errors += 1
                 note = ''
                 if key in waiting and 'prior-art x' in str(exc):
                     note = (' [waiting on an X search that has been asked for: {!r}. It is in '
                             'X_QUERIES.txt; one `rh intake x-search` clears it and the next pass '
                             'can complete this receipt.]'.format(waiting[key]))
                 errors.append('prior-art {}: {}{}'.format(key, exc, note))
+    # A search report that ended BLOCKED only because a lead waits on its own X QUERY is that lead's
+    # block, not the stage's: every receipt is complete or pending, and at least one is pending.
+    if 'search' in blocked and pending and not receipt_errors:
+        blocked.remove('search')
+    errors[:0] = [stage + ' report BLOCKED' for stage in blocked]
+    if cfg is not None:
+        cfg['_x_pending'] = pending
     return errors
 
 
@@ -1262,7 +1287,8 @@ def run_lane(lane, cfg, rh, dry=False):
                 mark_read(lane, key, scratch['read'], rh)
     except (OSError, ValueError, KeyError) as e:
         errors.append(str(e))
-    carried = carry_over(lane, scratch, rh, started, preserve_all=bool(errors))
+    carried = carry_over(lane, scratch, rh, started, preserve_all=bool(errors),
+                         x_pending=cfg.get('_x_pending', ()))
     if carried:
         print('{}: re-queued unsettled ideas {}'.format(lane.name, ','.join(carried)))
     prior_receipts = {}
@@ -1279,6 +1305,7 @@ def run_lane(lane, cfg, rh, dry=False):
                lesson_ids=cfg['_lesson_ids_shown'], lessons_sha256=lessons.snapshot(cfg['_lesson_rows']),
                lessons_command='rh lessons for {} -n 12'.format(lane.name),
                reports={k: str(v) for k, v in scratch.items()}, errors=errors, carried=carried,
+               x_pending=list(cfg.get('_x_pending', ())),
                rules_sha256={name: hashlib.sha256(text.encode()).hexdigest() for name, text in cfg['rules']},
                report_sha256={k: hashlib.sha256(v.read_bytes()).hexdigest() for k, v in scratch.items() if v.is_file()})
     with rh.locked(lane):
@@ -1288,20 +1315,24 @@ def run_lane(lane, cfg, rh, dry=False):
         print('FAIL {}: {}'.format(lane.name, '; '.join(errors)))
         notify(lane, errors)
         return 1
-    print('OK {}: sweep complete'.format(lane.name))
+    pending = cfg.get('_x_pending')
+    print('OK {}: sweep complete{}'.format(lane.name, ' (waiting on an X search, queued: {})'.format(
+        ','.join(pending)) if pending else ''))
     return 0
 
 
-def carry_over(lane, scratch, rh, started, preserve_all=False):
+def carry_over(lane, scratch, rh, started, preserve_all=False, x_pending=()):
     """11-02 (lane): an idea a search found but no kill test settled (run failed, or RESULT BLOCKED) was orphaned:
     the worker marked it seen, so the next clean run never re-proposed it. Put each one in the lane queue as a
-    new idea instead, once per sweep idea id and text."""
+    new idea instead, once per sweep idea id and text. A SURVIVED idea whose receipt still waits on its
+    X search (X_PENDING) is not settled either: it goes back in the queue with that receipt."""
     try:
         s = scratch['search'].read_text() if scratch['search'].is_file() else ''
         k = scratch['kill'].read_text() if scratch['kill'].is_file() else ''
     except OSError:
         return []
-    settled = {i for i, verdict in re.findall(r'^RESULT (' + ID_PATTERN + r'): (KILLED|SURVIVED)', k, re.M)}
+    settled = {i for i, verdict in re.findall(r'^RESULT (' + ID_PATTERN + r'): (KILLED|SURVIVED)', k, re.M)
+               if not (verdict == 'SURVIVED' and i in set(x_pending))}
     have = {(r.get('sweep_idea_id'), r.get('title_hash')) for r in rh.rows(lane / 'IDEAS.jsonl')}
     added = []
     for idea_id, text in re.findall(r'^IDEA (' + ID_PATTERN + r'):[ \t]*(\S[^\n]+)$', s, re.M):
