@@ -333,6 +333,12 @@ def test_unreadable_draft_fails_lint_without_advancing(env):
     row = outreach.current(env[1], rh)[ident]
     row['draft_path'] = str(env[0] / 'missing.txt')
     rh.append(env[1] / 'OUTREACH.jsonl', row)
+    # The archived copy stands in for a lost file (11-09); with that gone too, lint fails.
+    assert cli(env[0], 'lint', 'test', ident)[0] == 0
+    row = dict(outreach.current(env[1], rh)[ident], status='drafted')
+    rh.append(env[1] / 'OUTREACH.jsonl', row)
+    for kept in outreach.drafts_dir().iterdir():
+        kept.unlink()
     assert cli(env[0], 'lint', 'test', ident)[0] == 1
     assert outreach.current(env[1], rh)[ident]['status'] == 'drafted'
 

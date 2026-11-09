@@ -152,6 +152,15 @@ def logs():
     return [json.loads(l) for l in p.read_text().splitlines()] if p.exists() else []
 
 
+@pytest.mark.parametrize('value, refused', [(None, True), ('', True), ('enforce', True), ('nonsense', True),
+                                             ('warn', False)])
+def test_the_gate_is_enforced_unless_warn_is_explicit(local, value, refused):
+    """11-09: with RH_X_GATE unset, xr warned and posted a link self-reply that had no approved row."""
+    run = xr_pipe(local, payload('Unapproved words.'), value)
+    assert Path(os.environ['XURL_TEST_RECORD']).exists() == (not refused)
+    assert run.returncode == (2 if refused else 0) and ('REFUSED' if refused else 'WARNING') in run.stderr
+
+
 @pytest.mark.parametrize('mode', ['warn', 'enforce'])
 def test_xr_pipe_requires_exact_approved_text(local, mode):
     run = xr_pipe(local, payload('Unapproved words.'), mode)
@@ -175,9 +184,9 @@ def test_xr_pipe_approved_pass_preserves_account_and_records_sent(local, mode):
     assert logs() == []
 
 
-def test_xr_default_warn(local):
+def test_xr_default_enforces(local):
     run = xr_pipe(local, payload('No approval.'), None)
-    assert run.returncode == 0 and 'WARNING' in run.stderr and logs()[0]['mode'] == 'warn'
+    assert run.returncode == 2 and 'REFUSED' in run.stderr and logs()[0]['mode'] == 'enforce'
 
 
 @pytest.mark.parametrize('path', ['bash', 'browser', 'batch'])

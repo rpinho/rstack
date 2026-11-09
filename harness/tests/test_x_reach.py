@@ -3,6 +3,7 @@ import concurrent.futures
 import datetime as dt
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -407,3 +408,20 @@ def test_only_a_sent_x_post_can_be_retracted(state, monkeypatch):
     assert cli(state[0], 'retract', 'b', 'offline', '--reason', 'x', '--deleted-confirmed', 'checked by hand: page says deleted')[0] == 0
     rc, _, err = cli(state[0], 'retract', 'b', 'offline', '--reason', 'x')
     assert rc != 0 and 'already retracted' in err
+
+
+def test_a_sent_reply_whose_draft_file_is_gone_is_still_compared(state, monkeypatch):
+    """general, 11-09: three sent replies of 11-07 had drafts in /private/tmp; it was wiped, and every
+    new reply failed lint with "reply comparison draft unreadable"."""
+    text = 'That matches what we saw on the second estimator, the bound holds.'
+    first, path = approved(state, text=text, channel='x_reply', in_reply_to='https://x.com/a/status/1')
+    assert cli(state[0], 'sent', 'a', first, '--message-id', '11', '--via', 'browser')[0] == 0
+    near, _ = draft(state, text=text + ' Thanks.', channel='x_reply', in_reply_to='https://x.com/b/status/2')
+    path.unlink()
+    rc, out, _ = lint(state, near)
+    assert rc == 1 and 'near-duplicate reply' in out and 'unreadable' not in out
+    # Gone from the archive too: one lost draft warns, it does not block every later reply.
+    for kept in Path(os.environ['RH_DRAFT_ARCHIVE']).iterdir():
+        kept.unlink()
+    rc, out, _ = lint(state, near)
+    assert rc == 0 and 'near-duplicate check skipped' in out, out

@@ -15,6 +15,11 @@ def _isolate_agent_alert_queue(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_draft_archive(tmp_path_factory, monkeypatch):
+    monkeypatch.setenv('RH_DRAFT_ARCHIVE', str(tmp_path_factory.mktemp('drafts')))
+
+
+@pytest.fixture(autouse=True)
 def _no_host_voice_banks(tmp_path_factory, monkeypatch):
     """The host's private voice banks never reach a test; tests that want banks set their own."""
     monkeypatch.delenv('RH_VOICE_BANKS', raising=False)

@@ -32,8 +32,10 @@ def root_path():
 
 
 def mode():
-    # Invalid values fail closed, rather than accidentally disabling enforcement.
-    return os.environ.get('RH_X_GATE', 'warn')
+    # Enforced unless RH_X_GATE=warn says otherwise: invalid or missing values fail closed. Until
+    # 11-09 a missing value meant warn, so x-post-ready (which sets enforce) was gated but a worker
+    # calling xr directly posted a link self-reply with no approved row and only a warning.
+    return 'warn' if os.environ.get('RH_X_GATE', '').strip() == 'warn' else 'enforce'
 
 
 def option(words, *names):

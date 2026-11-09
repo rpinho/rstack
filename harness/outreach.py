@@ -178,8 +178,53 @@ def record(lane, row, rh):
     rh.append(path, row)
 
 
+def drafts_dir():
+    """Where approved and sent draft texts are kept by hash (RH_DRAFT_ARCHIVE)."""
+    # Not settings.path: this module's settings() (the lane config) shadows the settings module.
+    return Path(os.environ.get('RH_DRAFT_ARCHIVE') or '~/.local/state/research-harness/drafts').expanduser()
+
+
+def known_hashes(row):
+    return [h for h in (row.get('draft_sha256'), (row.get('approval') or {}).get('sha256'),
+                        (row.get('lint') or {}).get('sha256')) if isinstance(h, str) and re.fullmatch(r'[0-9a-f]{64}', h)]
+
+
+def archive(data):
+    """Keep these exact draft bytes under their sha256, outside any directory a restart empties.
+
+    11-09: three sent X replies of 11-07 had drafts in /private/tmp; when it was wiped, every new
+    reply failed lint because the near-duplicate check could not read them."""
+    digest = hashlib.sha256(data).hexdigest()
+    folder = drafts_dir()
+    target = folder / (digest + '.txt')
+    if not target.exists():
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        part = folder / '.{}.{}'.format(digest, uuid.uuid4().hex)
+        with open(part, 'wb', opener=lambda p, f: os.open(p, f, 0o600)) as fh:
+            fh.write(data)
+        os.replace(part, target)
+    return digest
+
+
 def body(row):
-    return row['text'] if 'text' in row else Path(row['draft_path']).read_bytes().decode('utf-8')
+    """The row's text: its stored text, its draft file, or the archived copy of an approved draft."""
+    if 'text' in row:
+        return row['text']
+    known = known_hashes(row)
+    try:
+        data = Path(row['draft_path']).read_bytes()
+    except OSError:
+        for digest in known:
+            kept = drafts_dir() / (digest + '.txt')
+            if kept.is_file():
+                return kept.read_bytes().decode('utf-8')
+        raise
+    if hashlib.sha256(data).hexdigest() in known:
+        try:
+            archive(data)   # rows drafted before the archive existed are kept the first time they are read
+        except OSError:
+            pass
+    return data.decode('utf-8')
 
 
 def titles(text):
@@ -561,7 +606,9 @@ def x_checks(row, text, everyone, clock, selected=(), cfg=None, posting=False):
             try:
                 shared = own_topics & topics(other, body(other))
             except (OSError, UnicodeError):
-                failures.append('topic comparison draft unreadable: ' + other['id'])
+                # A lost draft is not this post's fault; failing here blocked every later post.
+                warnings.append('topic comparison skipped, draft gone and not archived: {}/{}'.format(
+                    other['lane'], other['id']))
                 continue
             for topic in shared:
                 counts[topic].add((other['lane'], other['id']))
@@ -601,7 +648,10 @@ def x_checks(row, text, everyone, clock, selected=(), cfg=None, posting=False):
                     for label, score in similarities(row, other):
                         failures.append('near-duplicate reply {}/{}: {} Jaccard {:.3f}'.format(other['lane'], other['id'], label, score))
                 except (OSError, UnicodeError):
-                    failures.append('reply comparison draft unreadable: ' + other['id'])
+                    # 11-09: three wiped /tmp drafts failed every new reply. The archive now keeps
+                    # them; one that is gone everywhere is a warning, not a block on all replies.
+                    warnings.append('near-duplicate check skipped, draft gone and not archived: {}/{}'.format(
+                        other['lane'], other['id']))
     mentions = {m.casefold() for m in MENTION.findall(text)}
     credited = {h.lstrip('@').casefold() for h in row.get('credit', [])}
     target_author = re.match(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/([A-Za-z0-9_]+)/status/', row.get('in_reply_to', ''), re.I)
@@ -1037,7 +1087,7 @@ def main(root, args, rh):
                 raise ValueError('the draft is in a temporary directory, which a restart empties and '
                                  'the ledger then loses its text; keep drafts in the lane\'s outbox')
             row = dict(id=uuid.uuid4().hex[:16], lane=lane.name, channel=args.channel, to_name=name, to_key=key,
-                       purpose=safe(args.purpose, 'purpose'), draft_path=str(path), draft_sha256=sha(path),
+                       purpose=safe(args.purpose, 'purpose'), draft_path=str(path), draft_sha256=archive(path.read_bytes()),
                        status='drafted', created=rh.now())
             if args.channel not in X_PUBLIC and (args.in_reply_to or args.self_reply_to or args.media or args.credit or args.project):
                 raise ValueError('X reach options require x_post or x_reply')
@@ -1265,7 +1315,7 @@ def main(root, args, rh):
             row = dict(old, updated=rh.now())
             if args.action == 'approve':
                 row.update(status='approved', approval=dict(utc=rh.now(), by='owner (standing approval)' if args.quote == STANDING_APPROVAL else 'owner (relayed)', quote=args.quote,
-                                                           sha256=sha(row['draft_path'])))
+                                                           sha256=archive(Path(row['draft_path']).read_bytes())))
             elif args.action == 'sent':
                 # A send recorded after the fact keeps its real time, so the follow-up falls
                 # due from when the recipient got it rather than from the bookkeeping.
