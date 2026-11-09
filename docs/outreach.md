@@ -28,7 +28,7 @@ Approval requires a current passing lint hash and the operator's approval quote.
 
 A reply mirrors the message it answers ([reciprocate.py](../harness/reciprocate.py), [test_reciprocate.py](../harness/tests/test_reciprocate.py)). Draft it with their latest message, `rh outreach draft ... --incoming FILE`, and lint compares the two, with quoted text removed from both:
 
-- `RECIPROCATE_LENGTH`: our body is within `reciprocate_min_ratio` to `reciprocate_max_ratio` (0.7 to 1.6) times their word count, up to `reciprocate_max_ratio_answering` (2.0) when they asked something; a message under `reciprocate_short_words` (40) may get that many words back.
+- `RECIPROCATE_LENGTH`: our body is within `reciprocate_min_ratio` to `reciprocate_max_ratio` (0.7 to 1.6) times their word count, up to `reciprocate_max_ratio_answering` (2.0) when they asked something; a message under `reciprocate_short_words` (40) may get that many words back. The floor never exceeds `reciprocate_floor_cap` (120), a common cap on a reply to a friend, so a long message cannot demand more than that; a shorter reply takes `--short-ok` in the owner's words. Life questions and first-person answers are matched in English and Portuguese ("where are you", "estás em", "eu vim", "agora sou").
 - `RECIPROCATE_GREETING` and `RECIPROCATE_SIGNOFF`: they greet, we greet, in the same register (hi or ola against dear or caro), by name when they used ours; they sign off, we sign off.
 - `RECIPROCATE_WARMTH`: "good to hear from you" in, something as warm out.
 - `RECIPROCATE_QUESTION`: every question gets an answer; asked how we are, we say what we're doing and ask back.

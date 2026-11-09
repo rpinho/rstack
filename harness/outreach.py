@@ -635,7 +635,8 @@ def lint_rows(lane, selected, rh, allow_collision=None):
                 person = {'name': row.get('to_name', '')}
             if row.get('incoming'):
                 try:
-                    found, notes = reciprocate.findings(Path(row['incoming']).read_text(), text, person, cfg)
+                    found, notes = reciprocate.findings(Path(row['incoming']).read_text(), text, person, cfg,
+                                                        short_ok=row.get('short_ok') or '')
                     checks['reciprocate'] += found
                     reciprocate_warnings += notes
                 except (OSError, UnicodeError):
@@ -860,6 +861,7 @@ def arguments(sub):
             for flag, what in (('opener', 'opening with the result'), ('life', 'no line about your life'),
                                ('meaning', 'a number without its meaning'), ('nocall', 'no call offer')):
                 p.add_argument('--{}-ok'.format(flag), help="the owner's words allowing {} (science_email.py)".format(what))
+            p.add_argument('--short-ok', help="the owner's words allowing a reply shorter than the reciprocate floor (reciprocate.py)")
             p.add_argument('--requested', help='the recipient asked for this send, in their words; a reply, not outreach, so the daily limit does not hold it')
             p.add_argument('--target', action='append', default=[], help='OWNER/REPO the email is about; gated on rh bughunt target-check')
             p.add_argument('--target-override', help='why an unchecked or failing target is written about anyway (the recipient asked)')
@@ -992,7 +994,7 @@ def main(root, args, rh):
                 row['requested'] = safe(args.requested, 'their request')
             if args.users_override:
                 row['users_override'] = safe(args.users_override, 'users override')
-            for flag in ('opener_ok', 'life_ok', 'meaning_ok', 'nocall_ok'):
+            for flag in ('opener_ok', 'life_ok', 'meaning_ok', 'nocall_ok', 'short_ok'):
                 if getattr(args, flag, None):
                     row[flag] = safe(getattr(args, flag), flag.replace('_', ' '))
             if args.incoming:

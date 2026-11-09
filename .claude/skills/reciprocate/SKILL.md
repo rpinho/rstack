@@ -14,7 +14,8 @@ stays out. Answer in the language they wrote in.
    `RECIPROCATE_INCOMING_MISSING` without it.
 3. `rh outreach lint LANE ID`. Each `RECIPROCATE_*` finding quotes their line and ours. Fix the
    draft, not the numbers: the length band is 0.7 to 1.6 times their words (2.0 when they asked
-   something), and a short message under 40 words may get up to 40 back.
+   something), and a short message under 40 words may get up to 40 back. The floor stops at 120
+   words; below it, only the owner's own words in `--short-ok` let a shorter reply through.
 4. Read it next to theirs once more before approving. The lint is lexical, English and
    Portuguese; it catches the common misses, not tone.
 

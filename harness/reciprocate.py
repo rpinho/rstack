@@ -7,13 +7,16 @@ on a reply, checked against their latest message (`rh outreach draft ... --incom
   RECIPROCATE_LENGTH     our body within reciprocate_min_ratio..reciprocate_max_ratio of theirs
                          (0.7-1.6x), up to reciprocate_max_ratio_answering (2.0x) when they asked
                          us something; a short message (under reciprocate_short_words, 40) may get
-                         that many words back, since a few words rarely carry a full answer
+                         that many words back, since a few words rarely carry a full answer.
+                         The floor never exceeds reciprocate_floor_cap (120), the owner's cap on
+                         a reply to a friend: above it the two rules could not both pass (friends,
+                         11-09, 189 words in). A shorter reply takes --short-ok in the owner's words.
   RECIPROCATE_GREETING   they greet, we greet, in the same register (hi/hey/hello/ola vs
                          dear/caro); they greet us by name, we greet them by name
   RECIPROCATE_SIGNOFF    they sign off, we sign off
   RECIPROCATE_WARMTH     "good to hear from you" in, something as warm out
-  RECIPROCATE_QUESTION   every question they ask gets an answer; asked about our life, we say
-                         what we're doing and ask about theirs
+  RECIPROCATE_QUESTION   every question they ask gets an answer; asked about our life (how we
+                         are, where we live, what we do), we say what we're doing and ask about theirs
   RECIPROCATE_FAMILY     they mention family, ours goes in; they don't, ours stays out
   RECIPROCATE_LANGUAGE   we answer in the language they wrote in
   RECIPROCATE_EMOTICON   none from us unless they used one, and then at most as many
@@ -40,9 +43,14 @@ FAMILY = re.compile(r"(?i)\b(kids?|children|son|sons|daughters?|wife|husband|par
                     r"filhos?|filhas?|mi[uú]dos|mulher|marido|fam[ií]lia|beb[eé]s?|netos?)\b")
 EMOTICON = re.compile(r'[:;=]-?[)(DPp]|[\U0001F600-\U0001F64F\U0001F900-\U0001F9FF]')
 LIFE = re.compile(r"(?i)what are you up to|how are you|how have you been|how('s| is) (life|it going|everything|the family)|"
-                  r"what('s| is) new|como est[aá]s|como vais|o que andas|e tu\b|tudo bem")
-FIRST_PERSON = re.compile(r"(?i)\b(i'm|i am|i've|i have been|we're|we've|i've been|lately i|these days i|"
-                          r"estou|ando|tenho estado|temos estado|cá estamos)\b")
+                  r"what('s| is) new|what do you do|where are you|where do you live|are you (still )?(in|at|living|working)\b|"
+                  r"como est[aá]s|como vais|o que andas|e tu\b|tudo bem|est[aá]s (em|a viver|a trabalhar|por)\b|"
+                  r"onde (est[aá]s|vives|moras|trabalhas)|o que fazes|fizeste carreira|ainda est[aá]s|trabalhas (em|onde|n[ao])\b")
+# Portuguese first person is mostly in the verb ending, so the usual verbs and a bare "eu" count (friends,
+# 11-09: "eu vim para Stanford... Agora sou Head of Data" was missed).
+FIRST_PERSON = re.compile(r"(?i)\b(i'm|i am|i've|i have been|we're|we've|i've been|lately i|these days i|i (work|live|moved)|"
+                          r"estou|ando|tenho estado|temos estado|cá estamos|eu|sou|fiquei|vim|vivo|moro|trabalho|"
+                          r"mudei|mud[aá]mos|mudamo-nos|agora sou|continuo)\b")
 STOP = set('what when where which while with would could should there their them they this that these those '
            'have been from your yours about into just also some more much very really still then than will '
            'como para isso esta este estas estes mais muito também porque quando onde qual quais você voce '
@@ -51,7 +59,7 @@ STOP = set('what when where which while with would could should there their them
 
 def defaults():
     return dict(reciprocate_min_ratio=0.7, reciprocate_max_ratio=1.6,
-                reciprocate_max_ratio_answering=2.0, reciprocate_short_words=40)
+                reciprocate_max_ratio_answering=2.0, reciprocate_short_words=40, reciprocate_floor_cap=120)
 
 
 def fold(text):
@@ -94,8 +102,9 @@ def keywords(text):
     return {w for w in re.findall(r'\w{4,}', fold(text)) if w not in STOP}
 
 
-def findings(incoming, draft, contact=None, cfg=None):
-    """(failures, notes) for a reply DRAFT to the INCOMING message."""
+def findings(incoming, draft, contact=None, cfg=None, short_ok=''):
+    """(failures, notes) for a reply DRAFT to the INCOMING message. SHORT_OK is the owner's words
+    allowing a reply below the length floor."""
     cfg = dict(defaults(), **(cfg or {}))
     contact = contact or {}
     failures, notes = [], []
@@ -108,9 +117,12 @@ def findings(incoming, draft, contact=None, cfg=None):
     ratio_max = cfg['reciprocate_max_ratio_answering'] if asked else cfg['reciprocate_max_ratio']
     ceiling = max(int(n_in * ratio_max), cfg['reciprocate_short_words'])
     floor = int(n_in * cfg['reciprocate_min_ratio']) if n_in >= cfg['reciprocate_short_words'] else 0
+    floor = min(floor, cfg['reciprocate_floor_cap'])
+    if short_ok.strip():
+        floor = 0
     if n_out > ceiling or n_out < floor:
-        failures.append('RECIPROCATE_LENGTH: they wrote {} words, we write {} (keep it between {} and {})'.format(
-            n_in, n_out, floor, ceiling))
+        failures.append('RECIPROCATE_LENGTH: they wrote {} words, we write {} (keep it between {} and {}){}'.format(
+            n_in, n_out, floor, ceiling, '; or --short-ok in the owner\'s words' if n_out < floor else ''))
     # Greeting and sign-off.
     if g_in:
         word_in = fold(GREETING.match(g_in).group(1))

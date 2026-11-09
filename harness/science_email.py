@@ -31,7 +31,9 @@ NUMBER_GAIN = re.compile(r"(?i)(\d[\d.,]*\s*(→|->|=>)\s*\d|\bfrom\s+\d[\d.,]*\
 MEANING = re.compile(r"(?i)\b(means|meaning|which says|so the|that tells|significa|quer dizer|ou seja|isto mostra)\b")
 LIFE = (r"my (kids|boys|sons|family|wife|husband|partner|work|job|day)|the (kids|boys)|at work|"
         r"i'?m (now|working|doing|leading|at|in)|i (work|live|moved|run|started)|os (mi[uú]dos|meus filhos|rapazes)|"
-        r"no trabalho|eu (trabalho|ando|estou|vivo|comecei)|ando a|estou a (trabalhar|fazer)|c[aá] em casa|por c[aá]")
+        r"no trabalho|eu (trabalho|ando|estou|vivo|comecei|vim|fiquei|sou|mudei)|ando a|estou a (trabalhar|fazer)|"
+        r"c[aá] em casa|por c[aá]|agora (sou|estou|trabalho|vivo)|sou agora|mud(ei|[aá]mos|amo-nos) para|vim para|"
+        r"fiquei (em|no|na|por)|trabalho (em|numa?|n[ao]|como)")
 CALL = r"\b(call|zoom|google meet|chamada|videochamada|falar(mos)?|conversar(mos)?|ligar|liga-me|catch up)\b"
 IMAGE = re.compile(r"\.(jpe?g|png|heic|webp|gif)$", re.I)
 GREETING = re.compile(r"(?i)^(ol[aá]|oi|hey|hi|hello|dear|querid[oa]|caro|cara)\b[^.?!\n]{0,40}[,!]?$")

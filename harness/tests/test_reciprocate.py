@@ -119,3 +119,44 @@ def test_a_reply_owed_must_name_their_message(lane):
     ident, _ = draft(lane, text=VARIED[1], incoming=incoming)
     rc, out = lint(lane, ident)
     assert 'RECIPROCATE_INCOMING_MISSING' not in out and 'reciprocate:' in out
+
+
+LONG_PT_IN = """Olá Sam,
+
+Há quanto tempo! """ + ' '.join(['Temos andado a mudar o código de simulação para a versão nova.'] * 15) + """
+
+Estás em Lisboa, fizeste carreira por lá?
+
+Abraço,
+Rui
+"""
+SHORT_PT_OUT = """Olá Rui,
+
+Obrigado. Não, eu vim para o Porto para o mestrado e fiquei por cá. Agora sou analista numa empresa pequena.
+
+Mando o ficheiro amanhã. Ainda usas a versão antiga?
+
+Abraço,
+Sam
+"""
+
+
+def test_a_portuguese_life_question_answered_in_portuguese_passes():
+    """friends, 11-09: "Estás em ..., fizeste carreira por lá?" answered with "eu vim ... Agora sou ..."
+    was reported as unanswered: the life question and the first person were English-only."""
+    assert 'RECIPROCATE_QUESTION' not in codes(LONG_PT_IN, SHORT_PT_OUT)
+    assert 'RECIPROCATE_QUESTION' in codes(LONG_PT_IN, SHORT_PT_OUT.replace(
+        'Não, eu vim para o Porto para o mestrado e fiquei por cá. Agora sou analista numa empresa pequena.',
+        'Segue o relatório.'))
+
+
+def test_the_floor_never_exceeds_the_friend_reply_cap():
+    """The KB friend-reply lint caps a reply at 120 words; 0.7 x a long message asked for more. Both could
+    not pass. The floor is capped, and --short-ok in the owner's words lets a shorter reply through."""
+    found = reciprocate.findings(LONG_PT_IN, SHORT_PT_OUT, PERSON)[0]
+    length = [f for f in found if f.startswith('RECIPROCATE_LENGTH')]
+    assert length and 'between 120 and' in length[0] and '--short-ok' in length[0]
+    assert not [f for f in reciprocate.findings(LONG_PT_IN, SHORT_PT_OUT, PERSON, short_ok='keep it short')[0]
+                if f.startswith('RECIPROCATE_LENGTH')]
+    # The override lowers the floor only; a reply far too long still fails.
+    assert 'RECIPROCATE_LENGTH' in codes(PT_IN, PT_OUT + ' palavra' * 200)

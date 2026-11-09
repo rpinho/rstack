@@ -89,3 +89,13 @@ def test_no_second_science_email_until_they_answer(lane):
     assert 'AWAITING_REPLY' not in lint(lane, other)[1], 'a plain message is not a science email'
     assert cli(lane[0], 'reply', 'test', first, '--summary', 'Thanks')[0] == 0
     assert 'AWAITING_REPLY' not in lint(lane, nxt)[1]
+
+
+@pytest.mark.parametrize('line', ['Agora sou analista numa empresa pequena.', 'Eu vim para o Porto e fiquei por cá.',
+                                  'Mudamo-nos para o sul há dois anos.', 'Trabalho numa empresa de dados.'])
+def test_a_portuguese_life_line_counts(line):
+    """friends, 11-09: "mudamo-nos para ..." and "Agora sou ..." were not seen as a life line."""
+    text = 'Olá Rui,\n\nPosso perguntar uma coisa sobre o código?\n\n{}\n\nEncontrei um bug no fit.\n\nAbraço'.format(line)
+    out = science_email.findings({'name': 'Rui', 'users': 'they run it'}, '', text, kinds=['code-bug'],
+                                 cfg={'science_email_rules': True})
+    assert not [f for f in out if f.startswith('LIFE_LINE_MISSING')], out
