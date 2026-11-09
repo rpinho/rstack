@@ -82,6 +82,8 @@ A research account starts with no followers, and its first results reach nobody 
 5. **Original work, not reposted reach.** Bier said X would penalise big accounts reposting others' videos hours later, and reward original creators [4]. Short talking videos about one result are his top lever for small accounts [5]; they need the person on camera, so they are proposed to them, never generated.
 6. **A person approves replies.** In July 2026 X removed 42,000 accounts that automated replies with chatbots: "using AI to programmatically engage with users without a human in the loop runs counter to our mission" [6]. With `x_reply_human_approval = true` (the default), `approve` refuses an `x_reply` approved with the standing-approval quote, so each round's replies need a person's approval in their own words. A lane whose owner has decided otherwise sets it to `false` in its `OUTREACH.toml`, and that is the owner's decision to record, not the agent's.
 
+A post deleted from X after it went out (a wrong video, say; X has no edit) is recorded with `rh outreach retract LANE ID --reason TEXT [--replaced-by URL]`. It refuses while X's public oEmbed still returns the post, and when X cannot be asked, takes `--deleted-confirmed` with how the deletion was checked. A retracted post, like a dropped one, holds no slot in the gap, the daily limit, the 48 h topic count or reply spacing, so its replacement can go out at once; the row keeps its `sent` record.
+
 ```toml
 # OUTREACH.toml (all optional; these are the defaults)
 x_original_gap_minutes = 120

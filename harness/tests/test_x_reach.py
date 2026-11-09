@@ -367,3 +367,43 @@ def test_standing_does_not_bypass_failed_or_changed_lint(state):
     path.write_text('A changed result.')
     assert cli(state[0], 'approve', 'a', ident, '--quote', outreach.STANDING_APPROVAL)[0] == 2
 
+
+
+def test_a_retracted_original_takes_no_slot(state, monkeypatch):
+    """general, 11-09: a post that went out with the wrong video was deleted, and its replacement, same
+    text, was held 120 min by the post it replaced. `retract` records the deletion once X confirms it."""
+    monkeypatch.setenv('RH_X_ORIGINALS_PER_DAY', '1')
+    monkeypatch.delenv('RH_X_MIN_GAP_MINUTES', raising=False)
+    history(state, ident='wrong-video', age=1)
+    ident, _ = draft(state)
+    rc, out, _ = lint(state, ident)
+    assert rc == 1 and 'within 120 min of another original' in out and 'daily limit' in out
+    root = state[0]
+    monkeypatch.setattr(outreach, 'post_gone', lambda pid: False)
+    rc, _, err = cli(root, 'retract', 'b', 'wrong-video', '--reason', 'wrong video')
+    assert rc != 0 and 'still on X' in err
+    monkeypatch.setattr(outreach, 'post_gone', lambda pid: None)
+    rc, _, err = cli(root, 'retract', 'b', 'wrong-video', '--reason', 'wrong video')
+    assert rc != 0 and '--deleted-confirmed' in err
+    monkeypatch.setattr(outreach, 'post_gone', lambda pid: pid == '111' or pytest.fail(pid))
+    assert cli(root, 'retract', 'b', 'wrong-video', '--reason', 'wrong video',
+               '--replaced-by', 'https://x.com/someone/status/222')[0] == 0
+    row = outreach.current(root / 'lanes/b', rh)['wrong-video']
+    assert row['status'] == 'retracted' and row['sent']['utc'] and row['retracted']['replaced_by'].endswith('222')
+    rc, out, _ = lint(state, ident)
+    assert rc == 0, out
+    # A sent post that was not retracted still holds its slot.
+    history(state, ident='kept', age=1)
+    rc, out, _ = lint(state, ident)
+    assert rc == 1 and 'kept' in out
+
+
+def test_only_a_sent_x_post_can_be_retracted(state, monkeypatch):
+    monkeypatch.setattr(outreach, 'post_gone', lambda pid: True)
+    history(state, ident='draft-only', status='approved')
+    rc, _, err = cli(state[0], 'retract', 'b', 'draft-only', '--reason', 'x')
+    assert rc != 0 and 'sent X post' in err
+    history(state, ident='offline')
+    assert cli(state[0], 'retract', 'b', 'offline', '--reason', 'x', '--deleted-confirmed', 'checked by hand: page says deleted')[0] == 0
+    rc, _, err = cli(state[0], 'retract', 'b', 'offline', '--reason', 'x')
+    assert rc != 0 and 'already retracted' in err

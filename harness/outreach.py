@@ -26,6 +26,8 @@ import sys
 import tempfile
 import unicodedata
 from urllib.parse import urlsplit
+import urllib.error
+import urllib.request
 import uuid
 
 CONTACTS = settings.path('RH_CONTACTS', Path('.runtime/contacts.json'))
@@ -440,12 +442,30 @@ def mainly_question(text):
                                sum(len(s) for s in questions) * 2 >= sum(map(len, sentences)))
 
 
+# Rows that hold no X reach: a dropped row never went out, a retracted post was deleted from X.
+GONE = ('dropped', 'retracted')
+OEMBED = 'https://publish.x.com/oembed?omit_script=1&url=https%3A%2F%2Fx.com%2Fi%2Fstatus%2F{}'
+
+
+def post_gone(pid):
+    """True when X says the post does not exist (oEmbed 404), False when it does, None when unknown."""
+    try:
+        request = urllib.request.Request(OEMBED.format(pid), headers={'User-Agent': 'research-harness/1.0'})
+        with urllib.request.urlopen(request, timeout=20):
+            return False
+    except urllib.error.HTTPError as error:
+        return True if error.code == 404 else None
+    except (OSError, ValueError):
+        return None
+
+
 def activity_time(row):
     # A posting attempt also consumes a slot: the hook cannot know whether the network succeeded.
     # A dropped row does not: dropping it is the record that it never went out (general, 11-09: two
     # originals that failed on a media upload and on a still-processing video, both dropped, kept
-    # the next original out for 120 min and counted toward the day's limit).
-    if row.get('status') == 'dropped':
+    # the next original out for 120 min and counted toward the day's limit). A retracted post was
+    # deleted from X (`rh outreach retract`), so it takes no slot either.
+    if row.get('status') in GONE:
         return None
     for key in ('sent', 'gate_attempt'):
         if row.get(key, {}).get('utc'):
@@ -465,8 +485,8 @@ FILLER = re.compile(r'^\W*(?:gm|gn|good\s+(?:morning|night|evening)|happy\s+(?:m
 
 def sent_time(row):
     """When a row actually went out (or a posting attempt was made), never its approval time. A dropped
-    row never went out."""
-    if row.get('status') == 'dropped':
+    row never went out; a retracted one was deleted."""
+    if row.get('status') in GONE:
         return None
     for key in ('sent', 'gate_attempt'):
         if row.get(key, {}).get('utc'):
@@ -572,7 +592,7 @@ def x_checks(row, text, everyone, clock, selected=(), cfg=None, posting=False):
         except (OSError, ValueError, TypeError):
             failures.append('cannot read replied.json; duplicate reply check unavailable')
         for other in others:
-            if other.get('channel') != 'x_reply':
+            if other.get('channel') != 'x_reply' or other.get('status') == 'retracted':
                 continue
             if target and reply_target(other) == target and (other.get('sent') or other.get('gate_attempt') or other.get('status') == 'approved'):
                 failures.append('already replied or reserved reply to this post: {}/{}'.format(other['lane'], other['id']))
@@ -893,7 +913,8 @@ def arguments(sub):
     p.add_argument('name')
     p.add_argument('level', choices=('normal', 'extra'))
     contact.add_parser('pending', help='updates the contacts file does not have yet, for its owner to land')
-    for action in ('draft', 'lint', 'approve', 'sent', 'record-sent', 'reply', 'close', 'drop', 'status', 'due'):
+    for action in ('draft', 'lint', 'approve', 'sent', 'record-sent', 'reply', 'close', 'drop', 'retract', 'status',
+                   'due'):
         p = actions.add_parser(action)
         if action == 'due':
             p.add_argument('--all', action='store_true', help='include future follow-ups')
@@ -957,6 +978,10 @@ def arguments(sub):
                 p.add_argument('--summary', required=True)
             else:
                 p.add_argument('--reason', required=True)
+                if action == 'retract':
+                    p.add_argument('--replaced-by', help='URL of the post that replaces it')
+                    p.add_argument('--deleted-confirmed', help="how the deletion was confirmed, when X cannot be "
+                                                               "asked from here (offline)")
                 if action == 'drop':
                     p.add_argument('--purpose', help='replace the purpose (a hand-logged row whose purpose holds an address)')
 
@@ -1221,6 +1246,21 @@ def main(root, args, rh):
                 raise ValueError('reply requires a sent message')
             elif args.action in ('close', 'drop') and row.get('status') in ('closed', 'dropped'):
                 raise ValueError('message already closed or dropped')
+            elif args.action == 'retract':
+                # An X post deleted after it went out (11-09: a post that went out with the wrong
+                # video, deleted, and its replacement held 120 min by the post it replaced).
+                if row['channel'] not in X_PUBLIC or not (row.get('sent') or {}).get('utc'):
+                    raise ValueError('retract is for a sent X post')
+                if row.get('status') == 'retracted':
+                    raise ValueError('already retracted')
+                pid = post_id(str((row.get('sent') or {}).get('message_id', '')))
+                if not args.deleted_confirmed:
+                    gone = post_gone(pid) if pid else None
+                    if gone is False:
+                        raise ValueError('post {} is still on X; delete it first'.format(pid))
+                    if gone is None:
+                        raise ValueError('cannot confirm post {} is gone from X; check it and pass '
+                                         '--deleted-confirmed with how you did'.format(pid or '(no post ID)'))
         for old in selected:
             row = dict(old, updated=rh.now())
             if args.action == 'approve':
@@ -1256,6 +1296,12 @@ def main(root, args, rh):
                 if re.search(r'["“”«»]|^>|(?<!\w)\x27[^\x27\n]+\x27(?!\w)', summary):
                     raise ValueError('reply summary must paraphrase without quoted text')
                 row.update(status='replied', reply=dict(utc=rh.now(), summary=summary))
+            elif args.action == 'retract':
+                row.update(status='retracted', retracted=dict(utc=rh.now(), reason=safe(args.reason, 'reason'),
+                                                              confirmed=safe(args.deleted_confirmed, 'confirmation')
+                                                              if args.deleted_confirmed else 'oEmbed 404'))
+                if args.replaced_by:
+                    row['retracted']['replaced_by'] = safe(args.replaced_by, 'replacement URL')
             else:
                 row.update(status='closed' if args.action == 'close' else 'dropped', reason=safe(args.reason, 'reason'))
                 if getattr(args, 'purpose', None):
