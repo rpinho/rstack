@@ -38,6 +38,17 @@ EMAIL = re.compile(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}')
 URL = re.compile(r'\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>]+|\bwww\.[^\s<>]+')
 UTC = dt.timezone.utc
 REPLIED = settings.path('RH_X_REPLIED', Path('.runtime/x-replied.json'))
+# The X rounds' activity log, beside replied.json unless set. Read only, to tell a like from a reply.
+X_ACTIVITY = os.environ.get('RH_X_ACTIVITY_LOG')
+# Actions that touch a post without replying to it. A post whose log rows are all of these, with at least
+# one like or answer among them, was liked, not replied to. Any other action (reply, post, a failed reply,
+# anything new) keeps the replied.json entry binding.
+NOT_A_REPLY = {'like', 'like_error', 'answer_recorded', 'answer_received', 'capture_answer', 'conversation_read',
+               'draft_reply', 'drop_draft', 'draft_dropped', 'notifications_check', 'mentions_read', 'follow'}
+LIKED = {'like', 'answer_recorded', 'answer_received', 'capture_answer'}
+# Before 11-07 some sessions logged a reply with only OUR reply's URL, so an old post can look liked-only
+# when it was answered. Rounds draft for fresh posts, so the exemption needs every row inside this window.
+LIKED_WINDOW = dt.timedelta(hours=72)
 STANDING_APPROVAL = 'standing-approval-10-30'
 X_PUBLIC = ('x_post', 'x_reply')
 MENTION = re.compile(r'(?<![\w/])@([A-Za-z0-9_]{1,15})\b')
@@ -372,6 +383,38 @@ def post_id(value):
     return match[1] if match else None
 
 
+def only_liked(target, log=None, now=None):
+    """True when the X activity log shows TARGET was liked or its answer recorded, and nothing that could
+    be a reply. general, 11-09: the drafting round added a post to replied.json when it liked an answer,
+    so the thanks it drafted under the same post was refused as already replied and could never post.
+    Without log evidence the replied.json entry stands: a reply recorded only there is still protected.
+    Every row about TARGET must be inside LIKED_WINDOW; an unparseable time counts as outside it."""
+    now = now or dt.datetime.now(UTC)
+    path = Path(log or X_ACTIVITY or REPLIED.parent / 'log.jsonl').expanduser()
+    try:
+        lines = Path(path).read_text().splitlines()
+    except (OSError, UnicodeError):
+        return False
+    actions = set()
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        fields = [str(row.get(k) or '') for k in ('target_url', 'in_reply_to')]
+        if any(post_id(f) == target or ('/' + target) in f for f in fields):
+            actions.add(str(row.get('action', '')))
+            try:
+                when = dt.datetime.fromisoformat(str(row.get('utc', '')).replace('Z', '+00:00'))
+                if when.tzinfo is None or now - when > LIKED_WINDOW:
+                    return False
+            except ValueError:
+                return False
+    return bool(actions & LIKED) and actions <= NOT_A_REPLY
+
+
 def reply_target(row):
     return post_id(row.get('in_reply_to')) or post_id(row.get('self_reply_to'))
 
@@ -510,7 +553,11 @@ def x_checks(row, text, everyone, clock, selected=(), cfg=None, posting=False):
                 raise ValueError('expected IDs')
             ids = {post_id(str(k)) for k in replied}
             if target and target in ids:
-                failures.append('already replied to this post in read-only replied.json: ' + target)
+                if only_liked(target):
+                    warnings.append('replied.json lists {} but the X log shows only a like or an answer, no reply; '
+                                    'not counted as replied'.format(target))
+                else:
+                    failures.append('already replied to this post in read-only replied.json: ' + target)
         except (OSError, ValueError, TypeError):
             failures.append('cannot read replied.json; duplicate reply check unavailable')
         for other in others:

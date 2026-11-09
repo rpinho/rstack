@@ -435,3 +435,50 @@ def test_xr_refuses_to_post_without_a_configured_account(local, monkeypatch):
     run = xr_pipe(local, payload())
     assert run.returncode == 2 and 'RH_X_ACCOUNT' in run.stderr
     assert not Path(os.environ['XURL_TEST_RECORD']).exists()
+
+
+def x_log(rows):
+    path = Path(os.environ['RH_X_REPLIED']).parent / 'log.jsonl'
+    path.write_text(''.join(json.dumps(r) + '\n' for r in rows))
+
+
+NOW = dt.datetime.now(dt.timezone.utc).isoformat()
+LIKE = dict(utc=NOW, action='like', target_url='https://x.com/i/status/123')
+ANSWER = dict(utc=NOW, action='answer_recorded', target_url='https://x.com/i/status/123')
+
+
+def lint_reply(root):
+    draft = root / 'body.txt'
+    draft.write_text(TEXT)
+    result = cli(root, 'draft', 'test', '--to', '@anna', '--channel', 'x_reply', '--purpose', 'Thank them',
+                 '--file', draft, '--in-reply-to', 'https://x.com/anna/status/123')
+    assert result[0] == 0, result
+    return cli(root, 'lint', 'test', result[1].strip())
+
+
+def test_a_liked_answer_in_replied_json_does_not_block_the_thanks(local):
+    """general, 11-09: the drafting round added a post to replied.json when it liked an answer, so the
+    thanks it drafted under the same post was refused as already replied and could never post."""
+    Path(os.environ['RH_X_REPLIED']).write_text('["123"]')
+    x_log([LIKE, ANSWER, dict(utc=NOW, action='draft_reply', target_url='https://x.com/i/status/123')])
+    assert outreach.only_liked('123')
+    result = lint_reply(local)
+    assert result[0] == 0, result
+    assert 'shows only a like' in ''.join(map(str, result))
+
+
+@pytest.mark.parametrize('rows', [
+    [],                                                                       # no evidence: replied.json stands
+    [LIKE, dict(action='reply', target_url='https://x.com/rpinho_sci/status/9', in_reply_to='https://x.com/a/status/123')],
+    [LIKE, dict(action='reply_failed_403', target_url='https://x.com/a/status/123')],   # unknown: binding
+    [dict(utc=NOW, action='conversation_read', target_url='https://x.com/i/status/123')],  # no like or answer
+    # Before 11-07 a reply could be logged with only our URL, so an old like proves nothing.
+    [dict(LIKE, utc='2026-10-22T13:56:25Z')],
+    [dict(LIKE, utc='not a time')],
+])
+def test_replied_json_still_binds_without_proof_of_a_like_only(local, rows):
+    Path(os.environ['RH_X_REPLIED']).write_text('["123"]')
+    x_log(rows)
+    assert not outreach.only_liked('123')
+    result = lint_reply(local)
+    assert result[0] != 0 and 'already replied to this post' in ''.join(map(str, result)), result
