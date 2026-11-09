@@ -36,10 +36,29 @@ def get(url, tries=5):
             time.sleep(min(90, 10 * 2 ** k))
 
 
+NO_GH = re.compile(r'gh auth login|not logged in|authentication|GH_TOKEN|GITHUB_TOKEN', re.I)
+
+
+def github_public(q, n):
+    """Repository search through GitHub's public API, no token (about 10 requests a minute)."""
+    url = 'https://api.github.com/search/repositories?' + urllib.parse.urlencode({'q': q, 'per_page': n})
+    return [item['html_url'] for item in get(url).get('items', []) if str(item.get('html_url', '')).startswith('http')]
+
+
 def github(q, n=5, tries=4):
     import time
-    for k in range(tries):  # search API allows ~30 requests/min; back off on rate limits
+    # 11-09: on the m5 there was no gh at all, and every receipt (so every promotion) failed with
+    # FileNotFoundError. A repository search needs no account, so a missing or signed-out gh falls back to
+    # the public API rather than blocking; the results are the same search.
+    try:
         out = _gh(q, n)
+    except FileNotFoundError:
+        return github_public(q, n)
+    if out.returncode and NO_GH.search(out.stderr or ''):
+        return github_public(q, n)
+    for k in range(tries):  # search API allows ~30 requests/min; back off on rate limits
+        if k:
+            out = _gh(q, n)
         if out.returncode == 0 or k == tries - 1:
             break
         time.sleep(35)

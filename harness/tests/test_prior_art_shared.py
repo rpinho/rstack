@@ -222,3 +222,28 @@ def test_launch_without_opt_in_or_with_promoted_idea_continues(tmp_path, idea):
     # Deliberate nonexistent working directory stops safely after the optional check.
     assert result.returncode == 1 and 'REFUSED' not in result.stderr
     assert args_file.exists() == bool(idea)
+
+
+@pytest.mark.parametrize('gh', ['missing', 'signed-out'])
+def test_github_search_falls_back_to_the_public_api_without_gh(monkeypatch, gh):
+    """11-09: no gh on the m5, so every receipt failed with FileNotFoundError and nothing could promote."""
+    def no_gh(q, n):
+        if gh == 'missing':
+            raise FileNotFoundError('/Users/x/dev/.bin/gh')
+        return subprocess.CompletedProcess([], 4, '', 'To get started with GitHub CLI, please run:  gh auth login')
+    seen = []
+
+    def urlopen(req, timeout=None):
+        seen.append(req.full_url)
+        return response({'items': [{'html_url': 'https://github.com/fixture/tls'}, {'html_url': 'not-a-url'}]})
+    monkeypatch.setattr(receipt, '_gh', no_gh)
+    monkeypatch.setattr(receipt.urllib.request, 'urlopen', urlopen)
+    assert receipt.github('transit search', n=3) == ['https://github.com/fixture/tls']
+    assert seen == ['https://api.github.com/search/repositories?q=transit+search&per_page=3']
+
+
+def test_a_real_gh_error_still_fails(monkeypatch):
+    monkeypatch.setattr(receipt, '_gh', lambda q, n: subprocess.CompletedProcess([], 1, '', 'HTTP 422: Validation Failed'))
+    monkeypatch.setattr(receipt.time if hasattr(receipt, 'time') else __import__('time'), 'sleep', lambda s: None)
+    with pytest.raises(RuntimeError, match='github search failed'):
+        receipt.github('q')
