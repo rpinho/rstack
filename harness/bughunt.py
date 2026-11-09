@@ -369,7 +369,10 @@ def findings(row, text, cfg, lane, rh, everyone, clock):
     limit = cfg['emails_per_contact_per_day']
     same = [o for o in everyone if o.get('channel') == 'email' and o.get('to_key') == row.get('to_key')
             and (o['lane'], o['id']) != (row['lane'], row['id'])]
-    recent = [o for o in same if sent_at(o) and clock - sent_at(o) < dt.timedelta(hours=24)]
+    # A bounced email never reached them, so it is not contact (friends, 11-08: a bounced opener held the
+    # next email to the same person on DAILY_LIMIT).
+    recent = [o for o in same if sent_at(o) and o.get('status') != 'bounced'
+              and clock - sent_at(o) < dt.timedelta(hours=24)]
     if limit and len(recent) >= limit and row.get('requested'):
         # 11-08: a send the recipient explicitly asked for is a reply, not outreach.
         warnings.append('DAILY_LIMIT not applied: they asked for this ({})'.format(row['requested']))

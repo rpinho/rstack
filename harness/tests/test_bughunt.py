@@ -495,6 +495,18 @@ def test_engagement_lands_through_pending_like_every_other_contact_update(lane):
     assert contacts_ledger.pending(lane[0])['Contact Beta']['engagement'] == 'Prefers WhatsApp'
 
 
+def test_a_bounced_email_is_not_contact(lane):
+    """friends, 11-08: a bounced opener (it never reached him) held the next email on DAILY_LIMIT."""
+    config(lane, 'emails_per_contact_per_day = 1\n')
+    first, _ = draft(lane, text=VARIED[0])
+    send(lane, first)
+    nxt, _ = draft(lane, text=VARIED[2])
+    assert 'DAILY_LIMIT:' in lint(lane, nxt)[1]
+    assert cli(lane[0], 'bounce', 'test', first, '--address', 'old' + chr(64) + 'example.org')[0] == 0
+    out = lint(lane, nxt)[1]
+    assert 'DAILY_LIMIT:' not in out and 'collision' not in out.lower()
+
+
 def test_a_send_they_asked_for_is_a_reply_not_outreach_so_the_daily_limit_does_not_hold_it(lane):
     config(lane, 'emails_per_contact_per_day = 1\n')
     first, _ = draft(lane, text=VARIED[0])

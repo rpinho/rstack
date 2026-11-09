@@ -223,7 +223,8 @@ def recent_sent(row, days, clock):
 
 def collisions(row, everyone, clock):
     return [other for other in everyone if (other['lane'], other['id']) != (row['lane'], row['id']) and
-            other.get('to_key', '').casefold() == row['to_key'].casefold() and recent_sent(other, 7, clock)]
+            other.get('to_key', '').casefold() == row['to_key'].casefold() and recent_sent(other, 7, clock)
+            and other.get('status') != 'bounced']   # a bounce never reached them
 
 
 def postmortem_check(row, text, cfg, lane, rh):
@@ -261,7 +262,8 @@ def awaiting_reply(row, text, everyone, lane):
     key = row['to_key'].casefold()
     mine = [r for r in everyone if r.get('to_key', '').casefold() == key and r.get('channel') == 'email'
             and (r['lane'], r['id']) != (row['lane'], row['id'])]
-    science = [sent_time(r) for r in mine if r.get('sent') and set(bughunt.kinds_of(r)) & set(science_email.SCIENCE_KINDS)]
+    science = [sent_time(r) for r in mine if r.get('sent') and r.get('status') != 'bounced'
+               and set(bughunt.kinds_of(r)) & set(science_email.SCIENCE_KINDS)]
     science = [t for t in science if t]
     if not science:
         return []
@@ -1132,7 +1134,8 @@ def main(root, args, rh):
                     clock = time_of(args.utc) if args.utc else time_of(rh.now())
                     recent = [o for o in all_rows(root, rh) if o.get('channel') == 'email'
                               and o.get('to_key') == row.get('to_key') and o['id'] != row['id']
-                              and bughunt.sent_at(o) and abs(clock - bughunt.sent_at(o)) < dt.timedelta(hours=24)]
+                              and bughunt.sent_at(o) and o.get('status') != 'bounced'
+                              and abs(clock - bughunt.sent_at(o)) < dt.timedelta(hours=24)]
                     if limit and len(recent) >= limit and not row.get('requested'):
                         raise ValueError('DAILY_LIMIT: already {} email(s) to this contact within 24 h ({}); '
                                          'batch them'.format(len(recent), ', '.join(o['id'] for o in recent)))
