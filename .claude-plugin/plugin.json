@@ -1,0 +1,11 @@
+{
+  "name": "rstack",
+  "version": "0.1.0",
+  "description": "Start-here onboarding, an orchestrator skill, a measured-voice skill, and guard hooks that refuse instead of reminding.",
+  "author": {"name": "Ricardo Pinho", "url": "https://github.com/rpinho"},
+  "homepage": "https://github.com/rpinho/rstack",
+  "repository": "https://github.com/rpinho/rstack",
+  "license": "MIT",
+  "keywords": ["agents", "research", "hooks", "guards", "orchestration", "voice"],
+  "skills": ["./.claude/skills/onboard", "./.claude/skills/orchestrator", "./.claude/skills/voice"]
+}

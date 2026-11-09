@@ -4,8 +4,20 @@
 
 **The stack I run AI research agents on: the map, the principles, and the machinery, in one place.**
 
-**New to coding agents?** Most of this repo is more than you need. Clone it, run `claude` in it, and
-type `/onboard`. It asks whether you're a beginner, intermediate or advanced, checks that with three
+**Install it in Claude Code, one line:**
+
+```
+/plugin install rstack --marketplace rpinho/rstack
+```
+
+Or in two steps, which works on older versions: `/plugin marketplace add rpinho/rstack`, then
+`/plugin install rstack@rstack`. From a shell: `claude plugin marketplace add rpinho/rstack && claude plugin install rstack@rstack`.
+The plugin gives you `/rstack:onboard`, the orchestrator and voice skills, and the guard hooks in
+[`rstack/hooks/`](rstack/hooks/README.md) (each refuses with a reason; none sends anything anywhere). The
+research harness itself is a clone and an install script, below.
+
+**New to coding agents?** Most of this repo is more than you need. Install the plugin, or clone the repo and run `claude` in it, and
+type `/onboard` (`/rstack:onboard` from the plugin). It asks whether you're a beginner, intermediate or advanced, checks that with three
 questions, and walks you through the part that fits: [beginner](docs/onboarding/beginner.md),
 [intermediate](docs/onboarding/intermediate.md), [advanced](docs/onboarding/advanced.md).
 

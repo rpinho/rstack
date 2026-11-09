@@ -3,6 +3,11 @@ __pycache__/
 *.py[cod]
 .venv/
 *.json
+# Public, generic manifests and examples (everything else stays ignored by default).
+!.claude-plugin/marketplace.json
+!.claude-plugin/plugin.json
+!hooks/hooks.json
+!rstack/hooks/settings.example.json
 *.jsonl
 *.lock
 *.bak-*

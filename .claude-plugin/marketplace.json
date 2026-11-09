@@ -1,0 +1,15 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "rstack",
+  "description": "The stack I run AI research agents on: skills and guard hooks where every rule is tied to what enforces it.",
+  "owner": {"name": "Ricardo Pinho", "url": "https://github.com/rpinho"},
+  "plugins": [
+    {
+      "name": "rstack",
+      "source": "./",
+      "description": "Start-here onboarding, an orchestrator skill, a measured-voice skill, and guard hooks that refuse instead of reminding.",
+      "category": "productivity",
+      "homepage": "https://github.com/rpinho/rstack"
+    }
+  ]
+}

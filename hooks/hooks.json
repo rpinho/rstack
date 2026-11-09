@@ -1,0 +1,51 @@
+{
+  "description": "rstack guards: each refuses instead of reminding, and refuses rather than crashes on its own error (rstack/hooks/README.md).",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/rstack/hooks/block-main-tree-commit.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/rstack/hooks/poll-guard.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/rstack/hooks/trash-guard.py"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__plugin_runpod_runpod__create-pod",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/rstack/hooks/pod-deadline-gate.py"
+          }
+        ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/rstack/hooks/conductor-inbox-gate.py"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__claude-in-chrome__computer|mcp__claude-in-chrome__browser_batch|mcp__claude-in-chrome__get_page_text|mcp__claude-in-chrome__read_page",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/rstack/hooks/read-the-thread-first.py"
+          }
+        ]
+      }
+    ]
+  }
+}

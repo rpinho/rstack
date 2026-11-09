@@ -1,0 +1,38 @@
+{
+  "env": {
+    "RSTACK_STATE_DIR": "~/.local/state/rstack",
+    "RSTACK_MAIN_TREES": "~/src/my-repo",
+    "CONDUCTOR_NAME": "conductor"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {"type": "command", "command": "python3 ~/src/rstack/rstack/hooks/block-main-tree-commit.py"},
+          {"type": "command", "command": "python3 ~/src/rstack/rstack/hooks/poll-guard.py"},
+          {"type": "command", "command": "python3 ~/src/rstack/rstack/hooks/trash-guard.py"}
+        ]
+      },
+      {
+        "matcher": "mcp__plugin_runpod_runpod__create-pod",
+        "hooks": [
+          {"type": "command", "command": "python3 ~/src/rstack/rstack/hooks/pod-deadline-gate.py"},
+          {"type": "command", "command": "python3 ~/src/rstack/rstack/hooks/pod-create-gate.py"}
+        ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {"type": "command", "command": "python3 ~/src/rstack/rstack/hooks/conductor-inbox-gate.py"}
+        ]
+      },
+      {
+        "matcher": "mcp__claude-in-chrome__computer|mcp__claude-in-chrome__browser_batch|mcp__claude-in-chrome__get_page_text|mcp__claude-in-chrome__read_page",
+        "hooks": [
+          {"type": "command", "command": "python3 ~/src/rstack/rstack/hooks/read-the-thread-first.py"}
+        ]
+      }
+    ]
+  }
+}
