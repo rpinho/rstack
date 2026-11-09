@@ -1,4 +1,4 @@
-![rstack: the stack for AI research agents](assets/banner.png)
+![rstack: the stack for AI research agents](assets/banner.jpg)
 
 # rstack
 
