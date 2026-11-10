@@ -15,6 +15,10 @@ For every claim:
 2. Write your own minimal input and run the unpatched code on it. Compute the correct answer
    independently (by hand, or a few lines that do not use the package or the hunter's code).
    CONFIRMED only if the unpatched output is wrong in the way the claim says.
+   Judge the claim as written, not the bug you think it meant. If its observed and expected are
+   reversed, or the code already returns the claimed expected value, or the claim names the wrong
+   function or cause, the verdict is REFUTED, even when a related real bug sits next to it. A
+   claim is what reaches the author word for word, so a mislabelled one is wrong.
 3. Is it real for users? Check the README, docs, tutorials, help text and defaults: is the input or
    option documented or reachable in normal use? A crash on an undocumented or malformed input is
    at most CONFIRMED-MINOR. Behavior that looks deliberate is INTENDED.
