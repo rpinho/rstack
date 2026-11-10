@@ -193,3 +193,20 @@ def test_a_lane_with_no_host_sends_an_empty_one(tmp_path):
         popen.return_value.poll.return_value=0;popen.return_value.returncode=0;popen.return_value.pid=123456
         assert sweep.run_worker(spec,cfg)==0
     assert popen.call_args.kwargs['env']['LAUNCH_HOST']==''
+
+
+def test_an_openrouter_model_is_selected_only_on_its_own_route(tmp_path):
+    p=roles(tmp_path/'roles.json')
+    data=json.loads(p.read_text())
+    data['routes']['vendor/fixture-third']={'cli':'openrouter','canonical':'vendor/fixture-third'}
+    p.write_text(json.dumps(data))
+    got=wm.select('batch','openrouter',model='vendor/fixture-third',override='third-family referee',path=p)
+    assert got['executor']=='openrouter' and got['source']=='override'
+    with pytest.raises(ValueError,match='no compatible'):
+        wm.select('batch','codex',model='vendor/fixture-third',override='x',path=p)
+    with pytest.raises(ValueError,match='no compatible'):
+        wm.select('batch','openrouter',path=p)
+    out=subprocess.run([sys.executable,str(ROOT/'worker_models.py'),'--role','batch','--executor','openrouter',
+        '--model','vendor/fixture-third','--model-override','x','--roles-file',str(p),'--log',str(tmp_path/'l'),
+        '--receipt',str(tmp_path/'r.json')],capture_output=True,text=True)
+    assert out.returncode==0 and out.stdout.strip()=='vendor/fixture-third', out.stderr

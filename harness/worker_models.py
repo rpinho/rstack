@@ -57,7 +57,9 @@ def log_record(path, event, record):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--role', default='batch')
-    parser.add_argument('--executor', choices=('codex','claude'), default='codex')
+    # openrouter: a model routed through OpenRouter (run by codex with LAUNCH_PROVIDER=openrouter), e.g. a
+    # third-family referee when the GPT referees fail their plants (11-09: 3 of 12 caught).
+    parser.add_argument('--executor', choices=('codex','claude','openrouter'), default='codex')
     parser.add_argument('--model', default='')
     parser.add_argument('--model-override', default='')
     parser.add_argument('--roles-file', type=Path, default=ROLES_FILE)
