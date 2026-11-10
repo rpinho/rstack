@@ -280,6 +280,15 @@ def load(lane, rh):
     cfg.setdefault('host', '')
     if not isinstance(cfg['host'], str) or (cfg['host'] and not HOST_RE.fullmatch(cfg['host'])):
         raise ValueError('SWEEP host must be an ssh alias or empty, got ' + repr(cfg['host']))
+    # Directories put first on the worker's PATH, here and on the host. 11-10: math's kill test
+    # 60a6723f was BLOCKED on "No module named 'flint'" because the m5 worker ran the system python3,
+    # while the lane's checkers need the shared venv's (python-flint). A lane names its interpreter's
+    # bin directory here instead of every stage spelling out a venv path.
+    cfg.setdefault('worker_path', [])
+    if not isinstance(cfg['worker_path'], list) or any(
+            not isinstance(d, str) or not d.strip() or ':' in d or '\n' in d
+            or not os.path.isabs(os.path.expanduser(d)) for d in cfg['worker_path']):
+        raise ValueError('SWEEP worker_path must be a list of absolute directories')
     if 'boards' in cfg and (not isinstance(cfg['boards'], list) or not cfg['boards'] or
                            any(not isinstance(b, str) or not re.fullmatch(r'[A-Z0-9]+', b) for b in cfg['boards'])):
         raise ValueError('SWEEP boards must be nonempty uppercase board names')
@@ -775,6 +784,20 @@ def execution_host(cfg):
     return str(cfg.get('host', '') or '').strip()
 
 
+# launch.sh's own default for the PATH on the host, used as the base when a lane prepends to it.
+REMOTE_PATH_DEFAULT = '$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+
+
+def worker_path_env(cfg, env):
+    """PATH and LAUNCH_REMOTE_PATH with the lane's worker_path first; {} when it names none."""
+    dirs = [os.path.expanduser(d) for d in cfg.get('worker_path') or []]
+    if not dirs:
+        return {}
+    remote = env.get('LAUNCH_REMOTE_PATH') or REMOTE_PATH_DEFAULT.replace('$HOME', os.path.expanduser('~'))
+    return dict(PATH=':'.join(dirs + [env.get('PATH', '')]),
+                LAUNCH_REMOTE_PATH=':'.join(dirs + [remote]))
+
+
 def host_free_bytes(host, path):
     """Free bytes at `path` on `host`, or None when it cannot be determined.
 
@@ -1199,6 +1222,7 @@ def run_worker(spec, cfg):
                OPENBLAS_NUM_THREADS=str(cfg['cores']), MKL_NUM_THREADS=str(cfg['cores']),
                VECLIB_MAXIMUM_THREADS=str(cfg['cores']), NUMEXPR_NUM_THREADS=str(cfg['cores']))
     env.pop('FORCE_LAUNCH', None)
+    env.update(worker_path_env(cfg, env))
     env.update(LAUNCH_ROLE=cfg.get('worker_role', 'batch'), LAUNCH_MODEL=cfg.get('worker_model', ''),
                LAUNCH_MODEL_OVERRIDE=cfg.get('model_override', ''),
                LAUNCH_HOST=execution_host(cfg))

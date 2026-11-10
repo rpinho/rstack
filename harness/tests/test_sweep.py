@@ -794,6 +794,32 @@ class SweepTests(unittest.TestCase):
         self.save_cfg()
         self.assertNotEqual(self.cli('sweep', 'test', '--dry-run')[0], 0)
 
+    def test_worker_path_must_be_absolute_directories(self):
+        for bad in ('/opt/v/bin', ['relative/bin'], ['/a:/b'], [3]):
+            self.cfg['worker_path'] = bad
+            self.save_cfg()
+            self.assertNotEqual(self.cli('sweep', 'test', '--dry-run')[0], 0, bad)
+        self.cfg['worker_path'] = ['/opt/v/bin']
+        self.save_cfg()
+        self.assertEqual(self.loaded()['worker_path'], ['/opt/v/bin'])
+
+    def test_worker_path_reaches_the_launcher_env(self):
+        cfg = self.loaded()
+        cfg['worker_path'] = ['/opt/venv/bin']
+        cfg['launcher_path'] = self.lane / 'launcher.sh'
+        cfg['launcher_path'].write_text('# fixture only; never executed\n')
+        spec = self.lane / 'work/runs/0-search.md'
+        spec.parent.mkdir(parents=True)
+        spec.write_text('fixture')
+        process = MagicMock(pid=123456, returncode=0)
+        process.poll.return_value = 0
+        with patch.object(sweep, 'guard'), patch.object(sweep.subprocess, 'Popen', return_value=process) as popen, patch.object(sweep.os, 'killpg'):
+            with patch.object(sweep, 'run_worker', self.original_run_worker):
+                self.assertEqual(sweep.run_worker(spec, cfg), 0)
+        env = popen.call_args[1]['env']
+        self.assertTrue(env['PATH'].startswith('/opt/venv/bin:'))
+        self.assertTrue(env['LAUNCH_REMOTE_PATH'].startswith('/opt/venv/bin:'))
+
     def test_worker_launcher_adapter_env_and_cleanup_without_launch(self):
         cfg = self.loaded()
         cfg['launcher_path'] = self.lane / 'launcher.sh'

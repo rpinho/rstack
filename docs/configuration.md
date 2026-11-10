@@ -94,7 +94,14 @@ the lane's `host` when it has one, otherwise the controller. `controller_min_fre
 is the controller's own floor, because specs, logs, receipts and pulled-back status files land
 there even when the work does not. If the host's disk cannot be read, the sweep refuses rather than
 assuming it has room. Before 11-07 the floor always measured the controller, so moving the workers
-to a second machine refused every sweep on a disk that was not doing the work.
+to a second machine refused every sweep on a disk that was not doing the work. On a host where the
+work dir does not exist yet, the floor is measured at its nearest existing parent, because the
+sweep's mirror creates it right after this check (11-10).
+
+`SWEEP.toml`'s `worker_path` (default empty) lists absolute directories put first on the worker's
+`PATH`, both here and on the host (as `LAUNCH_REMOTE_PATH`). A lane whose checkers need a venv names
+its `bin` directory there, so a bare `python3` in any stage is that interpreter. 11-10: a math kill
+test was blocked on a missing `flint` module because the m5 worker ran the system `python3`.
 
 Capacity policy uses `mode = audit|enforce` and `enforce_lanes` drawn from
 `RH_POD_LANES`. Hooks are not installed automatically. Set `RH_ROOT` explicitly
