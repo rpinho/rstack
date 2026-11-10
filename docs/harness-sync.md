@@ -42,3 +42,14 @@ One source, extended outward rather than duplicated:
 - The launchers and the sweep refuse a `--host` run when the two machines' receipts differ, naming
   both commits and the command that fixes it. Unreadable is a refusal too: a job that cannot be
   shown to be running the right code is not run.
+
+## Which machine drives (11-10)
+
+The controller is whichever machine the code is written on, and since 11-10 that is the compute
+host ("the M5 is our new driver"). Its checkout is the one that commits and pushes, its env sets
+`RH_HARNESS_HOSTS` to the other machine, and its own `harness-sync` installs both. The other
+machine's checkout is a follower: a scheduled job fast-forwards it from `origin`, keeps its tracked
+files read-only so an edit fails, and sets repo-local hooks (`core.hooksPath`) that refuse a commit
+or push there and name the driver's path. The symptom this ends: the driver's checkout reading as
+"behind" because the code was still being written on the follower.
+
