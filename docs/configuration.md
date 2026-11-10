@@ -4,6 +4,7 @@ Use an isolated writable root with `python3 harness/rh.py --root PATH ...`. It c
 
 | Setting | Meaning |
 |---|---|
+| `RH_LAUNCH_RECEIPTS` | Directory of the launcher's `JOB.log.selection.json` receipts. `rh bughunt verdicts` takes a referee's model family from the receipt named after the verdict's folder, not from the referee's self-report. Unset: the self-report is used and flagged. |
 | `RH_POD_LANES` | Comma-separated eligible pod lane names; empty by default. |
 | `RH_SELECTION_GATE` | Optional selection package root; defaults to bundled `selection/` beside `harness/`. `~` expands. V2 requires NumPy. |
 | `RH_POLICY_EXCLUDED` | Explicit legacy evidence-policy exemptions; empty by default. New deployments should keep it empty. The capacity hook also recognizes these exemptions. |
