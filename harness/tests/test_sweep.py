@@ -334,6 +334,40 @@ class SweepTests(unittest.TestCase):
         self.assertEqual(sweep.lint(self.lane, rh), ([], []))
         self.worker.assert_not_called()
 
+    def close(self, lane, when):
+        (lane / 'CADENCE.toml').write_text(
+            'deliverable = "x"\nowner_session = "claude-x"\nevery_hours = 24\n'
+            'evidence_globs = ["*.md"]\nwindow_closes = "{}"\n'.format(when))
+
+    def test_a_closed_lane_is_skipped_by_all_and_refused_by_name(self):
+        """11-10: c5 and virtual-embryo were retired 11-09 with window_closes, and the daily
+        sweep --all still started three workers for c5 the next morning."""
+        retired = self.root / 'lanes/c5'
+        retired.mkdir()
+        for f in ('SWEEP.toml', 'INTAKE.toml', 'RULES.md'):
+            (retired / f).write_text((self.lane / f).read_text())
+        self.close(retired, '2026-11-09T22:01:00Z')
+        visits = []
+        with patch.object(sweep, 'run_lane', side_effect=lambda lane, *_: visits.append(lane.name) or 0), \
+                patch.object(sweep, 'guard'):
+            rc, out, err = self.cli('sweep', '--all')
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(visits, ['test'], 'the open lane still runs')
+            self.assertIn('SKIP c5: lane closed 2026-11-09T22:01:00Z', out)
+            rc, _, err = self.cli('sweep', 'c5')
+        self.assertEqual(rc, 1)
+        self.assertIn('REFUSED c5: lane closed', err)
+        self.assertEqual(visits, ['test'])
+        self.worker.assert_not_called()
+
+    def test_a_lane_before_its_close_still_sweeps(self):
+        self.close(self.lane, (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=3))
+                   .strftime('%Y-%m-%dT%H:%M:%SZ'))
+        self.assertIsNone(sweep.closed(self.lane, rh))
+        with patch.object(sweep, 'run_lane', return_value=0) as run, patch.object(sweep, 'guard'):
+            self.assertEqual(self.cli('sweep', '--all')[0], 0)
+        self.assertEqual(run.call_count, 1)
+
     def test_all_bad_preflight_does_not_block_valid_lane(self):
         other = self.root / 'lanes/broken'
         other.mkdir()

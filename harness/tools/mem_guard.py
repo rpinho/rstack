@@ -18,6 +18,22 @@ So, every 30 s (launchd), for each process owned by this user:
     resume it, so a job killed here is not restarted into the same leak;
   * log one JSON row (name, pid, parent and its command, footprint, signal) and push the owner.
 
+A whole-machine total too (11-10). On the 48 GB compute host no single process was huge (the
+largest was 14.6 GB), but two six-hour jobs ran four workers each, and their footprints together
+exhausted swap at 00:02. The kernel then suspended the largest apps (Chrome, Claude, Wispr Flow)
+rather than the jobs, because it only suspends apps, and they stayed frozen until 08:30. So with
+MEM_GUARD_TOTAL_GB set, after the per-process pass: while the footprints of all unspared processes
+outside an app bundle add up to more than that, the largest of them is killed the same way. Apps
+are neither counted nor killed by this rule; the per-process limit still applies to them.
+
+And a per-job cap (11-10), the one that would have prevented that night. With MEM_GUARD_JOB_GB
+set, every launcher job (launch.sh --host writes the job's pid to MEM_GUARD_JOBS_DIR/<job>.pid) is
+measured as its whole process tree: the executor and every worker under it. A tree over the cap is
+stopped whole, children first, TERM then KILL, and a MEMCAP line goes into the job's STATUS.md so
+whoever reads the job sees why it ended. macOS ignores ulimit -v, so a watcher is the only cap there
+is. A pid file is trusted only if its process started within two minutes of the file being written;
+a stale file whose pid was reused by something else is ignored.
+
 Spared by executable path or name, whatever their size: the window server, the agent sessions
 (Claude Code and the Claude app), the browser, the tmux server that holds the sessions, the session
 login machinery, and Apple's own binaries. Killing any of those costs more than the memory.
@@ -28,6 +44,9 @@ login machinery, and Apple's own binaries. Killing any of those costs more than 
 
 Settings (environment):
     MEM_GUARD_LIMIT_GB   footprint limit per process (default 8)
+    MEM_GUARD_TOTAL_GB   limit on all unspared non-app processes together (default: off)
+    MEM_GUARD_JOB_GB     limit on one launcher job's whole process tree (default: off)
+    MEM_GUARD_JOBS_DIR   the launcher's pid files (default ~/.local/state/research-harness/remote-jobs)
     MEM_GUARD_SPARE      extra regexes, os.pathsep separated, matched against the executable path
     MEM_GUARD_LOG        JSONL log (default ~/.local/state/mem-guard/kills.jsonl)
     MEM_GUARD_NOTIFY     a command taking the message as its first argument; unset sends nothing
@@ -137,7 +156,16 @@ def settings():
         re.compile(p)   # a bad pattern is a refusal now, not a crash mid-kill
     log = Path(os.path.expanduser(os.environ.get('MEM_GUARD_LOG',
                                                  '~/.local/state/mem-guard/kills.jsonl')))
-    return dict(limit=int(limit * GIB), extra=extra, log=log,
+    total = float(os.environ.get('MEM_GUARD_TOTAL_GB', '') or 0)
+    if total < 0:
+        sys.exit('MEM_GUARD_TOTAL_GB must be positive, or unset for no total limit')
+    job = float(os.environ.get('MEM_GUARD_JOB_GB', '') or 0)
+    if job < 0:
+        sys.exit('MEM_GUARD_JOB_GB must be positive, or unset for no per-job cap')
+    jobs = Path(os.path.expanduser(os.environ.get('MEM_GUARD_JOBS_DIR', '') or
+                                   '~/.local/state/research-harness/remote-jobs'))
+    return dict(limit=int(limit * GIB), total=int(total * GIB), job=int(job * GIB), jobs=jobs,
+                extra=extra, log=log,
                 notify=os.environ.get('MEM_GUARD_NOTIFY', '').strip(),
                 grace=float(os.environ.get('MEM_GUARD_GRACE_S', '') or 5))
 
@@ -215,14 +243,34 @@ def parent_command(row):
                           capture_output=True, text=True, timeout=10).stdout.strip()
 
 
-def record(row, how, cfg):
+# An app's own binaries, counted by neither the total nor its kills (the per-process limit still
+# applies). Xcode's Python lives under Contents/Developer, so it is compute, not an app.
+APP_BUNDLE = r'^/Applications/[^/]+\.app/Contents/(MacOS|Frameworks)/'
+
+
+def cwd_of(pid):
+    """The working directory, which names the job a worker belongs to. Read before the kill."""
+    try:
+        out = subprocess.run(['lsof', '-a', '-p', str(pid), '-d', 'cwd', '-Fn'],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    return next((line[1:] for line in out.splitlines() if line.startswith('n')), '')
+
+
+def record(row, how, cfg, rule='process', total=0, extra=None):
     row['parent_command'] = parent_command(row)
     cfg['log'].parent.mkdir(parents=True, exist_ok=True)
     entry = dict(time=time.strftime('%Y-%m-%dT%H:%M:%S%z'), pid=row['pid'], name=name_of(row),
                  exe=row['exe'], command=row['command'][:500], ppid=row['ppid'],
-                 parent_command=row['parent_command'][:500],
+                 parent_command=row['parent_command'][:500], cwd=row.get('cwd', ''),
                  footprint_gib=round(row['footprint'] / GIB, 2),
-                 limit_gib=round(cfg['limit'] / GIB, 2), signal=how)
+                 limit_gib=round({'total': cfg.get('total', 0), 'job': cfg.get('job', 0)}
+                                 .get(rule, cfg['limit']) / GIB, 2),
+                 rule=rule, signal=how)
+    if rule in ('total', 'job'):
+        entry['total_gib'] = round(total / GIB, 2)
+    entry.update(extra or {})
     with cfg['log'].open('a') as fh:
         fh.write(json.dumps(entry) + '\n')
     return entry
@@ -232,10 +280,18 @@ def notify(entry, cfg):
     if not cfg['notify']:
         return
     parent = os.path.basename(entry['parent_command'].split(' ', 1)[0]) or '?'
-    text = ('Memory guard {} {} (pid {}) at {:.1f} GB, limit {:.0f} GB. Parent: {} (pid {}).'
+    if entry.get('rule') == 'job':
+        limit = 'whole job {} stopped at {:.1f} GB, cap {:.0f} GB'.format(
+            entry.get('job', '?'), entry['total_gib'], entry['limit_gib'])
+    elif entry.get('rule') == 'total':
+        limit = 'largest of {:.1f} GB in jobs, limit {:.0f} GB total'.format(entry['total_gib'],
+                                                                          entry['limit_gib'])
+    else:
+        limit = 'limit {:.0f} GB'.format(entry['limit_gib'])
+    text = ('Memory guard {} {} (pid {}) at {:.1f} GB, {}. Parent: {} (pid {}).{}'
             .format('killed' if entry['signal'] else 'could NOT kill', entry['name'],
-                    entry['pid'], entry['footprint_gib'], entry['limit_gib'], parent,
-                    entry['ppid']))
+                    entry['pid'], entry['footprint_gib'], limit, parent, entry['ppid'],
+                    ' Dir: ' + entry['cwd'] if entry.get('cwd') else ''))
     try:
         subprocess.run(cfg['notify'].split() + [text], timeout=30,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -243,10 +299,99 @@ def notify(entry, cfg):
         pass   # a failed push must never stop the next kill
 
 
+def started(pid):
+    """Process start time as epoch seconds, or None."""
+    out = subprocess.run(['ps', '-o', 'lstart=', '-p', str(pid)], capture_output=True, text=True,
+                         timeout=10).stdout.strip()
+    try:
+        return time.mktime(time.strptime(out, '%a %b %d %H:%M:%S %Y'))
+    except ValueError:
+        return None
+
+
+def jobs(cfg):
+    """[(job name, root pid)] for pid files whose process is the one that wrote them."""
+    found = []
+    for f in sorted(cfg['jobs'].glob('*.pid')) if cfg['jobs'].is_dir() else []:
+        try:
+            pid = int(f.read_text().strip())
+        except (OSError, ValueError):
+            continue
+        t = started(pid)
+        if t is not None and abs(t - f.stat().st_mtime) <= 120:
+            found.append((f.stem, pid))
+    return found
+
+
+def tree(root, rows):
+    """root and every descendant among rows."""
+    kids = {}
+    for r in rows:
+        kids.setdefault(r['ppid'], []).append(r['pid'])
+    out, todo = [], [root]
+    while todo:
+        pid = todo.pop()
+        out.append(pid)
+        todo.extend(kids.get(pid, []))
+    return out
+
+
+def memcap_note(workdir, text):
+    """One line in the job's STATUS.md, which is what the job's reader opens first."""
+    if not workdir:
+        return
+    try:
+        with open(os.path.join(workdir, 'STATUS.md'), 'a') as fh:
+            fh.write('\n' + text + '\n')
+    except OSError:
+        pass
+
+
+def over_job_caps(rows, cfg, dry_run, out):
+    """Stop every launcher job whose whole tree is over the per-job cap."""
+    by_pid = {r['pid']: r for r in rows}
+    stopped = []
+    for name, root in jobs(cfg):
+        pids = tree(root, rows)
+        members = [by_pid[p] for p in pids if p in by_pid]
+        size = sum(r['footprint'] for r in members)
+        if size <= cfg['job']:
+            continue
+        top = max(members, key=lambda r: r['footprint'])
+        if dry_run:
+            print('WOULD STOP job {} ({} processes, {:.1f} GiB over the {:.0f} GiB cap)'.format(
+                name, len(members), size / GIB, cfg['job'] / GIB), file=out)
+            for r in members:
+                r['gone'] = True
+            continue
+        workdir = cwd_of(root)
+        signals = []
+        for r in sorted(members, key=lambda r: r['pid'] == root):   # workers first, executor last
+            r['cwd'] = workdir
+            signals.append(kill(r, cfg))
+            r['gone'] = True
+        how = 'TERM' if all(x in ('TERM', 'gone') for x in signals) else (
+            'KILL' if all(signals) else None)
+        text = ('MEMCAP {}: the memory guard stopped this job at {:.1f} GB, cap {:.0f} GB. '
+                'Largest process: {} pid {} at {:.1f} GB. Measure peak memory '
+                '(/usr/bin/time -l) before running that step unattended again.').format(
+            time.strftime('%Y-%m-%d %H:%M %Z'), size / GIB, cfg['job'] / GIB, name_of(top),
+            top['pid'], top['footprint'] / GIB)
+        memcap_note(workdir, text)
+        entry = record(dict(top, cwd=workdir), how, cfg, rule='job', total=size,
+                       extra=dict(job=name, processes=len(members)))
+        notify(entry, cfg)
+        stopped.append(entry)
+        print('stopped job {} ({} processes) at {:.1f} GiB with {}'.format(
+            name, len(members), size / GIB, how), file=out)
+    return stopped
+
+
 def run_once(cfg, dry_run=False, uid=None, out=None):
     out = out or sys.stdout
-    over = [r for r in survey(cfg, uid) if r['footprint'] > cfg['limit']]
-    killed = []
+    rows = survey(cfg, uid)
+    killed = over_job_caps(rows, cfg, dry_run, out) if cfg.get('job') else []
+    over = [r for r in rows if r['footprint'] > cfg['limit'] and not r.get('gone')]
     for row in over:
         size = row['footprint'] / GIB
         if row['spared_by']:
@@ -256,13 +401,45 @@ def run_once(cfg, dry_run=False, uid=None, out=None):
         if dry_run:
             print('WOULD KILL {} pid {} at {:.1f} GiB (parent {} {})'.format(
                 name_of(row), row['pid'], size, row['ppid'], parent_command(row)[:80]), file=out)
+            row['gone'] = True   # counted as killed, so the total pass does not name it twice
             continue
+        row['cwd'] = cwd_of(row['pid'])
         how = kill(row, cfg)
+        row['gone'] = bool(how)
         entry = record(row, how, cfg)
         notify(entry, cfg)
         killed.append(entry)
         print('killed {} pid {} at {:.1f} GiB with {}'.format(entry['name'], row['pid'], size,
                                                              how), file=out)
+    if cfg.get('total'):
+        killed += over_total(rows, cfg, dry_run, out)
+    return killed
+
+
+def over_total(rows, cfg, dry_run, out):
+    """Kill the largest job processes until all of them together fit under the total."""
+    pool = [r for r in rows if not r['spared_by'] and not r.get('gone')
+            and not re.search(APP_BUNDLE, r['exe'] or r['command'])]
+    total = sum(r['footprint'] for r in pool)
+    killed = []
+    for row in sorted(pool, key=lambda r: -r['footprint']):
+        if total <= cfg['total']:
+            break
+        size = row['footprint'] / GIB
+        if dry_run:
+            print('WOULD KILL {} pid {} at {:.1f} GiB: jobs total {:.1f} GiB over {:.0f}'.format(
+                name_of(row), row['pid'], size, total / GIB, cfg['total'] / GIB), file=out)
+            total -= row['footprint']
+            continue
+        row['cwd'] = cwd_of(row['pid'])
+        how = kill(row, cfg)
+        entry = record(row, how, cfg, rule='total', total=total)
+        notify(entry, cfg)
+        killed.append(entry)
+        print('killed {} pid {} at {:.1f} GiB with {}: jobs total {:.1f} GiB'.format(
+            entry['name'], row['pid'], size, how, total / GIB), file=out)
+        if how:
+            total -= row['footprint']
     return killed
 
 

@@ -1415,6 +1415,19 @@ def run_locked(lane, config, rh, cancel):
                                                             lessons_sha256=lessons.snapshot(cfg.get('_lesson_rows', []))))
 
 
+def closed(lane, rh):
+    """The lane's CADENCE window_closes if it has passed, else None. That is how a lane is retired
+    (11-09: c5 and virtual-embryo), and the daily `sweep --all` still ran both on 11-10 because
+    only cadence read it."""
+    if not (lane / 'CADENCE.toml').is_file():
+        return None
+    import cadence
+    cfg = cadence.load(lane, rh)
+    if 'window_closes' in cfg and cadence.stamp(rh.now()) >= cadence.stamp(cfg['window_closes']):
+        return cfg['window_closes']
+    return None
+
+
 def main(root, args, rh):
     root = root.expanduser().resolve()
     lanes = sorted((root / 'lanes').iterdir()) if args.all else [root / 'lanes' / args.lane]
@@ -1424,6 +1437,13 @@ def main(root, args, rh):
         if not lane.is_dir():
             continue
         try:
+            ended = closed(lane, rh)
+            if ended and args.all:
+                print('SKIP {}: lane closed {} (CADENCE window_closes)'.format(lane.name, ended))
+                continue
+            if ended:
+                raise ValueError('lane closed {} (CADENCE window_closes); a closed lane is not '
+                                 'swept. Open a new window in CADENCE.toml to run it again'.format(ended))
             import lane_setup
             declaration_errors = lane_setup.audit(lane, rh)
             if declaration_errors:

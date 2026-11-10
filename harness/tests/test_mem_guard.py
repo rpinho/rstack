@@ -63,6 +63,9 @@ def config(tmp_path, monkeypatch, limit_mib, **env):
     push.chmod(0o755)
     monkeypatch.setenv('MEM_GUARD_NOTIFY', str(push))
     monkeypatch.delenv('MEM_GUARD_SPARE', raising=False)
+    monkeypatch.delenv('MEM_GUARD_TOTAL_GB', raising=False)
+    monkeypatch.delenv('MEM_GUARD_JOB_GB', raising=False)
+    monkeypatch.setenv('MEM_GUARD_JOBS_DIR', str(tmp_path / 'remote-jobs'))
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     return mem_guard.settings(), pushed
@@ -133,6 +136,139 @@ def test_a_spared_process_is_never_killed_whatever_its_size(tmp_path, monkeypatc
         assert proc.poll() is None and not pushed.exists()
     finally:
         proc.kill()
+
+
+def test_jobs_over_the_total_lose_their_largest_process_only(tmp_path, monkeypatch):
+    """11-10: no process passed the per-process limit, but eight workers together exhausted swap."""
+    big, small = allocator(tmp_path, 300), allocator(tmp_path, 120)
+    try:
+        only(monkeypatch, big, small)
+        cfg, pushed = config(tmp_path, monkeypatch, limit_mib=1024, MEM_GUARD_TOTAL_GB=str(380 / 1024))
+        killed = mem_guard.run_once(cfg)
+        wait_gone(big)
+        assert [k['pid'] for k in killed] == [big.pid]
+        assert small.poll() is None, 'one kill brought the total under; the rest keep running'
+        row = json.loads((tmp_path / 'kills.jsonl').read_text().splitlines()[-1])
+        assert row['rule'] == 'total' and row['total_gib'] > row['footprint_gib']
+        assert row['cwd'] == os.getcwd(), 'the working directory names the job'
+        message = pushed.read_text()
+        assert 'GB total' in message and 'Dir: ' + os.getcwd() in message
+    finally:
+        big.kill(); small.kill()
+
+
+def test_the_total_never_counts_or_kills_an_app(tmp_path, monkeypatch):
+    """The kernel already suspends apps under swap exhaustion; the total is about jobs."""
+    big, small = allocator(tmp_path, 300), allocator(tmp_path, 120)
+    try:
+        only(monkeypatch, big, small)
+        real = mem_guard.exe_path
+        monkeypatch.setattr(mem_guard, 'exe_path', lambda pid: (
+            '/Applications/Some App.app/Contents/MacOS/Some App' if pid == big.pid else real(pid)))
+        cfg, pushed = config(tmp_path, monkeypatch, limit_mib=1024, MEM_GUARD_TOTAL_GB=str(380 / 1024))
+        assert mem_guard.run_once(cfg) == []
+        assert big.poll() is None and small.poll() is None and not pushed.exists()
+    finally:
+        big.kill(); small.kill()
+
+
+JOB = '''
+import subprocess, sys, time
+kids = [subprocess.Popen([sys.executable, sys.argv[1], "x", "plain"], stdout=subprocess.PIPE, text=True)
+        for _ in range(2)]
+for k in kids:
+    k.stdout.readline()
+print("ready", flush=True)
+time.sleep(120)
+'''
+
+
+def job(tmp_path, mib_each, name='math_c47r14_1110', stale=False):
+    """A launcher job as launch.sh leaves it: a root process in its work dir, two workers under
+    it, and its pid in remote-jobs/<job>.pid, written as it starts."""
+    (tmp_path / 'allocate.py').write_text(ALLOCATE.format(size=mib_each * MIB))
+    (tmp_path / 'job.py').write_text(JOB)
+    work = tmp_path / 'work'
+    work.mkdir()
+    root = subprocess.Popen([sys.executable, str(tmp_path / 'job.py'), str(tmp_path / 'allocate.py')],
+                            cwd=work, stdout=subprocess.PIPE, text=True)
+    marks = tmp_path / 'remote-jobs'
+    marks.mkdir(exist_ok=True)
+    pidfile = marks / (name + '.pid')
+    pidfile.write_text(str(root.pid) + '\n')
+    if stale:
+        old = time.time() - 3600
+        os.utime(pidfile, (old, old))
+    assert root.stdout.readline().strip() == 'ready'
+    kids = [int(x) for x in subprocess.run(['pgrep', '-P', str(root.pid)], capture_output=True,
+                                           text=True).stdout.split()]
+    assert len(kids) == 2
+    return root, kids, work
+
+
+def only_pids(monkeypatch, pids):
+    real = mem_guard.processes
+    monkeypatch.setattr(mem_guard, 'processes', lambda uid: [r for r in real(uid) if r[0] in pids])
+
+
+def running(pid):
+    return mem_guard.alive(pid)
+
+
+def test_a_job_over_its_cap_is_stopped_whole_and_says_so_in_status(tmp_path, monkeypatch):
+    """11-10: the C47 producer reached 18 GB in 15 s inside a job; the job is the unit to stop."""
+    root, kids, work = job(tmp_path, 200)
+    try:
+        only_pids(monkeypatch, {root.pid, *kids})
+        cfg, pushed = config(tmp_path, monkeypatch, limit_mib=4096, MEM_GUARD_JOB_GB=str(300 / 1024))
+        killed = mem_guard.run_once(cfg)
+        wait_gone(root)
+        assert not any(running(k) for k in kids), 'the workers go with the job'
+        assert len(killed) == 1 and killed[0]['rule'] == 'job'
+        assert killed[0]['job'] == 'math_c47r14_1110' and killed[0]['processes'] == 3
+        assert killed[0]['total_gib'] > 0.35 and killed[0]['cwd'] == str(work)
+        status = (work / 'STATUS.md').read_text()
+        assert status.lstrip().startswith('MEMCAP ') and 'cap 0 GB' in status and '/usr/bin/time -l' in status
+        assert 'whole job math_c47r14_1110 stopped' in pushed.read_text()
+    finally:
+        for p in [root.pid, *kids]:
+            try:
+                os.kill(p, 9)
+            except ProcessLookupError:
+                pass
+
+
+def test_a_job_under_its_cap_runs_on(tmp_path, monkeypatch):
+    root, kids, work = job(tmp_path, 50)
+    try:
+        only_pids(monkeypatch, {root.pid, *kids})
+        cfg, pushed = config(tmp_path, monkeypatch, limit_mib=4096, MEM_GUARD_JOB_GB='1')
+        assert mem_guard.run_once(cfg) == []
+        assert running(root.pid) and all(running(k) for k in kids)
+        assert not (work / 'STATUS.md').exists() and not pushed.exists()
+    finally:
+        root.kill()
+        for k in kids:
+            os.kill(k, 9)
+
+
+def test_a_stale_pid_file_never_names_a_job(tmp_path, monkeypatch):
+    """remote-jobs keeps files from jobs long gone; their pids get reused by other processes."""
+    root, kids, work = job(tmp_path, 200, stale=True)
+    try:
+        only_pids(monkeypatch, {root.pid, *kids})
+        cfg, _ = config(tmp_path, monkeypatch, limit_mib=4096, MEM_GUARD_JOB_GB=str(300 / 1024))
+        assert mem_guard.jobs(cfg) == []
+        assert mem_guard.run_once(cfg) == [] and running(root.pid)
+    finally:
+        root.kill()
+        for k in kids:
+            os.kill(k, 9)
+
+
+def test_no_total_is_the_default(tmp_path, monkeypatch):
+    cfg, _ = config(tmp_path, monkeypatch, limit_mib=1024)
+    assert cfg['total'] == 0 and cfg['job'] == 0
 
 
 def test_dry_run_kills_nothing(tmp_path, monkeypatch, capsys):

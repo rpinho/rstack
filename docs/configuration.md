@@ -5,6 +5,10 @@ Use an isolated writable root with `python3 harness/rh.py --root PATH ...`. It c
 | Setting | Meaning |
 |---|---|
 | `RH_LAUNCH_RECEIPTS` | Directory of the launcher's `JOB.log.selection.json` receipts. `rh bughunt verdicts` takes a referee's model family from the receipt named after the verdict's folder, not from the referee's self-report. Unset: the self-report is used and flagged. |
+| `MEM_GUARD_LIMIT_GB` | `harness/tools/mem_guard.py` (launchd, every few seconds on a compute host): kill any user process whose physical footprint passes this, default 8. The window server, agent sessions, the browser, tmux and Apple binaries are spared. |
+| `MEM_GUARD_JOB_GB` | Cap on one launcher job's whole process tree, found from its pid file in `MEM_GUARD_JOBS_DIR` (default `~/.local/state/research-harness/remote-jobs`). Over it, the job is stopped whole and a `MEMCAP` line is appended to its `STATUS.md`. Unset: no per-job cap. macOS ignores `ulimit -v`, so this watcher is the cap. |
+| `MEM_GUARD_TOTAL_GB` | Cap on all unspared processes outside app bundles together; over it, the largest is killed until they fit. Unset: off. |
+| `HOST_WATCH_NOTIFY` | `harness/tools/host_watch.py` (launchd, every 5 min): push critical memory pressure with the largest processes, resume apps the kernel suspended for swap exhaustion once pressure eases, and report a browser renderer above 90% CPU for an hour with the session that started it. Also `HOST_WATCH_SWAP_GB` (default 16), `HOST_WATCH_SPIN_CPU`, `HOST_WATCH_SPIN_S`. |
 | `RH_POD_LANES` | Comma-separated eligible pod lane names; empty by default. |
 | `RH_SELECTION_GATE` | Optional selection package root; defaults to bundled `selection/` beside `harness/`. `~` expands. V2 requires NumPy. |
 | `RH_POLICY_EXCLUDED` | Explicit legacy evidence-policy exemptions; empty by default. New deployments should keep it empty. The capacity hook also recognizes these exemptions. |
