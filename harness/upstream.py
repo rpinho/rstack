@@ -158,10 +158,12 @@ def new_pr_errors(root, repo, now=None):
 
 
 PR_REF = re.compile(r'github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)|(?<![\w/])#(\d+)\b', re.I)
-TABLE = re.compile(r"\bon\s+(?:Tao'?s|the)\s+(?:optimization\s+)?table\b|\bTao'?s\s+table\b", re.I)
+TABLE = re.compile(r"\bon\s+Tao[\u2019']?s\s+(?:optimization\s+)?table\b", re.I)   # not "on the table"
+FIX = 'say "PR updated, not merged"'
+X_FIX = 'write "candidate bound for C22b (Tao\'s optimization table), PR open"'
 
 
-def report_lint(text, root):
+def report_lint(text, root, fix=FIX):
     """Reasons a lane report misstates an unmerged PR as shipped; [] when it does not.
 
     "live" next to a PR that is not merged fails, and so does "on Tao's table" unless every PR it
@@ -187,10 +189,10 @@ def report_lint(text, root):
                 refs += [(r, int(m.group(3))) for r in repos if (r, int(m.group(3))) in known]
         unmerged = sorted({n for key, n in [(k, k[1]) for k in refs] if not known[key]})
         if TABLE.search(sentence) and (unmerged or not refs):
-            errors.append('"on Tao\'s table" is only true once merged{}: say "PR updated, not merged"'.format(
+            errors.append('"on Tao\'s table" is only true once merged{}: {}'.format(
                 ' (#{} not merged)'.format(', #'.join(map(str, unmerged))) if unmerged else
-                ' (name the PR, and only if it merged)'))
+                ' (name the PR, and only if it merged)', fix))
         elif unmerged and re.search(r'\blive\b', sentence, re.I):
-            errors.append('#{} {} not merged, so not live: say "PR updated, not merged"'.format(
-                ', #'.join(map(str, unmerged)), 'is' if len(unmerged) == 1 else 'are'))
+            errors.append('#{} {} not merged, so not live: {}'.format(
+                ', #'.join(map(str, unmerged)), 'is' if len(unmerged) == 1 else 'are', fix))
     return errors

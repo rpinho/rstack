@@ -511,3 +511,14 @@ def test_the_executor_carries_the_job_mark_the_memory_guard_reads(tmp_path):
     assert proc.returncode == 0, proc.stderr + log
     program, _ = staged(tmp_path)
     assert 'RH_JOB=fixture-job' in program
+
+
+def test_a_lane_on_hold_starts_no_job(tmp_path):
+    """11-10: lane-yield's HOLD was read only by friends' own loops; now the launcher reads it."""
+    jobs, env = harness(tmp_path)
+    (tmp_path / 'runtime/lanes/fixture/HOLD').write_text('HOLD by lane-yield 2026-11-10T23:30: BURNING\n')
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path)], env=env,
+                          capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 78
+    assert 'lane fixture is on hold: HOLD by lane-yield' in proc.stderr
+    assert not (jobs / 'fixture-job.log').exists() or 'attempt' not in (jobs / 'fixture-job.log').read_text()

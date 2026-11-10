@@ -137,6 +137,12 @@ fi
 # it, and the gate has to refuse before the registry write, the log and any spend.
 lane=${LAUNCH_LANE:-${${job:t}%%[-_]*}}
 lane_dir=${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-$PWD/.runtime}}/lanes/$lane
+# 11-10: a lane-yield HOLD stops the lane's jobs here. Until now only friends' own loops read one,
+# so a hold on any other lane was a file nobody checked. Only general removes it.
+if [[ -f $lane_dir/HOLD ]]; then
+  print -u2 -- "launch.sh refused $job: lane $lane is on hold: $(head -1 $lane_dir/HOLD) Only general removes $lane_dir/HOLD."
+  exit 78
+fi
 # rounds.py has held this rule since the first c5 postmortem on 11-06: no repeat of a method that
 # just produced a dry streak, no reopening a closed dead end, no round 1 without reading the KB.
 # Nothing ever called it and no lane had written a single row, so every check read an empty ledger

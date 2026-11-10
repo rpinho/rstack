@@ -31,7 +31,11 @@ and FAILS the lane when
                  stays the other route, for a claim surfaced without a message. This failure pushes
                  general but never writes the hold file: missing paperwork is not spending in circles.
 Every research lane is configured, not only one: the point of a lane is something new.
-A lane with `report_only: true` is pushed to general on FAIL but gets no hold file.
+A lane with `report_only: true` is pushed to general on FAIL but gets no hold file, with one exception
+(general, 11-10): a lane with `upstream` becomes binding once the upstream merges other people's PRs and
+not ours, i.e. its last merge by anyone is UPSTREAM_BIND_DAYS (7) or more newer than our last merge. While
+the maintainer merges nobody, a hold would punish the lane for his inactivity; once he merges others, it
+is about our PRs.
 With --act, a failing lane gets its hold file written (its loops stop spending) and a push to general.
 Exit 0 = all lanes PASS, 1 = some lane FAILS, 2 = config error.
 """
@@ -49,6 +53,7 @@ LINT = HERE.parents[1]
 sys.path.insert(0, str(LINT))
 from result_lint import lint  # noqa: E402
 
+UPSTREAM_BIND_DAYS = 7
 DEFAULTS = dict(window_hours=48, max_job_hours_without_new=20, min_verdicts=20, max_pass_share=0.9,
                 max_attempts_without_new=0, max_dry_streak=3)
 
@@ -286,6 +291,13 @@ def check_lane(name, cfg, now):
     row = dict(lane=name, as_of=datetime.fromtimestamp(now).isoformat(timespec='minutes'), job_hours=round(hours, 1),
                attempts=attempts, new_yes=new_yes, verdicts=verdicts, pass_share=round(share, 3), status='FAIL' if fails else 'PASS', fails=fails)
     if c.get('upstream'):
+        anyone, ours = (up or {}).get('last_merge_anyone'), (up or {}).get('last_merge_ours')
+        gap = (upstream.parse(anyone) - upstream.parse(ours)).days if anyone and ours else None
+        binding = bool(anyone) and (ours is None or gap >= UPSTREAM_BIND_DAYS)
+        row.update(upstream_binding=binding, upstream_merge_gap_days=gap)
+        if binding and row['fails']:
+            row['fails'][0] += (f' (binding: upstream merged others {gap} d after our last merge)'
+                                if ours else ' (binding: upstream merges others, never ours)')
         row.update(upstream_open=up['open_unmerged'] if up else None,
                    upstream_oldest_days=up['oldest_open_days'] if up else None,
                    upstream_merged=up['merged'] if up else None)
@@ -314,7 +326,7 @@ def act(row, cfg):
     # A paperwork gap and a direction change are not spending in circles, so neither holds.
     spending = [f for f in row['fails']
                 if not f.startswith('UNSURFACED') and not f.startswith('DRY_STREAK')]
-    if hold and spending and not cfg.get('report_only'):
+    if hold and spending and (not cfg.get('report_only') or row.get('upstream_binding')):
         p = Path(os.path.expanduser(hold))
         if not p.exists():
             p.write_text(f'HOLD by lane-yield {row["as_of"]}: ' + '; '.join(row['fails']) + '\nOnly general removes this file.\n')

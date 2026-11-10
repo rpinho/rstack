@@ -120,6 +120,8 @@ def test_calling_an_unmerged_pr_live_fails(tmp_path, text):
     "#250 merged on 10-26 and is on Tao's table.",
     'The memory guard is live on the m5.',
     'kb backup: no OK line; the live log is fine.',
+    'Both options are still on the table.',
+    "Tao's table lists C22b at 0.9 since 2024.",
 ])
 def test_true_reports_pass(tmp_path, text):
     lane(tmp_path, [pr(298), pr(250, 'closed', '2026-10-26T04:07:00Z')])
@@ -128,3 +130,57 @@ def test_true_reports_pass(tmp_path, text):
 
 def test_without_any_upstream_lane_the_lint_is_silent(tmp_path):
     assert upstream.report_lint("two PR updates are live on Tao's table", tmp_path) == []
+
+
+def yield_row(tmp_path, prs, hold=None):
+    d = lane(tmp_path, prs)
+    log = tmp_path / 'math_a.log'
+    log.write_text('=== run 1 model m Tue Nov 10 00:00:00 EST 2026\nwork\nexit 0 Tue Nov 10 23:00:00 EST 2026\n')
+    now = ly.parse_stamp('exit 0 Tue Nov 10 23:30:00 EST 2026')
+    cfg = {'logs': [str(log)], 'results': [], 'upstream': str(d), 'report_only': True,
+           'hold': str(hold or tmp_path / 'lanes/math/HOLD')}
+    return ly.check_lane('math', cfg, now), cfg
+
+
+def test_a_frozen_queue_keeps_the_lane_report_only(tmp_path, monkeypatch):
+    """general 11-10: nobody merged since 10-26, so a hold would punish the lane for that."""
+    monkeypatch.setattr(ly.subprocess, 'run', lambda *a, **k: None)
+    row, cfg = yield_row(tmp_path, [pr(298), pr(250, 'closed', '2026-10-26T04:07:00Z'),
+                                    pr(260, 'closed', '2026-10-26T03:00:00Z', author='someone-else')])
+    assert row['status'] == 'FAIL' and row['upstream_binding'] is False
+    ly.act(row, cfg)
+    assert not Path(cfg['hold']).exists()
+
+
+def test_others_merged_a_week_after_us_makes_it_binding(tmp_path, monkeypatch):
+    monkeypatch.setattr(ly.subprocess, 'run', lambda *a, **k: None)
+    row, cfg = yield_row(tmp_path, [pr(298), pr(250, 'closed', '2026-10-26T04:07:00Z'),
+                                    pr(360, 'closed', '2026-11-03T05:00:00Z', author='someone-else')])
+    assert row['upstream_binding'] is True and row['upstream_merge_gap_days'] == 8
+    assert 'binding: upstream merged others 8 d after our last merge' in row['fails'][0]
+    ly.act(row, cfg)
+    assert Path(cfg['hold']).read_text().startswith('HOLD by lane-yield')
+
+
+def test_six_days_is_not_yet_binding(tmp_path):
+    row, _ = yield_row(tmp_path, [pr(298), pr(250, 'closed', '2026-10-26T04:07:00Z'),
+                                  pr(360, 'closed', '2026-11-01T05:00:00Z', author='someone-else')])
+    assert row['upstream_binding'] is False and row['upstream_merge_gap_days'] == 6
+
+
+@pytest.mark.parametrize('post', [
+    "Candidate bound on Tao's table for C22b.",
+    'Candidate bound on Tao’s table for C22b.',
+    'New C22b bound, PR https://github.com/teorth/optimizationproblems/pull/347 is live.',
+])
+def test_an_x_post_that_calls_an_open_pr_shipped_fails_with_the_x_wording(tmp_path, post):
+    """11-10: the C22b post said "Candidate bound on Tao's table" while #347 was unmerged."""
+    lane(tmp_path, [pr(347)])
+    errors = upstream.report_lint(post, tmp_path, fix=upstream.X_FIX)
+    assert errors and "(Tao's optimization table), PR open" in errors[0]
+
+
+def test_the_x_fix_wording_itself_passes(tmp_path):
+    lane(tmp_path, [pr(347)])
+    assert upstream.report_lint("Candidate bound for C22b (Tao's optimization table), PR open: "
+                                'https://github.com/teorth/optimizationproblems/pull/347', tmp_path) == []
