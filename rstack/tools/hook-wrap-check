@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Fail on any registered guard that does not run through the fail-safe wrapper.
+
+hook-audit finds a guard that crashes, after the fact. This makes the rule itself the check: every
+PreToolUse command registered in the settings files must be a Python hook that calls
+`_hookfail.run(` (rstack/hooks/_hookfail.py), or be on an allowlist with a reason. A shell guard
+counts only through a Python shim that uses the wrapper, because a shell script that errors exits
+nonzero and Claude Code lets the call through. The one shell shape that passes is a trampoline:
+`python3 "$(dirname "$0")/X.py" && exit 0` then `exit 2`, where X.py uses the wrapper. A registered hook whose file is missing is a guard
+that is not there, and fails too.
+
+Why (11-10): hook-audit on a KB project found three send gates (a friend-reply gate, a voice gate,
+an email gate) that crashed on malformed events and so failed open. None used the wrapper. The
+laptop, which had adopted the same wrapper, found its only crash in the one guard that didn't.
+
+    hook-wrap-check [SETTINGS.json ...] [--project DIR] [--allow FILE] [--json]
+
+Default settings: ~/.claude/settings.json, plus DIR/.claude/settings.json for each --project.
+
+Allowlist (default $RSTACK_HOOK_ALLOWLIST, else ~/.config/rstack/hook-allowlist.json):
+    {"allow": {"<hook file name>": {"reason": "why it is safe unwrapped", "until": "YYYY-MM-DD"}},
+     "projects": ["~/path/to/project"]}
+A reason is required. `until` is optional; after that date the entry no longer counts, so a
+temporary exception (a migration in progress) cannot become a permanent one. `projects` are added
+to --project, so a host's policy file names the project settings it holds to the same rule.
+
+Exit 0 when every guard is wrapped or allowed, 1 otherwise.
+"""
+import argparse
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import sys
+
+MARK = '_hookfail.run('
+SCRIPT = re.compile(r'\.(py|sh|bash|zsh)$')
+
+
+def policy_path():
+    return Path(os.environ.get('RSTACK_HOOK_ALLOWLIST') or
+                Path.home() / '.config/rstack/hook-allowlist.json').expanduser()
+
+
+def load_policy(path):
+    """(allow {name: entry}, projects [path]) from the policy file, or empty when it has none."""
+    path = Path(path).expanduser()
+    if not path.is_file():
+        return {}, []
+    data = json.loads(path.read_text())
+    allow = data.get('allow') or {}
+    for name, entry in allow.items():
+        if not isinstance(entry, dict) or len(str(entry.get('reason', '')).split()) < 3:
+            raise ValueError('{}: allowlist entry {} needs a reason of a few words'.format(path, name))
+        if entry.get('until'):
+            dt.date.fromisoformat(entry['until'])   # a malformed date is a refusal, not a pass
+    return allow, [str(Path(p).expanduser()) for p in data.get('projects') or []]
+
+
+def registered(paths):
+    """Every PreToolUse command: dict(settings, project, matcher, command)."""
+    out = []
+    for path, project in paths:
+        try:
+            cfg = json.loads(Path(path).read_text())
+        except (OSError, ValueError) as exc:
+            out.append(dict(settings=str(path), project=project, matcher='', command='',
+                            error='settings unreadable ({})'.format(type(exc).__name__)))
+            continue
+        for entry in (cfg.get('hooks') or {}).get('PreToolUse', []):
+            for h in entry.get('hooks', []):
+                if h.get('type') == 'command':
+                    out.append(dict(settings=str(path), project=project,
+                                    matcher=entry.get('matcher') or '*', command=h.get('command', '')))
+    return out
+
+
+def script_of(command, project):
+    """The hook file a command runs: the first word that looks like a script, expanded."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    home = str(Path.home())
+    for w in words:
+        w = w.replace('${CLAUDE_PROJECT_DIR}', project or '').replace('$CLAUDE_PROJECT_DIR', project or '')
+        w = os.path.expanduser(w.replace('${HOME}', home).replace('$HOME', home))
+        if SCRIPT.search(w):
+            return Path(w)
+    return Path(os.path.expanduser(words[0])) if words else None
+
+
+TRAMPOLINE = re.compile(r'^python3\s+"?\$\(dirname\s+"\$0"\)"?/([\w.-]+\.py)"?\s+&&\s+exit\s+0$')
+
+
+def trampoline(script, text):
+    """The wrapped .py a shell guard hands off to, when that is all it does; else None.
+
+    11-10 (KB b723a00bc): friend-reply-gate.sh kept its name so settings and references hold, and became
+    `python3 "$(dirname "$0")/friend-reply-gate.py" && exit 0` then `exit 2`. That fails closed: if the
+    wrapped hook cannot run, the click is refused. Accepted only in exactly that shape (comments and echo
+    lines aside), naming a sibling that calls the wrapper. Not `exec python3 ...`: a python that cannot
+    start exits 1, and exit 1 is an allow."""
+    if script.suffix == '.py':
+        return None
+    lines = [l.strip() for l in text.splitlines()
+             if l.strip() and not l.strip().startswith(('#', 'echo '))]
+    m = TRAMPOLINE.match(lines[0]) if lines else None
+    if not m or lines[1:] != ['exit 2']:
+        return None
+    target = script.parent / m.group(1)
+    if target.is_file() and MARK in target.read_text(errors='replace'):
+        return target
+    return None
+
+
+def verdict(row, allow, today):
+    """('ok'|'allowed'|'UNWRAPPED'|'MISSING'|'BROKEN', detail)."""
+    if row.get('error'):
+        return 'BROKEN', row['error']
+    script = script_of(row['command'], row['project'])
+    name = script.name if script else '?'
+    entry = allow.get(name)
+    live = entry and (not entry.get('until') or dt.date.fromisoformat(entry['until']) >= today)
+    if script is None or not script.is_file():
+        return ('allowed', entry['reason']) if live else ('MISSING', 'no file at {}'.format(script))
+    text = script.read_text(errors='replace')
+    if script.suffix == '.py' and MARK in text:
+        return 'ok', name
+    target = trampoline(script, text)
+    if target:
+        return 'ok', '{} (runs {}, exit 2 if it cannot)'.format(name, target.name)
+    if live:
+        return 'allowed', '{} (until {})'.format(entry['reason'], entry['until']) if entry.get('until') \
+            else entry['reason']
+    if entry and not live:
+        return 'UNWRAPPED', '{}: its allowlist entry expired {}'.format(name, entry['until'])
+    if script.suffix != '.py':
+        return 'UNWRAPPED', '{} is a shell guard: register a Python shim that calls {} instead'.format(name, MARK)
+    return 'UNWRAPPED', '{} does not call {}'.format(name, MARK)
+
+
+def check(settings, projects, allow, today=None):
+    today = today or dt.date.today()
+    paths = [(p, None) for p in settings]
+    paths += [(str(Path(d) / '.claude/settings.json'), str(d)) for d in projects]
+    rows = []
+    for row in registered(paths):
+        state, detail = verdict(row, allow, today)
+        rows.append(dict(row, state=state, detail=detail))
+    return rows
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('settings', nargs='*')
+    ap.add_argument('--project', action='append', default=[])
+    ap.add_argument('--allow')
+    ap.add_argument('--json', action='store_true')
+    a = ap.parse_args(argv)
+    try:
+        allow, extra = load_policy(a.allow or policy_path())
+    except (ValueError, OSError) as exc:
+        print('hook-wrap-check: policy file unusable: {}'.format(exc), file=sys.stderr)
+        return 1
+    settings = a.settings or [str(Path.home() / '.claude/settings.json')]
+    projects = [str(Path(p).expanduser()) for p in a.project] + [p for p in extra if p not in a.project]
+    rows = check(settings, [p for p in projects if (Path(p) / '.claude/settings.json').is_file()], allow)
+    bad = [r for r in rows if r['state'] in ('UNWRAPPED', 'MISSING', 'BROKEN')]
+    if a.json:
+        print(json.dumps(rows, indent=2))
+    else:
+        for r in rows:
+            print('{:9}  [{}]  {}  {}'.format(r['state'], r['matcher'][:40], r['detail'],
+                                               '' if r['state'] == 'ok' else '(' + r['settings'] + ')'))
+        print('{} guard(s), {} not through the wrapper'.format(len(rows), len(bad)))
+    return 1 if bad else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

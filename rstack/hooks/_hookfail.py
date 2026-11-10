@@ -23,6 +23,18 @@ An error on a call inside the guarded set is refused (`deny`, or `ask` where a f
 more than the harm). An error on a call outside it is allowed, with the failure printed to stderr so
 a broken guard is visible rather than silent.
 
+Two more cases, each with its own answer:
+
+  lookup(what, fn, ...)        A guard that must ask something outside itself (git, gh, the forge,
+                               a ledger) wraps that call in `lookup`. If the lookup fails, the hook
+                               answers `ask` and names what could not be read: the guard is fine
+                               and the world is unreadable, so the owner decides, rather than the
+                               hook guessing either way.
+  fail_closed=True             For guards whose matcher IS the dangerous act (send, merge, push,
+                               delete, publish). Any parse error or exception refuses, whatever the
+                               triage says. Do not set it on a guard wired to every shell command:
+                               a broken one would refuse the whole session. Those keep triage.
+
 The refusal names the hook and the exception TYPE only, never the exception text and never the
 input: command payloads and env blocks hold API keys.
 
@@ -40,6 +52,27 @@ from pathlib import Path
 import sys
 
 EVENT = 'PreToolUse'
+FAIL_CLOSED_ACTS = ('send', 'merge', 'push', 'delete', 'publish')
+
+
+class LookupFailed(Exception):
+    """A lookup the guard needs (git, gh, the forge) could not be read. `what` names it."""
+    def __init__(self, what):
+        super().__init__(what)
+        self.what = what
+
+
+def lookup(what, fn, *args, **kwargs):
+    """Return fn(*args, **kwargs); if it fails in any way, raise LookupFailed(what).
+
+    `run` turns that into an `ask` naming `what`, never an allow. The original error is not kept:
+    its text can carry the payload or a credential."""
+    try:
+        return fn(*args, **kwargs)
+    except SystemExit:
+        raise
+    except Exception:
+        raise LookupFailed(what) from None
 
 
 def state_dir(*parts):
@@ -59,9 +92,10 @@ def decide(decision, reason):
         'permissionDecisionReason': reason}}))
 
 
-def run(name, body, triage=None, guards='this action', on_error='deny'):
+def run(name, body, triage=None, guards='this action', on_error='deny', fail_closed=False):
     """Run `body(event)`; refuse rather than allow if it cannot be run to completion.
 
+    A failed `lookup` asks. With fail_closed, any other error refuses whatever triage says.
     Returns the exit code to hand to sys.exit.
     """
     raw = sys.stdin.read()
@@ -78,11 +112,18 @@ def run(name, body, triage=None, guards='this action', on_error='deny'):
             return body(event) or 0
         except SystemExit:
             raise
+        except LookupFailed as exc:
+            decide('ask', '{} could not read {} to check this call. It guards {}; the guard works '
+                          'but what it checks against is unreadable, so the owner decides.'.format(
+                              name, exc.what, guards))
+            return 0
         except Exception as exc:
             why = type(exc).__name__
 
     guarded = True
-    if triage is not None:
+    if fail_closed:
+        pass   # the matcher is the dangerous act itself: every failure refuses
+    elif triage is not None:
         try:
             guarded = bool(triage(raw, event))
         except Exception:

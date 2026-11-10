@@ -1,0 +1,7 @@
+{
+  "_why": "Ricardo, 11-08: most people we share this with are beginners, so the full stack is overkill. A beginner page may point at advanced-only material only with 'later' in the same paragraph (rstack/tools/onboarding_lint.py).",
+  "beginner": ["docs/onboarding/beginner.md"],
+  "advanced_only": ["SKILL.md", "rstack/STACK.md", "rstack/principles/", "rstack/hooks/", "rstack/tools/",
+                    "rstack/coverage.py", "rstack/inventory.py", "harness/", "kb/", "docs/outreach.md",
+                    "docs/lane-yield.md", "docs/conductor-inbox.md", "docs/onboarding/advanced.md"]
+}

@@ -1,0 +1,80 @@
+{
+  "_comment": [
+    "An example manifest, with example data. Copy it to layers.json, point `sources` at your own",
+    "paths, and replace the layers with yours. Everything under rstack/example/ is invented.",
+    "",
+    "Read `rules` top to bottom like a routing table: the FIRST rule that matches an item wins, so",
+    "the specific rule goes above the general one. Every rule needs a `layer` that exists and",
+    "either a `match` glob with 3+ literal characters or `any_of` keywords of 4+ characters;",
+    "coverage.py rejects a catch-all, FAILS a rule that matches nothing, and FAILS an `enforcer`",
+    "path that does not exist. An item no rule claims FAILS until you give it a rule, or an",
+    "exclusion with a written reason. 'Not ours' is a reason. 'Misc' is not.",
+    "",
+    "Run `coverage.py --config rstack/layers.example.json` as shipped and it FAILS on purpose:",
+    "stale-guard.py is unmapped. That is the tool working."
+  ],
+
+  "sources": {
+    "hook": {"globs": ["rstack/example/hooks/*.py", "rstack/example/hooks/*.sh"]},
+    "job": {"globs": ["rstack/example/jobs/*.json"]},
+    "skill": {"globs": ["rstack/example/skills/*/SKILL.md"], "name_from": "parent"},
+    "rule": {"globs": ["rstack/example/rules/*.md"]}
+  },
+  "corrections": ["rstack/example/corrections.jsonl"],
+
+  "layers": {
+    "01-orchestration": {
+      "title": "Orchestration",
+      "playbook": "One conductor, many workers. Workers reach the conductor through a script, never by messaging it directly, so a wake is a decision someone made deliberately."
+    },
+    "02-guards": {
+      "title": "Guards",
+      "playbook": "A guard refuses rather than crashes. Most hook systems block only on a specific exit code or decision, so a guard that raises is not a weaker guard, it is no guard, and it fails silently. Add a guard with its test in the same change."
+    },
+    "03-comms": {
+      "title": "Outbound communication",
+      "playbook": "Anything that leaves gets linted before it leaves and approved as the exact bytes that will be sent. The thing that sends is not the thing that approves."
+    },
+    "04-work": {
+      "title": "The actual work",
+      "playbook": "The reason the rest exists. Frozen tests, a baseline you can run, a yield check that fails a line of work spending without finding anything. Every claim says whether it found something new."
+    },
+    "05-publishing": {
+      "title": "Publishing and egress",
+      "playbook": "Nothing leaves without a scan for private material, and an agent whose output leaves runs with an empty identity so personal context cannot leak into it."
+    },
+    "06-memory": {
+      "title": "Memory and the knowledge base",
+      "playbook": "The main checkout is never edited by a session: work in a worktree and land. One fact per file, with an index."
+    },
+    "07-jobs": {
+      "title": "Scheduled and background jobs",
+      "playbook": "Wait on an event, do not poll. Heavy compute goes somewhere else; the machine running the fleet is not the machine running the models."
+    },
+    "08-mods": {
+      "title": "Session mechanics",
+      "playbook": "Context limits, handoffs and naming. A long session hands off through a written file rather than compacting silently."
+    }
+  },
+
+  "rules": [
+    {"type": "hook", "match": "block-force-push", "layer": "02-guards",
+     "enforcer": "rstack/example/hooks/block-force-push.py"},
+    {"type": "hook", "match": "require-tests", "layer": "05-publishing",
+     "enforcer": "rstack/example/hooks/require-tests.sh"},
+    {"type": "job", "match": "nightly-digest*", "layer": "06-memory"},
+    {"type": "skill", "match": "deploy", "layer": "05-publishing"},
+    {"type": "rule", "any_of": ["standard method", "baseline", "changelog"], "layer": "04-work"},
+    {"type": "rule", "any_of": ["force-push", "branch"], "layer": "06-memory"}
+  ],
+
+  "exclusions": [
+    {"type": "job", "match": "vendor-*",
+     "reason": "a third-party updater installed with the vendor's own tooling; not ours to map or change"}
+  ],
+
+  "enforcers": {
+    "always-run-the-standard-method-first": "rstack/example/hooks/require-tests.sh",
+    "never-force-push-main": "rstack/example/hooks/block-force-push.py"
+  }
+}

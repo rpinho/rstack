@@ -8,7 +8,13 @@ __pycache__/
 !.claude-plugin/plugin.json
 !hooks/hooks.json
 !rstack/hooks/settings.example.json
+# 11-10: these fixtures were never committed (only the M4's working tree had them), so a clean clone
+# failed tests. A fixture a test reads is tracked; rstack/example is all synthetic.
+!rstack/layers.example.json
+!docs/onboarding/tracks.json
+!rstack/example/jobs/*.json
 *.jsonl
+!rstack/example/*.jsonl
 *.lock
 *.bak-*
 *.bak
