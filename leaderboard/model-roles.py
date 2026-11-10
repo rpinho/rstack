@@ -47,7 +47,8 @@ MODELS = {'anthropic/claude-opus-5.5': ('claude', 'claude-opus-5-5'),
  'z-ai/glm-5.3-flash': ('openrouter', 'z-ai/glm-5.3-flash'),
  'moonshotai/kimi-k3.1-pro': ('openrouter', 'moonshotai/kimi-k3.1-pro'),
  'x-ai/grok-4.6': ('openrouter', 'x-ai/grok-4.6'),
- 'google/gemini-4-argon': ('openrouter', 'google/gemini-4-argon')}
+ 'google/gemini-4-argon': ('openrouter', 'google/gemini-4-argon'),
+ 'google/gemini-4-carbon': ('openrouter', 'google/gemini-4-carbon')}
 
 ALIASES = [('opus[- ]?5[.-]5', 'anthropic/claude-opus-5.5'),
  ('fable', 'anthropic/claude-fable-5.1'),
@@ -63,7 +64,8 @@ ALIASES = [('opus[- ]?5[.-]5', 'anthropic/claude-opus-5.5'),
  ('glm', 'z-ai/glm-5.3-flash'),
  ('kimi', 'moonshotai/kimi-k3.1-pro'),
  ('grok[- ]?4\\.6', 'x-ai/grok-4.6'),
- ('argon', 'google/gemini-4-argon')]
+ ('argon', 'google/gemini-4-argon'),
+ ('carbon', 'google/gemini-4-carbon')]
 
 SEED = {'taste': ['anthropic/claude-opus-5.5', 'anthropic/claude-fable-5.1'],
  'review': ['anthropic/claude-opus-5.5',
