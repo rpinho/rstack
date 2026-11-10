@@ -150,3 +150,20 @@ def test_an_empty_env_host_does_not_shadow_the_lane_setting(cfg, monkeypatch):
     cfg['host'] = 'm5'
     monkeypatch.setenv('LAUNCH_HOST', '  ')
     assert sweep.execution_host(cfg) == 'm5'
+
+
+def test_a_work_dir_not_yet_on_the_host_is_measured_at_its_parent(tmp_path, monkeypatch):
+    """11-10: friends and math stalled with "cannot read the disk on m5". Their work dir did not
+    exist on the m5 yet (the old copies were moved aside on 11-09), `df` on a missing path fails,
+    and the guard runs before host_sync creates it. The stub runs the real command locally, so the
+    real `df` sees the missing path."""
+    script = tmp_path / 'local-ssh'
+    script.write_text('#!/bin/sh\nshift 3\nexec sh -c "$1"\n')   # -o BatchMode=yes HOST CMD
+    script.chmod(0o755)
+    monkeypatch.setenv('LAUNCH_SSH', str(script))
+    missing = tmp_path / 'lanes' / 'friends'
+    assert not missing.exists()
+    free = sweep.host_free_bytes('m5', missing)
+    assert free is not None and free > 0
+    assert abs(free - shutil.disk_usage(tmp_path).free) < 2 * GIB
+    assert not missing.exists()           # measuring never creates the directory

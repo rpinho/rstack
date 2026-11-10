@@ -780,9 +780,17 @@ def host_free_bytes(host, path):
 
     None is not "fine": the caller refuses on it. A disk guard that passes when it cannot read
     the disk is not a guard, and an unreachable host would fail the sweep a minute later anyway.
+
+    The path is measured at its nearest existing ancestor. 11-10: friends and math stalled because
+    their work dir did not exist on the m5 yet (the old copies had been moved aside on 11-09), and
+    `df` on a missing path fails. The guard runs before host_sync, which is what creates that
+    directory there, so a lane's first sweep onto a fresh host could never get past it. The
+    ancestor sits on the filesystem the mirror will write to, which is the figure the floor wants.
     """
+    probe = ('p={}; while [ ! -e "$p" ] && [ "$p" != / ]; do p=$(dirname "$p"); done; '
+             'df -k "$p"').format(shlex.quote(str(path)))
     try:
-        out = subprocess.run(ssh_argv() + [host, 'df -k ' + shlex.quote(str(path))],
+        out = subprocess.run(ssh_argv() + [host, probe],
                              capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
         return None
