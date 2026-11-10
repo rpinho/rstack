@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -50,6 +51,14 @@ def test_a_failed_lookup_asks_and_names_what_it_could_not_read(tmp_path):
     assert 'CalledProcessError' not in r['stdout'], 'the lookup error itself is not echoed'
 
 
+def test_the_refusal_names_the_real_hook_file(tmp_path):
+    """11-10: it said ~/.claude/hooks/NAME, wrong for a project hook such as a KB send gate."""
+    hook = probe(tmp_path, 'def body(event):\n    raise RuntimeError("x")')
+    r = blocked(hook, {'tool_input': 'danger'})
+    assert 'Hook: {}'.format(os.path.abspath(hook)) in r['stdout'], r['stdout']
+    assert '~/.claude/hooks/probe.py' not in r['stdout']
+
+
 def test_fail_closed_refuses_on_any_error_whatever_the_triage_says(tmp_path):
     body = 'def body(event):\n    raise RuntimeError("x")'
     closed = probe(tmp_path, body, triage='lambda raw, e: False', fail_closed=True)
@@ -73,6 +82,7 @@ def test_the_fail_closed_acts_are_named():
 def hooks(tmp_path):
     d = tmp_path / 'hooks'
     d.mkdir()
+    shutil.copy(HOOKS / '_hookfail.py', d / '_hookfail.py')   # the current wrapper, so nothing here drifts
     (d / 'wrapped.py').write_text('import _hookfail\nsys.exit(_hookfail.run("w", body))\n')
     (d / 'plain.py').write_text('import sys\ntry:\n    pass\nexcept Exception:\n    sys.exit(0)\n')
     (d / 'gate.sh').write_text('#!/bin/sh\nexit 0\n')
@@ -120,6 +130,34 @@ def test_a_shell_trampoline_counts_only_in_its_fail_closed_shape(tmp_path, hooks
     got = states(wc.check([s], [], {}))
     assert got == {'closed.sh': 'ok', 'exec.sh': 'UNWRAPPED', 'open.sh': 'UNWRAPPED',
                    'unwrapped.sh': 'UNWRAPPED', 'more.sh': 'UNWRAPPED'}
+
+
+def test_a_hook_on_an_old_wrapper_is_drifted_until_main_is_installed(tmp_path, hooks, monkeypatch):
+    """11-10: the KB send gates import ~/.claude/hooks/_hookfail.py, which was older than main and had
+    neither lookup nor fail_closed."""
+    s = settings(tmp_path, 'python3 {}/wrapped.py'.format(hooks))
+    (hooks / '_hookfail.py').write_text('def run(*a, **k):\n    return 0\n')
+    rows = wc.check([s], [], {})
+    assert rows[0]['state'] == 'DRIFTED' and 'install it from main' in rows[0]['detail']
+    assert wc.main([s, '--allow', str(tmp_path / 'none.json')]) == 1
+    shutil.copy(HOOKS / '_hookfail.py', hooks / '_hookfail.py')
+    assert states(wc.check([s], [], {})) == {'wrapped.py': 'ok'}
+    # A project hook that loads the user-level wrapper is held to the same copy.
+    home = tmp_path / 'home'
+    monkeypatch.setenv('HOME', str(home))
+    proj = tmp_path / 'proj'
+    (proj / '.claude/hooks').mkdir(parents=True)
+    (proj / '.claude/hooks/send-gate.py').write_text(
+        "import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path.home() / '.claude/hooks'))\n"
+        "import _hookfail\nsys.exit(_hookfail.run('send-gate.py', body))\n")
+    (proj / '.claude/settings.json').write_text(json.dumps({'hooks': {'PreToolUse': [{'matcher': 'Bash', 'hooks': [
+        {'type': 'command', 'command': '"$CLAUDE_PROJECT_DIR/.claude/hooks/send-gate.py"'}]}]}}))
+    rows = wc.check([], [str(proj)], {})
+    assert rows[0]['state'] == 'DRIFTED' and 'missing' in rows[0]['detail']
+    (home / '.claude/hooks').mkdir(parents=True)
+    shutil.copy(HOOKS / '_hookfail.py', home / '.claude/hooks/_hookfail.py')
+    assert [r['state'] for r in wc.check([], [str(proj)], {})] == ['ok']
+    assert [r['state'] for r in wc.check([], [str(proj)], {}, lib=None)] == ['ok']
 
 
 def test_an_allowlisted_guard_needs_a_reason_and_expires(tmp_path, hooks):

@@ -138,5 +138,21 @@ def run(name, body, triage=None, guards='this action', on_error='deny', fail_clo
     decide(on_error,
            '{} could not check this call ({} inside the hook). It guards {}, and a guard that '
            'cannot run must not authorize what it was meant to check, so this call is refused '
-           'rather than allowed. Repair the hook, or ask the owner to decide.'.format(name, why, guards))
+           'rather than allowed. Repair the hook, or ask the owner to decide. Hook: {}'.format(
+               name, why, guards, hook_path(name)))
     return 0
+
+
+def hook_path(name):
+    """The file that is running, home shown as ~, so the refusal points at the hook to repair.
+
+    11-10: the message used to say ~/.claude/hooks/NAME, which was wrong for every project hook
+    (a KB send gate lives in <project>/.claude/hooks). Falls back to the name alone."""
+    try:   # the refusal must not fail because of this line
+        path = os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] not in ('', '-c', '-') else ''
+        if not path.endswith(('.py', '.sh')):
+            return name
+        home = os.path.expanduser('~')
+        return '~' + path[len(home):] if home not in ('', '/') and path.startswith(home + os.sep) else path
+    except Exception:
+        return name

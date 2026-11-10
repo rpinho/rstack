@@ -24,7 +24,11 @@ A reason is required. `until` is optional; after that date the entry no longer c
 temporary exception (a migration in progress) cannot become a permanent one. `projects` are added
 to --project, so a host's policy file names the project settings it holds to the same rule.
 
-Exit 0 when every guard is wrapped or allowed, 1 otherwise.
+A wrapped hook is DRIFTED when the _hookfail.py it imports (its own directory's, or ~/.claude/hooks/
+for a project hook that names that path) is not byte-identical to this checkout's copy: an old
+wrapper lacks the lookup and fail_closed answers, so it is installed from main, not edited.
+
+Exit 0 when every guard is wrapped (with the current wrapper) or allowed, 1 otherwise.
 """
 import argparse
 import datetime as dt
@@ -37,6 +41,30 @@ import sys
 
 MARK = '_hookfail.run('
 SCRIPT = re.compile(r'\.(py|sh|bash|zsh)$')
+
+
+LIB = Path(__file__).resolve().parents[1] / 'hooks/_hookfail.py'   # the committed copy beside this tool
+
+
+def lib_of(script, text):
+    """The _hookfail.py a wrapped hook imports: its own directory's, else ~/.claude/hooks/ when it
+    names that path (the KB send gates do). None when it names neither."""
+    sibling = script.parent / '_hookfail.py'
+    if sibling.is_file() or ('.claude/hooks' not in text and "'.claude', 'hooks'" not in text):
+        return sibling
+    return Path.home() / '.claude/hooks/_hookfail.py'
+
+
+def drift(script, text, lib):
+    """None when the hook imports the same _hookfail as `lib`, else why not."""
+    used = lib_of(script, text)
+    if lib is None or used == lib:
+        return None
+    if not used.is_file():
+        return 'imports {}, which is missing: the hook cannot load its wrapper'.format(used)
+    if used.read_bytes() != lib.read_bytes():
+        return 'imports {}, which differs from {} (install it from main)'.format(used, lib)
+    return None
 
 
 def policy_path():
@@ -116,8 +144,8 @@ def trampoline(script, text):
     return None
 
 
-def verdict(row, allow, today):
-    """('ok'|'allowed'|'UNWRAPPED'|'MISSING'|'BROKEN', detail)."""
+def verdict(row, allow, today, lib=LIB):
+    """('ok'|'allowed'|'UNWRAPPED'|'MISSING'|'BROKEN'|'DRIFTED', detail)."""
     if row.get('error'):
         return 'BROKEN', row['error']
     script = script_of(row['command'], row['project'])
@@ -128,10 +156,13 @@ def verdict(row, allow, today):
         return ('allowed', entry['reason']) if live else ('MISSING', 'no file at {}'.format(script))
     text = script.read_text(errors='replace')
     if script.suffix == '.py' and MARK in text:
-        return 'ok', name
+        why = drift(script, text, lib)
+        return ('DRIFTED', '{} {}'.format(name, why)) if why else ('ok', name)
     target = trampoline(script, text)
     if target:
-        return 'ok', '{} (runs {}, exit 2 if it cannot)'.format(name, target.name)
+        why = drift(target, target.read_text(errors='replace'), lib)
+        return ('DRIFTED', '{} runs {}, which {}'.format(name, target.name, why)) if why else \
+            ('ok', '{} (runs {}, exit 2 if it cannot)'.format(name, target.name))
     if live:
         return 'allowed', '{} (until {})'.format(entry['reason'], entry['until']) if entry.get('until') \
             else entry['reason']
@@ -142,13 +173,14 @@ def verdict(row, allow, today):
     return 'UNWRAPPED', '{} does not call {}'.format(name, MARK)
 
 
-def check(settings, projects, allow, today=None):
+def check(settings, projects, allow, today=None, lib=LIB):
     today = today or dt.date.today()
+    lib = Path(lib) if lib else None
     paths = [(p, None) for p in settings]
     paths += [(str(Path(d) / '.claude/settings.json'), str(d)) for d in projects]
     rows = []
     for row in registered(paths):
-        state, detail = verdict(row, allow, today)
+        state, detail = verdict(row, allow, today, lib)
         rows.append(dict(row, state=state, detail=detail))
     return rows
 
@@ -158,6 +190,8 @@ def main(argv=None):
     ap.add_argument('settings', nargs='*')
     ap.add_argument('--project', action='append', default=[])
     ap.add_argument('--allow')
+    ap.add_argument('--lib', default=str(LIB), help='the _hookfail.py every hook must import (default: '
+                    "this checkout's rstack/hooks/_hookfail.py); --lib none skips the drift check")
     ap.add_argument('--json', action='store_true')
     a = ap.parse_args(argv)
     try:
@@ -167,8 +201,9 @@ def main(argv=None):
         return 1
     settings = a.settings or [str(Path.home() / '.claude/settings.json')]
     projects = [str(Path(p).expanduser()) for p in a.project] + [p for p in extra if p not in a.project]
-    rows = check(settings, [p for p in projects if (Path(p) / '.claude/settings.json').is_file()], allow)
-    bad = [r for r in rows if r['state'] in ('UNWRAPPED', 'MISSING', 'BROKEN')]
+    rows = check(settings, [p for p in projects if (Path(p) / '.claude/settings.json').is_file()], allow,
+                 lib=None if a.lib == 'none' else a.lib)
+    bad = [r for r in rows if r['state'] in ('UNWRAPPED', 'MISSING', 'BROKEN', 'DRIFTED')]
     if a.json:
         print(json.dumps(rows, indent=2))
     else:
