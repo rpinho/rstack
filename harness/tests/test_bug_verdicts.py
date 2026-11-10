@@ -141,12 +141,47 @@ def test_a_referee_from_the_hunters_family_does_not_count(ln, tmp_path):
     gpt = dict(CLAIMS, hunter=dict(model='gpt-6.1-codex', family='GPT-6 Codex'))
     bug_verdicts.referee_prompt(ln, gpt, tmp_path / 'a', rng=random.Random(6))
     ok, msgs = bug_verdicts.record(ln, write_verdict(ln, tmp_path / 'a', honest, model='gpt-6.1-sol', family='GPT-6'))
-    assert not ok and msgs[0].startswith('REFEREE_SAME_FAMILY')
+    assert not ok and any(m.startswith('REFEREE_SAME_FAMILY') for m in msgs)
     assert bug_verdicts.ledger(ln, 'REFEREE.jsonl')[-1]['same_family'] is True
     assert not bug_verdicts.ledger(ln, 'REFUTED.jsonl'), 'a refused file leaves no refutations behind'
     bug_verdicts.referee_prompt(ln, gpt, tmp_path / 'b', rng=random.Random(7))
     ok, _ = bug_verdicts.record(ln, write_verdict(ln, tmp_path / 'b', honest, model='claude-opus-5-5', family='Claude'))
     assert ok
+
+
+def test_the_launch_receipt_beats_the_referees_self_report(ln, tmp_path, monkeypatch):
+    """11-09: Gemini 4 Argon run through Codex wrote "gpt-5.4 / openai" as its own model."""
+    claude_hunt = dict(CLAIMS, hunter=dict(model='claude-opus-5-5', family='Claude'))
+    work = tmp_path / 'friends_ref_x_1109'
+    bug_verdicts.referee_prompt(ln, claude_hunt, work, rng=random.Random(10))
+    path = write_verdict(ln, work, honest, model='gpt-5.4', family='openai')
+    receipts = tmp_path / 'codex'
+    receipts.mkdir()
+    (receipts / 'friends_ref_x_1109.log.selection.json').write_text(json.dumps(
+        dict(canonical='anthropic/claude-sonnet-5-5', model='claude-sonnet-5-5', executor='openrouter')))
+    monkeypatch.setenv('RH_LAUNCH_RECEIPTS', str(receipts))
+    ok, msgs = bug_verdicts.record(ln, path)
+    assert not ok, 'a Claude referee calling itself GPT does not pass the family check'
+    assert any(m.startswith('REFEREE_SELF_REPORT_WRONG') for m in msgs)
+    assert any(m.startswith('REFEREE_SAME_FAMILY') for m in msgs)
+    row = bug_verdicts.ledger(ln, 'REFEREE.jsonl')[-1]
+    assert row['family_source'] == 'receipt' and row['referee'].startswith('anthropic/claude-sonnet-5-5')
+    gem = receipts / 'gem.json'
+    gem.write_text(json.dumps(dict(canonical='google/gemini-4-argon')))
+    bug_verdicts.referee_prompt(ln, claude_hunt, tmp_path / 'w2', rng=random.Random(11))
+    ok, msgs = bug_verdicts.record(ln, write_verdict(ln, tmp_path / 'w2', honest, model='gpt-5.4', family='openai'),
+                                   receipt=gem)
+    assert ok and bug_verdicts.ledger(ln, 'REFEREE.jsonl')[-1]['referee'] == 'google/gemini-4-argon (google)'
+    ok, msgs = bug_verdicts.record(ln, tmp_path / 'w2/verdict.json', receipt=tmp_path / 'missing.json')
+    assert not ok and msgs[0].startswith('VERDICT_RECEIPT_UNREADABLE')
+
+
+def test_no_receipt_is_flagged_as_a_self_report(ln, tmp_path, monkeypatch):
+    monkeypatch.delenv('RH_LAUNCH_RECEIPTS', raising=False)
+    bug_verdicts.referee_prompt(ln, CLAIMS, tmp_path / 'w', rng=random.Random(12))
+    ok, msgs = bug_verdicts.record(ln, write_verdict(ln, tmp_path / 'w', honest))
+    assert ok and any(m.startswith('REFEREE_FAMILY_SELF_REPORTED') for m in msgs)
+    assert bug_verdicts.ledger(ln, 'REFEREE.jsonl')[-1]['family_source'] == 'self-report'
 
 
 def test_the_hunter_family_is_required_and_compared_by_maker(ln, tmp_path):

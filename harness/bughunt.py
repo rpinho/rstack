@@ -499,6 +499,7 @@ def arguments(sub):
     p = actions.add_parser('verdicts', help="validate a referee's verdict.json, check its plants, record it")
     p.add_argument('lane')
     p.add_argument('file', type=Path)
+    p.add_argument('--receipt', type=Path, help="the launcher's JOB.log.selection.json for this referee run")
     p = actions.add_parser('referees', help='confirm rate and plant catch rate per referee')
     p.add_argument('lane')
     p = actions.add_parser('coverage', help='what was already hunted in a repository')
@@ -528,7 +529,7 @@ def verdict_commands(lane, args, rh):
         return 0
     if args.action == 'verdicts':
         with rh.locked(lane):
-            ok, msgs = bug_verdicts.record(lane, args.file)
+            ok, msgs = bug_verdicts.record(lane, args.file, receipt=args.receipt)
         print('\n'.join(msgs))
         return 0 if ok else 1
     doc = json.loads(args.claims.read_text())

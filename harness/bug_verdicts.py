@@ -21,6 +21,8 @@ Commands:
     rh bughunt referee-prompt LANE CLAIMS.json DIR   plant, shuffle, write DIR/claims.json + PROMPT.md
                                                      (needs the hunter's family: "hunter" in the file or --hunter-family)
     rh bughunt verdicts LANE DIR/verdict.json        validate, check the plants, record
+        [--receipt FILE]                             the launcher's model receipt; found by job name under
+                                                     RH_LAUNCH_RECEIPTS when not given
     rh bughunt referees LANE                         confirm rate and plant catch rate per referee
 
 Claims file (from the hunter):
@@ -30,6 +32,7 @@ Claims file (from the hunter):
 import datetime as dt
 import hashlib
 import json
+import os
 from pathlib import Path
 import random
 import re
@@ -267,7 +270,35 @@ def referee_prompt(lane, doc, workdir, plants=(), n_plants=1, rng=None, extra=''
     return batch, len(real), len(planted)
 
 
-def record(lane, path):
+def launch_receipt(path, receipt=None):
+    """(receipt dict, its path) for the referee run that wrote PATH, or (None, None).
+
+    A referee's own "referee" field is a self-report: on 11-09 Gemini 4 Argon run through Codex wrote
+    {"model": "gpt-5.4", "family": "openai"}, repeating Codex's base prompt. The launcher's selection
+    receipt (launch.sh writes JOB.log.selection.json) names the model it actually ran, so the family
+    check uses that. Found by the verdict's directory name under RH_LAUNCH_RECEIPTS when not given."""
+    if receipt:
+        candidates = [Path(receipt).expanduser()]
+    elif os.environ.get('RH_LAUNCH_RECEIPTS'):
+        job = Path(path).resolve().parent.name
+        candidates = [Path(os.environ['RH_LAUNCH_RECEIPTS']).expanduser() / (job + '.log.selection.json')]
+    else:
+        return None, None
+    for c in candidates:
+        try:
+            doc = json.loads(c.read_text())
+        except (OSError, ValueError):
+            if receipt:
+                raise ValueError('VERDICT_RECEIPT_UNREADABLE: ' + str(c))
+            continue
+        if isinstance(doc, dict) and text_field(doc.get('canonical') or doc.get('model')):
+            return doc, c
+        if receipt:
+            raise ValueError('VERDICT_RECEIPT_UNREADABLE: no model in ' + str(c))
+    return None, None
+
+
+def record(lane, path, receipt=None):
     """Validate a verdict.json, check its plants, and record it. Returns (ok, messages)."""
     path = Path(path)
     try:
@@ -293,8 +324,26 @@ def record(lane, path):
     caught = [i for i in planted if (by_id.get(i) or {}).get('verdict') in ('REFUTED', 'BLOCKED')]
     counts = {v: sum(c['verdict'] == v for c in doc['claims'] if not key.get(c['id'], {}).get('planted')) for v in VERDICTS}
     referee = '{} ({})'.format(doc['referee']['model'], doc['referee']['family'])
+    said = maker(doc['referee']['family'], doc['referee']['model'])
+    notes = []   # where the referee's family came from; printed after the verdict's own messages
+    try:
+        rec, rec_path = launch_receipt(path, receipt)
+    except ValueError as exc:
+        return False, [str(exc)]
+    if rec:
+        ran = rec.get('canonical') or rec.get('model')
+        referee_maker = maker(ran)
+        if referee_maker != said:
+            notes.append('REFEREE_SELF_REPORT_WRONG: verdict.json says {}; the launch receipt {} says {}; the '
+                        'receipt is used'.format(referee, rec_path.name, ran))
+        referee = '{} ({})'.format(ran, referee_maker)
+    else:
+        referee_maker = said
     hunter_maker = keys[-1].get('hunter_maker')
-    same = bool(hunter_maker) and maker(doc['referee']['family'], doc['referee']['model']) == hunter_maker
+    if hunter_maker and not rec:
+        notes.append('REFEREE_FAMILY_SELF_REPORTED: no launch receipt, so the family check used verdict.json\'s own '
+                    '"referee" field (pass --receipt JOB.log.selection.json)')
+    same = bool(hunter_maker) and referee_maker == hunter_maker
     if same:
         msgs.append('REFEREE_SAME_FAMILY: the hunter was {} and the referee is {}; nothing in this file counts. '
                     'Run a referee from another family'.format(keys[-1].get('hunter_family'), referee))
@@ -304,12 +353,13 @@ def record(lane, path):
     append(lane, 'REFEREE.jsonl', dict(utc=now(), batch=doc['batch'], target=doc['target'], referee=referee,
                                        file=str(path.resolve()), sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                                        planted=len(planted), caught=len(caught), fooled=len(fooled), counts=counts,
-                                       same_family=same, accepted=ok))
+                                       same_family=same, family_source='receipt' if rec else 'self-report',
+                                       accepted=ok))
     if fooled:
         msgs.append('REFEREE_FOOLED: the referee confirmed planted false claim(s) {}; nothing in this file counts. '
                     'Run a different referee'.format(', '.join(fooled)))
     if not ok:
-        return False, msgs
+        return False, msgs + notes
     for c in doc['claims']:
         if key.get(c['id'], {}).get('planted'):
             continue
@@ -320,6 +370,7 @@ def record(lane, path):
             append(lane, 'REFUTED.jsonl', dict(row, reason=c['reason']))
         elif c['verdict'] == 'BLOCKED':
             append(lane, 'BLOCKED.jsonl', dict(row, needs=c['needs'], check=c['check']))
+    msgs += notes
     msgs.append('recorded: {} real claims ({}), {} of {} planted caught'.format(
         sum(counts.values()), ', '.join('{} {}'.format(n, v) for v, n in counts.items() if n), len(caught), len(planted)))
     return True, msgs
