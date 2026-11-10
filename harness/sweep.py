@@ -548,6 +548,8 @@ def generate(stage, lane, cfg, paths, day, due, failures=()):
     intro = [
         '# Harness outside search: {} / {} / {}'.format(lane.name, stage, day),
         'Working directory: ' + str(cfg['cwd']),
+        # launch.sh refuses a --host job without a declared peak (11-10); a sweep worker's peak is its cap.
+        H('Peak RSS: {} GB (this worker\'s memory cap).'.format(cfg['memory_gib'])),
         H('This is the {} stage. Run synchronously; no background workers.'.format(stage)),
         H('One worker at a time; low CPU priority (niceness 10 or higher is fine; never raise it, and never block because of it); <= {} cores; total process-tree RSS <= {} GiB; keep >= {} GiB free.'.format(
             cfg['cores'], cfg['memory_gib'], cfg['min_free_gib'])),

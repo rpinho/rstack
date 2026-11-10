@@ -66,6 +66,9 @@ def config(tmp_path, monkeypatch, limit_mib, **env):
     monkeypatch.delenv('MEM_GUARD_TOTAL_GB', raising=False)
     monkeypatch.delenv('MEM_GUARD_JOB_GB', raising=False)
     monkeypatch.setenv('MEM_GUARD_JOBS_DIR', str(tmp_path / 'remote-jobs'))
+    for k in ('MEM_GUARD_MIN_FREE_PCT', 'MEM_GUARD_TELL', 'MEM_GUARD_TELL_HOST'):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv('MEM_GUARD_HEARTBEAT', str(tmp_path / 'heartbeat'))
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     return mem_guard.settings(), pushed
@@ -228,7 +231,8 @@ def test_a_job_over_its_cap_is_stopped_whole_and_says_so_in_status(tmp_path, mon
         assert killed[0]['job'] == 'math_c47r14_1110' and killed[0]['processes'] == 3
         assert killed[0]['total_gib'] > 0.35 and killed[0]['cwd'] == str(work)
         status = (work / 'STATUS.md').read_text()
-        assert status.lstrip().startswith('MEMCAP ') and 'cap 0 GB' in status and '/usr/bin/time -l' in status
+        assert status.lstrip().startswith('MEMKILL ') and 'per-job cap' in status
+        assert 'peak' in status and '/usr/bin/time -l' in status
         assert 'whole job math_c47r14_1110 stopped' in pushed.read_text()
     finally:
         for p in [root.pid, *kids]:
@@ -258,12 +262,106 @@ def test_a_stale_pid_file_never_names_a_job(tmp_path, monkeypatch):
     try:
         only_pids(monkeypatch, {root.pid, *kids})
         cfg, _ = config(tmp_path, monkeypatch, limit_mib=4096, MEM_GUARD_JOB_GB=str(300 / 1024))
-        assert mem_guard.jobs(cfg) == []
+        assert mem_guard.pid_jobs(cfg) == {}
         assert mem_guard.run_once(cfg) == [] and running(root.pid)
     finally:
         root.kill()
         for k in kids:
             os.kill(k, 9)
+
+
+def marked(tmp_path, mib, job, cwd=None):
+    """A worker carrying the launcher's RH_JOB mark, with no pid file and no parent in any job:
+    what a detached worker looks like once launchd has adopted it."""
+    script = tmp_path / ('allocate-%d.py' % mib)
+    script.write_text(ALLOCATE.format(size=mib * MIB))
+    proc = subprocess.Popen([sys.executable, str(script), 'x', 'plain'], stdout=subprocess.PIPE,
+                            text=True, env=dict(os.environ, RH_JOB=job), cwd=cwd or tmp_path)
+    assert proc.stdout.readline().strip() == 'ready'
+    return proc
+
+
+def test_a_detached_worker_is_found_by_its_job_mark(tmp_path, monkeypatch):
+    worker = marked(tmp_path, 250, 'math_c47r15_1110')
+    try:
+        only(monkeypatch, worker)
+        cfg, pushed = config(tmp_path, monkeypatch, limit_mib=4096, MEM_GUARD_JOB_GB=str(150 / 1024))
+        found = mem_guard.jobs(cfg, mem_guard.survey(cfg))
+        assert [r['pid'] for r in found['math_c47r15_1110']] == [worker.pid]
+        killed = mem_guard.run_once(cfg)
+        wait_gone(worker)
+        assert killed[0]['job'] == 'math_c47r15_1110' and killed[0]['why'].startswith('over the')
+    finally:
+        worker.kill()
+
+
+def test_low_free_memory_stops_the_largest_job_only_and_waits(tmp_path, monkeypatch):
+    """Under the free-memory floor the largest JOB goes, not the largest process: a bigger
+    process that belongs to no job, and an app inside a job, are left alone."""
+    big = marked(tmp_path, 200, 'big_job')
+    small = marked(tmp_path, 60, 'small_job')
+    app = marked(tmp_path, 120, 'small_job')
+    loner = allocator(tmp_path, 300)
+    try:
+        only(monkeypatch, big, small, app, loner)
+        real = mem_guard.exe_path
+        monkeypatch.setattr(mem_guard, 'exe_path', lambda pid: (
+            '/Applications/Some App.app/Contents/MacOS/Some App' if pid == app.pid else real(pid)))
+        monkeypatch.setattr(mem_guard, 'free_pct', lambda: 6)
+        cfg, pushed = config(tmp_path, monkeypatch, limit_mib=4096, MEM_GUARD_MIN_FREE_PCT='15',
+                             MEM_GUARD_COOLDOWN_S='60')
+        state = {}
+        killed = mem_guard.run_once(cfg, state=state)
+        wait_gone(big)
+        assert [k['job'] for k in killed] == ['big_job'] and 'free memory 6%' in killed[0]['why']
+        assert small.poll() is None and app.poll() is None and loner.poll() is None
+        assert mem_guard.run_once(cfg, state=state) == [], 'one stop per cooldown'
+        assert small.poll() is None
+    finally:
+        for p in (big, small, app, loner):
+            p.kill()
+
+
+def test_the_conductor_is_told(tmp_path, monkeypatch):
+    worker = marked(tmp_path, 250, 'tell_job')
+    told = tmp_path / 'told.txt'
+    teller = tmp_path / 'tell'
+    teller.write_text('#!/bin/sh\nprintf "%s|%s\\n" "$1" "$2" >> ' + str(told) + '\n')
+    teller.chmod(0o755)
+    try:
+        only(monkeypatch, worker)
+        cfg, _ = config(tmp_path, monkeypatch, limit_mib=4096, MEM_GUARD_JOB_GB=str(150 / 1024),
+                        MEM_GUARD_TELL=str(teller) + ' --from')
+        mem_guard.run_once(cfg)
+        wait_gone(worker)
+        line = told.read_text()
+        assert line.startswith('--from|mem-guard: MEMKILL') and 'job tell_job' in line
+    finally:
+        worker.kill()
+
+
+def test_the_loop_writes_a_heartbeat_every_pass(tmp_path):
+    """launch.sh refuses a job on a host whose heartbeat is stale, so the loop must beat."""
+    beat = tmp_path / 'heartbeat'
+    env = dict(os.environ, MEM_GUARD_LIMIT_GB='100000', MEM_GUARD_HEARTBEAT=str(beat),
+               MEM_GUARD_LOG=str(tmp_path / 'kills.jsonl'), HOST_WATCH_STATE=str(tmp_path / 'hw.json'),
+               HOST_WATCH_LOG=str(tmp_path / 'hw.jsonl'))
+    for k in ('MEM_GUARD_JOB_GB', 'MEM_GUARD_TOTAL_GB', 'MEM_GUARD_MIN_FREE_PCT', 'MEM_GUARD_NOTIFY',
+              'MEM_GUARD_TELL', 'HOST_WATCH_NOTIFY'):
+        env.pop(k, None)
+    proc = subprocess.Popen([sys.executable, str(ROOT / 'tools/mem_guard.py'), '--every', '0.5'], env=env)
+    try:
+        deadline = time.time() + 20
+        while not beat.exists() and time.time() < deadline:
+            time.sleep(0.1)
+        first = beat.read_text()
+        deadline = time.time() + 20
+        while beat.read_text() == first and time.time() < deadline:
+            time.sleep(0.1)
+        assert beat.read_text() != first, 'a second pass beat again'
+        assert json.loads(beat.read_text())['pid'] == proc.pid
+    finally:
+        proc.kill()
 
 
 def test_no_total_is_the_default(tmp_path, monkeypatch):

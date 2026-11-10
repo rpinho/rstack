@@ -25,7 +25,9 @@ def harness(tmp_path, lane='fixture'):
     """A launcher environment whose agent CLI and ssh are stubs: no model, no network, no spend."""
     jobs = tmp_path / 'jobs'
     jobs.mkdir(exist_ok=True)
-    (jobs / (lane + '-job.md')).write_text(ASK)
+    (jobs / (lane + '-job.md')).write_text(ASK + '\n\nPeak RSS: 1 GB\n')
+    beat = tmp_path / 'mem-guard-heartbeat'   # the host's memory guard, alive
+    beat.write_text('{}\n')
     roles = tmp_path / 'roles.json'
     roles.write_text(json.dumps(dict(roles={'batch': ['fixture-claude']}, routes={
         'fixture-claude': {'canonical': 'fixture-claude', 'cli': 'claude'}})))
@@ -55,6 +57,7 @@ def harness(tmp_path, lane='fixture'):
                LAUNCH_ARTIFACT_DIR=str(jobs), LAUNCH_STATE=str(tmp_path / 'registry'),
                RH_ROLES_FILE=str(roles), FORCE_LAUNCH='1', LAUNCH_LANE_ROOT=str(root),
                LAUNCH_SSH=str(ssh), SSH_LOG=str(tmp_path / 'ssh.log'),
+               LAUNCH_MEMGUARD_HEARTBEAT=str(beat),
                LAUNCH_REMOTE_EXECUTOR=str(REPO / 'harness/agent_executor.py'),
                LAUNCH_REMOTE_ATTEMPTS=str(tmp_path / 'remote-attempts'), LAUNCH_REMOTE_POLL_S='0.2')
     env.pop('LAUNCH_RESUME', None)
@@ -248,7 +251,7 @@ def test_the_output_directory_is_created_on_the_host(tmp_path):
     runs. The work dir itself is still never created: that refusal is a different rule."""
     nested = tmp_path / 'jobs/runs/20261107T000000-abc'
     nested.mkdir(parents=True)
-    (nested / 'stage-job.md').write_text(ASK)
+    (nested / 'stage-job.md').write_text(ASK + '\n\nPeak RSS: 1 GB\n')
     jobs, env = harness(tmp_path)
     env['LAUNCH_ARTIFACT_DIR'] = str(nested)
     proc = subprocess.run(['zsh', str(LAUNCH), 'stage-job', str(tmp_path)],
@@ -459,3 +462,52 @@ def test_a_receipt_file_already_here_is_not_pulled(tmp_path):
             capture_path=str(d / 'X.capture.jsonl'), capture_sha256=s)))))
     assert receipt_files.files(tmp_path) == ['runs/new/X.capture.jsonl']
     assert 'for rel in ${(f)named}' in LAUNCH.read_text()
+
+
+# 11-10: the m5 froze overnight under two math jobs, and it had no memory guard. A --host job now
+# starts only where the guard is beating, and only with a measured peak declared in its spec.
+
+def launch(tmp_path, env):
+    return subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path), '--host', 'm5'],
+                          env=env, capture_output=True, text=True, timeout=120)
+
+
+@pytest.mark.parametrize('beat', ['missing', 'stale'])
+def test_a_host_without_a_live_memory_guard_is_refused(tmp_path, beat):
+    jobs, env = harness(tmp_path)
+    hb = Path(env['LAUNCH_MEMGUARD_HEARTBEAT'])
+    if beat == 'missing':
+        hb.unlink()
+    else:
+        old = hb.stat().st_mtime - 300
+        os.utime(hb, (old, old))
+    proc = launch(tmp_path, env)          # FORCE_LAUNCH is set and does not skip this
+    assert proc.returncode == 75, proc.stderr
+    assert 'the memory guard on m5 is not running' in proc.stderr
+    assert not (tmp_path / 'remote-attempts').exists(), 'nothing was staged on the host'
+
+
+def test_a_host_job_must_declare_its_peak_memory(tmp_path):
+    jobs, env = harness(tmp_path)
+    (jobs / 'fixture-job.md').write_text(ASK)
+    proc = launch(tmp_path, env)
+    assert proc.returncode == 78
+    assert "'Peak RSS: N GB'" in proc.stderr and '/usr/bin/time -l' in proc.stderr
+    assert not (tmp_path / 'remote-attempts').exists()
+
+
+def test_a_declared_peak_over_8_gb_goes_to_a_pod(tmp_path):
+    """The C47 producer of 11-10 reached 18 GB in 15 s; a step like that is a pod's job."""
+    jobs, env = harness(tmp_path)
+    (jobs / 'fixture-job.md').write_text(ASK + '\n\n- Peak RSS: 18 GB (measured, /usr/bin/time -l)\n')
+    proc = launch(tmp_path, env)
+    assert proc.returncode == 78
+    assert 'declared peak 18 GB is over 8 GB' in proc.stderr and 'RunPod' in proc.stderr
+
+
+def test_the_executor_carries_the_job_mark_the_memory_guard_reads(tmp_path):
+    """RH_JOB is inherited by every worker, including detached ones a process tree loses."""
+    proc, log, _ = run(tmp_path, '--host', 'm5')
+    assert proc.returncode == 0, proc.stderr + log
+    program, _ = staged(tmp_path)
+    assert 'RH_JOB=fixture-job' in program

@@ -167,4 +167,7 @@ def test_the_remote_shell_records_the_executors_own_pid(tmp_path):
     i = text.index('mkdir -p $rmarks')
     block = text[i:i + 300]
     assert 'echo \\$\\$ >' in block
-    assert block.index('exec nice') > block.index('echo \\$\\$ >')
+    # env and nice both exec in place (11-10: env sets RH_JOB for the memory guard), so the pid
+    # written above is still the executor's.
+    assert block.index('exec env RH_JOB=') > block.index('echo \\$\\$ >')
+    assert ' nice -n 10 python3 ' in block[block.index('exec env RH_JOB='):]

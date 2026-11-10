@@ -92,6 +92,30 @@ else
   spec=$artifacts/$job.md
 fi
 [[ -f $spec ]] || { print -u2 -- "missing spec: $spec"; exit 2; }
+# 11-10: the m5 froze overnight. Two math jobs used up its memory and swap, the kernel suspended
+# every app until morning, and the m5 had no memory guard. So a --host job starts only where the
+# guard is live (mem_guard.py --every writes a heartbeat each pass; over 60 s old is a refusal) and
+# only with its measured peak declared in the spec, as a line "Peak RSS: N GB" (measure the heaviest
+# step with /usr/bin/time -l). A peak over LAUNCH_MAX_PEAK_GB (8) belongs on a RunPod pod.
+# FORCE_LAUNCH does not skip this: the guard is what lets anything run there unattended.
+if [[ -n $LAUNCH_HOST ]]; then
+  hbf=${LAUNCH_MEMGUARD_HEARTBEAT:-'$HOME/.local/state/mem-guard/heartbeat'}
+  hb=$(${=${LAUNCH_SSH:-ssh}} -o BatchMode=yes -o ConnectTimeout=20 "$LAUNCH_HOST" \
+       "f=$hbf; [ -f \"\$f\" ] && echo \$(( \$(date +%s) - \$(stat -f %m \"\$f\" 2>/dev/null || stat -c %Y \"\$f\") ))" 2>/dev/null | awk 'NF{print int($1); exit}')
+  if [[ $hb != <-> ]] || (( hb > 60 )); then
+    print -u2 -- "launch.sh refused $job: the memory guard on $LAUNCH_HOST is not running (heartbeat ${hb:+$hb s old}${hb:-missing}). No job runs there without it: launchctl kickstart gui/\$(id -u)/com.ricardo.mem-guard on $LAUNCH_HOST."
+    exit 75
+  fi
+  peak=$(grep -Eio -m1 '^[-* ]*peak rss: *[0-9]+(\.[0-9]+)? *GB' $spec 2>/dev/null | grep -Eo '[0-9]+(\.[0-9]+)?' | head -1)
+  if [[ -z $peak ]]; then
+    print -u2 -- "launch.sh refused $job: a job for $LAUNCH_HOST declares its memory. Add a line 'Peak RSS: N GB' to the spec, measured by running the heaviest step once under /usr/bin/time -l (maximum resident set size)."
+    exit 78
+  fi
+  if (( peak > ${LAUNCH_MAX_PEAK_GB:-8} )); then
+    print -u2 -- "launch.sh refused $job: declared peak $peak GB is over ${LAUNCH_MAX_PEAK_GB:-8} GB, so it runs on a RunPod pod (rh pod), not on $LAUNCH_HOST. Or stream the data and measure again."
+    exit 78
+  fi
+fi
 log=${spec:r}.log
 # HARD RULE (Ricardo, 11-04): the goal must not turn into process. A spec over the cap needs
 # SPEC_OVER_CAP="<reason>". The count is the job-specific part only (spec_words.py): the sweep
@@ -224,7 +248,7 @@ for (( i = start; i <= 5; i++ )); do
 mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
 mkdir -p $rmarks 2>/dev/null || true
 echo \$\$ > $rmarks/${(q)${job:t}}.pid 2>/dev/null || true
-exec nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)${LAUNCH_CLAUDE_BUDGET:-1.00}}"
+exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)${LAUNCH_CLAUDE_BUDGET:-1.00}}"
     # 11-08: this was one foreground ssh, so the job lived exactly as long as the connection. A
     # network blip ended a 5 h job, and the controller's reset at 22:16 took every job on the host
     # with it. remote_run.py starts the executor detached THERE (nohup, files for stdio, a watcher
