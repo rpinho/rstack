@@ -396,3 +396,14 @@ def test_public_same_agent_l1_annotation_does_not_assert_strict_l1(tmp_path):
     path = tmp_path / 'body.md'
     path.write_text('Whole-bound level: L0; finite parts L1-same-agent.')
     assert v.publication_errors(path) == []
+
+
+def test_a_read_mark_on_an_old_close_is_not_a_new_close():
+    """11-10, math rows 511/512/517/518: closed 10-31 and 11-01, then a sweep read mark on 11-03 copied
+    each closed row with a later `revised`, and lint judged the copy as a close made under the rule."""
+    old_close = {'event': 'close', 'status': 'closed', 'revised': '2026-11-01T17:45:06+00:00'}
+    read_mark = dict(old_close, event='read', revised='2026-11-03T21:27:34+00:00')
+    assert not v.new_close(old_close)
+    assert not v.new_close(read_mark)
+    # A close made under the rule is still judged on its own row, whatever read marks follow it.
+    assert v.new_close({'event': 'close', 'status': 'closed', 'revised': '2026-11-04T00:00:00+00:00'})

@@ -287,6 +287,11 @@ def validate_row(row, base, required=False, rerun=True):
 def new_close(row):
     if row.get('event') != 'close' and row.get('status') != 'closed':
         return False
+    # A sweep read mark copies the closed row with a new `revised`; it is not a close. 11-10: math's
+    # four 10-31/11-01 closes failed lint as new because their 11-03 read marks came after the
+    # cutoff. The close itself was judged on its own row, under its own date.
+    if row.get('event') == 'read':
+        return False
     # A close written while the lane was not opted in remains historical when
     # the owner enables the rule later. External appenders have the cutoff.
     if row.get('verification_required_at_close') is False:
