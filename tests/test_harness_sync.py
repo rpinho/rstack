@@ -121,6 +121,20 @@ def test_stray_module_blocks_auto_and_goes_to_trash(env, capsys):
     assert (root / 'rh.py.bak-1103a').exists() and (root / 'lanes/team/helper.py').exists()
 
 
+def test_an_archived_lane_copy_is_data_not_a_stray_module(env, capsys):
+    """11-10: the m5 keeps stale-lanes-1107/ (11 GB of old lane copies) under its root, and two
+    runs retired 4,454 of its scripts to the Trash as stray modules."""
+    repo, root, backups, trash, run = env
+    run()
+    kept = root / 'stale-lanes-1107/math/watch/poll.sh'
+    kept.parent.mkdir(parents=True)
+    kept.write_text('echo old lane\n')
+    capsys.readouterr()
+    assert run('--auto') == 0
+    assert 'stale-lanes' not in capsys.readouterr().out
+    assert kept.read_text() == 'echo old lane\n'
+
+
 def test_file_removed_from_repo_is_retired(env):
     repo, root, _, trash, run = env
     run()

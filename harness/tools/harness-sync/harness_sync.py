@@ -81,7 +81,10 @@ def stray_code(root, expected):
     found = []
     for dirpath, dirnames, filenames in os.walk(root):
         rel_dir = Path(dirpath).relative_to(root)
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith('.')]
+        # stale-lanes-*: archived lane copies kept under the root (the m5's stale-lanes-1107 is 11 GB).
+        # They are data, not stray modules; on 11-10 a run retired 4,454 of their scripts to the Trash.
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith('.')
+                       and not d.startswith('stale-lanes')]
         for name in filenames:
             rel = (rel_dir / name).as_posix()
             if '.bak' in name or Path(name).suffix not in CODE_SUFFIXES or rel in expected:
