@@ -16,7 +16,7 @@ The plugin gives you `/rstack:onboard`, the orchestrator and voice skills, and t
 [`rstack/hooks/`](rstack/hooks/README.md) (each refuses with a reason; none sends anything anywhere). The
 research harness itself is a clone and an install script, below.
 
-**New to coding agents?** Most of this repo is more than you need. Install the plugin, or clone the repo and run `claude` in it, and
+**New to coding agents?** You will not trust the AI from day one, so you have to start small. At first it does stuff bad, and then it starts doing stuff better, and your trust meter goes up. rstack is the harness I built over time around how I work: text files, Python scripts, shell scripts and hooks, with a yes or no gate for a lot of stuff that I do. They're not perfect, but you teach the AI how to catch itself. Most of this repo is more than you need. Install the plugin, or clone the repo and run `claude` in it, and
 type `/onboard` (`/rstack:onboard` from the plugin). It asks whether you're a beginner, intermediate or advanced, checks that with three
 questions, and walks you through the part that fits: [beginner](docs/onboarding/beginner.md),
 [intermediate](docs/onboarding/intermediate.md), [advanced](docs/onboarding/advanced.md).

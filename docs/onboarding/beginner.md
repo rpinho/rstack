@@ -1,5 +1,13 @@
 # Beginner: your first week with AI on your research
 
+**What rstack is.** Claude itself is a harness. It's the thing around the model. But you, for your own work, end up building your own harness, which is the way you like to work. The harness is just text files, Python scripts, shell scripts and hooks, and you build it over time. rstack is mine.
+
+You will not trust the AI from day one. So you have to build the trust in it, and that's why you have to start small. At first, you don't trust it. It does stuff bad, and then it starts doing stuff better. That's when you get comfortable giving it more stuff, because your trust meter goes up. If you cannot build a system of trust, then you will never scale.
+
+So I built a bunch of safeguards and guardrails around how I work: a lot of scripts, a lot of instructions, a lot of gates. A gate is a yes or no for a lot of stuff that I do. I have a gate for emails that tries to stop the email from going if it doesn't sound like me, and one for analysis: if it didn't do all the steps, it stops it from going out and redoes it. They're not perfect. But you teach the AI how to catch itself and how to do things the way you like it.
+
+And I have a very low activation energy to give it a task, and also a low barrier to just throw everything away and start over.
+
 You don't need most of this repo yet. If you do research, start with Claude Science. It's really
 easy, and it's a great first step for your research. The first step is the hardest; after that
 it's fun.
