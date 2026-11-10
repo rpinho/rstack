@@ -1180,6 +1180,17 @@ def validate_checkout(snapshot, pinned_files):
 
 def publication_errors(body, target, now=None):
     """Read-only gate validation. No networking, packet execution or receipt issuing."""
+    if '#' not in target:
+        # gh pr create (edits carry #N): a NEW PR waits while a lane with this upstream has
+        # max_open or more of ours open there (11-10: 18 open, none merged since 10-26).
+        try:
+            import upstream
+            root = settings.path('RH_ROOT', Path(__file__).resolve().parent)
+            waiting = upstream.new_pr_errors(root, target, now)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            waiting = ['upstream PR list unreadable ({}); a cap that cannot be read refuses'.format(exc)]
+        if waiting:
+            return ['open-PR cap: ' + e for e in waiting]
     try:
         path = receipt_path('.', body)
         receipt = json_object(path.read_bytes(), str(path))

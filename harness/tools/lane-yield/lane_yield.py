@@ -10,7 +10,10 @@ For each configured lane, over a rolling window (default 48 h) it computes:
   job_hours   wall-clock hours of agent jobs, from launcher logs ("=== run/attempt ... <date>" .. "exit ... <date>")
   new_yes     claims that say NEW: yes, pass result-lint and have a HOLDS verdict (something new and refereed),
               plus lines in the lane's results ledgers (`results`: JSONL written by log_result.py) with
-              new=true and a refereed verdict, for lanes whose results are PRs, notes or submissions, not claims
+              new=true and a refereed verdict, for lanes whose results are PRs, notes or submissions, not claims.
+              With `upstream` (the lane dir holding UPSTREAM.json, 11-10) such a row counts only once its link is
+              a merged PR or a commit in that repo: a push or an opened PR is activity, not a result. The row
+              also reports upstream_open (our open-unmerged PRs there) and upstream_oldest_days.
   verdicts    referee verdicts written in the window, and the share that pass
 and FAILS the lane when
   BURNING        job_hours >= max_job_hours_without_new and new_yes == 0
@@ -215,6 +218,18 @@ def check_lane(name, cfg, now):
             if ok and not lint(d, new_only=True):
                 new_yes += 1
     attempts = 0
+    up_lane, up = None, None
+    if c.get('upstream'):
+        sys.path.insert(0, str(HERE.parents[2]))   # harness/ in the repo, the install root installed
+        import upstream
+        up_lane = Path(os.path.expanduser(c['upstream']))
+        data = upstream.cached(up_lane)
+        if data is None or upstream.age_hours(data) > upstream.MAX_AGE_H:
+            try:
+                upstream.refresh(up_lane)
+            except Exception:   # an old list still judges; a missing one counts nothing as shipped
+                pass
+        up = upstream.summary(up_lane)
     for g in c.get('results', []):
         for p in glob.glob(os.path.expanduser(g)):
             try:
@@ -234,12 +249,15 @@ def check_lane(name, cfg, now):
                 # from 11-06, but rows written before that are still in the ledgers, so skip them
                 # here too rather than count history as yield.
                 if (r.get('new') is True and r.get('kind') != 'rerun'
-                        and str(r.get('referee', '')).upper().startswith('HOLDS')):
+                        and str(r.get('referee', '')).upper().startswith('HOLDS')
+                        and (up_lane is None or upstream.taken(up_lane, r.get('link')))):
                     new_yes += 1
     share = passes / verdicts if verdicts else 0.0
     fails = []
     if hours >= c['max_job_hours_without_new'] and new_yes == 0:
-        fails.append(f'BURNING: {hours:.0f} job-hours in {c["window_hours"]} h and nothing new (0 refereed NEW: yes claims)')
+        fails.append(f'BURNING: {hours:.0f} job-hours in {c["window_hours"]} h and nothing new (0 refereed NEW: yes claims)'
+                     + (f'; nothing merged upstream: {up["open_unmerged"]} of our PRs open and unmerged in '
+                        f'{up["repo"]}, oldest {up["oldest_open_days"]} d' if up else ''))
     if c['max_attempts_without_new'] and attempts >= c['max_attempts_without_new'] and new_yes == 0:
         fails.append(f'DRY_ROUNDS: {attempts} logged attempts in {c["window_hours"]} h and nothing new. '
                      'Repeating an approach that is not working is activity, not progress: change the approach.')
@@ -265,8 +283,13 @@ def check_lane(name, cfg, now):
         # itself between runs reads as a new failure each time it is pushed to general.
         per = ', '.join(f'{k} {len(v)}' for k, v in sorted(missing.items(), key=lambda kv: (-len(kv[1]), kv[0])))
         fails.append(f'UNSURFACED: {n} HOLDS claims of {len(missing)} subjects never audited ({per})')
-    return dict(lane=name, as_of=datetime.fromtimestamp(now).isoformat(timespec='minutes'), job_hours=round(hours, 1),
-                attempts=attempts, new_yes=new_yes, verdicts=verdicts, pass_share=round(share, 3), status='FAIL' if fails else 'PASS', fails=fails)
+    row = dict(lane=name, as_of=datetime.fromtimestamp(now).isoformat(timespec='minutes'), job_hours=round(hours, 1),
+               attempts=attempts, new_yes=new_yes, verdicts=verdicts, pass_share=round(share, 3), status='FAIL' if fails else 'PASS', fails=fails)
+    if c.get('upstream'):
+        row.update(upstream_open=up['open_unmerged'] if up else None,
+                   upstream_oldest_days=up['oldest_open_days'] if up else None,
+                   upstream_merged=up['merged'] if up else None)
+    return row
 
 
 def act(row, cfg):

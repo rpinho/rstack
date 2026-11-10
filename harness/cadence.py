@@ -233,9 +233,33 @@ def arguments(sub):
     parser = actions.add_parser('cadence', help='read-only delivery cadence status for every lane')
     parser.add_argument('--lane', help='limit to one lane')
     parser.add_argument('--json', action='store_true', help='machine-readable array')
+    up = actions.add_parser('upstream', help="what each lane's upstream repo has merged (lanes with UPSTREAM.json)")
+    up.add_argument('--lane', help='limit to one lane')
+    up.add_argument('--refresh', action='store_true', help='fetch the PR list with gh first (network)')
+    up.add_argument('--json', action='store_true', help='machine-readable array')
+
+
+def upstream_main(root, args):
+    import upstream
+    rows = []
+    for lane in lanes(root, args.lane):
+        if upstream.config(lane) is None:
+            continue
+        if args.refresh:
+            upstream.refresh(lane)
+        s = upstream.summary(lane)
+        rows.append(dict(s or {}, lane=lane.name, missing=s is None))
+    if args.json:
+        print(json.dumps(rows, indent=2, sort_keys=True))
+    for row in [] if args.json else rows:
+        print('{}: {}'.format(row['lane'], 'no PR list yet; run with --refresh' if row['missing']
+                              else upstream.line(row)))
+    return 0
 
 
 def main(root, args, rh):
+    if args.action == 'upstream':
+        return upstream_main(root, args)
     rows = report(root, rh, args.lane)
     if args.json:
         print(json.dumps(rows, indent=2, sort_keys=True))
@@ -244,4 +268,12 @@ def main(root, args, rh):
             print('{} {}: {}'.format(row['status'], row['lane'], body(row).replace('\n', ' ').strip()))
             if row.get('last_sweep_refused'):
                 print('  last sweep was refused, not idle: ' + row['last_sweep_refused'])
+            # 11-10: shipped means merged upstream, so the open-unmerged count sits beside cadence.
+            try:
+                import upstream
+                up = upstream.summary(root.expanduser() / 'lanes' / row['lane'])
+            except (OSError, ValueError, KeyError):
+                up = None
+            if up:
+                print('  ' + upstream.line(up))
     return int(any(row['status'] == 'STALLED' for row in rows))
