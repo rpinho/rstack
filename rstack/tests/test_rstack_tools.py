@@ -380,3 +380,18 @@ def test_hook_audit_reports_a_guard_that_crashes(tmp_path):
     assert 'false' not in r.stdout, 'only PreToolUse guards run'
     rows = json.loads(py('hook-audit', str(settings), '--json').stdout)
     assert {r['result'] for r in rows if 'refuse' in r['command']} == {'refused'}
+
+
+def test_event_watch_match_regex_is_the_rest_of_the_line(watch, tmp_path):
+    """friends-nsplan, 11-11: `match F (exit [1-9]|refused)` was split at the space and failed to
+    compile; the `\\s` workaround lost its backslash to shlex and matched the letter s."""
+    conf, state, env = watch
+    log = tmp_path / 'job log.txt'
+    log.write_text('')
+    (conf / 'j.conf').write_text('match "{}" (exit [1-9]|refused)\nmatch "{}" job\\sdone\n'.format(log, log))
+    assert py('event-watch', 'scan', 'j', env=env).returncode == 0
+    with open(log, 'a') as f:
+        f.write('worker exit 3\nsss\njob done\n')
+    woke = py('event-watch', 'wait', 'j', '--max-hours', '0', env=env)
+    lines = sorted(json.loads(l)['line'] for l in woke.stdout.splitlines())
+    assert lines == ['job done', 'worker exit 3'], woke.stdout + woke.stderr

@@ -9,7 +9,7 @@ Rules live in $EVENT_WATCH_CONF/<job>.conf (default ~/.config/event-watch), one 
   new   <glob>               a new path matches (paths present at the first scan are baseline)
   stale <glob> <minutes>     newest match not modified for N minutes (once; re-arms when it updates)
   pid   <pid|pidfile>        that process is gone (kill -0 only; never reads command lines)
-  match <file> <regex>       a new line in <file> matches regex (offset-tracked; truncation-safe)
+  match <file> <regex>       a new line in <file> matches regex: the rest of the line, verbatim (offset-tracked)
   deadline <YYYY-MM-DDTHH:MM> the time has passed (local time, once)
   push  on|off               also run $EVENT_WATCH_NOTIFY MESSAGE TITLE [PRIORITY] (default off)
 
@@ -55,8 +55,21 @@ def load_rules(job):
         for line in f:
             line = line.strip()
             if line and not line.startswith("#"):
-                rules.append(shlex.split(line))
+                rules.append(parse_rule(line))
     return rules
+
+
+def parse_rule(line):
+    """A match rule's regex is the rest of the line, verbatim. shlex split it at the first space and
+    ate its backslashes, so `match F (exit [1-9]|refused)` failed to compile and the `\\s` workaround
+    silently became the letter s (friends-nsplan, 11-11). One pair of outer quotes is still accepted."""
+    m = re.match(r"""match\s+("[^"]*"|'[^']*'|\S+)\s+(.+)$""", line)
+    if not m:
+        return shlex.split(line)
+    rx = m.group(2).strip()
+    if len(rx) >= 2 and rx[0] == rx[-1] and rx[0] in "\"'":
+        rx = rx[1:-1]
+    return ["match", shlex.split(m.group(1))[0], rx]
 
 
 def jpath(job, ext):
