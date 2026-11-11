@@ -261,3 +261,65 @@ def test_the_host_check_asks_for_files_the_work_dir_really_has(tmp_path):
     (project / 'runs').mkdir()
     names = sweep.host_check_names(dict(cwd=str(project), rules=rules, run_directory='runs'))
     assert names == ['README.md', 'model.py']
+
+
+# --- lane ledgers that live outside the work dir ------------------------------------------------
+
+def test_lane_ledgers_outside_the_work_dir_are_named_only_then(tmp_path):
+    lane, work = tmp_path / 'lanes/ve', tmp_path / 'project'
+    lane.mkdir(parents=True); work.mkdir()
+    (lane / 'X_SEARCHES.jsonl').write_text('{}\n')
+    assert sweep.lane_reads_outside(lane, work) == ['IDEAS.jsonl', 'X_SEARCHES.jsonl']
+    assert sweep.lane_reads_outside(lane, lane) == []
+    assert sweep.lane_reads_outside(lane, tmp_path / 'lanes') == []
+
+
+def test_a_project_work_dir_lane_gets_its_ledgers_on_the_host(cfg, tmp_path, monkeypatch):
+    """virtual-embryo, 11-09 and 11-10 (run 20261110T122438-cdfec547): the work dir is a project
+    directory, so the m5 had the work dir but not lanes/virtual-embryo/, and the read stage opened
+    IDEAS.jsonl there, found nothing and reported BLOCKED after a full sweep. The controller now
+    copies the ledgers the prompt names to the same path on the host, one way, and confirms they
+    arrived before any worker starts."""
+    host_root = tmp_path / 'host'
+    lane, work = tmp_path / 'lanes/ve', tmp_path / 'project'
+    lane.mkdir(parents=True); work.mkdir()
+    (lane / 'IDEAS.jsonl').write_text('{"id": "I-1"}\n')
+    (lane / 'SEEN_IDEAS.txt').write_text('I-0\n')
+    (work / 'README.md').write_text('x\n')
+    # ssh stub: run the remote command locally with every absolute path re-rooted under host/.
+    stub_ssh(tmp_path, monkeypatch,
+             'shift 3; cmd="$*"; '
+             'exec /bin/sh -c "$(printf %s "$cmd" | sed "s#{0}#{1}{0}#g")"'.format(tmp_path, host_root))
+    real_run = subprocess.run
+
+    def fake_run(argv, **kwargs):
+        if argv[0] == 'rsync':     # rsync's own -e transport is not exercised; copy to the host root
+            argv = [a.replace('m5:' + str(lane) + '/', str(host_root) + str(lane) + '/') for a in argv]
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(sweep.subprocess, 'run', fake_run)
+    assert sweep.host_sync_lane(lane, ['IDEAS.jsonl', 'SEEN_IDEAS.txt'], 'm5') is True
+    assert (host_root / str(lane).lstrip('/') / 'IDEAS.jsonl').read_text() == '{"id": "I-1"}\n'
+    assert (host_root / str(lane).lstrip('/') / 'SEEN_IDEAS.txt').exists()
+
+
+def test_run_worker_refuses_when_the_ledgers_do_not_arrive(cfg, tmp_path, monkeypatch):
+    lane, work = tmp_path / 'lanes/ve', tmp_path / 'project'
+    lane.mkdir(parents=True); work.mkdir()
+    (lane / 'IDEAS.jsonl').write_text('{"id": "I-1"}\n')
+    launcher = tmp_path / 'launcher'
+    launcher.write_text('#!/bin/sh\nexit 0\n')
+    spec = tmp_path / 'worker.md'
+    spec.write_text('fixture')
+    cfg.update(cwd=str(work), launcher_path=launcher, rules=[], worker_timeout_minutes=1, _lane=lane)
+    monkeypatch.setattr(sweep, 'guard', lambda c: None)
+    monkeypatch.setattr(sweep, 'host_harness_mismatch', lambda h: None)
+    monkeypatch.setattr(sweep, 'host_sync', lambda c, h: True)
+    monkeypatch.setattr(sweep, 'host_sync_lane', lambda lane, names, host: True)
+    monkeypatch.setattr(sweep, 'host_workdir_missing',
+                        lambda host, d, names: [] if Path(d) == work else ['IDEAS.jsonl'])
+    monkeypatch.setattr(sweep.subprocess, 'Popen',
+                        lambda *a, **k: pytest.fail('a worker started without its ledgers on the host'))
+    with pytest.raises(ValueError) as e:
+        sweep.run_worker(spec, cfg)
+    assert 'missing IDEAS.jsonl' in str(e.value) and str(lane) in str(e.value)

@@ -980,6 +980,40 @@ def host_sync(cfg, host):
     return out.returncode == 0
 
 
+# The lane files a worker prompt names by absolute path and reads on the machine it runs on.
+LANE_READS = ('IDEAS.jsonl', 'X_SEARCHES.jsonl', 'SEEN_IDEAS.txt', 'X_QUERIES.txt')
+
+
+def lane_reads_outside(lane, cwd):
+    """Lane files the worker reads that host_sync's copy of the work dir does not carry: [] when the work
+    dir holds the lane. virtual-embryo, 11-09 and 11-10: its work dir is a project directory, so every m5
+    sweep passed the work-dir guard, then opened lanes/virtual-embryo/IDEAS.jsonl on the m5, found no such
+    directory, and spent a whole sweep reporting BLOCKED. IDEAS.jsonl is always required."""
+    lane, cwd = Path(lane).resolve(), Path(cwd).resolve()
+    if lane == cwd or lane.is_relative_to(cwd):
+        return []
+    return [n for n in LANE_READS if n == 'IDEAS.jsonl' or (lane / n).is_file()]
+
+
+def host_sync_lane(lane, names, host):
+    """Copy those lane files to the same path on the host, one way. The controller's copy stays the
+    authority (the sweep appends to IDEAS.jsonl here), so the host gets a read copy and never sends one
+    back. True when it worked."""
+    lane = str(Path(lane))
+    argv = ssh_argv()
+    try:
+        made = subprocess.run(argv + [host, 'mkdir -p ' + shlex.quote(lane)], capture_output=True,
+                              text=True, timeout=60)
+        if made.returncode != 0:
+            return False
+        out = subprocess.run(['rsync', '-a', '--timeout=120', '-e', os.environ.get('LAUNCH_SSH', 'ssh')]
+                             + [str(Path(lane) / n) for n in names] + [host + ':' + lane + '/'],
+                             capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0
+
+
 HARNESS_RECEIPT = '.harness-sync.json'
 
 
@@ -1214,6 +1248,19 @@ def run_worker(spec, cfg):
             raise ValueError('sweep refused: {} on {} is missing or empty: {}. The host copy of the work '
                              'dir is incomplete or a stub, so the worker would not see what this machine has.'
                              .format(cfg['cwd'], host, ', '.join(sorted(missing))))
+        lane = cfg.get('_lane')
+        reads = lane_reads_outside(lane, cfg['cwd']) if lane is not None else []
+        if reads:
+            if not (lane / 'IDEAS.jsonl').is_file():
+                raise ValueError('sweep refused: {} has no IDEAS.jsonl here, so there is nothing to send to {}'
+                                 .format(lane, host))
+            if not host_sync_lane(lane, reads, host):
+                raise ValueError('sweep refused: cannot copy the lane ledgers in {} onto {} (workers read them '
+                                 'there); not running against a missing or stale copy'.format(lane, host))
+            gone = host_workdir_missing(host, lane, reads)
+            if gone is None or gone:
+                raise ValueError('sweep refused: {} on {} is {}'.format(
+                    lane, host, 'unreadable' if gone is None else 'missing ' + ', '.join(sorted(gone))))
     launcher = cfg['launcher_path']
     if not launcher.is_file():
         raise ValueError('launcher missing: ' + str(launcher))
@@ -1308,6 +1355,7 @@ def run_lane(lane, cfg, rh, dry=False):
             for stage in ('search', 'read', 'kill'):
                 stage_due, queue, _ = stage_snapshot(lane, cfg, rh)
                 cfg['_settled'] = settled(queue)
+                cfg['_lane'] = lane
                 if stage == 'read':
                     due = stage_due
                 spec = attempt / ('{}-{}.md'.format(pass_number, stage))
