@@ -34,6 +34,17 @@ MSG = ("Harness check (lane-nudge): lane {lane} is {why}, and this session has b
        "conductor inbox and keep working on something else.")
 
 
+def pickup(row):
+    """11-11: the digest -> lane loop. Name the newest digest idea no round has picked up, so the
+    next round starts there (rh lanes cadence reports it as digest.newest_unrun)."""
+    idea = ((row or {}).get('digest') or {}).get('newest_unrun')
+    if not idea:
+        return ''
+    return (' Start from the newest digest idea no round has picked up: {} ({}). Promote or freeze it when '
+            'the round starts and log its result or close it with the verdict, so idea -> round -> verdict '
+            'shows in rh lanes cadence.'.format(idea['id'], idea.get('claim', '')[:140]))
+
+
 def decide(idle_min, running, status, last_nudge, now, idle_limit=60, reask=7200):
     """Return the reason to nudge, or None. Pure, so it can be tested without tmux."""
     if status in ('EXEMPT', 'UNCONFIGURED'):
@@ -199,7 +210,7 @@ def main():
             why += '; the last sweep was REFUSED, not idle: ' + c['last_sweep_refused'] + '. Fix that first'
         if error and why == 'quiet':
             why = 'quiet (cadence unknown: the read failed)'
-        text = MSG.format(lane=lane, why=why, idle=idle)
+        text = MSG.format(lane=lane, why=why, idle=idle) + pickup(c)
         say(a.log, f'{a.prefix}{lane}: nudge ({why}; idle {idle} min)', a.dry)
         if a.dry:
             continue

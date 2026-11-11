@@ -140,6 +140,57 @@ def last_sweep_refusal(lane, rh):
     return None
 
 
+DIGEST_SESSION = 'digest'
+DIGEST_DAYS = 7
+STARTED_EVENTS = {'promote', 'freeze', 'result', 'close'}
+
+
+def digest_flow(lane, clock, days=DIGEST_DAYS):
+    """The digest -> lane loop, read from the lane's own idea ledger (11-11, general: in the week to 11-11,
+    26 digest ideas produced zero new ideas for math, friends or planets and nothing showed it).
+
+    queued: digest ideas added in the last `days`; started: those a round has picked up (promoted, frozen,
+    resulted or closed); verdicts: those with a result or close. newest_unrun is the newest digest idea
+    still waiting, which lane-nudge names as the place to start. None when the lane has no ledger."""
+    path = lane / 'IDEAS.jsonl'
+    if not path.is_file():
+        return None
+    first, events, status = {}, {}, {}
+    with open(path, errors='replace') as fh:
+        for line in fh:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or not isinstance(row.get('id'), str):
+                continue
+            first.setdefault(row['id'], row)
+            events.setdefault(row['id'], set()).add(row.get('event'))
+            status[row['id']] = row.get('status')
+    since = clock - dt.timedelta(days=days)
+    queued, unrun = [], []
+    for idea_id, row in first.items():
+        if row.get('session') != DIGEST_SESSION:
+            continue
+        try:
+            created = stamp(row.get('created') or row.get('ts'))
+        except (ValueError, TypeError):
+            continue
+        started = bool(events[idea_id] & STARTED_EVENTS) or status[idea_id] not in ('new', None)
+        if created >= since:
+            queued.append((idea_id, started, bool(events[idea_id] & {'result', 'close'})
+                           or status[idea_id] == 'closed'))
+        if not started:
+            unrun.append((created, idea_id, row.get('claim') or row.get('title') or ''))
+    flow = dict(days=days, queued=len(queued), started=sum(q[1] for q in queued),
+                verdicts=sum(q[2] for q in queued), unrun=len(unrun), newest_unrun=None)
+    if unrun:
+        created, idea_id, claim = max(unrun)
+        flow['newest_unrun'] = dict(id=idea_id, created=created.isoformat(),
+                                    claim=' '.join(str(claim).split())[:140])
+    return flow
+
+
 def evaluate(lane, rh, now=None):
     """One lane; no lane locks, worker config reads, mkdirs, alerts or pushes."""
     clock = stamp(now or rh.now())
@@ -169,6 +220,10 @@ def evaluate(lane, rh, now=None):
         # An interval anchored to the last delivery is stable across polls/days.
         # Missing evidence has a stable sentinel, never a poll-time bucket.
         result['stall_window'] = when.isoformat() if when else 'never'
+        try:
+            result['digest'] = digest_flow(lane, clock)
+        except OSError:
+            result['digest'] = None    # an unreadable idea ledger is not a cadence failure
         if result['status'] != 'OK':
             refused = last_sweep_refusal(lane, rh)
             if refused:
@@ -268,6 +323,11 @@ def main(root, args, rh):
             print('{} {}: {}'.format(row['status'], row['lane'], body(row).replace('\n', ' ').strip()))
             if row.get('last_sweep_refused'):
                 print('  last sweep was refused, not idle: ' + row['last_sweep_refused'])
+            flow = row.get('digest')
+            if flow:
+                print('  digest ideas, last {days} days: {queued} queued, {started} started, {verdicts} with a verdict; '
+                      '{unrun} waiting'.format(**flow) + (', newest {}'.format(flow['newest_unrun']['id'])
+                                                          if flow['newest_unrun'] else ''))
             # 11-10: shipped means merged upstream, so the open-unmerged count sits beside cadence.
             try:
                 import upstream

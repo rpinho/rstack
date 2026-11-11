@@ -104,3 +104,9 @@ def test_last_turn_reads_past_a_tail_window_with_no_turn(tmp_path):
     g = tmp_path / 'none.jsonl'
     g.write_text(filler + '\n')
     assert nudge.last_turn(g, chunk=64) is None
+
+
+def test_the_nudge_names_the_newest_unrun_digest_idea():
+    row = {'digest': {'newest_unrun': {'id': 'abc123', 'claim': 'Run one round as teams of ten agents.'}}}
+    assert 'abc123 (Run one round as teams of ten agents.)' in nudge.pickup(row)
+    assert nudge.pickup({'digest': None}) == '' and nudge.pickup({}) == '' and nudge.pickup(None) == ''
