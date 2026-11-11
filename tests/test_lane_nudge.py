@@ -26,6 +26,7 @@ def test_rate_limited_per_lane():
 
 
 def test_exempt_and_unconfigured_never_nudged():
+    assert nudge.decide(10_000, False, 'HELD', 0, NOW) is None     # paused by its owner (friends, 11-11)
     assert nudge.decide(10_000, False, 'EXEMPT', 0, NOW) is None
     assert nudge.decide(10_000, False, 'UNCONFIGURED', 0, NOW) is None
 

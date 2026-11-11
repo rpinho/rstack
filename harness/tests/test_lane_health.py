@@ -281,6 +281,14 @@ class LaneHealthTests(unittest.TestCase):
         self.config(window_opens=NOW.isoformat())
         self.assertEqual(cadence.evaluate(self.lane,rh)['status'],'STALLED')
 
+    def test_a_held_lane_is_held_not_stalled(self):
+        """friends, 11-11: paused by its owner, then reported STALLED and nudged to start rounds."""
+        self.config()
+        (self.lane / 'HOLD').write_text('PAUSED 11-11 by the owner\n')
+        row = cadence.evaluate(self.lane, rh)
+        self.assertEqual((row['status'], row['held']), ('HELD', 'PAUSED 11-11 by the owner'))
+        self.assertEqual(cadence.lint(self.lane, rh), [])
+
     def test_cadence_unconfigured_and_lint_bootstrap_grace_fixed_epoch(self):
         self.assertEqual(cadence.evaluate(self.lane,rh)['status'],'UNCONFIGURED')
         ship=cadence.stamp(cadence.SHIPPED_UTC)

@@ -1520,6 +1520,19 @@ def closed(lane, rh):
     return None
 
 
+def held(lane):
+    """The first line of lanes/<lane>/HOLD when the lane is paused, else None. The one place a pause
+    lives: launch.sh refuses the lane's jobs on it, cadence reports HELD instead of STALLED, and
+    lane-nudge leaves the lane alone (friends, 11-11: paused by its owner, then nudged to start rounds)."""
+    path = lane / 'HOLD'
+    if not path.is_file():
+        return None
+    try:
+        return (path.read_text(errors='replace').strip().splitlines() or ['(empty HOLD file)'])[0][:200]
+    except OSError:
+        return '(HOLD file unreadable)'
+
+
 def main(root, args, rh):
     root = root.expanduser().resolve()
     lanes = sorted((root / 'lanes').iterdir()) if args.all else [root / 'lanes' / args.lane]
@@ -1529,6 +1542,12 @@ def main(root, args, rh):
         if not lane.is_dir():
             continue
         try:
+            pause = held(lane)
+            if pause and args.all:
+                print('SKIP {}: lane on hold: {}'.format(lane.name, pause))
+                continue
+            if pause and not args.dry_run:
+                raise ValueError('lane on hold: {}. Only general removes {}'.format(pause, lane / 'HOLD'))
             ended = closed(lane, rh)
             if ended and args.all:
                 print('SKIP {}: lane closed {} (CADENCE window_closes)'.format(lane.name, ended))

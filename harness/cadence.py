@@ -211,6 +211,13 @@ def evaluate(lane, rh, now=None):
                 or ('window_closes' in cfg and clock >= stamp(cfg['window_closes']))):
             result['status'] = 'EXEMPT'
             return result
+        # A paused lane is not a stalled one (friends, 11-11): lanes/<lane>/HOLD, the file launch.sh
+        # already refuses jobs on, makes it HELD, which nothing alerts on or nudges.
+        hold = lane / 'HOLD'
+        if hold.is_file():
+            result['status'] = 'HELD'
+            result['held'] = (hold.read_text(errors='replace').strip().splitlines() or [''])[0][:200]
+            return result
         when = delivery_time(lane, cfg, clock)
         age = max(0, (clock - when).total_seconds() / 3600) if when else None
         result.update(last_delivery=when.isoformat() if when else None,
@@ -321,6 +328,8 @@ def main(root, args, rh):
     else:
         for row in rows:
             print('{} {}: {}'.format(row['status'], row['lane'], body(row).replace('\n', ' ').strip()))
+            if row.get('held'):
+                print('  on hold: ' + row['held'])
             if row.get('last_sweep_refused'):
                 print('  last sweep was refused, not idle: ' + row['last_sweep_refused'])
             flow = row.get('digest')

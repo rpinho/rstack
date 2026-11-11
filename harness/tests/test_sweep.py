@@ -361,6 +361,25 @@ class SweepTests(unittest.TestCase):
         self.assertEqual(visits, ['test'])
         self.worker.assert_not_called()
 
+    def test_a_held_lane_is_skipped_by_all_and_refused_by_name(self):
+        """friends, 11-11: its owner paused the lane; lanes/<lane>/HOLD is the one place a pause lives."""
+        paused = self.root / 'lanes/paused'
+        paused.mkdir()
+        for f in ('SWEEP.toml', 'INTAKE.toml', 'RULES.md'):
+            (paused / f).write_text((self.lane / f).read_text())
+        (paused / 'HOLD').write_text('PAUSED by the owner: no rounds until he says so\n')
+        visits = []
+        with patch.object(sweep, 'run_lane', side_effect=lambda lane, *_: visits.append(lane.name) or 0), \
+                patch.object(sweep, 'guard'):
+            rc, out, err = self.cli('sweep', '--all')
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(visits, ['test'])
+            self.assertIn('SKIP paused: lane on hold: PAUSED by the owner', out)
+            rc, _, err = self.cli('sweep', 'paused')
+        self.assertEqual(rc, 1)
+        self.assertIn('lane on hold', err)
+        self.worker.assert_not_called()
+
     def test_a_lane_before_its_close_still_sweeps(self):
         self.close(self.lane, (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=3))
                    .strftime('%Y-%m-%dT%H:%M:%SZ'))

@@ -47,7 +47,7 @@ def pickup(row):
 
 def decide(idle_min, running, status, last_nudge, now, idle_limit=60, reask=7200):
     """Return the reason to nudge, or None. Pure, so it can be tested without tmux."""
-    if status in ('EXEMPT', 'UNCONFIGURED'):
+    if status in ('EXEMPT', 'UNCONFIGURED', 'HELD'):    # HELD: lanes/<lane>/HOLD, paused by its owner
         return None
     if running or idle_min < idle_limit or now - last_nudge < reask:
         return None
