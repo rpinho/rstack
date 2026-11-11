@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import contacts_ledger
@@ -66,7 +67,7 @@ def kind_in(kind, kinds):
 
 
 def defaults():
-    return dict(target_max_age_days=365, target_check_valid_days=7, target_required_kinds=[],
+    return dict(target_max_age_days=365, target_check_valid_days=7, target_required_kinds=[], target_author_since='',
                 emails_per_contact_per_day=0, extra_rechecks=2, required_questions=[],
                 required_question_names=[], required_questions_kinds=[])
 
@@ -154,6 +155,9 @@ def check_settings(cfg):
             raise ValueError('OUTREACH ' + key + ' must be a number, 0 or more')
         if type(default) is list and (type(value) is not list):
             raise ValueError('OUTREACH ' + key + ' must be a list')
+    since = cfg['target_author_since']
+    if type(since) is not str or (since and not re.fullmatch(r'\d{4}-\d{2}-\d{2}', since)):
+        raise ValueError('OUTREACH target_author_since must be "" (off) or a YYYY-MM-DD date')
     sets = cfg['required_questions']
     if any(type(s) is not list or not s or any(type(w) is not str or not w.strip() for w in s)
            for s in sets):
@@ -214,8 +218,13 @@ def stamp(value):
     return dt.datetime.fromisoformat(value.replace('Z', '+00:00')) if value else None
 
 
-def target_check(target, max_age_days=365, get=None, clock=None, packages=(), fetch_json=None, usage_cfg=None):
-    """The verdict row for one target. Network only through `get` (default: github)."""
+def target_check(target, max_age_days=365, get=None, clock=None, packages=(), fetch_json=None, usage_cfg=None,
+                 author=None, author_since=''):
+    """The verdict row for one target. Network only through `get` (default: github).
+
+    author_since (OUTREACH target_author_since): the friend must have committed to this repo since that
+    date under their own GitHub login (author). Ricardo, 11-11: bugs only in software the friend
+    contributed to this year; a repo someone else keeps busy does not count."""
     get = get or github
     clock = clock or dt.datetime.now(UTC)
     target = normalise(target)
@@ -262,6 +271,16 @@ def target_check(target, max_age_days=365, get=None, clock=None, packages=(), fe
         reasons.append('archived')
     if notice:
         reasons.append('README says "{}"'.format(notice.group()))
+    author_commits = None
+    if author_since:
+        if not author:
+            reasons.append('no --author: this lane needs the friend\'s own commits since ' + author_since)
+        else:
+            mine = get('repos/{}/commits?author={}&since={}T00:00:00Z&per_page=100'.format(
+                target, urllib.parse.quote(author), author_since)) or []
+            author_commits = len(mine)
+            if not mine:
+                reasons.append('no commits by {} since {}'.format(author, author_since))
     if age is None:
         reasons.append('no commit or release found')
     elif age > max_age_days:
@@ -273,6 +292,8 @@ def target_check(target, max_age_days=365, get=None, clock=None, packages=(), fe
                    commits_last_365_days=len(year) if len(year) < 100 else '100+',
                    last_issue_or_pr=last_issue.date().isoformat() if last_issue else None,
                    age_days=age)
+    if author_since:
+        numbers.update(author=author, author_since=author_since, author_commits=author_commits)
     return dict(row, verdict='FAIL' if reasons else 'PASS', reasons=reasons, numbers=numbers,
                 usage=usage(target, repo, get, packages, fetch_json, usage_cfg, clock))
 
@@ -476,6 +497,7 @@ def arguments(sub):
     p = actions.add_parser('target-check', help='read GitHub and store a PASS/FAIL verdict')
     p.add_argument('lane')
     p.add_argument('target', help='OWNER/REPO or its GitHub URL')
+    p.add_argument('--author', help="the friend's GitHub login (required when OUTREACH target_author_since is set)")
     p.add_argument('--package', action='append', default=[], metavar='INDEX:NAME',
                    help='a package to count downloads for: pypi:NAME, cran:NAME, bioconda:NAME, conda-forge:NAME')
     p.add_argument('--json', action='store_true')
@@ -568,7 +590,8 @@ def main(root, args, rh, get=None):
             print('  ' + code)
         return 0 if row['verdict'] == 'PASS' else 1
     if args.action == 'target-check':
-        row = target_check(args.target, cfg['target_max_age_days'], get, packages=args.package, usage_cfg=cfg)
+        row = target_check(args.target, cfg['target_max_age_days'], get, packages=args.package, usage_cfg=cfg,
+                           author=args.author, author_since=cfg['target_author_since'])
         with rh.locked(lane):
             rh.append(lane / 'TARGETS.jsonl', row)
         if args.json:

@@ -1,6 +1,7 @@
 """Local outreach ledger and gates. This module never sends or fetches anything."""
 import settings
 import claim_evidence
+import result_gates
 import mixed_language
 import ops_mentions
 import bughunt
@@ -662,6 +663,30 @@ def x_checks(row, text, everyone, clock, selected=(), cfg=None, posting=False):
     return failures, warnings
 
 
+def novelty_findings(lane, row):
+    """A paper email from a lane with RESULT_GATES.json needs claims, and every claim must carry an
+    allowed `Novelty:` and a `Paper date:` inside the window (Ricardo, 11-11, friends: new science from
+    their 2025-2026 papers, not a reproduction, a bug or a tighter number)."""
+    if 'paper' not in bughunt.kinds_of(row):
+        return []
+    try:
+        gates = result_gates.load(lane)
+    except (OSError, ValueError) as exc:
+        return ['RESULT_GATES.json unreadable: {}'.format(exc)]
+    if not gates:
+        return []
+    claims = row.get('claims') or []
+    if not claims:
+        return ['NOVELTY: a paper email from this lane must name its claim dirs (--claim); each needs '
+                '"Novelty: {}" and a "Paper date:" from {} on'.format(' or '.join(gates['novelty']),
+                                                                    gates['paper_since'] or 'any date')]
+    out = []
+    for claim in claims:
+        for e in result_gates.errors(gates, *result_gates.claim_fields(Path(claim).expanduser())):
+            out.append('NOVELTY: {}: {}'.format(Path(claim).name, e))
+    return out
+
+
 def lint_rows(lane, selected, rh, allow_collision=None):
     cfg = settings(lane, rh)
     clock = time_of(rh.now())
@@ -736,6 +761,7 @@ def lint_rows(lane, selected, rh, allow_collision=None):
             checks['evidence'], evidence_warnings = claim_evidence.findings(
                 row.get('claims', []), cfg.get('recheck_roots', []),
                 cfg.get('pod_incident_utc'), cfg.get('require_claims', False))
+            checks['evidence'] = list(checks['evidence']) + novelty_findings(lane, row)
         # Two emails in a batch resembling each other is a warning, not a failure (Ricardo,
         # 11-05): "I don't think anybody will be comparing emails. What's important is that it
         # doesn't sound like AI slop and that it uses my voice." A shared closing is the usual

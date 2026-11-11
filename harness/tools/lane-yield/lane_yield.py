@@ -202,6 +202,14 @@ def unsurfaced(audit):
     return missing
 
 
+def _within(r, start, end):
+    try:
+        t = datetime.fromisoformat(str(r['utc']).replace('Z', '+00:00')).timestamp()
+    except (KeyError, ValueError):
+        return False
+    return start <= t <= end
+
+
 def check_lane(name, cfg, now):
     c = {**DEFAULTS, **cfg}
     # A row, log line or verdict written in the same second as this run is inside the window.
@@ -213,6 +221,15 @@ def check_lane(name, cfg, now):
     hours = job_hours(logs, start, end)
     claims = [Path(p) for g in c.get('claims', []) for p in glob.glob(os.path.expanduser(g)) if Path(p).is_dir()]
     verdicts = passes = new_yes = 0
+    sys.path.insert(0, str(HERE.parents[2]))   # harness/ in the repo, the install root installed
+    import result_gates
+    lane_gates = None
+    for g in c.get('results', []):
+        for p in glob.glob(os.path.expanduser(g)):
+            try:
+                lane_gates = lane_gates or result_gates.load(Path(p).parent)
+            except (OSError, ValueError):
+                lane_gates = dict(paper_since='9999-12-31', novelty=[])
     for d in claims:
         v = d / 'VERDICT.md'
         if v.is_file() and start <= v.stat().st_mtime <= end:
@@ -220,7 +237,7 @@ def check_lane(name, cfg, now):
             head = verdict_head(d) or ''
             ok = head.upper().startswith('HOLDS')
             passes += ok
-            if ok and not lint(d, new_only=True):
+            if ok and not lint(d, new_only=True) and not result_gates.errors(lane_gates, *result_gates.claim_fields(d)):
                 new_yes += 1
     attempts = 0
     up_lane, up = None, None
@@ -235,12 +252,23 @@ def check_lane(name, cfg, now):
             except Exception:   # an old list still judges; a missing one counts nothing as shipped
                 pass
         up = upstream.summary(up_lane)
+    gated_week = None
     for g in c.get('results', []):
         for p in glob.glob(os.path.expanduser(g)):
             try:
                 rows = [json.loads(l) for l in open(p, errors='replace') if l.strip()]
             except (OSError, json.JSONDecodeError):
                 continue
+            # 11-11, friends: a lane with RESULT_GATES.json counts only results of the novelty it names
+            # (new science from 2025+ papers), and reports how many of those held in the last 7 days.
+            try:
+                gates = result_gates.load(Path(p).parent)
+            except (OSError, ValueError):
+                gates = dict(paper_since='9999-12-31', novelty=[])   # unreadable gates count nothing
+            if gates:
+                gated_week = (gated_week or 0) + sum(
+                    1 for r in rows if r.get('new') is True and str(r.get('referee', '')).upper().startswith('HOLDS')
+                    and result_gates.counts(gates, r) and _within(r, now - 7 * 86400, end))
             for r in rows:
                 try:
                     t = datetime.fromisoformat(str(r['utc']).replace('Z', '+00:00')).timestamp()
@@ -255,6 +283,7 @@ def check_lane(name, cfg, now):
                 # here too rather than count history as yield.
                 if (r.get('new') is True and r.get('kind') != 'rerun'
                         and str(r.get('referee', '')).upper().startswith('HOLDS')
+                        and (not gates or result_gates.counts(gates, r))
                         and (up_lane is None or upstream.taken(up_lane, r.get('link')))):
                     new_yes += 1
     share = passes / verdicts if verdicts else 0.0
@@ -290,6 +319,8 @@ def check_lane(name, cfg, now):
         fails.append(f'UNSURFACED: {n} HOLDS claims of {len(missing)} subjects never audited ({per})')
     row = dict(lane=name, as_of=datetime.fromtimestamp(now).isoformat(timespec='minutes'), job_hours=round(hours, 1),
                attempts=attempts, new_yes=new_yes, verdicts=verdicts, pass_share=round(share, 3), status='FAIL' if fails else 'PASS', fails=fails)
+    if gated_week is not None:
+        row['gated_holds_7d'] = gated_week
     if c.get('upstream'):
         anyone, ours = (up or {}).get('last_merge_anyone'), (up or {}).get('last_merge_ours')
         gap = (upstream.parse(anyone) - upstream.parse(ours)).days if anyone and ours else None

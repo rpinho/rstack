@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import rh
 import sweep
+import contacts_ledger
 import idea_policy
 from policy_fixtures import prior_art as prior_fixture, config as config_fixture
 
@@ -802,6 +803,23 @@ class SweepTests(unittest.TestCase):
         self.cfg['worker_path'] = ['/opt/v/bin']
         self.save_cfg()
         self.assertEqual(self.loaded()['worker_path'], ['/opt/v/bin'])
+
+    def test_engaged_only_refuses_targets_who_have_not_replied(self):
+        """Ricardo, 11-11: friends works only for the people who answered; a sweep naming anyone else refuses."""
+        contacts = self.root / 'contacts.json'
+        contacts.write_text(json.dumps([dict(name='Ana Replied', last_in='2026-11-08 email'),
+                                        dict(name='Bo Silent', last_in='')]))
+        self.cfg['engaged_only'] = True
+        self.cfg['search_targets'] = ['Ana Replied, Bo Silent: open questions']
+        self.save_cfg()
+        with patch.dict(os.environ, RH_CONTACTS=str(contacts), RH_CONTACT_UPDATES=str(self.root / 'none.jsonl')), \
+                patch.object(contacts_ledger, 'CONTACTS', contacts):
+            with self.assertRaises(ValueError) as e:
+                self.loaded()
+            self.assertIn('Bo Silent (has not replied)', str(e.exception))
+            self.cfg['search_targets'] = ['Ana Replied: open questions']
+            self.save_cfg()
+            self.assertTrue(self.loaded()['engaged_only'])
 
     def test_worker_path_reaches_the_launcher_env(self):
         cfg = self.loaded()

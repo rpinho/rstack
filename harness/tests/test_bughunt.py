@@ -582,3 +582,27 @@ def test_the_headline_fails_when_the_users_check_fails(lane, monkeypatch):
     monkeypatch.setattr(bughunt, 'github', lambda p: dict(fake(p), stargazers_count=0) if p == 'repos/org/tool' else fake(p))
     rc, out, _ = rh_cli(lane, 'bughunt', 'target-check', 'test', 'Org/Tool')
     assert rc == 1 and out.startswith('FAIL org/tool (recency PASS, users FAIL)')
+
+
+def test_target_check_needs_the_friends_own_commits_this_year():
+    """Ricardo, 11-11: bugs only in software the friend committed to in 2026; repo activity by others
+    does not count."""
+    base = fake_github(commit='2026-10-01')
+
+    def get(path, mine=()):
+        if 'author=' in path:
+            assert 'since=2026-01-01T00:00:00Z' in path
+            return [{}] * (2 if 'author=friend' in path else 0)
+        return base(path)
+    ok = bughunt.target_check('o/r', get=get, clock=CLOCK, author='friend', author_since='2026-01-01')
+    assert ok['verdict'] == 'PASS' and ok['numbers']['author_commits'] == 2
+    busy = bughunt.target_check('o/r', get=get, clock=CLOCK, author='someone', author_since='2026-01-01')
+    assert busy['verdict'] == 'FAIL' and 'no commits by someone since 2026-01-01' in busy['reasons']
+    anon = bughunt.target_check('o/r', get=get, clock=CLOCK, author_since='2026-01-01')
+    assert anon['verdict'] == 'FAIL' and any('--author' in r for r in anon['reasons'])
+    off = bughunt.target_check('o/r', get=get, clock=CLOCK)
+    assert off['verdict'] == 'PASS' and 'author' not in off['numbers']
+    import pytest
+    for bad in ('2026', 2026, '26-01-01'):
+        with pytest.raises(ValueError):
+            bughunt.check_settings(dict(target_author_since=bad))

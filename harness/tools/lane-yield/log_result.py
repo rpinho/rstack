@@ -27,6 +27,10 @@ try:
     import verdict_rubric
 except ImportError:                  # installed layouts that do not ship the harness package
     verdict_rubric = None
+try:
+    import result_gates
+except ImportError:
+    result_gates = None
 URL = re.compile(r'(?:https?://|doi:|10\.\d{4,9}/)', re.I)
 
 
@@ -66,11 +70,25 @@ def main(argv=None):
     p.add_argument('--link', required=True, help='evidence: PR, DOI, claim dir or sent-mail id')
     p.add_argument('--referee', required=True, help='HOLDS, FAILS or NONE')
     p.add_argument('--utc', help='ISO time of the result (default now)')
+    p.add_argument('--novelty', help='new-science, repro, bug or tightening (read from CLAIM.md when the link is a claim dir)')
+    p.add_argument('--paper-date', help='YYYY-MM-DD of the source paper (read from CLAIM.md "Paper date:" when omitted)')
     p.add_argument('--verdict', help='the referee verdict text, or a file holding it; a passing '
                                      'verdict on a new result must answer the three rubric questions')
     a = p.parse_args(argv)
+    novelty, paper_date = a.novelty, a.paper_date
+    link_dir = Path(a.link).expanduser()
+    if result_gates is not None and link_dir.is_dir():
+        found = result_gates.claim_fields(link_dir)
+        novelty, paper_date = novelty or found[0], paper_date or found[1]
     if a.new == 'yes':
         errors = new_errors(a.kind, a.link)
+        # 11-11, friends: a lane with RESULT_GATES.json counts only the novelty and paper window it names.
+        if result_gates is not None:
+            try:
+                gates = result_gates.load(Path(a.ledger).expanduser().parent)
+            except (OSError, ValueError) as exc:
+                gates, errors = None, errors + ['RESULT_GATES.json unreadable: {}'.format(exc)]
+            errors += result_gates.errors(gates, novelty, paper_date)
         # 11-06, BioBasicsBench failure modes: a referee pass only counts when the verdict says
         # what it checked. Scoped to --new yes AND a passing verdict, which is the row that leads
         # to something being sent; NONE and FAILS rows are untouched, so no lane's ordinary
@@ -96,6 +114,10 @@ def main(argv=None):
                kind=a.kind, what=a.what, link=a.link, referee=a.referee)
     if a.verdict:
         row['verdict'] = a.verdict
+    if novelty:
+        row['novelty'] = novelty
+    if paper_date:
+        row['paper_date'] = paper_date
     path = Path(a.ledger).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'a') as f:

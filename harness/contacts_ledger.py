@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import re
+import unicodedata
 import urllib.parse
 import urllib.request
 
@@ -280,3 +281,55 @@ def find(name, urls=(), get=None, today=None):
             add(address, url)
     ranked = sorted(candidates.values(), key=lambda c: (not c['matches_name'], c['address']))
     return dict(name=name, sources=sources, candidates=ranked)
+
+
+def _tokens(name):
+    plain = unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode().casefold()
+    return [t for t in re.findall(r'[a-z]+', plain) if len(t) > 1]
+
+
+def find_person(name, rows=None):
+    """The contact a free-text name means, ignoring accents and middle initials ("Pedro Beltrao",
+    "Hugo L. Fernandes"); None when no contact or more than one fits."""
+    rows = base_rows() if rows is None else rows
+    want = _tokens(name)
+    if not want:
+        return None
+    hits = []
+    for row in rows:
+        have = _tokens(row['name'])
+        if have and (set(want) <= set(have) or {have[0], have[-1]} <= set(want)):
+            hits.append(row)
+    return hits[0] if len(hits) == 1 else None
+
+
+def engaged(root, row):
+    """True when the person has written back to us: a dated last_in in the contacts file or a reply
+    or answered event in the updates ledger. Ricardo, 11-11: friends work goes only to the people who replied."""
+    if when(row.get('last_in')):
+        return True
+    # 'answered' events are recorded from their replies too (one friend's 11-09 email reply was only that).
+    return any(e.get('event') in ('reply', 'answered') for e in events(root, row['name']))
+
+
+def target_people(target):
+    """The people a SWEEP search target names: the text before its first colon, split on commas and 'and'."""
+    head = target.split(':', 1)[0] if ':' in target else ''
+    return [p.strip() for p in re.split(r',|\band\b', head) if p.strip()]
+
+
+def not_engaged(root, targets, rows=None):
+    """[(target person, reason)] for every person a target names who is unknown or has not replied."""
+    rows = base_rows() if rows is None else rows
+    out = []
+    for target in targets:
+        people = target_people(target)
+        if not people:
+            out.append((target[:60], 'names nobody before a colon'))
+        for person in people:
+            row = find_person(person, rows)
+            if row is None:
+                out.append((person, 'no single matching contact'))
+            elif not engaged(root, row):
+                out.append((person, 'has not replied'))
+    return out

@@ -26,5 +26,10 @@ their table is homework, not a gift. The point is a result they would want to kn
    lane's required questions, the contact's scrutiny level. The author is the judge of whether it is
    useful; record their answer and let it steer their next targets.
 
+A lane with `RESULT_GATES.json` (friends, 11-11: `{"paper_since": "2025-01-01", "novelty": ["new-science"]}`)
+counts only what it names. Every CLAIM.md there carries `Novelty: new-science|repro|bug|tightening` and
+`Paper date: YYYY-MM-DD` of the source paper; log-result, `rh outreach` and lane-yield all refuse the
+rest, so a reproduction, a bug or a tighter number from an older paper is never yield and never sent.
+
 Heavy work runs on the compute host, never the controller. Lessons from a round go in the lane's
 LESSONS.jsonl through `rh lessons add`.

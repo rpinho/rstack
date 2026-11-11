@@ -254,6 +254,16 @@ def load(lane, rh):
     for key in ('rules_files', 'search_targets', 'sources', 'banned_sources', 'allowed_tests', 'allowed_writes'):
         if not isinstance(cfg[key], list) or not all(isinstance(v, str) and v.strip() for v in cfg[key]):
             raise ValueError('SWEEP ' + key + ' must be a nonempty string array')
+    if cfg.get('engaged_only'):
+        # Ricardo, 11-11 (friends): work only for the people who answered; everyone else waits until they do.
+        import contacts_ledger
+        try:
+            refused = contacts_ledger.not_engaged(lane.parent.parent, cfg['search_targets'])
+        except (OSError, ValueError) as exc:
+            raise ValueError('SWEEP engaged_only: cannot read contacts: {}'.format(exc))
+        if refused:
+            raise ValueError('SWEEP engaged_only: search_targets name people who have not replied: ' +
+                             '; '.join('{} ({})'.format(p, why) for p, why in refused))
     stamp(cfg['start_date'])
     for key, default, low, high in (
         ('testing_max_age_days', 3, 1, 365), ('max_load', 8, 1, 30),
