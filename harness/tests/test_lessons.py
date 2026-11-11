@@ -371,3 +371,15 @@ def test_read_receipt_references_old_lesson_and_disabled_lane_has_no_sweep_warni
     assert any(old['id'] in w for w in lessons.warnings(lane, rh))
     lessons.record_read(lane, rh)
     assert lessons.warnings(lane, rh) == []
+
+
+def test_a_lanes_own_lessons_are_not_crowded_out_by_other_lanes(lab):
+    """11-11, friends: with more than n cross-lane lessons stored, every slot went to other lanes and a
+    lesson friends had just recorded never reached its next jobs. Each group now gets half the slots."""
+    for i in range(14):
+        add(lab, lane='sample-a', text='Other lane lesson {}.'.format(i))
+    own = add(lab, lane='sample-b', text='This lane just learned this.')
+    picked = lessons.for_lane(lab / 'lanes/sample-b', rh, n=12)
+    assert len(picked) == 12 and own['id'] in [r['id'] for r in picked]
+    assert sum(r['lane'] == 'sample-a' for r in picked) == 11     # unused own slots go to cross-lane
+    assert [r['id'] for r in lessons.for_lane(lab / 'lanes/sample-b', rh, n=1)] != []

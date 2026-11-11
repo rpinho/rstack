@@ -172,8 +172,16 @@ def for_lane(lane, rh, idea=None, values=(), n=12):
     context = terms(context)
     candidates = [r for r in current(lane.parent.parent, rh).values() if r['status'] != 'superseded']
     # Cross-lane transfer first; within each group, relevance then recency.
-    return sorted(candidates, key=lambda r: (r['lane'] != lane.name,
-                  sum(bool(context.intersection(terms([tag]))) for tag in r['tags']), timestamp(r['utc']), r['id']), reverse=True)[:n]
+    ranked = sorted(candidates, key=lambda r: (r['lane'] != lane.name,
+                    sum(bool(context.intersection(terms([tag]))) for tag in r['tags']), timestamp(r['utc']), r['id']), reverse=True)
+    # 11-11, friends: with more than n cross-lane lessons in the store, the lane's own never made the cut,
+    # so a lesson friends had just paid for never reached its next jobs. Each group gets half the slots,
+    # and either fills what the other leaves.
+    cross = [r for r in ranked if r['lane'] != lane.name]
+    own = [r for r in ranked if r['lane'] == lane.name]
+    take_cross = min(len(cross), max(n - len(own), n - n // 2))
+    take_own = min(len(own), n - take_cross)
+    return cross[:take_cross] + own[:take_own]
 
 
 def render(rows):
