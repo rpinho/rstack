@@ -8,9 +8,12 @@ write for --idle-min, and no running shell or agent shown in the pane) AND eithe
 or the pane has simply been idle that long, it types one resume prompt into the pane. That happens at most once
 per --reask seconds per lane.
 
-Sessions are tmux sessions named PREFIX + owner_session (default prefix `claude-`). Transcript freshness comes from
-Claude Code's project directory for the pane's working directory. Lanes marked EXEMPT or UNCONFIGURED by cadence,
-and names in --skip, are never nudged. --dry prints decisions and types nothing.
+Sessions are tmux sessions named PREFIX + owner_session (default prefix `claude-`). Idle time is measured from the
+last real turn (a user or assistant message) in the session's Claude Code transcript, never from the file's mtime:
+11-08 to 11-11 every lane slept because idle compaction and session metadata rewrote transcripts about hourly, so
+no pane ever looked idle and nothing was nudged for three days. Lanes marked EXEMPT or UNCONFIGURED by cadence,
+and names in --skip, are never nudged. --dry prints decisions and types nothing. Run one copy per Mac that hosts
+lane sessions; each scans its own tmux (pass --tmux when tmux is not on the scheduler's PATH).
 """
 import argparse
 import json
@@ -20,6 +23,7 @@ import shlex
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 BEHIND = ('WARN', 'STALLED', 'BROKEN')
@@ -48,10 +52,63 @@ def panes(tmux, prefix):
             yield name[len(prefix):], pane, path
 
 
-def newest_transcript(path, projects):
+def transcripts(path, projects, now, recent=2 * 86400):
+    """Transcripts for a pane: those Claude Code files under the pane's directory, plus recent ones whose
+    latest recorded cwd is the pane's (a session that cd'd after launch files under its launch directory)."""
     d = projects / re.sub(r'[/.]', '-', path)
-    files = sorted(d.glob('*.jsonl'), key=lambda p: p.stat().st_mtime) if d.is_dir() else []
-    return files[-1] if files else None
+    found = list(d.glob('*.jsonl')) if d.is_dir() else []
+    needle = '"cwd":' + json.dumps(path)
+    for f in projects.glob('*/*.jsonl'):
+        if f in found or now - f.stat().st_mtime > recent:
+            continue
+        cwds = re.findall(r'"cwd":"[^"]*"', tail_text(f, 1 << 16))
+        if cwds and cwds[-1] == needle:
+            found.append(f)
+    return found
+
+
+def tail_text(f, size):
+    with open(f, 'rb') as fh:
+        fh.seek(0, 2)
+        fh.seek(max(0, fh.tell() - size))
+        return fh.read().decode('utf-8', 'replace')
+
+
+def real_turn(row):
+    """A message someone sent or the model wrote. Not compaction (its boundary and summary rows carry fresh
+    timestamps), not meta rows, not the untimestamped title/mode/bridge rows a session rewrites while idle."""
+    return (row.get('type') in ('user', 'assistant') and not row.get('isCompactSummary')
+            and not row.get('isMeta') and not row.get('isSidechain') and bool(row.get('timestamp')))
+
+
+def last_turn(f, chunk=1 << 20):
+    """Epoch seconds of the newest real turn in transcript f, or None. Reads from the end, widening the
+    window until it finds one, so a multi-GB transcript costs one chunk."""
+    size = f.stat().st_size
+    window = chunk
+    while True:
+        lines = tail_text(f, window).splitlines()
+        if window < size:
+            lines = lines[1:]      # the first line of a partial window is cut
+        for line in reversed(lines):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and real_turn(row):
+                try:
+                    return datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00')).timestamp()
+                except ValueError:
+                    continue
+        if window >= size:
+            return None
+        window *= 4
+
+
+def idle_minutes(path, projects, now):
+    """Minutes since the newest real turn across the pane's transcripts, or None when there is none."""
+    turns = [t for t in (last_turn(f) for f in transcripts(path, projects, now)) if t is not None]
+    return int((now - max(turns)) / 60) if turns else None
 
 
 def cadence(rh):
@@ -90,6 +147,13 @@ def report_failure(error, state, alert, dry):
     return None
 
 
+def say(log, line, dry=False):
+    print(line)
+    if log and not dry:
+        with open(os.path.expanduser(log), 'a') as fh:
+            fh.write(time.strftime('%Y-%m-%d %H:%M:%S ') + line + '\n')
+
+
 def main():
     home = Path.home()
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
@@ -104,21 +168,23 @@ def main():
     ap.add_argument('--state', default=str(home / '.local/state/lane-nudge'))
     ap.add_argument('--alert', default=os.environ.get('LANE_NUDGE_ALERT', ''),
                     help='command run with one message argument when the cadence read fails (and on recovery)')
+    ap.add_argument('--log', default=os.environ.get('LANE_NUDGE_LOG', ''), help='append each nudge to this file')
     ap.add_argument('--dry', action='store_true')
     a = ap.parse_args()
     skip = {s for s in a.skip.split(',') if s}
     state = Path(a.state)
     state.mkdir(parents=True, exist_ok=True)
     cad, error = cadence(a.rh)
-    report_failure(error, state, a.alert, a.dry)
+    failed = report_failure(error, state, a.alert, a.dry)
+    if failed:
+        say(a.log, failed, a.dry)
     cad = cad or {}
     for lane, pane, path in panes(a.tmux, a.prefix):
         if lane in skip:
             continue
-        f = newest_transcript(path, Path(a.projects))
-        if not f:
+        idle = idle_minutes(path, Path(a.projects), time.time())
+        if idle is None:
             continue
-        idle = int((time.time() - f.stat().st_mtime) / 60)
         tail = subprocess.run([a.tmux, 'capture-pane', '-p', '-t', pane, '-S', '-15'],
                               capture_output=True, text=True).stdout
         sf = state / f'{lane}.json'
@@ -127,12 +193,14 @@ def main():
         why = decide(idle, bool(RUNNING.search(tail)), c.get('status'), last, time.time(), a.idle_min, a.reask)
         if not why:
             continue
+        if c.get('status') in BEHIND and c.get('deliverable'):
+            why += ' ({}, {:.0f} h since the last one)'.format(c['deliverable'], c.get('hours_since_last_delivery') or 0)
         if c.get('last_sweep_refused'):
             why += '; the last sweep was REFUSED, not idle: ' + c['last_sweep_refused'] + '. Fix that first'
         if error and why == 'quiet':
             why = 'quiet (cadence unknown: the read failed)'
         text = MSG.format(lane=lane, why=why, idle=idle)
-        print(f'{lane}: nudge ({why}; idle {idle} min)')
+        say(a.log, f'{a.prefix}{lane}: nudge ({why}; idle {idle} min)', a.dry)
         if a.dry:
             continue
         subprocess.run([a.tmux, 'send-keys', '-t', pane, '-l', '--', text])
