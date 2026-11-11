@@ -287,6 +287,9 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
       --include='*/' --include='STATUS.md' --include='REPORT.md' --include='PLAN.md' \
       --include='RESULTS.jsonl' --include='*.selection.json' --include='*.report.md' \
       --include='prior-art-*.json' \
+      --include='CLAIM.md' --include='RESULT.md' --include='NOTE.md' --include='FREEZE.md' \
+      --include='DATA.md' --include='VERDICT.md' --include='BASELINES.json' --include='RECHECK.csv' \
+      --include='referee_*.md' \
       --include="${out:t}" \
       --exclude='*' "$LAUNCH_HOST:$dir/" "$dir/" >> "$log.pull" 2>&1 ||
       print -- "pull from $LAUNCH_HOST failed rc $? (outputs are on the host) $(date)" >> "$log"

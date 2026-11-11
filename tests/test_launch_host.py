@@ -245,6 +245,29 @@ def test_the_pull_brings_back_a_sweep_workers_report(tmp_path):
     assert not (dst / 'work/runs/attempt/0-search.md').exists()
 
 
+def test_the_pull_brings_back_the_claim_evidence(tmp_path):
+    """friends_nsrun_victor_1111, 11-11: the pull brought back STATUS.md and REPORT.md but not CLAIM.md,
+    FREEZE.md, RESULT.md, DATA.md, BASELINES.json or the referee files, so log-result, outreach and the
+    novelty gates read claims that were only on the host."""
+    import shlex
+    text = LAUNCH.read_text()
+    start = text.index('rsync -a --timeout')
+    command = text[start:text.index('\n', text.index('--exclude=', start))].replace('\\\n', ' ')
+    includes = [token for token in shlex.split(command)
+                if (token.startswith('--include=') or token.startswith('--exclude='))
+                and '${out:t}' not in token]
+    src, dst = tmp_path / 'host', tmp_path / 'here'
+    names = ['CLAIM.md', 'RESULT.md', 'NOTE.md', 'FREEZE.md', 'DATA.md', 'VERDICT.md', 'BASELINES.json',
+             'RECHECK.csv', 'referee_audit.md']
+    (src / 'claims/c1').mkdir(parents=True)
+    for n in names:
+        (src / 'claims/c1' / n).write_text('x\n')
+    (src / 'claims/c1/big.npy').write_bytes(b'0' * 64)
+    dst.mkdir()
+    subprocess.run(['rsync', '-a', *includes, str(src) + '/', str(dst) + '/'], check=True, timeout=60)
+    assert sorted(p.name for p in (dst / 'claims/c1').iterdir()) == sorted(names)
+
+
 def test_the_output_directory_is_created_on_the_host(tmp_path):
     """A sweep worker's --output is inside the attempt directory the controller just made here,
     which does not exist on the host. Without this the executor's first write fails and nothing
