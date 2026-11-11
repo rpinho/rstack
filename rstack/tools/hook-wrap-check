@@ -28,6 +28,12 @@ A wrapped hook is DRIFTED when the _hookfail.py it imports (its own directory's,
 for a project hook that names that path) is not byte-identical to this checkout's copy: an old
 wrapper lacks the lookup and fail_closed answers, so it is installed from main, not edited.
 
+Two more failures (11-11, from the laptop's use of the same wrapper):
+  BROAD_CLOSED  a guard with fail_closed=True on a matcher that covers every shell command (Bash) or every
+                tool (*): fail_closed ignores triage, so one bug in it refuses the whole session.
+  STALE         an allowlist entry that has expired, names no registered hook, or covers a hook that is now
+                wrapped. A dead exception is how a temporary one becomes permanent unnoticed.
+
 Exit 0 when every guard is wrapped (with the current wrapper) or allowed, 1 otherwise.
 """
 import argparse
@@ -156,6 +162,9 @@ def verdict(row, allow, today, lib=LIB):
         return ('allowed', entry['reason']) if live else ('MISSING', 'no file at {}'.format(script))
     text = script.read_text(errors='replace')
     if script.suffix == '.py' and MARK in text:
+        if re.search(r'fail_closed\s*=\s*True', text) and broad(row['matcher']):
+            return 'BROAD_CLOSED', ('{} sets fail_closed=True on [{}], which covers every shell command or tool: '
+                                    'use triage instead'.format(name, row['matcher']))
         why = drift(script, text, lib)
         return ('DRIFTED', '{} {}'.format(name, why)) if why else ('ok', name)
     target = trampoline(script, text)
@@ -173,6 +182,32 @@ def verdict(row, allow, today, lib=LIB):
     return 'UNWRAPPED', '{} does not call {}'.format(name, MARK)
 
 
+def broad(matcher):
+    return matcher in ('', '*') or bool(re.search(r'(^|\|)Bash($|\|)', matcher))
+
+
+def stale(rows, allow, today):
+    """Allowlist entries that no longer hold anything back."""
+    out = []
+    names = {}
+    for r in rows:
+        script = script_of(r['command'], r['project']) if r.get('command') else None
+        if script is not None:
+            names.setdefault(script.name, []).append(r['state'])
+    for name, entry in sorted(allow.items()):
+        if entry.get('until') and dt.date.fromisoformat(entry['until']) < today:
+            why = 'expired {}'.format(entry['until'])
+        elif name not in names:
+            why = 'names no registered hook'
+        elif all(state == 'ok' for state in names[name]):
+            why = 'the hook is wrapped now'
+        else:
+            continue
+        out.append(dict(settings='allowlist', project=None, matcher='-', command='', state='STALE',
+                        detail='{}: {}; delete the entry'.format(name, why)))
+    return out
+
+
 def check(settings, projects, allow, today=None, lib=LIB):
     today = today or dt.date.today()
     lib = Path(lib) if lib else None
@@ -182,7 +217,7 @@ def check(settings, projects, allow, today=None, lib=LIB):
     for row in registered(paths):
         state, detail = verdict(row, allow, today, lib)
         rows.append(dict(row, state=state, detail=detail))
-    return rows
+    return rows + stale(rows, allow, today)
 
 
 def main(argv=None):
@@ -203,7 +238,7 @@ def main(argv=None):
     projects = [str(Path(p).expanduser()) for p in a.project] + [p for p in extra if p not in a.project]
     rows = check(settings, [p for p in projects if (Path(p) / '.claude/settings.json').is_file()], allow,
                  lib=None if a.lib == 'none' else a.lib)
-    bad = [r for r in rows if r['state'] in ('UNWRAPPED', 'MISSING', 'BROKEN', 'DRIFTED')]
+    bad = [r for r in rows if r['state'] in ('UNWRAPPED', 'MISSING', 'BROKEN', 'DRIFTED', 'BROAD_CLOSED', 'STALE')]
     if a.json:
         print(json.dumps(rows, indent=2))
     else:

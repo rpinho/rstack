@@ -10,4 +10,10 @@ Claude Code PreToolUse guards. Each runs inside `_hookfail.run`, so an internal 
 - `pod-create-gate.py`: runs the repo's capacity-receipt gate (`tools/pod-create-gate.py`) fail-safe. An import error used to exit 1, which Claude Code treats as allow.
 - `conductor-inbox-gate.py`: denies direct SendMessage to the conductor session; workers use `relay`. Every wake replays the conductor's whole context to deliver what was usually an FYI.
 - `read-the-thread-first.py`: denies a browser click that sends an email unless the session pulled the page text in the last 30 minutes. Wrong replies were wrong about the question, not the voice; a screenshot does not count as a read.
+- `gate-pipe-guard.py`: denies a lint/test/typecheck gate piped into tail/head/grep without `set -o pipefail`. The pipe's exit code is the last command's, so a failing gate read as green and a broken PR merged.
+- `agent-stdin-guard.py`: denies `codex exec` or `claude -p` with stdin left open (add `< /dev/null`, or pipe the prompt in). Both read a non-tty stdin and hang forever on a pipe that never closes.
+- `results-brief-guard.py`: a subagent brief opens "You asked: X. I will: Y." and has a "Done when:" line, the same rule `tools/launch.sh` lints on every job. Drift starts in the brief, when the goal turns into process.
+- `results-report-guard.py` (SubagentStop): the report opens "You asked: X. Shipped: Y" with a count of results, not activity; blocks the stop once, then degrades.
+- `lane-no-questions.py`: only the conductor (cwd ending `CONDUCTOR_CWD_SUFFIX`, or tmux session `claude-$CONDUCTOR_NAME`) may show a question card. Lanes sat for days on one while the owner was away.
+- Unattended runs: with `RSTACK_UNATTENDED=1` (the harness sets it for headless `claude -p` jobs), every `ask` becomes a deny with the reason, because an ask prompts even with permissions bypassed and nobody is there to answer. `_hookfail.run(..., timeout=S)` stops a hung body before Claude Code's own timeout turns it into an allow.
 - `settings.example.json`: the matchers each hook is meant for.

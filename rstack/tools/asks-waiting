@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""List lane sessions that stopped on the owner, and our PRs nobody has touched, for the conductor.
+
+Why (11-08 to 11-11): three lane sessions sat stopped for three days and nobody noticed. Two ways a
+session waits on a person: its last turn ends on a question or a hand-off ("your call", "should I"),
+or a tool call is waiting on a permission prompt (a hook's `ask` prompts even with permissions
+bypassed, so an unattended lane just stalls there). And a PR we opened can sit untouched for days.
+
+    asks-waiting [--prs] [--push HOST]   scan this Mac's transcripts (and with --prs, our open PRs);
+                                         write $RSTACK_STATE_DIR/asks-waiting/<host>.tsv; --push copies it
+                                         to the same path on HOST (the conductor's Mac)
+    asks-waiting --hook                  UserPromptSubmit hook: in the conductor session only, print every
+                                         host's list so the conductor sees it on every turn
+
+Run the scan from launchd every few minutes on each Mac. No model tokens, no notifications.
+The conductor is the session whose working directory ends with CONDUCTOR_CWD_SUFFIX; its own
+transcripts are never listed.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import subprocess
+import sys
+import time
+from datetime import datetime
+
+ASK = re.compile(r"\?\s*(\)|\*\*)?\s*$|\b(want me to|should I|shall I|do you want|would you like|your call|"
+                 r"your decision|up to you|needs? (you|your)|waiting on (you|your)|over to you|say (send|go))\b", re.I)
+IDLE_S = 20 * 60          # a question unanswered this long
+TOOL_S = 15 * 60          # a tool call with no result this long: a permission prompt (Bash's own cap is 10 min)
+LOOKBACK_S = 3 * 86400
+PR_IDLE_H = 6
+
+
+def state_dir():
+    base = os.environ.get('RSTACK_STATE_DIR') or os.path.join(
+        os.environ.get('XDG_STATE_HOME') or os.path.expanduser('~/.local/state'), 'rstack')
+    return Path(os.path.expanduser(base)) / 'asks-waiting'
+
+
+def stamp(rec):
+    try:
+        return datetime.fromisoformat(rec['timestamp'].replace('Z', '+00:00')).timestamp()
+    except (KeyError, ValueError, AttributeError):
+        return None
+
+
+def last_state(path):
+    """(name, cwd, kind, when, text): kind is 'ask', 'tool' or None for the session's last real turn."""
+    with path.open('rb') as fh:
+        fh.seek(max(0, path.stat().st_size - 1_500_000))
+        lines = fh.read().decode('utf-8', 'replace').splitlines()
+    name, cwd, kind, when, text, pending = None, None, None, None, '', {}
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(d, dict):
+            continue
+        t = d.get('type')
+        if t in ('agent-name', 'custom-title'):
+            name = d.get('agentName') or d.get('customTitle') or name
+        cwd = d.get('cwd') or cwd
+        if t not in ('user', 'assistant') or d.get('isSidechain') or d.get('isMeta') or d.get('isCompactSummary'):
+            continue
+        content = (d.get('message') or {}).get('content') or []
+        content = [c for c in content if isinstance(c, dict)] if isinstance(content, list) else []
+        if t == 'user':
+            for c in content:
+                if c.get('type') == 'tool_result':
+                    pending.pop(c.get('tool_use_id'), None)
+            if not pending:
+                kind, text = None, ''
+            continue
+        uses = [c for c in content if c.get('type') == 'tool_use']
+        for u in uses:
+            pending[u.get('id')] = u.get('name', '?')
+        words = '\n'.join(c.get('text', '') for c in content if c.get('type') == 'text').strip()
+        if pending:
+            kind, when, text = 'tool', stamp(d), 'waiting on ' + ', '.join(sorted(set(pending.values())))
+        elif words:
+            tail = words[-300:]
+            kind, when, text = ('ask' if ASK.search(tail) else None), stamp(d), tail
+    return name, cwd, kind, when, text
+
+
+def live_dirs(projects):
+    """Transcript directories of sessions that have a tmux pane now, or None when tmux cannot be read.
+    A session that is not running cannot be waiting on anyone; its last question is history."""
+    tmux = os.environ.get('TMUX_BIN') or next((t for t in ('tmux', os.path.expanduser('~/.local/bin/tmux'),
+                                                          '/opt/homebrew/bin/tmux') if t == 'tmux' or os.path.exists(t)), 'tmux')
+    try:
+        out = subprocess.run([tmux, 'list-panes', '-a', '-F', '#{pane_current_path}'], capture_output=True,
+                             text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode:
+        return None
+    return {projects / re.sub(r'[/.]', '-', p) for p in out.stdout.split('\n') if p}
+
+
+def scan_sessions(projects, now, conductor=''):
+    rows = []
+    newest = {}
+    live = live_dirs(projects)
+    for f in projects.glob('*/*.jsonl'):
+        if live is not None and f.parent not in live:
+            continue
+        try:
+            m = f.stat().st_mtime
+        except OSError:
+            continue
+        if now - m < LOOKBACK_S and m > newest.get(f.parent, (0, None))[0]:
+            newest[f.parent] = (m, f)   # one live session per directory: older ones there are history
+    for _, f in newest.values():
+        try:
+            name, cwd, kind, when, text = last_state(f)
+        except OSError:
+            continue
+        if not kind or not when or (conductor and (cwd or '').rstrip('/').endswith(conductor)):
+            continue
+        idle = now - when
+        if idle < (IDLE_S if kind == 'ask' else TOOL_S):
+            continue
+        label = name or Path(cwd or f.parent.name).name
+        what = 'question' if kind == 'ask' else 'tool call with no result (permission prompt?)'
+        rows.append('{:.1f}h\t{}\t{}\t{}'.format(idle / 3600, label, what, ' '.join(text.split())[-160:]))
+    return rows
+
+
+def scan_prs(now):
+    out = subprocess.run(['gh', 'search', 'prs', '--author', '@me', '--state', 'open', '--limit', '100',
+                          '--json', 'url,title,updatedAt'], capture_output=True, text=True, timeout=90)
+    if out.returncode:
+        return ['?\tgh\tPR scan failed\t' + (out.stderr.strip().splitlines() or ['no output'])[-1][:120]]
+    idle = []
+    for pr in json.loads(out.stdout or '[]'):
+        h = (now - datetime.fromisoformat(pr['updatedAt'].replace('Z', '+00:00')).timestamp()) / 3600
+        if h >= PR_IDLE_H:
+            idle.append((h, pr))
+    by_repo = {}
+    for h, pr in idle:
+        repo, _, number = pr['url'].split('github.com/')[-1].rpartition('/pull/')
+        by_repo.setdefault(repo, []).append((h, number))
+    # One line per repo: the conductor reads this on every turn.
+    return ['{:.0f}h\t{}\t{} open PR(s) idle {:.0f}-{:.0f}h\toldest #{}'.format(
+                max(r)[0], repo, len(r), min(r)[0], max(r)[0], max(r)[1])
+            for repo, r in sorted(by_repo.items(), key=lambda kv: -max(kv[1])[0])]
+
+
+def hook():
+    try:
+        event = json.loads(sys.stdin.read())
+    except ValueError:
+        return 0
+    suffix = os.environ.get('CONDUCTOR_CWD_SUFFIX', '').rstrip('/')
+    if not suffix or not str(event.get('cwd') or '').rstrip('/').endswith(suffix):
+        return 0
+    lines = []
+    for f in sorted(state_dir().glob('*.tsv')):
+        age = (time.time() - f.stat().st_mtime) / 60
+        body = [l for l in f.read_text().splitlines() if l.strip()]
+        if age > 30:
+            lines.append('{}: list is {:.0f} min old; its scan may have stopped'.format(f.stem, age))
+        lines += ['{}: {}'.format(f.stem, l.replace('\t', ' | ')) for l in body]
+    if lines:
+        print('[asks-waiting] sessions stopped on a person, and stale PRs (hours idle | session | what):')
+        print('\n'.join(lines))
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--hook', action='store_true')
+    ap.add_argument('--prs', action='store_true')
+    ap.add_argument('--push')
+    ap.add_argument('--projects', default=os.path.expanduser('~/.claude/projects'))
+    a = ap.parse_args(argv)
+    if a.hook:
+        return hook()
+    now = time.time()
+    projects = Path(a.projects)
+    rows = scan_sessions(projects, now, os.environ.get('CONDUCTOR_CWD_SUFFIX', '').rstrip('/'))
+    if a.prs:
+        rows += scan_prs(now)
+    out = state_dir() / (socket.gethostname().split('.')[0] + '.tsv')
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix('.tmp')
+    tmp.write_text(''.join(r + '\n' for r in rows))
+    os.replace(tmp, out)
+    if a.push:
+        subprocess.run(['ssh', '-o', 'BatchMode=yes', a.push, 'mkdir -p ' + str(out.parent)],
+                       capture_output=True, timeout=60)
+        subprocess.run(['scp', '-q', str(out), '{}:{}'.format(a.push, out)], capture_output=True, timeout=60)
+    print('\n'.join(rows))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

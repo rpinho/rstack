@@ -45,14 +45,29 @@ Usage, at the bottom of a hook:
     sys.exit(_hookfail.run('my-hook.py', body, triage, guards='what it guards'))
 
 `body(event)` emits its own decision (with `decide`) and returns an exit code.
+
+Two more (11-11, adopted from the laptop's copy of this contract):
+
+  timeout=SECONDS              A hook that hangs is killed by Claude Code at its settings timeout, and a
+                               killed hook is an allow. With a timeout, run() stops the body itself a little
+                               earlier and treats it as an error (triage decides). HookTimeout derives from
+                               BaseException so a hook's own `except Exception` cannot swallow it.
+  RSTACK_UNATTENDED=1          An `ask` prompts even under --dangerously-skip-permissions, and in a headless
+                               run (`claude -p`, a scheduled job) nobody is there to answer: the run stalls.
+                               With this set in the environment, every ask becomes a deny that says why.
 """
 import json
 import os
 from pathlib import Path
+import signal
 import sys
 
 EVENT = 'PreToolUse'
 FAIL_CLOSED_ACTS = ('send', 'merge', 'push', 'delete', 'publish')
+
+
+class HookTimeout(BaseException):
+    """The body ran past run()'s timeout. A BaseException so `except Exception` in a hook cannot hide it."""
 
 
 class LookupFailed(Exception):
@@ -84,18 +99,30 @@ def state_dir(*parts):
     return Path(base).expanduser().joinpath(*parts)
 
 
+def unattended():
+    return os.environ.get('RSTACK_UNATTENDED') == '1'
+
+
 def decide(decision, reason):
-    """Emit a PreToolUse decision. 'deny' refuses; 'ask' puts it to the owner."""
+    """Emit a PreToolUse decision. 'deny' refuses; 'ask' puts it to the owner (a deny when unattended)."""
+    if decision == 'ask' and unattended():
+        decision, reason = 'deny', reason + (' (Unattended run, RSTACK_UNATTENDED=1: nobody can answer a prompt '
+                                             'here, so this is refused instead of asked.)')
     print(json.dumps({'hookSpecificOutput': {
         'hookEventName': EVENT,
         'permissionDecision': decision,
         'permissionDecisionReason': reason}}))
 
 
-def run(name, body, triage=None, guards='this action', on_error='deny', fail_closed=False):
+def _expired(signum, frame):
+    raise HookTimeout()
+
+
+def run(name, body, triage=None, guards='this action', on_error='deny', fail_closed=False, timeout=None):
     """Run `body(event)`; refuse rather than allow if it cannot be run to completion.
 
     A failed `lookup` asks. With fail_closed, any other error refuses whatever triage says.
+    With timeout, a body still running after that many seconds is an error too.
     Returns the exit code to hand to sys.exit.
     """
     raw = sys.stdin.read()
@@ -108,10 +135,15 @@ def run(name, body, triage=None, guards='this action', on_error='deny', fail_clo
         why = type(exc).__name__
 
     if event is not None:
+        if timeout:
+            signal.signal(signal.SIGALRM, _expired)
+            signal.setitimer(signal.ITIMER_REAL, timeout)
         try:
             return body(event) or 0
         except SystemExit:
             raise
+        except HookTimeout:
+            why = 'HookTimeout'
         except LookupFailed as exc:
             decide('ask', '{} could not read {} to check this call. It guards {}; the guard works '
                           'but what it checks against is unreadable, so the owner decides.'.format(
@@ -119,6 +151,9 @@ def run(name, body, triage=None, guards='this action', on_error='deny', fail_clo
             return 0
         except Exception as exc:
             why = type(exc).__name__
+        finally:
+            if timeout:
+                signal.setitimer(signal.ITIMER_REAL, 0)
 
     guarded = True
     if fail_closed:

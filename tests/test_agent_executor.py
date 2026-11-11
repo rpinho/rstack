@@ -145,3 +145,19 @@ def test_an_unknown_sandbox_is_refused_rather_than_passed_through(monkeypatch):
         command('codex', 'codex', 'm', 'high', '/w', '/o')
     with pytest.raises(ValueError):
         codex_sandbox('--sandbox=none')
+
+
+def test_a_headless_claude_job_is_marked_unattended(tmp_path):
+    """11-11: a hook's ask prompts even with permissions bypassed, and nobody answers a headless job.
+    RSTACK_UNATTENDED=1 makes every rstack hook deny with a reason instead."""
+    repo = Path(__file__).resolve().parents[1]
+    fake = tmp_path/'fake-cli'
+    fake.write_text('#!'+sys.executable+'\nimport json, os\n'
+                    'print(json.dumps({"is_error": False, "subtype": "success",'
+                    ' "result": os.environ.get("RSTACK_UNATTENDED", "")}))\n')
+    fake.chmod(0o755)
+    subprocess.run([sys.executable, str(repo/'harness/agent_executor.py'),
+        '--backend', 'claude', '--executable', str(fake), '--model', 'fixture',
+        '--effort', 'low', '--directory', str(tmp_path), '--output', str(tmp_path/'last')],
+        capture_output=True, timeout=10)
+    assert json.loads((tmp_path/'last').read_text())['result'] == '1'

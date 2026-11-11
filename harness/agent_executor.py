@@ -100,8 +100,10 @@ def main(argv=None):
         # Its own session, so the wall-clock kill signals the CLI's process group and not ours.
         # Without this, getpgid(child) is our own group and the cap would kill the launcher
         # instead of the job.
+        # 11-11: a hook's `ask` prompts even with permissions bypassed, and nobody answers a headless
+        # job, so it would stall. RSTACK_UNATTENDED turns every rstack hook's ask into a deny with a reason.
         proc = subprocess.Popen(cmd, cwd=a.directory, stdout=subprocess.PIPE,
-                                start_new_session=True)
+                                start_new_session=True, env=dict(os.environ, RSTACK_UNATTENDED='1'))
         # A watchdog rather than a check inside the read loop: stdout.read(65536) blocks until
         # the buffer fills or the process exits, so a job that goes quiet and hangs never
         # reaches a check placed in that loop. This fires on the clock either way.

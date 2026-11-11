@@ -242,3 +242,41 @@ def test_no_live_guard_on_this_host_crashes_on_malformed_input(real_home):
         crashes += [(name, r['payload'], r['result']) for r in rows
                     if r['result'].startswith('CRASHED') and name not in excused]
     assert not crashes, crashes
+
+
+# --------------------------------------------------------------- 11-11, from the laptop's wrapper
+
+def test_a_hung_body_times_out_as_an_error_even_inside_except_exception(tmp_path):
+    body = ('def body(event):\n'
+            '    import time\n'
+            '    try:\n'
+            '        time.sleep(30)\n'
+            '    except Exception:\n'
+            '        return 0\n')
+    h = probe(tmp_path, body, timeout=0.5)
+    assert call(h, {'tool_name': 'Bash', 'tool_input': {'command': 'danger'}})['decision'] == 'deny'
+    r = call(h, {'tool_name': 'Bash', 'tool_input': {'command': 'ls'}})
+    assert not r['blocked'] and 'HookTimeout' in r['stderr']
+
+
+def test_a_closed_guard_on_a_broad_matcher_fails_the_check(tmp_path, hooks):
+    (hooks / 'closed.py').write_text('import _hookfail\nsys.exit(_hookfail.run("c", body, fail_closed=True))\n')
+    s = settings(tmp_path, 'python3 {}/closed.py'.format(hooks))
+    assert states(wc.check([s], [], {}, lib=None)) == {'closed.py': 'BROAD_CLOSED'}
+    narrow = tmp_path / 'narrow.json'
+    narrow.write_text(json.dumps({'hooks': {'PreToolUse': [{'matcher': 'mcp__mail__send', 'hooks': [
+        {'type': 'command', 'command': 'python3 {}/closed.py'.format(hooks)}]}]}}))
+    assert states(wc.check([str(narrow)], [], {}, lib=None)) == {'closed.py': 'ok'}
+
+
+def test_stale_allowlist_entries_fail(tmp_path, hooks):
+    s = settings(tmp_path, 'python3 {}/wrapped.py'.format(hooks))
+    allow = {'wrapped.py': {'reason': 'was unwrapped during a migration'},
+             'gone.py': {'reason': 'a guard that was since removed'},
+             'old.sh': {'reason': 'a temporary exception now past', 'until': '2026-11-01'}}
+    rows = wc.check([s], [], allow, today=dt.date(2026, 11, 11), lib=None)
+    stale = sorted(r['detail'] for r in rows if r['state'] == 'STALE')
+    assert len(stale) == 3
+    assert any('gone.py: names no registered hook' in d for d in stale)
+    assert any('old.sh: expired 2026-11-01' in d for d in stale)
+    assert any('wrapped.py: the hook is wrapped now' in d for d in stale)

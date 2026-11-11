@@ -256,8 +256,12 @@ def test_read_the_thread_first(env):
 
 
 def test_every_hook_uses_the_failsafe_wrapper():
+    # The wrapper's contract is PreToolUse (allow/deny/ask). A hook wired only to another event
+    # (results-report-guard on SubagentStop) degrades to letting the report through instead.
+    settings = json.loads((HOOKS / 'settings.example.json').read_text())
+    pre = {Path(h['command'].split()[-1]).name for g in settings['hooks']['PreToolUse'] for h in g['hooks']}
     for hook in sorted(HOOKS.glob('*.py')):
-        if hook.name.startswith('_'):
+        if hook.name.startswith('_') or hook.name not in pre:
             continue
         assert '_hookfail.run(' in hook.read_text(), hook.name + ' does not run fail-safe'
 
@@ -268,6 +272,72 @@ def test_settings_example_names_only_hooks_that_exist():
     for groups in settings['hooks'].values():
         for group in groups:
             for h in group['hooks']:
-                named.add(Path(h['command'].split()[-1]).name)
+                if '/hooks/' in h['command']:
+                    named.add(Path(h['command'].split()[-1]).name)
     on_disk = {p.name for p in HOOKS.glob('*.py') if not p.name.startswith('_')}
     assert named == on_disk, (named ^ on_disk)
+
+
+# ------------------------------------------------------------------- adopted from the laptop, 11-11
+
+def test_gate_pipe_guard(env):
+    h = HOOKS / 'gate-pipe-guard.py'
+    blocked(h, bash('python3 -m pytest -q | tail -3'), env=env)
+    blocked(h, bash('npm run lint 2>&1 | grep error'), env=env)
+    allowed(h, bash('set -o pipefail; python3 -m pytest -q | tail -3'), env=env)
+    allowed(h, bash('python3 -m pytest -q'), env=env)
+    allowed(h, bash('git log --oneline | head -5'), env=env)
+    loud(h, '[1]', env=env)                                   # broken, and nothing gate-like is piped
+    blocked(h, 'not json: pytest | tail', env=env)            # broken, and it looks like the real thing
+
+
+def test_agent_stdin_guard(env):
+    h = HOOKS / 'agent-stdin-guard.py'
+    blocked(h, bash('codex exec --skip-git-repo-check "do it"'), env=env)
+    blocked(h, bash('cd /tmp && claude -p "summarise"'), env=env)
+    blocked(h, bash('env A=1 timeout 600 codex exec "x"'), env=env)
+    allowed(h, bash('codex exec "do it" < /dev/null'), env=env)
+    allowed(h, bash('cat prompt.md | claude -p'), env=env)
+    allowed(h, bash("codex exec - <<'EOF'\nthe prompt\nEOF"), env=env)
+    allowed(h, bash('echo "run codex exec later" && grep "claude -p" notes.md'), env=env)
+    allowed(h, bash('codex exec --help'), env=env)
+    loud(h, '[1]', env=env)
+
+
+def test_results_brief_guard(env):
+    h = HOOKS / 'results-brief-guard.py'
+    agent = lambda prompt: {'tool_name': 'Agent', 'tool_input': {'prompt': prompt}}
+    blocked(h, agent('Find every caller of foo() and list them.'), env=env)
+    blocked(h, agent('You asked: the callers of foo(). I will: list them.'), env=env)   # no Done when
+    allowed(h, agent('You asked: the callers of foo(). I will: list them with file:line.\n'
+                     'Done when: every caller is listed.'), env=env)
+    allowed(h, agent('[followup] also check bar()'), env=env)
+    allowed(h, {'tool_name': 'SendMessage', 'tool_input': {'to': 'math', 'message': 'fixed'}}, env=env)
+    r = call(h, 'not json "Agent"', env=env)
+    assert r['decision'] == 'ask'                             # broken on a brief: asks, never allows
+
+
+def test_results_report_guard(tmp_path):
+    h = HOOKS / 'results-report-guard.py'
+    r = call(h, {'last_assistant_message': 'I read twelve files and ran the tests.'})
+    assert json.loads(r['stdout'])['decision'] == 'block'
+    assert call(h, {'last_assistant_message': 'You asked: X. Shipped: 3 fixes.'})['stdout'] == ''
+    assert call(h, {'last_assistant_message': 'activity only', 'stop_hook_active': True})['stdout'] == ''
+    r = call(h, 'not json')
+    assert r['stdout'] == '' and 'needs repair' in r['stderr']   # degrades, never suppresses a report
+
+
+def test_lane_no_questions(tmp_path):
+    h = HOOKS / 'lane-no-questions.py'
+    ask = lambda cwd: {'tool_name': 'AskUserQuestion', 'tool_input': {}, 'cwd': cwd}
+    e = {'CONDUCTOR_CWD_SUFFIX': '/src/conductor', 'TMUX': ''}
+    blocked(h, ask('/home/u/src/lane-a'), env=e)
+    allowed(h, ask('/home/u/src/conductor'), env=e)
+    allowed(h, bash('ls'), env=e)
+    blocked(h, 'not json AskUserQuestion', env=e)
+
+
+def test_unattended_turns_ask_into_deny(tmp_path):
+    h = HOOKS / 'results-brief-guard.py'
+    r = call(h, 'not json "Agent"', env={'RSTACK_UNATTENDED': '1'})
+    assert r['decision'] == 'deny' and 'Unattended' in r['stdout']
