@@ -22,7 +22,9 @@ BLOCKING = ('deny', 'ask')
 
 def call(script, payload, cwd=None, env=None):
     raw = payload if isinstance(payload, str) else json.dumps(payload)
-    e = dict(os.environ)
+    # The ask default depends on who is answering (11-11): never inherit that from the developer's shell.
+    e = {k: v for k, v in os.environ.items()
+         if not k.startswith('CONDUCTOR_') and k not in ('RSTACK_ATTENDED', 'RSTACK_UNATTENDED', 'TMUX')}
     e.update(env or {})
     p = subprocess.run([sys.executable, str(script)], input=raw, capture_output=True, text=True,
                        cwd=str(cwd or Path.cwd()), env=e, timeout=60)

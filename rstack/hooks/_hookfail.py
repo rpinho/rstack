@@ -55,12 +55,22 @@ Two more (11-11, adopted from the laptop's copy of this contract):
   RSTACK_UNATTENDED=1          An `ask` prompts even under --dangerously-skip-permissions, and in a headless
                                run (`claude -p`, a scheduled job) nobody is there to answer: the run stalls.
                                With this set in the environment, every ask becomes a deny that says why.
+
+Asks are for the attended session only (11-11, second step). Setting RSTACK_UNATTENDED was opt-in, so every
+launcher that forgot it (all the interactive tmux lanes, running unwatched) still stalled on an ask. Now an
+ask is kept only in the conductor (working directory ending in CONDUCTOR_CWD_SUFFIX, or tmux session
+`claude-$CONDUCTOR_NAME`) or a session started with RSTACK_ATTENDED=1; everywhere else it becomes a deny
+naming what to do instead. RSTACK_UNATTENDED=1 still forces a deny, the conductor included. A deny is
+stricter than an ask, so no guard gets weaker. Every ask, kept or converted, gets one line in
+$RSTACK_STATE_DIR/hook-asks.jsonl (the guard's own text, never the tool input).
 """
 import json
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
+import time
 
 EVENT = 'PreToolUse'
 FAIL_CLOSED_ACTS = ('send', 'merge', 'push', 'delete', 'publish')
@@ -99,15 +109,73 @@ def state_dir(*parts):
     return Path(base).expanduser().joinpath(*parts)
 
 
+_CURRENT = {'name': '', 'event': None}   # set by run(), so decide() knows the guard and the session
+
+
 def unattended():
     return os.environ.get('RSTACK_UNATTENDED') == '1'
 
 
+def _tmux_session():
+    if not os.environ.get('TMUX'):
+        return ''
+    for tmux in ('tmux', os.path.expanduser('~/.local/bin/tmux'), '/opt/homebrew/bin/tmux'):
+        try:
+            out = subprocess.run([tmux, 'display-message', '-p', '#S'], capture_output=True, text=True, timeout=2)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if out.returncode == 0:
+            return out.stdout.strip()
+    return ''
+
+
+def is_conductor(event=None):
+    """The conductor session: its cwd ends with CONDUCTOR_CWD_SUFFIX, or its tmux session is
+    claude-$CONDUCTOR_NAME (CONDUCTOR_TMUX overrides). Never a pinned session id: it changes on restart."""
+    event = event if isinstance(event, dict) else {}
+    suffix = os.environ.get('CONDUCTOR_CWD_SUFFIX', '').rstrip('/')
+    cwd = str(event.get('cwd') or os.getcwd()).rstrip('/')
+    if suffix and cwd.endswith(suffix):
+        return True
+    name = os.environ.get('CONDUCTOR_TMUX') or ('claude-' + os.environ['CONDUCTOR_NAME']
+                                                if os.environ.get('CONDUCTOR_NAME') else '')
+    return bool(name) and _tmux_session() == name
+
+
+def attended(event=None):
+    """True where a person answers prompts: the conductor, or a session started with RSTACK_ATTENDED=1."""
+    if unattended():
+        return False
+    return os.environ.get('RSTACK_ATTENDED') == '1' or is_conductor(event)
+
+
+def _ledger(decision, reason):
+    """One line per ask, kept or converted. The guard's own text only, never the tool input. A failed
+    write never changes the decision."""
+    try:
+        event = _CURRENT['event'] if isinstance(_CURRENT['event'], dict) else {}
+        row = dict(utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), session_id=str(event.get('session_id', '')),
+                   cwd=os.path.basename(str(event.get('cwd') or os.getcwd()).rstrip('/')), guard=_CURRENT['name'],
+                   outcome=decision, reason=reason[:500])
+        path = state_dir('hook-asks.jsonl')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'a') as fh:
+            fh.write(json.dumps(row) + '\n')
+    except Exception as exc:
+        print('[_hookfail] could not write the ask ledger ({}); the decision stands'.format(type(exc).__name__),
+              file=sys.stderr)
+
+
 def decide(decision, reason):
-    """Emit a PreToolUse decision. 'deny' refuses; 'ask' puts it to the owner (a deny when unattended)."""
-    if decision == 'ask' and unattended():
-        decision, reason = 'deny', reason + (' (Unattended run, RSTACK_UNATTENDED=1: nobody can answer a prompt '
-                                             'here, so this is refused instead of asked.)')
+    """Emit a PreToolUse decision. 'deny' refuses; 'ask' puts it to the owner, but only in an attended
+    session: anywhere else nobody can answer, so it is a deny saying what to do instead."""
+    if decision == 'ask':
+        if not attended(_CURRENT['event']):
+            decision, reason = 'deny', reason + (
+                ' Nobody can answer a prompt in this session ({}), so this is refused instead of asked: retry once '
+                'what it needs works, or send the decision to the conductor and keep working.'.format(
+                    'RSTACK_UNATTENDED=1' if unattended() else 'not the conductor'))
+        _ledger(decision, reason)
     print(json.dumps({'hookSpecificOutput': {
         'hookEventName': EVENT,
         'permissionDecision': decision,
@@ -127,10 +195,12 @@ def run(name, body, triage=None, guards='this action', on_error='deny', fail_clo
     """
     raw = sys.stdin.read()
     event, why = None, None
+    _CURRENT['name'] = name
     try:
         event = json.loads(raw)
         if not isinstance(event, dict):
             event, why = None, 'ValueError'
+        _CURRENT['event'] = event
     except Exception as exc:
         why = type(exc).__name__
 

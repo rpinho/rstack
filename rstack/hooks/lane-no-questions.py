@@ -11,7 +11,6 @@ working directory ends with CONDUCTOR_CWD_SUFFIX, or its tmux session is CONDUCT
 `claude-` + CONDUCTOR_NAME). If neither is configured, nobody is exempt.
 """
 import os
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -22,27 +21,10 @@ REASON = ('lane-no-questions: only the conductor shows question cards. If you wo
           'it really is the owner\'s call, send it to the conductor and keep working on everything else.')
 
 
-def tmux_session():
-    if not os.environ.get('TMUX'):
-        return ''
-    out = subprocess.run(['tmux', 'display-message', '-p', '#S'], capture_output=True, text=True, timeout=3)
-    return out.stdout.strip() if out.returncode == 0 else ''
-
-
-def is_conductor(event):
-    suffix = os.environ.get('CONDUCTOR_CWD_SUFFIX', '').rstrip('/')
-    cwd = str(event.get('cwd') or os.getcwd()).rstrip('/')
-    if suffix and cwd.endswith(suffix):
-        return True
-    name = os.environ.get('CONDUCTOR_TMUX') or ('claude-' + os.environ['CONDUCTOR_NAME']
-                                                if os.environ.get('CONDUCTOR_NAME') else '')
-    return bool(name) and _hookfail.lookup('the tmux session name', tmux_session) == name
-
-
 def body(event):
     if not str(event.get('tool_name', '')).endswith('AskUserQuestion'):
         return 0
-    if not is_conductor(event):
+    if not _hookfail.is_conductor(event):   # one definition, shared with the ask default
         _hookfail.decide('deny', REASON)
     return 0
 

@@ -46,7 +46,8 @@ def test_a_failed_lookup_asks_and_names_what_it_could_not_read(tmp_path):
     hook = probe(tmp_path, 'def body(event):\n'
                            '    _hookfail.lookup("the forge (gh pr view)", subprocess.run, ["false"], check=True)\n'
                            '    return 0')
-    r = call(hook, {'tool_input': {'command': 'gh pr merge 1'}})
+    r = call(hook, {'tool_input': {'command': 'gh pr merge 1'}},
+             env={'RSTACK_ATTENDED': '1', 'RSTACK_STATE_DIR': str(tmp_path / 'state')})
     assert r['decision'] == 'ask' and 'could not read the forge (gh pr view)' in r['stdout']
     assert 'CalledProcessError' not in r['stdout'], 'the lookup error itself is not echoed'
 

@@ -13,7 +13,9 @@ from rstack_hookcall import HOOKS, allowed, bash, blocked, call, loud
 
 @pytest.fixture
 def env(tmp_path):
-    return {'RSTACK_STATE_DIR': str(tmp_path / 'state')}
+    # Attended, so the guards' own ask/deny choices are what these tests see; the ask default
+    # outside the conductor has its own tests below.
+    return {'RSTACK_STATE_DIR': str(tmp_path / 'state'), 'RSTACK_ATTENDED': '1'}
 
 
 # ------------------------------------------------------------------------------- _hookfail
@@ -116,7 +118,7 @@ def trees(tmp_path):
 def test_main_tree_commit_refused_worktree_allowed(trees, tmp_path):
     main, wt = trees
     h = HOOKS / 'block-main-tree-commit.py'
-    env = {'RSTACK_MAIN_TREES': str(main)}
+    env = {'RSTACK_MAIN_TREES': str(main), 'RSTACK_ATTENDED': '1', 'RSTACK_STATE_DIR': str(tmp_path / 'state')}
     blocked(h, bash('git commit -m x', cwd=str(main)), env=env)
     blocked(h, bash('cd {} && git commit -qm x'.format(main), cwd=str(tmp_path)), env=env)
     blocked(h, bash('git -C {} commit -m x'.format(main), cwd=str(tmp_path)), env=env)
@@ -339,5 +341,65 @@ def test_lane_no_questions(tmp_path):
 
 def test_unattended_turns_ask_into_deny(tmp_path):
     h = HOOKS / 'results-brief-guard.py'
-    r = call(h, 'not json "Agent"', env={'RSTACK_UNATTENDED': '1'})
-    assert r['decision'] == 'deny' and 'Unattended' in r['stdout']
+    r = call(h, 'not json "Agent"', env={'RSTACK_UNATTENDED': '1', 'RSTACK_STATE_DIR': str(tmp_path)})
+    assert r['decision'] == 'deny' and 'RSTACK_UNATTENDED=1' in r['stdout']
+
+
+# --------------------------------------------------- asks only where someone answers (11-11 PM)
+
+def asker(tmp_path):
+    hook = tmp_path / 'asker.py'
+    hook.write_text('import sys\nsys.path.insert(0, {!r})\nimport _hookfail\n'
+                    'def body(event):\n'
+                    '    _hookfail.decide("ask", "probe wants a person")\n'
+                    '    return 0\n'
+                    'sys.exit(_hookfail.run("asker.py", body, guards="probe"))\n'.format(str(HOOKS)))
+    return hook
+
+
+def ev(cwd):
+    return {'tool_name': 'Bash', 'tool_input': {'command': 'SECRET-INPUT-TEXT'}, 'cwd': cwd,
+            'session_id': 'sess-1'}
+
+
+def test_an_ask_stays_an_ask_only_where_someone_answers(tmp_path):
+    """Interactive lanes run unwatched in tmux, and an ask prompts even with permissions bypassed:
+    a silent stall. Only the conductor, or a session started with RSTACK_ATTENDED=1, keeps an ask."""
+    h = asker(tmp_path)
+    base = {'RSTACK_STATE_DIR': str(tmp_path / 'state'), 'CONDUCTOR_CWD_SUFFIX': '/kb/general'}
+    assert call(h, ev('/home/u/kb/general'), env=base)['decision'] == 'ask'
+    lane = call(h, ev('/home/u/kb/math'), env=base)
+    assert lane['decision'] == 'deny' and 'Nobody can answer a prompt' in lane['stdout']
+    assert 'probe wants a person' in lane['stdout']                       # the guard's own reason is kept
+    assert call(h, ev('/home/u/kb/math'), env=dict(base, RSTACK_ATTENDED='1'))['decision'] == 'ask'
+    assert call(h, ev('/home/u/kb/general'), env=dict(base, RSTACK_UNATTENDED='1'))['decision'] == 'deny'
+    assert call(h, ev('/home/u/kb/math'), env={'RSTACK_STATE_DIR': str(tmp_path / 's2')})['decision'] == 'deny'
+
+
+def test_every_ask_is_ledgered_without_the_tool_input(tmp_path):
+    h = asker(tmp_path)
+    base = {'RSTACK_STATE_DIR': str(tmp_path / 'state'), 'CONDUCTOR_CWD_SUFFIX': '/kb/general'}
+    call(h, ev('/home/u/kb/general'), env=base)
+    call(h, ev('/home/u/kb/math'), env=base)
+    text = (tmp_path / 'state/hook-asks.jsonl').read_text()
+    rows = [json.loads(l) for l in text.splitlines()]
+    assert [(r['cwd'], r['outcome'], r['guard'], r['session_id']) for r in rows] == [
+        ('general', 'ask', 'asker.py', 'sess-1'), ('math', 'deny', 'asker.py', 'sess-1')]
+    assert 'SECRET-INPUT-TEXT' not in text
+    assert set(rows[0]) == {'utc', 'session_id', 'cwd', 'guard', 'outcome', 'reason'}
+
+
+def test_an_unwritable_ledger_leaves_the_decision_alone(tmp_path):
+    h = asker(tmp_path)
+    blocker = tmp_path / 'not-a-dir'
+    blocker.write_text('a file where the state directory should be')
+    r = call(h, ev('/home/u/kb/general'), env={'RSTACK_STATE_DIR': str(blocker), 'CONDUCTOR_CWD_SUFFIX': '/kb/general'})
+    assert r['decision'] == 'ask' and 'ask ledger' in r['stderr']
+
+
+def test_allow_and_deny_are_untouched_and_not_ledgered(tmp_path):
+    h = HOOKS / 'gate-pipe-guard.py'
+    state = tmp_path / 'state'
+    allowed(h, bash('ls'), env={'RSTACK_STATE_DIR': str(state)})
+    blocked(h, bash('python3 -m pytest -q ' + chr(124) + ' tail -3'), env={'RSTACK_STATE_DIR': str(state)})
+    assert not (state / 'hook-asks.jsonl').exists()
