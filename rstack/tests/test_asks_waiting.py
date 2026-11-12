@@ -73,3 +73,13 @@ def test_prs_are_scanned_at_most_every_half_hour_and_a_failure_keeps_the_last_li
     assert aw.cached_prs(t + 600, bad)[0].startswith('9h') and len(calls) == 1        # cached: no new search
     stale = aw.cached_prs(t + 3600, bad)
     assert len(calls) == 2 and stale[0].startswith('9h') and 'refresh failed' in stale[0]
+
+
+def test_a_report_saying_nothing_needs_you_is_not_a_question(tmp_path, monkeypatch):
+    """planets, 11-12: "Event-watch is armed. Nothing needs you." was listed as a question."""
+    monkeypatch.setenv('TMUX_BIN', str(tmp_path / 'no-tmux'))
+    p = tmp_path / 'projects'
+    transcript(p, 'report', [say('Round started. Event-watch is armed. Nothing needs you.', 3600)])
+    transcript(p, 'asks', [say('Round done. Nothing else needs you, but should I start the next one?', 3600, cwd='/src/b')])
+    rows = aw.scan_sessions(p, time.time())
+    assert [r.split('\t')[1] for r in rows] == ['b']

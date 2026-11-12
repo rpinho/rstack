@@ -29,6 +29,10 @@ from datetime import datetime
 
 ASK = re.compile(r"\?\s*(\)|\*\*)?\s*$|\b(want me to|should I|shall I|do you want|would you like|your call|"
                  r"your decision|up to you|needs? (you|your)|waiting on (you|your)|over to you|say (send|go))\b", re.I)
+# "Nothing needs you" is a report, not an ask (planets, 11-12, flagged as a question). A negated hand-off
+# is removed before ASK looks; a trailing question mark still counts.
+NOT_ASK = re.compile(r"\b(nothing|no one|nobody|none of this)( else)? (needs|is waiting on|waits on) (you|your)\w*|"
+                     r"\b(doesn.t|does not|no need to) (need|wait on) (you|your)\w*", re.I)
 IDLE_S = 20 * 60          # a question unanswered this long
 TOOL_S = 15 * 60          # a tool call with no result this long: a permission prompt (Bash's own cap is 10 min)
 LOOKBACK_S = 3 * 86400
@@ -85,7 +89,7 @@ def last_state(path):
             kind, when, text = 'tool', stamp(d), 'waiting on ' + ', '.join(sorted(set(pending.values())))
         elif words:
             tail = words[-300:]
-            kind, when, text = ('ask' if ASK.search(tail) else None), stamp(d), tail
+            kind, when, text = ('ask' if ASK.search(NOT_ASK.sub('', tail)) else None), stamp(d), tail
     return name, cwd, kind, when, text
 
 
