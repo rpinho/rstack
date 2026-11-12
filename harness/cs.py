@@ -237,7 +237,34 @@ def csrf():
     return ''
 
 
-def call(path, data=None, form=False):
+# 11-11 (planets, on the m5): ask and reply hung three times, once for 12 h, with no frame created, and an
+# immediate retry went through in seconds. urllib's default is no timeout, so a daemon that accepts the
+# connection and never answers held the caller forever. Every request now has one.
+REQUEST_TIMEOUT = float(os.environ.get('CS_REQUEST_TIMEOUT', '60'))
+GET_RETRIES = 2
+
+
+class CSTimeout(Exception):
+    """A Claude Science request got no answer within CS_REQUEST_TIMEOUT."""
+
+
+def _open(req, timeout):
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            return r.status, r.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()
+    except (socket.timeout, TimeoutError) as e:
+        raise CSTimeout(str(e) or 'timed out')
+    except urllib.error.URLError as e:
+        if isinstance(e.reason, (socket.timeout, TimeoutError)):
+            raise CSTimeout(str(e.reason) or 'timed out')
+        raise
+
+
+def call(path, data=None, form=False, timeout=None, retries=None):
+    """(status, body). A GET that times out is retried (it changes nothing); a POST is not, here:
+    whether resending is safe is the caller's call (see post)."""
     headers = {}
     body = None
     if data is not None:
@@ -249,24 +276,24 @@ def call(path, data=None, form=False):
             headers['Content-Type'] = 'application/json'
         headers['Origin'] = origin()
         headers['x-operon-csrf'] = csrf()
-    req = urllib.request.Request(base() + path, data=body, headers=headers, method='POST' if body else 'GET')
-    try:
-        with opener.open(req) as r:
-            out = r.read().decode(); save()
-            return r.status, out
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode()
+    timeout = REQUEST_TIMEOUT if timeout is None else timeout
+    tries = 1 + (GET_RETRIES if body is None else 0) if retries is None else 1 + retries
+    for attempt in range(tries):
+        req = urllib.request.Request(base() + path, data=body, headers=headers, method='POST' if body else 'GET')
+        try:
+            status, out = _open(req, timeout)
+            save()
+            return status, out
+        except CSTimeout:
+            if attempt + 1 == tries:
+                raise
 
 
 def patch(path, data):
     body = json.dumps(data).encode()
     req = urllib.request.Request(base() + path, data=body, method='PATCH', headers={
         'Content-Type': 'application/json', 'Origin': origin(), 'x-operon-csrf': csrf()})
-    try:
-        with opener.open(req) as r:
-            return r.status, r.read().decode()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode()
+    return _open(req, REQUEST_TIMEOUT)
 
 
 def remote_login_url():
@@ -290,7 +317,8 @@ def login():
     if CS_HOST:
         url = remote_login_url()
     else:
-        url = re.search(r'http\S+', subprocess.run([CS_BIN, 'url'], capture_output=True, text=True).stdout + '').group(0)
+        url = re.search(r'http\S+', subprocess.run([CS_BIN, 'url'], capture_output=True, text=True,
+                                                   timeout=60).stdout + '').group(0)
     nonce = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)['nonce'][0]
     call(urllib.parse.urlparse(url).path + '?' + urllib.parse.urlparse(url).query)  # sets operon_csrf
     code, _ = call('/api/auth/nonce', {'nonce': nonce, 'dest': '/'}, form=True)
@@ -307,7 +335,19 @@ def ensure():
 
 
 def post(data):
-    code, out = call('/api/request', data)
+    """Start an ask or a reply. A POST that times out is sent once more: on 11-11 every hung one had
+    created no frame and the retry went through at once. If both did land, `cs.py list` shows two
+    and one can be cancelled; that costs less than a lane stuck for hours."""
+    try:
+        code, out = call('/api/request', data)
+    except CSTimeout:
+        print('cs.py: no answer from Claude Science within {:.0f} s; sending once more (if two frames '
+              'appear, cancel one)'.format(REQUEST_TIMEOUT), file=sys.stderr)
+        try:
+            code, out = call('/api/request', data)
+        except CSTimeout:
+            sys.exit('cs.py: Claude Science did not answer twice ({:.0f} s each); is the daemon up? '
+                     'Try `cs.py list` and resend.'.format(REQUEST_TIMEOUT))
     if code == 403 and 'csrf' in out:
         call('/csrf'); code, out = call('/api/request', data)
     if code != 200:
