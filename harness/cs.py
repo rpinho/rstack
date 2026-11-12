@@ -344,19 +344,39 @@ def _frames(pid):
     return {r['id']: r for r in rows if isinstance(r, dict) and r.get('id')} if isinstance(rows, list) else None
 
 
+def _says(fid, text, skip=0):
+    """True when a user message in frame fid (after the first `skip`) carries `text`; None if unreadable."""
+    want = ' '.join(str(text).split())[:200]
+    try:
+        msgs = messages(fid)[skip:]
+    except (CSTimeout, ValueError, OSError, KeyError):
+        return None
+    for m in msgs:
+        if m.get('role') == 'user' and want and want in ' '.join(str(m.get('content')).split()):
+            return True
+    return False
+
+
 def _landed(data, before, after):
-    """The frame a timed-out request created, if it did. An ask makes a new root frame. A reply joins
-    its conversation, whose row (the listing shows root frames) gains messages: checked on the live
-    m5 daemon 11-12, every row of a 9-conversation project was a root."""
-    root = data.get('root_frame_id')
+    """The frame a timed-out request created, or None when it did not land, or 'unknown' when that
+    cannot be told. An ask makes a new root frame; a reply raises its conversation's message count (the
+    live m5 listing shows root frames only, 11-12). Another session can post to the same project or
+    conversation meanwhile (harness review of 5b04ec8), so a candidate counts only if one of its new user
+    messages carries this request's text."""
+    root, text = data.get('root_frame_id'), (data.get('input_data') or {}).get('request', '')
     if root:
         was, now = before.get(root) or {}, after.get(root) or {}
-        if (now.get('message_count') or 0) > (was.get('message_count') or 0):
-            return dict(now, id=root)
-        new = [r for fid, r in after.items() if fid not in before and r.get('root_frame_id') == root]
+        old = was.get('message_count') or 0
+        candidates = [(dict(now, id=root), old)] if (now.get('message_count') or 0) > old else []
     else:
-        new = [r for fid, r in after.items() if fid not in before and not r.get('parent_frame_id')]
-    return max(new, key=lambda r: str(r.get('created_at'))) if new else None
+        candidates = [(r, 0) for fid, r in after.items() if fid not in before and not r.get('parent_frame_id')]
+    for frame_row, skip in candidates:
+        said = _says(frame_row['id'], text, skip)
+        if said is None:
+            return 'unknown'
+        if said:
+            return frame_row
+    return None
 
 
 def post(data, sleep=time.sleep):
@@ -376,6 +396,9 @@ def post(data, sleep=time.sleep):
             sys.exit('cs.py: Claude Science did not answer within {:.0f} s, and its frames cannot be read to '
                      'tell whether the request landed; not resending blind. Check `cs.py list`.'.format(REQUEST_TIMEOUT))
         hit = _landed(data, before, after)
+        if hit == 'unknown':
+            sys.exit('cs.py: the request timed out and a new frame appeared whose messages cannot be read, so '
+                     'it is not known whether it is this one; not resending blind. Check `cs.py list`.')
         if hit:
             print('cs.py: the request timed out but frame {} was created; not resending'.format(hit['id']),
                   file=sys.stderr)

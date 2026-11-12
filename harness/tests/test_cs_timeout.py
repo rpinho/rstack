@@ -54,7 +54,13 @@ def frames(*rows, messages=None):
                        for n, (i, root, parent) in enumerate(rows)])
 
 
-ASK = {'project_id': 'p1', 'input_data': {'request': 'x'}}
+ASK = {'project_id': 'p1', 'input_data': {'request': 'Prove the C47 lower bound'}}
+
+
+def said(*texts):
+    """A frame's messages: user turns carrying these texts."""
+    return json.dumps({'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': t}]} for t in texts],
+                       'total': len(texts)})
 OLD = ('F1', 'F1', None)
 
 
@@ -85,7 +91,8 @@ def test_an_ask_that_hung_without_a_frame_is_sent_once_more(daemon, capsys):
 
 
 def test_an_ask_that_timed_out_but_landed_is_not_sent_again(daemon, capsys):
-    seen = daemon({'/api/frames?': [frames(OLD), frames(OLD, ('F2', 'F2', None))], '/api/request': [None]})
+    seen = daemon({'/api/frames?': [frames(OLD), frames(OLD, ('F2', 'F2', None))], '/api/request': [None],
+                   '/api/frames/F2/messages': [said('Prove the C47 lower bound')]})
     assert cs.post(ASK, sleep=lambda s: None) == {'root_frame_id': 'F2', 'frame_id': 'F2', 'status': 'running'}
     assert sum(1 for s in seen if s[0] == 'POST') == 1
     assert 'frame F2 was created; not resending' in capsys.readouterr().err
@@ -94,18 +101,30 @@ def test_an_ask_that_timed_out_but_landed_is_not_sent_again(daemon, capsys):
 def test_a_reply_that_landed_shows_as_more_messages_in_its_conversation(daemon, capsys):
     """The live listing shows root frames only (11-12), so a landed reply is a message-count rise."""
     reply = dict(ASK, root_frame_id='F1')
-    seen = daemon({'/api/frames?': [frames(OLD), frames(OLD, messages={'F1': 3})], '/api/request': [None]})
+    seen = daemon({'/api/frames?': [frames(OLD), frames(OLD, messages={'F1': 3})], '/api/request': [None],
+                   '/api/frames/F1/messages': [said('earlier', 'answer', 'Prove the C47 lower bound')]})
     assert cs.post(reply, sleep=lambda s: None)['frame_id'] == 'F1'
     assert sum(1 for s in seen if s[0] == 'POST') == 1
     reply_seen = daemon({'/api/frames?': [frames(OLD), frames(OLD)], '/api/request': [None, '{"status": "ok"}']})
     assert cs.post(reply, sleep=lambda s: None) == {'status': 'ok'}       # no new message: resent once
 
 
-def test_a_reply_that_landed_is_found_in_its_own_conversation(daemon):
-    reply = dict(ASK, root_frame_id='F1')
-    daemon({'/api/frames?': [frames(OLD), frames(OLD, ('X9', 'OTHER', None), ('R2', 'F1', 'F1'))],
-            '/api/request': [None]})
-    assert cs.post(reply, sleep=lambda s: None)['frame_id'] == 'R2'
+def test_another_sessions_frame_is_not_taken_for_ours(daemon):
+    """harness review of 5b04ec8: another session posting to the same project meanwhile must not look
+    like our request landing, or ours is dropped and the caller gets someone else's frame."""
+    seen = daemon({'/api/frames?': [frames(OLD), frames(OLD, ('X9', 'X9', None))],
+                   '/api/frames/X9/messages': [said('someone else asked this')],
+                   '/api/request': [None, '{"root_frame_id": "F3"}']})
+    assert cs.post(ASK, sleep=lambda s: None) == {'root_frame_id': 'F3'}
+    assert sum(1 for s in seen if s[0] == 'POST') == 2
+
+
+def test_a_new_frame_whose_messages_cannot_be_read_stops(daemon):
+    seen = daemon({'/api/frames?': [frames(OLD), frames(OLD, ('F2', 'F2', None))],
+                   '/api/frames/F2/messages': [None, None, None], '/api/request': [None]})
+    with pytest.raises(SystemExit) as e:
+        cs.post(ASK, sleep=lambda s: None)
+    assert 'not resending blind' in str(e.value) and sum(1 for s in seen if s[0] == 'POST') == 1
 
 
 def test_a_timeout_with_unreadable_frames_stops_instead_of_resending_blind(daemon):
