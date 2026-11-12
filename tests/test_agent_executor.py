@@ -161,3 +161,16 @@ def test_a_headless_claude_job_is_marked_unattended(tmp_path):
         '--effort', 'low', '--directory', str(tmp_path), '--output', str(tmp_path/'last')],
         capture_output=True, timeout=10)
     assert json.loads((tmp_path/'last').read_text())['result'] == '1'
+
+
+def test_a_job_runs_only_where_the_osascript_shim_comes_first(tmp_path):
+    """11-12: a Codex job deleted through Finder and the owner heard the trash sound. The shim in
+    ~/.local/bin makes that silent, but only when it is the osascript the job finds."""
+    from agent_executor import shim_first
+    home = tmp_path / 'home'
+    shim = home / '.local/bin/osascript'
+    assert shim_first(home, lambda name: '/usr/bin/osascript') is None          # no shim installed: no rule
+    shim.parent.mkdir(parents=True)
+    shim.write_text('#!/bin/sh\n')
+    assert shim_first(home, lambda name: str(shim)) is None
+    assert '/usr/bin/osascript' in shim_first(home, lambda name: '/usr/bin/osascript')

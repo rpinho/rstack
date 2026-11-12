@@ -1,0 +1,40 @@
+#!/usr/bin/python3 -I
+"""osascript shim: a Finder delete goes to the Trash silently; everything else runs unchanged.
+
+11-12 (owner: "Finder still making the noise"). Finder deletes play the trash sound once per item.
+
+Agents (Codex jobs especially) kept writing
+`osascript -e 'tell application "Finder" to delete POSIX file "..."'` despite a written rule, so
+this sits first on PATH (~/.local/bin; tools/launch.sh refuses a job where it would not be first) and turns a Finder delete into /usr/bin/trash: same Trash,
+same Put Back, no sound. Anything else, or a delete whose paths it cannot read, goes to the real
+/usr/bin/osascript unchanged.
+"""
+import os, re, subprocess, sys
+
+REAL = os.environ.get('OSASCRIPT_REAL', '/usr/bin/osascript')
+TRASH = os.environ.get('OSASCRIPT_TRASH', '/usr/bin/trash')
+args = sys.argv[1:]
+
+scripts, rest, i = [], [], 0
+while i < len(args):
+    a = args[i]
+    if a == '-e' and i + 1 < len(args):
+        scripts.append(args[i + 1]); i += 2; continue
+    if a.startswith('-') and not scripts:
+        os.execv(REAL, [REAL] + args)  # flags we don't model: pass through
+    rest.append(a); i += 1
+
+text = '\n'.join(scripts)
+if not (re.search(r'application\s+"Finder"', text) and re.search(r'\bdelete\b', text)):
+    os.execv(REAL, [REAL] + args)
+
+paths = re.findall(r'POSIX file\s+"((?:[^"\\]|\\.)*)"', text)
+paths = [p.replace('\\"', '"').replace('\\\\', '\\') for p in paths]
+if 'argv' in text:
+    paths += rest
+paths = [p for p in paths if os.path.lexists(p)]
+if not paths:
+    os.execv(REAL, [REAL] + args)
+
+r = subprocess.run([TRASH] + paths)
+sys.exit(r.returncode)

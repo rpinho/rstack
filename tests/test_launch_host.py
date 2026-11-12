@@ -545,3 +545,20 @@ def test_a_lane_on_hold_starts_no_job(tmp_path):
     assert proc.returncode == 78
     assert 'lane fixture is on hold: HOLD by lane-yield' in proc.stderr
     assert not (jobs / 'fixture-job.log').exists() or 'attempt' not in (jobs / 'fixture-job.log').read_text()
+
+
+def test_the_osascript_shim_is_first_even_when_local_bin_was_already_on_path(tmp_path):
+    """11-12: a math Codex job deleted through Finder (the owner heard it). ~/.local/bin was already on
+    PATH, behind /usr/bin, and the old line only added it when missing, so the shim never ran."""
+    text = LAUNCH.read_text()
+    start = text.index('for d in /opt/homebrew/bin $HOME/.local/bin')
+    block = text[start:text.index('\nfi\n', start) + 4]
+    home = tmp_path / 'home'
+    (home / '.local/bin').mkdir(parents=True)
+    shim = home / '.local/bin/osascript'
+    shim.write_text('#!/bin/sh\n')
+    shim.chmod(0o755)
+    env = dict(os.environ, HOME=str(home), PATH='/usr/bin:/bin:{}/.local/bin'.format(home))
+    r = subprocess.run(['zsh', '-f', '-c', block + '\nwhence -p osascript'], env=env, capture_output=True,
+                       text=True, timeout=30)
+    assert r.returncode == 0 and r.stdout.strip() == str(shim), r.stdout + r.stderr

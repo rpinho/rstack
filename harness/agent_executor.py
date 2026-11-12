@@ -74,6 +74,21 @@ def command(backend, executable, model, effort, directory, output, budget='1.00'
     raise ValueError('AGENT_BACKEND must be codex or claude')
 
 
+def shim_first(home=None, which=None):
+    """None when ~/.local/bin/osascript is absent or is what `osascript` resolves to; else the reason.
+    11-12: a Codex job deleted through Finder and the owner heard it; the shim makes that a silent trash,
+    and it only works when it is the osascript the job finds."""
+    import shutil
+    shim = Path(home or Path.home()) / '.local/bin/osascript'
+    if not shim.exists():
+        return None
+    found = (which or shutil.which)('osascript')
+    if found and Path(found).resolve() == shim.resolve():
+        return None
+    return ('osascript resolves to {}, not the shim {}; a Finder delete in this job would play the trash '
+            'sound. Put ~/.local/bin first on PATH.'.format(found, shim))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--backend', choices=('codex', 'claude'), required=True)
@@ -90,6 +105,10 @@ def main(argv=None):
                    help='wall-clock cap; 0 means none. This CLI has no --max-turns, so a run '
                         'is bounded by spend and by the clock.')
     a = p.parse_args(argv)
+    why = shim_first()
+    if why:
+        print('agent_executor refused: ' + why, file=sys.stderr)
+        return 78
     cmd = command(a.backend, a.executable, a.model, a.effort, a.directory, a.output, a.budget,
                   a.allowed_tools)
     if a.backend == 'codex':

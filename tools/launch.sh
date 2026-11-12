@@ -4,7 +4,14 @@
 setopt pipefail
 # 11-09 (planets on the m5): a non-login shell there has only the system PATH, the detached job inherits
 # it, and the executor (codex in /opt/homebrew/bin) was "command not found" (exit 127).
-for d in /opt/homebrew/bin $HOME/.local/bin; do [[ -d $d && :$PATH: != *:$d:* ]] && PATH=$d:$PATH; done; export PATH
+# 11-12: moved to the FRONT, not just added when missing. ~/.local/bin holds the osascript shim that
+# turns a Finder delete into a silent /usr/bin/trash; a math Codex job deleted through Finder (the
+# owner heard it) because a PATH that already had ~/.local/bin behind /usr/bin was left alone.
+for d in /opt/homebrew/bin $HOME/.local/bin; do [[ -d $d ]] && path=($d ${path:#$d}); done; export PATH
+if [[ -x $HOME/.local/bin/osascript && $(whence -p osascript) != $HOME/.local/bin/osascript ]]; then
+  print -u2 -- "launch.sh refused: osascript resolves to $(whence -p osascript), not the shim in ~/.local/bin, so a Finder delete in this job would play the trash sound. Put ~/.local/bin first on PATH."
+  exit 78
+fi
 (( $# >= 2 )) || { print -u2 -- 'usage: launch.sh JOB WORKDIR'; exit 2; }
 self=${0:A}
 job=$1; dir=$2; shift 2
@@ -250,7 +257,9 @@ for (( i = start; i <= 5; i++ )); do
     if [[ $remote_marks == /* ]]; then rmarks=${(q)remote_marks}
     else rmarks='$HOME/'${(q)remote_marks}
     fi
+    # The host's ssh PATH is the system one; ~/.local/bin goes first there too (the osascript shim).
     remote="cd ${(q)dir} 2>/dev/null || { echo ${(q)missing} >&2; exit 2; }
+export PATH=\$HOME/.local/bin:/opt/homebrew/bin:\$PATH
 mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
 mkdir -p $rmarks 2>/dev/null || true
 echo \$\$ > $rmarks/${(q)${job:t}}.pid 2>/dev/null || true
