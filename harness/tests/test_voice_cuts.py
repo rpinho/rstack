@@ -116,3 +116,25 @@ def test_rh_runs_it(banks, tmp_path):
     draft.write_text('thanks, that makes sense')
     (tmp_path / 'r.txt.cuts').write_text('v2:3')
     assert rh.main(['voice-cuts', str(draft)]) == 0
+
+
+def test_a_line_he_dictated_or_approved_is_added_and_can_be_cut_from(tmp_path):
+    """11-12: the gate made general drop a line Ricardo had already approved in chat. His own words
+    go into a bank (append-only, with a source) and a draft cut from that line passes."""
+    spec = tmp_path / 'banks.json'
+    spec.write_text(json.dumps({'dicten': {'path': 'dict_en.jsonl', 'lang': 'en'}}))
+    banks = voice_cuts.load_banks(spec)
+    line = 'We moved to Florida for the kids and I still work on the research side'
+    assert voice_cuts.add_line('dicten', line, 'chat with general 2026-11-12', banks) == 'dicten:1'
+    assert voice_cuts.add_line('dicten', line, 'chat again 2026-11-12', banks) == 'dicten:1'   # no duplicate
+    rows = [json.loads(l) for l in (tmp_path / 'dict_en.jsonl').read_text().splitlines()]
+    assert len(rows) == 1 and rows[0]['source'] == 'chat with general 2026-11-12'
+    for bad in (('nope', line, 'chat 2026-11-12'), ('dicten', line, 'chat'),
+                ('dicten', 'Estamos na Florida por causa dos miudos e da escola', 'chat 2026-11-12')):
+        with pytest.raises(ValueError):
+            voice_cuts.add_line(*bad, banks)
+    draft = tmp_path / 'reply.txt'
+    draft.write_text(line + '\n')
+    (tmp_path / 'reply.txt.cuts').write_text('dicten:1\n')
+    fails, _ = voice_cuts.check(draft.read_text(), voice_cuts.cuts_for(draft), '', banks)
+    assert fails == []

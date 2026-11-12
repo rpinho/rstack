@@ -212,7 +212,57 @@ def passed(text, within=dt.timedelta(hours=24), state=None, clock=None):
     return False
 
 
+def add_line(bank, text, source, banks=None, clock=None):
+    """Append a line the author dictated or approved, verbatim, to a bank. Returns BANK:LINE.
+
+    11-12: the gate made general drop a line Ricardo had already approved in chat ("You already had the
+    line before. I had already approved"). Blocking free composition is the point; blocking his own words
+    is not, so what he dictates or approves becomes a bank line that drafts can cut from. Append-only,
+    and the source (where and when he said it) is required, so a bank line always traces to him."""
+    banks = load_banks() if banks is None else banks
+    if bank not in banks:
+        raise ValueError('no bank {} (banks: {})'.format(bank, ', '.join(sorted(banks)) or 'none configured'))
+    text, source = ' '.join(str(text).split()), ' '.join(str(source).split())
+    if not text:
+        raise ValueError('the line is empty')
+    if len(source.split()) < 2:
+        raise ValueError('--source must say where and when he said it, e.g. "chat with general 2026-11-12"')
+    path, lang = banks[bank]
+    if language(text) != lang:
+        raise ValueError('the line reads as {} but bank {} is {}'.format(language(text), bank, lang))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.read_text().split('\n') if path.exists() else []
+    for n, line in enumerate(existing, 1):
+        try:
+            if ' '.join(json.loads(line).get('text', '').split()) == text:
+                return '{}:{}'.format(bank, n)          # already there: same citation, nothing appended
+        except ValueError:
+            continue
+    rows = [l for l in existing if l.strip()]
+    row = dict(text=text, source=source,
+               added_utc=(clock or dt.datetime.now(dt.timezone.utc)).strftime('%Y-%m-%dT%H:%M:%SZ'))
+    with open(path, 'a') as fh:
+        if existing and existing[-1].strip():
+            fh.write('\n')
+        fh.write(json.dumps(row, ensure_ascii=False) + '\n')
+    return '{}:{}'.format(bank, len(rows) + 1)
+
+
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ['add']:
+        ap = argparse.ArgumentParser(prog='voice-cuts add', description=add_line.__doc__)
+        ap.add_argument('text', help='the line, exactly as he said or approved it')
+        ap.add_argument('--bank', required=True, help='e.g. dicten or dictpt')
+        ap.add_argument('--source', required=True, help='where and when he said it')
+        ap.add_argument('--banks', type=Path, help='banks JSON (default: $RH_VOICE_BANKS)')
+        a = ap.parse_args(argv[1:])
+        try:
+            print(add_line(a.bank, a.text, a.source, load_banks(a.banks)))
+        except ValueError as exc:
+            print('FAIL: ' + str(exc))
+            return 1
+        return 0
     ap = argparse.ArgumentParser(prog='rh voice-cuts', description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('draft', type=Path)
