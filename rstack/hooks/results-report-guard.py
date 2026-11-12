@@ -26,7 +26,7 @@ def last_text(path):
         return ''
     with p.open('rb') as f:
         f.seek(max(0, p.stat().st_size - 400_000))
-        lines = f.read().decode('utf-8', 'replace').splitlines()
+        lines = f.read().decode('utf-8', 'replace').split('\n')   # not splitlines(): U+2028 inside JSON splits a record
     for line in reversed(lines):
         try:
             rec = json.loads(line)

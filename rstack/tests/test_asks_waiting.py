@@ -83,3 +83,20 @@ def test_a_report_saying_nothing_needs_you_is_not_a_question(tmp_path, monkeypat
     transcript(p, 'asks', [say('Round done. Nothing else needs you, but should I start the next one?', 3600, cwd='/src/b')])
     rows = aw.scan_sessions(p, time.time())
     assert [r.split('\t')[1] for r in rows] == ['b']
+
+
+def test_a_line_separator_inside_a_record_does_not_hide_its_tool_result(tmp_path, monkeypatch):
+    """11-12: the digest session read as stuck on a prompt for hours. Its transcript held a U+2028
+    inside a tool result; splitlines() cut that record in two, the result was dropped, and the tool
+    call looked unanswered. Transcripts are split on newlines only."""
+    monkeypatch.setenv('TMUX_BIN', str(tmp_path / 'no-tmux'))
+    p = tmp_path / 'projects'
+    use = dict(type='assistant', timestamp=stamp(7200), cwd='/src/digest', message=dict(role='assistant', content=[
+        dict(type='tool_use', id='t1', name='Bash', input={'command': 'ls'})]))
+    result = dict(type='user', timestamp=stamp(7100), cwd='/src/digest', message=dict(role='user', content=[
+        dict(type='tool_result', tool_use_id='t1', content='line one line two')]))
+    d = p / '-src-digest'
+    d.mkdir(parents=True)
+    (d / 's.jsonl').write_text(json.dumps(use) + '\n' + json.dumps(result, ensure_ascii=False) + '\n'
+                               + json.dumps(say('Done; event-watch armed.', 7000, cwd='/src/digest')) + '\n')
+    assert aw.scan_sessions(p, time.time()) == []

@@ -111,3 +111,11 @@ def test_the_nudge_names_the_newest_unrun_digest_idea():
     row = {'digest': {'newest_unrun': {'id': 'abc123', 'claim': 'Run one round as teams of ten agents.'}}}
     assert 'abc123 (Run one round as teams of ten agents.)' in nudge.pickup(row)
     assert nudge.pickup({'digest': None}) == '' and nudge.pickup({}) == '' and nudge.pickup(None) == ''
+
+
+def test_a_line_separator_inside_the_last_turn_does_not_hide_it(tmp_path):
+    import json
+    f = tmp_path / 't.jsonl'
+    turn = dict(type='assistant', timestamp='2026-11-12T10:00:00Z', message={'role': 'assistant', 'content': 'a b'})
+    f.write_text(json.dumps(turn, ensure_ascii=False) + '\n')
+    assert nudge.last_turn(f) is not None

@@ -98,7 +98,7 @@ def last_turn(f, chunk=1 << 20):
     size = f.stat().st_size
     window = chunk
     while True:
-        lines = tail_text(f, window).splitlines()
+        lines = tail_text(f, window).split('\n')   # not splitlines(): U+2028 inside JSON splits a record
         if window < size:
             lines = lines[1:]      # the first line of a partial window is cut
         for line in reversed(lines):

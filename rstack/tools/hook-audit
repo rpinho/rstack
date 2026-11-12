@@ -77,7 +77,10 @@ def decision(run):
 
 
 def audit(found, project=None, timeout=20):
-    env = dict(os.environ)
+    import tempfile
+    # Probes are not real calls: their state (the ask ledger, poll counters) goes to a throwaway
+    # directory. 11-12: malformed probe events showed up in the live hook-asks ledger as denies.
+    env = dict(os.environ, RSTACK_STATE_DIR=tempfile.mkdtemp(prefix='hook-audit-'))
     if project:
         env['CLAUDE_PROJECT_DIR'] = str(Path(project).expanduser())
     rows = []

@@ -281,3 +281,12 @@ def test_stale_allowlist_entries_fail(tmp_path, hooks):
     assert any('gone.py: names no registered hook' in d for d in stale)
     assert any('old.sh: expired 2026-11-01' in d for d in stale)
     assert any('wrapped.py: the hook is wrapped now' in d for d in stale)
+
+
+def test_audit_probes_never_write_the_live_state(tmp_path, monkeypatch):
+    """11-12: hook-audit's malformed probe events appeared in the live hook-asks ledger as denies."""
+    live = tmp_path / 'live-state'
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(live))
+    hook = probe(tmp_path, 'def body(event):\n    raise RuntimeError("x")', triage='lambda raw, e: True', on_error='ask')
+    audit.audit([dict(command='python3 {}'.format(hook), matcher='Bash')])
+    assert not (live / 'hook-asks.jsonl').exists()

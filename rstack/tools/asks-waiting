@@ -57,7 +57,9 @@ def last_state(path):
     """(name, cwd, kind, when, text): kind is 'ask', 'tool' or None for the session's last real turn."""
     with path.open('rb') as fh:
         fh.seek(max(0, path.stat().st_size - 1_500_000))
-        lines = fh.read().decode('utf-8', 'replace').splitlines()
+        # split('\n'), not splitlines(): a U+2028 inside a JSON string split one record in two, and the
+        # half holding a tool_result was dropped, so the digest session read as stuck on a prompt (11-12).
+        lines = fh.read().decode('utf-8', 'replace').split('\n')
     name, cwd, kind, when, text, pending = None, None, None, None, '', {}
     for line in lines:
         try:
