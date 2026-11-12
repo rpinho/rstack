@@ -6,6 +6,8 @@ This is a **scaffold**, not an app. No database, no account. It ships empty. Wha
 
 > The design follows the "LLM wiki" pattern (Karpathy, 2026): **the human curates sources and directs attention; the agent writes and maintains the wiki.** You don't type into a notes app. You hand the agent a podcast, a thread, a decision, and it compiles it into the knowledge graph.
 
+What it turned out to be for, a year in: [RETRO.md](RETRO.md).
+
 ---
 
 ## Why this works (the load-bearing ideas)
