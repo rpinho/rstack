@@ -119,3 +119,33 @@ def test_a_line_separator_inside_the_last_turn_does_not_hide_it(tmp_path):
     turn = dict(type='assistant', timestamp='2026-11-12T10:00:00Z', message={'role': 'assistant', 'content': 'a b'})
     f.write_text(json.dumps(turn, ensure_ascii=False) + '\n')
     assert nudge.last_turn(f) is not None
+
+
+def test_a_result_newer_than_the_last_turn_wakes_a_lane_even_with_its_watcher_running():
+    """11-12: math's review finished at 16:18Z and the lane sat until 21:05Z. Its watcher shell was
+    running (watching the wrong files), and a running shell made the pane look busy, so it was never
+    nudged. A result newer than the last turn overrides that, once per file."""
+    why = nudge.decide(20, True, 'OK', NOW - 600, NOW, unread='/jobs/math_rev/astra.md')
+    assert why and 'astra.md' in why
+    assert nudge.decide(20, True, 'OK', NOW - 600, NOW, unread='/jobs/math_rev/astra.md',
+                        last_output='/jobs/math_rev/astra.md') is None          # already told about this one
+    assert nudge.decide(20, True, 'HELD', 0, NOW, unread='/jobs/x/astra.md') is None   # a paused lane stays paused
+    assert nudge.decide(20, True, 'OK', 0, NOW) is None                        # no result: a watcher is busy
+
+
+def test_unread_output_is_the_newest_settled_result_after_the_last_turn(tmp_path):
+    import os
+    now = 1_000_000.0
+    def make(name, age):
+        f = tmp_path / name
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text('x')
+        os.utime(f, (now - age, now - age))
+        return str(f)
+    make('math_a/astra.md', 7200)            # before the last turn: already seen
+    want = make('math_b/astra.md', 3000)     # after the last turn, settled
+    make('math_c/astra.md', 60)              # still being written
+    make('friends_d/astra.md', 3000)         # another lane
+    globs = [str(tmp_path / '{lane}_*/astra.md')]
+    assert nudge.unread_output(globs, 'math', last_turn=now - 5000, now=now) == want
+    assert nudge.unread_output(globs, 'math', last_turn=now - 100, now=now) is None

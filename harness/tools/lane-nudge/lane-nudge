@@ -16,6 +16,7 @@ and names in --skip, are never nudged. --dry prints decisions and types nothing.
 lane sessions; each scans its own tmux (pass --tmux when tmux is not on the scheduler's PATH).
 """
 import argparse
+import glob
 import json
 import os
 import re
@@ -34,6 +35,11 @@ MSG = ("Harness check (lane-nudge): lane {lane} is {why}, and this session has b
        "conductor inbox and keep working on something else.")
 
 
+RESULT_MSG = ("Harness check (lane-nudge): a job result for lane {lane} landed after your last turn and nothing woke "
+              "you: {path}. Read it and take the next step now. Then check why your watcher missed it (the file it "
+              "watched, or a missing rule) and fix that rule.")
+
+
 def pickup(row):
     """11-11: the digest -> lane loop. Name the newest digest idea no round has picked up, so the
     next round starts there (rh lanes cadence reports it as digest.newest_unrun)."""
@@ -45,13 +51,35 @@ def pickup(row):
             'shows in rh lanes cadence.'.format(idea['id'], idea.get('claim', '')[:140]))
 
 
-def decide(idle_min, running, status, last_nudge, now, idle_limit=60, reask=7200):
-    """Return the reason to nudge, or None. Pure, so it can be tested without tmux."""
+def decide(idle_min, running, status, last_nudge, now, idle_limit=60, reask=7200, unread=None, last_output=None):
+    """Return the reason to nudge, or None. Pure, so it can be tested without tmux.
+
+    unread: a job output newer than the session's last real turn (see unread_output). It overrides
+    `running` and the idle limit: 11-12, math waited on its own watcher shell for 5.5 h after its review
+    had finished, and that shell is exactly what made the pane look busy. One nudge per output file."""
     if status in ('EXEMPT', 'UNCONFIGURED', 'HELD'):    # HELD: lanes/<lane>/HOLD, paused by its owner
         return None
+    if unread and unread != last_output:
+        return 'a job result landed after your last turn and nothing woke you: {}'.format(unread)
     if running or idle_min < idle_limit or now - last_nudge < reask:
         return None
     return f'{status} on cadence' if status in BEHIND else 'quiet'
+
+
+def unread_output(globs, lane, last_turn, now, settle=15 * 60):
+    """The newest job output (from the --outputs globs, {lane} filled in) written after last_turn and at
+    least `settle` seconds ago, or None. Finished-job files only (a .last.md, a review's final text, a
+    watch event): a live log changes all the time and would always look newer."""
+    newest, best = None, None
+    for pattern in globs:
+        for f in glob.glob(os.path.expanduser(pattern.replace('{lane}', lane))):
+            try:
+                m = os.path.getmtime(f)
+            except OSError:
+                continue
+            if last_turn < m <= now - settle and (best is None or m > best):
+                newest, best = f, m
+    return newest
 
 
 def panes(tmux, prefix):
@@ -180,9 +208,13 @@ def main():
     ap.add_argument('--alert', default=os.environ.get('LANE_NUDGE_ALERT', ''),
                     help='command run with one message argument when the cadence read fails (and on recovery)')
     ap.add_argument('--log', default=os.environ.get('LANE_NUDGE_LOG', ''), help='append each nudge to this file')
+    ap.add_argument('--outputs', default=os.environ.get('LANE_NUDGE_OUTPUTS', ''),
+                    help='comma-separated globs of finished-job outputs, {lane} for the lane name; one newer than '
+                         "the session's last turn nudges it even while a watcher shell runs")
     ap.add_argument('--dry', action='store_true')
     a = ap.parse_args()
     skip = {s for s in a.skip.split(',') if s}
+    outputs = [g.strip() for g in a.outputs.split(',') if g.strip()]
     state = Path(a.state)
     state.mkdir(parents=True, exist_ok=True)
     cad, error = cadence(a.rh)
@@ -199,9 +231,13 @@ def main():
         tail = subprocess.run([a.tmux, 'capture-pane', '-p', '-t', pane, '-S', '-15'],
                               capture_output=True, text=True).stdout
         sf = state / f'{lane}.json'
-        last = json.loads(sf.read_text()).get('at', 0) if sf.exists() else 0
+        saved = json.loads(sf.read_text()) if sf.exists() else {}
+        last = saved.get('at', 0)
         c = cad.get(lane, {})
-        why = decide(idle, bool(RUNNING.search(tail)), c.get('status'), last, time.time(), a.idle_min, a.reask)
+        now = time.time()
+        unread = unread_output(outputs, lane, now - idle * 60, now) if outputs else None
+        why = decide(idle, bool(RUNNING.search(tail)), c.get('status'), last, now, a.idle_min, a.reask,
+                     unread, saved.get('output'))
         if not why:
             continue
         if c.get('status') in BEHIND and c.get('deliverable'):
@@ -210,14 +246,15 @@ def main():
             why += '; the last sweep was REFUSED, not idle: ' + c['last_sweep_refused'] + '. Fix that first'
         if error and why == 'quiet':
             why = 'quiet (cadence unknown: the read failed)'
-        text = MSG.format(lane=lane, why=why, idle=idle) + pickup(c)
+        text = (RESULT_MSG.format(lane=lane, path=unread) if unread and why.startswith('a job result')
+                else MSG.format(lane=lane, why=why, idle=idle) + pickup(c))
         say(a.log, f'{a.prefix}{lane}: nudge ({why}; idle {idle} min)', a.dry)
         if a.dry:
             continue
         subprocess.run([a.tmux, 'send-keys', '-t', pane, '-l', '--', text])
         time.sleep(1)
         subprocess.run([a.tmux, 'send-keys', '-t', pane, 'Enter'])
-        sf.write_text(json.dumps({'at': time.time(), 'why': why}))
+        sf.write_text(json.dumps({'at': time.time(), 'why': why, 'output': unread or saved.get('output')}))
 
 
 if __name__ == '__main__':
