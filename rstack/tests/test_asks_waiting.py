@@ -60,3 +60,16 @@ def test_the_hook_prints_only_in_the_conductor(tmp_path, monkeypatch):
                                      input=json.dumps({'cwd': cwd}), capture_output=True, text=True).stdout
     assert 'm5: 2.0h | planets | question' in run('/home/u/conductor')
     assert run('/home/u/lane') == ''
+
+
+def test_prs_are_scanned_at_most_every_half_hour_and_a_failure_keeps_the_last_list(tmp_path, monkeypatch):
+    """11-12: a PR search every 5 minutes hit GitHub's rate limit on the shared token."""
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
+    calls = []
+    good = lambda now: calls.append(now) or ['9h\tteorth/x\t2 open PR(s) idle 7-9h\toldest #1']
+    bad = lambda now: calls.append(now) or ['?\tgh\tPR scan failed\tHTTP 403: API rate limit exceeded']
+    t = 1_000_000.0
+    assert aw.cached_prs(t, good)[0].startswith('9h')
+    assert aw.cached_prs(t + 600, bad)[0].startswith('9h') and len(calls) == 1        # cached: no new search
+    stale = aw.cached_prs(t + 3600, bad)
+    assert len(calls) == 2 and stale[0].startswith('9h') and 'refresh failed' in stale[0]

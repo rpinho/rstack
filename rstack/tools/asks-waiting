@@ -33,6 +33,7 @@ IDLE_S = 20 * 60          # a question unanswered this long
 TOOL_S = 15 * 60          # a tool call with no result this long: a permission prompt (Bash's own cap is 10 min)
 LOOKBACK_S = 3 * 86400
 PR_IDLE_H = 6
+PR_EVERY_S = 30 * 60      # 11-12: a PR search every 5 min ran the shared GitHub token into its rate limit
 
 
 def state_dir():
@@ -152,6 +153,27 @@ def scan_prs(now):
             for repo, r in sorted(by_repo.items(), key=lambda kv: -max(kv[1])[0])]
 
 
+def cached_prs(now, scan=None):
+    """The PR rows, refreshed at most every PR_EVERY_S. A failed refresh keeps the last good list
+    (marked with its age) instead of replacing it with an error line."""
+    cache = state_dir() / 'prs.json'
+    try:
+        old = json.loads(cache.read_text())
+    except (OSError, ValueError):
+        old = {}
+    if now - old.get('at', 0) < PR_EVERY_S:
+        return old.get('rows', [])
+    rows = (scan or scan_prs)(now)
+    if rows and rows[0].startswith('?\t'):
+        if old.get('rows'):
+            age = (now - old['at']) / 3600
+            return [r + ' (list {:.1f}h old; refresh failed)'.format(age) for r in old['rows']]
+        return rows
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(dict(at=now, rows=rows)))
+    return rows
+
+
 def hook():
     try:
         event = json.loads(sys.stdin.read())
@@ -186,7 +208,7 @@ def main(argv=None):
     projects = Path(a.projects)
     rows = scan_sessions(projects, now, os.environ.get('CONDUCTOR_CWD_SUFFIX', '').rstrip('/'))
     if a.prs:
-        rows += scan_prs(now)
+        rows += cached_prs(now)
     out = state_dir() / (socket.gethostname().split('.')[0] + '.tsv')
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix('.tmp')
