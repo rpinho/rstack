@@ -334,15 +334,55 @@ def ensure():
     call('/csrf')  # refresh the CSRF cookie
 
 
-def post(data):
-    """Start an ask or a reply. A POST that times out is sent once more: on 11-11 every hung one had
-    created no frame and the retry went through at once. If both did land, `cs.py list` shows two
-    and one can be cancelled; that costs less than a lane stuck for hours."""
+def _frames(pid):
+    """{frame id: frame} for a project, or None when it cannot be read."""
+    try:
+        code, out = call('/api/frames?project_id=' + urllib.parse.quote(str(pid)))
+        rows = json.loads(out) if code == 200 else None
+    except (CSTimeout, ValueError, OSError):
+        return None
+    return {r['id']: r for r in rows if isinstance(r, dict) and r.get('id')} if isinstance(rows, list) else None
+
+
+def _landed(data, before, after):
+    """The frame a timed-out request created, if it did. An ask makes a new root frame. A reply joins
+    its conversation, whose row (the listing shows root frames) gains messages: checked on the live
+    m5 daemon 11-12, every row of a 9-conversation project was a root."""
+    root = data.get('root_frame_id')
+    if root:
+        was, now = before.get(root) or {}, after.get(root) or {}
+        if (now.get('message_count') or 0) > (was.get('message_count') or 0):
+            return dict(now, id=root)
+        new = [r for fid, r in after.items() if fid not in before and r.get('root_frame_id') == root]
+    else:
+        new = [r for fid, r in after.items() if fid not in before and not r.get('parent_frame_id')]
+    return max(new, key=lambda r: str(r.get('created_at'))) if new else None
+
+
+def post(data, sleep=time.sleep):
+    """Start an ask or a reply. If the POST times out, the project's frames are read again before
+    anything is resent (harness review of 37c3259): a slow daemon may have taken the request, and a
+    blind resend would start a second session. A frame that appeared is returned as the answer; with
+    none, the request is sent once more; if the frames cannot be read, it stops and says so.
+    11-11 (planets): every hung request had created no frame, and the resend went through at once."""
+    pid = data.get('project_id')
+    before = _frames(pid) if pid else None
     try:
         code, out = call('/api/request', data)
     except CSTimeout:
-        print('cs.py: no answer from Claude Science within {:.0f} s; sending once more (if two frames '
-              'appear, cancel one)'.format(REQUEST_TIMEOUT), file=sys.stderr)
+        sleep(2)
+        after = _frames(pid) if before is not None else None
+        if after is None:
+            sys.exit('cs.py: Claude Science did not answer within {:.0f} s, and its frames cannot be read to '
+                     'tell whether the request landed; not resending blind. Check `cs.py list`.'.format(REQUEST_TIMEOUT))
+        hit = _landed(data, before, after)
+        if hit:
+            print('cs.py: the request timed out but frame {} was created; not resending'.format(hit['id']),
+                  file=sys.stderr)
+            return dict(root_frame_id=hit.get('root_frame_id') or hit['id'], frame_id=hit['id'],
+                        status=hit.get('status'))
+        print('cs.py: no answer from Claude Science within {:.0f} s and no frame was created; sending once '
+              'more'.format(REQUEST_TIMEOUT), file=sys.stderr)
         try:
             code, out = call('/api/request', data)
         except CSTimeout:
