@@ -16,7 +16,7 @@ asks-waiting hook shows them on every turn while they last, and each NEW problem
 (with a one-line summary as its last argument); a cleared one is logged as recovered.
 
 Registry (default ~/.config/rstack/job-health.json):
-    {"fresh": [{"path": "~/x/BOOKMARKS_FRESH.md", "max_hours": 6, "why": "X rounds read it"}],
+    {"fresh": [{"path": "~/x/BOOKMARKS_FRESH.md", "max_hours": 6, "check_hours": [9, 22], "why": "X rounds read it"}],
      "exit_ok": {"com.example.lane-yield": {"codes": [1], "why": "exit 1 is its FAIL verdict, alerted on its own"}}}
 
     job-health [--prefix com.example.] [--registry FILE] [--alert CMD] [--push HOST] [--dry]
@@ -69,6 +69,11 @@ def exit_problems(jobs, exit_ok):
 def fresh_problems(entries, now):
     rows = []
     for e in entries:
+        # check_hours [start, end): local hours when the producer runs. 11-13: x-engage rebuilds the bookmark
+        # list 08:15-20:15 only, so every night the list is 12 h old and a flat 6 h limit woke general for nothing.
+        window = e.get('check_hours')
+        if window and not (int(window[0]) <= time.localtime(now).tm_hour < int(window[1])):
+            continue
         paths = glob.glob(os.path.expanduser(e['path']))
         limit = float(e['max_hours'])
         if not paths:

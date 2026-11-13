@@ -73,3 +73,16 @@ def test_an_unreadable_registry_is_a_problem_not_an_all_clear(tmp_path):
     r = subprocess.run([sys.executable, str(TOOLS / 'job-health'), '--prefix', 'com.nothing-matches.',
                         '--registry', str(reg), '--dry'], capture_output=True, text=True)
     assert r.returncode == 1 and 'unreadable' in r.stdout
+
+
+def test_freshness_is_only_checked_in_the_hours_its_producer_runs(tmp_path):
+    """11-13: the bookmark list is rebuilt 08:15-20:15; at 04:00 it is 8 h old by design, not stale."""
+    f = tmp_path / 'list.md'
+    f.write_text('x')
+    now = time.mktime((2026, 11, 13, 4, 0, 0, 0, 0, -1))
+    os.utime(f, (now - 8 * 3600,) * 2)
+    entry = dict(path=str(f), max_hours=6, check_hours=[9, 22])
+    assert jh.fresh_problems([entry], now) == []
+    noon = time.mktime((2026, 11, 13, 12, 0, 0, 0, 0, -1))
+    os.utime(f, (noon - 8 * 3600,) * 2)
+    assert len(jh.fresh_problems([entry], noon)) == 1
