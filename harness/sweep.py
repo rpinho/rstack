@@ -1541,6 +1541,14 @@ def main(root, args, rh):
     for lane in lanes:
         if not lane.is_dir():
             continue
+        if (args.all and not (lane / 'SWEEP.toml').exists() and not (lane / 'INTAKE.toml').exists()
+                and any((lane / n).exists() for n in ('OUTREACH.toml', 'OUTREACH.jsonl'))):
+            # 11-12 (job-health's first run): lanes/general and lanes/x-history hold only outreach records,
+            # never a SWEEP.toml, so the daily `sweep --all` REFUSED them and exited 1 every day, which hid any
+            # real failure behind a constant one. An outreach-only lane is not a sweep lane; an empty or
+            # half-set-up lane still refuses.
+            print('SKIP {}: an outreach-only lane (no SWEEP.toml or INTAKE.toml)'.format(lane.name))
+            continue
         try:
             pause = held(lane)
             if pause and args.all:

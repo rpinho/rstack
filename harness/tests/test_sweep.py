@@ -380,6 +380,17 @@ class SweepTests(unittest.TestCase):
         self.assertIn('lane on hold', err)
         self.worker.assert_not_called()
 
+    def test_all_skips_an_outreach_only_lane(self):
+        """11-12: lanes/general and lanes/x-history hold only outreach records; --all refused them and exited 1 daily."""
+        (self.root / 'lanes/x-history').mkdir()
+        (self.root / 'lanes/x-history/OUTREACH.jsonl').write_text('')
+        with patch.object(sweep, 'run_lane', side_effect=lambda lane, *_: 0), patch.object(sweep, 'guard'):
+            rc, out, err = self.cli('sweep', '--all')
+        self.assertEqual(rc, 0, err)
+        self.assertIn('SKIP x-history: an outreach-only lane', out)
+        rc, _, err = self.cli('sweep', 'x-history')
+        self.assertNotEqual(rc, 0)            # named directly, a missing config is still a refusal
+
     def test_a_lane_before_its_close_still_sweeps(self):
         self.close(self.lane, (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=3))
                    .strftime('%Y-%m-%dT%H:%M:%SZ'))
