@@ -86,3 +86,17 @@ def test_freshness_is_only_checked_in_the_hours_its_producer_runs(tmp_path):
     noon = time.mktime((2026, 11, 13, 12, 0, 0, 0, 0, -1))
     os.utime(f, (noon - 8 * 3600,) * 2)
     assert len(jh.fresh_problems([entry], noon)) == 1
+
+
+def test_apple_agents_are_never_listed_and_a_bare_run_writes_nothing(tmp_path):
+    """11-13: a bare run (no --prefix) on the M4 wrote 121 com.apple.* "exited -9" rows into the conductor's
+    asks-waiting list, and they flooded every prompt."""
+    listing = 'PID\tStatus\tLabel\n-\t-9\tcom.apple.Safari.History\n-\t78\tcom.example.preview\n'
+    assert jh.exit_problems(jh.launchd_jobs('com.', listing), {}) == [('exit', 'com.example.preview', 'last run exited 78')]
+    state = tmp_path / 'state'
+    env = dict(os.environ, RSTACK_STATE_DIR=str(state))
+    env.pop('JOB_HEALTH_PREFIX', None)
+    r = subprocess.run([sys.executable, str(TOOLS / 'job-health'), '--registry', str(tmp_path / 'none.json')],
+                       env=env, capture_output=True, text=True)
+    assert r.returncode == 0 and 'only printed' in r.stderr
+    assert not (state / 'asks-waiting').exists()

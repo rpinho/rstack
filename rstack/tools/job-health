@@ -46,7 +46,9 @@ def launchd_jobs(prefix, listing=None):
     out = {}
     for line in listing.splitlines()[1:]:
         parts = line.split('\t') if '\t' in line else line.split()
-        if len(parts) < 3 or not parts[2].startswith(prefix):
+        # 11-13: a bare run took every com.apple.* agent macOS kills (121 "exited -9" rows) into the conductor's
+        # prompt. The operating system's own agents are never ours to report.
+        if len(parts) < 3 or not parts[2].startswith(prefix) or parts[2].startswith('com.apple.'):
             continue
         pid = None if parts[0] == '-' else parts[0]
         try:
@@ -87,7 +89,9 @@ def fresh_problems(entries, now):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--prefix', default=os.environ.get('JOB_HEALTH_PREFIX', 'com.'))
+    ap.add_argument('--prefix', default=os.environ.get('JOB_HEALTH_PREFIX', ''),
+                    help="your jobs' launchd label prefix, e.g. com.example. Without one the run only prints: "
+                         'it writes no list and sends no alert, so an ad-hoc run cannot flood the conductor')
     ap.add_argument('--registry', default=os.environ.get('JOB_HEALTH_REGISTRY',
                                                          os.path.expanduser('~/.config/rstack/job-health.json')))
     ap.add_argument('--alert', default=os.environ.get('JOB_HEALTH_ALERT', ''),
@@ -95,19 +99,22 @@ def main(argv=None):
     ap.add_argument('--push', help='copy this host\'s list to the same path on HOST (the conductor\'s Mac)')
     ap.add_argument('--dry', action='store_true')
     a = ap.parse_args(argv)
+    bad = []
     try:
         reg = json.loads(Path(a.registry).read_text())
     except FileNotFoundError:
         reg = {}
     except ValueError as exc:   # a registry that does not parse is a problem of its own, not an all-clear
         reg, bad = {}, [('registry', a.registry, 'unreadable: {}'.format(exc))]
-    else:
-        bad = []
     now = time.time()
     rows = bad + exit_problems(launchd_jobs(a.prefix), reg.get('exit_ok') or {}) + fresh_problems(reg.get('fresh') or [], now)
     lines = ['{}\t{}\t{}'.format(kind, what, detail) for kind, what, detail in rows]
     for l in lines:
         print(l)
+    if not a.prefix and not a.dry:
+        print('job-health: no --prefix (or JOB_HEALTH_PREFIX), so this run only printed; nothing was written or '
+              'alerted', file=sys.stderr)
+        return 0
     if a.dry:
         return 1 if rows else 0
     host = socket.gethostname().split('.')[0]
