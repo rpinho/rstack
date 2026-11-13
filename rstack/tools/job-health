@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Every scheduled job's failure reaches a person, not just a log.
+
+Why (11-12, twice in one day): a step crashed on every X round for two days and only runs.log knew,
+so each round worked from a 72-hour-old list and engagement fell from 77 likes a day to 5; the round
+agents even wrote "needs a look" into that log, which nobody reads. Hours earlier a lane sat idle with
+its result in. Same class: a failure that only reaches a log. Two checks need no change to any job:
+
+  exit     every launchd job under --prefix whose last run exited with a code that job does not
+           declare as fine (`exit_ok`), and that is not running now
+  fresh    every required output in the registry (`fresh`) that is missing or older than its limit:
+           a job that loses its input and keeps running empty rounds still stops refreshing what it makes
+
+The problems are written to $RSTACK_STATE_DIR/asks-waiting/<host>-jobs.tsv, so the conductor's
+asks-waiting hook shows them on every turn while they last, and each NEW problem runs --alert once
+(with a one-line summary as its last argument); a cleared one is logged as recovered.
+
+Registry (default ~/.config/rstack/job-health.json):
+    {"fresh": [{"path": "~/x/BOOKMARKS_FRESH.md", "max_hours": 6, "why": "X rounds read it"}],
+     "exit_ok": {"com.example.lane-yield": {"codes": [1], "why": "exit 1 is its FAIL verdict, alerted on its own"}}}
+
+    job-health [--prefix com.example.] [--registry FILE] [--alert CMD] [--push HOST] [--dry]
+"""
+import argparse
+import glob
+import json
+import os
+from pathlib import Path
+import shlex
+import socket
+import subprocess
+import sys
+import time
+
+
+def state_dir():
+    base = os.environ.get('RSTACK_STATE_DIR') or os.path.join(
+        os.environ.get('XDG_STATE_HOME') or os.path.expanduser('~/.local/state'), 'rstack')
+    return Path(os.path.expanduser(base))
+
+
+def launchd_jobs(prefix, listing=None):
+    """{label: (pid or None, last exit status)} for jobs under prefix."""
+    if listing is None:
+        listing = subprocess.run(['launchctl', 'list'], capture_output=True, text=True, timeout=30).stdout
+    out = {}
+    for line in listing.splitlines()[1:]:
+        parts = line.split('\t') if '\t' in line else line.split()
+        if len(parts) < 3 or not parts[2].startswith(prefix):
+            continue
+        pid = None if parts[0] == '-' else parts[0]
+        try:
+            status = int(parts[1])
+        except ValueError:
+            continue
+        out[parts[2]] = (pid, status)
+    return out
+
+
+def exit_problems(jobs, exit_ok):
+    rows = []
+    for label, (pid, status) in sorted(jobs.items()):
+        ok = set((exit_ok.get(label) or {}).get('codes', [])) | {0}
+        if pid is None and status not in ok:
+            rows.append(('exit', label, 'last run exited {}'.format(status)))
+    return rows
+
+
+def fresh_problems(entries, now):
+    rows = []
+    for e in entries:
+        paths = glob.glob(os.path.expanduser(e['path']))
+        limit = float(e['max_hours'])
+        if not paths:
+            rows.append(('fresh', e['path'], 'missing (needed every {:g} h: {})'.format(limit, e.get('why', ''))))
+            continue
+        age = (now - max(os.path.getmtime(p) for p in paths)) / 3600
+        if age > limit:
+            rows.append(('fresh', e['path'], '{:.1f} h old, limit {:g} h ({})'.format(age, limit, e.get('why', ''))))
+    return rows
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--prefix', default=os.environ.get('JOB_HEALTH_PREFIX', 'com.'))
+    ap.add_argument('--registry', default=os.environ.get('JOB_HEALTH_REGISTRY',
+                                                         os.path.expanduser('~/.config/rstack/job-health.json')))
+    ap.add_argument('--alert', default=os.environ.get('JOB_HEALTH_ALERT', ''),
+                    help='command run once per new problem, with a one-line summary as its last argument')
+    ap.add_argument('--push', help='copy this host\'s list to the same path on HOST (the conductor\'s Mac)')
+    ap.add_argument('--dry', action='store_true')
+    a = ap.parse_args(argv)
+    try:
+        reg = json.loads(Path(a.registry).read_text())
+    except FileNotFoundError:
+        reg = {}
+    except ValueError as exc:   # a registry that does not parse is a problem of its own, not an all-clear
+        reg, bad = {}, [('registry', a.registry, 'unreadable: {}'.format(exc))]
+    else:
+        bad = []
+    now = time.time()
+    rows = bad + exit_problems(launchd_jobs(a.prefix), reg.get('exit_ok') or {}) + fresh_problems(reg.get('fresh') or [], now)
+    lines = ['{}\t{}\t{}'.format(kind, what, detail) for kind, what, detail in rows]
+    for l in lines:
+        print(l)
+    if a.dry:
+        return 1 if rows else 0
+    host = socket.gethostname().split('.')[0]
+    out = state_dir() / 'asks-waiting' / (host + '-jobs.tsv')
+    seen_file = state_dir() / 'job-health' / 'seen.json'
+    out.parent.mkdir(parents=True, exist_ok=True)
+    seen_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        seen = set(json.loads(seen_file.read_text()))
+    except (OSError, ValueError):
+        seen = set()
+    keys = {'{}\t{}'.format(k, w) for k, w, _ in rows}
+    new = [r for r in rows if '{}\t{}'.format(r[0], r[1]) not in seen]
+    gone = seen - keys
+    log = state_dir() / 'job-health' / 'log'
+    with open(log, 'a') as fh:
+        for k, w, d in new:
+            fh.write('{} NEW {} {} {}\n'.format(time.strftime('%F %T'), k, w, d))
+        for key in sorted(gone):
+            fh.write('{} RECOVERED {}\n'.format(time.strftime('%F %T'), key.replace('\t', ' ')))
+    if new and a.alert:
+        summary = '{} on {}: {}'.format(len(new), host, '; '.join('{} {} ({})'.format(k, w, d) for k, w, d in new))[:900]
+        subprocess.run(shlex.split(a.alert) + ['job-health: ' + summary], capture_output=True, timeout=60)
+    tmp = out.with_suffix('.tmp')
+    tmp.write_text(''.join('{}\t{}\t{}\n'.format('job', w, '{}: {}'.format(k, d)) for k, w, d in rows))
+    os.replace(tmp, out)
+    seen_file.write_text(json.dumps(sorted(keys)))
+    if a.push:
+        subprocess.run(['ssh', '-o', 'BatchMode=yes', a.push, 'mkdir -p ' + str(out.parent)], capture_output=True, timeout=60)
+        subprocess.run(['scp', '-q', str(out), '{}:{}'.format(a.push, out)], capture_output=True, timeout=60)
+    return 1 if rows else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
