@@ -149,3 +149,20 @@ def test_unread_output_is_the_newest_settled_result_after_the_last_turn(tmp_path
     globs = [str(tmp_path / '{lane}_*/astra.md')]
     assert nudge.unread_output(globs, 'math', last_turn=now - 5000, now=now) == want
     assert nudge.unread_output(globs, 'math', last_turn=now - 100, now=now) is None
+
+
+def test_a_lane_blocked_on_the_owner_is_not_nudged_but_a_result_still_wakes_it(tmp_path):
+    """friends, 11-13: blocked on seven owner-only decisions with every job done, and nudged three times in
+    a night to keep working on something else."""
+    import os
+    lane = tmp_path / 'friends'
+    lane.mkdir()
+    assert nudge.blocked_on(lane, NOW) is None
+    (lane / 'BLOCKED').write_text('7 decisions sent to general 05:30 (ricardo channel)\n')
+    os.utime(lane / 'BLOCKED', (NOW - 3600, NOW - 3600))
+    reason = nudge.blocked_on(lane, NOW)
+    assert reason.startswith('7 decisions')
+    assert nudge.decide(500, False, 'STALLED', 0, NOW, blocked=reason) is None
+    assert nudge.decide(500, False, 'OK', 0, NOW, unread='/jobs/x.last.md', blocked=reason)   # a result still wakes it
+    os.utime(lane / 'BLOCKED', (NOW - 13 * 3600, NOW - 13 * 3600))
+    assert nudge.blocked_on(lane, NOW) is None                                             # lapses: cannot silence forever

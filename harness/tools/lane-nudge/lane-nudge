@@ -51,7 +51,8 @@ def pickup(row):
             'shows in rh lanes cadence.'.format(idea['id'], idea.get('claim', '')[:140]))
 
 
-def decide(idle_min, running, status, last_nudge, now, idle_limit=60, reask=7200, unread=None, last_output=None):
+def decide(idle_min, running, status, last_nudge, now, idle_limit=60, reask=7200, unread=None, last_output=None,
+           blocked=None):
     """Return the reason to nudge, or None. Pure, so it can be tested without tmux.
 
     unread: a job output newer than the session's last real turn (see unread_output). It overrides
@@ -61,6 +62,8 @@ def decide(idle_min, running, status, last_nudge, now, idle_limit=60, reask=7200
         return None
     if unread and unread != last_output:
         return 'a job result landed after your last turn and nothing woke you: {}'.format(unread)
+    if blocked:      # waiting on a decision only the owner can make; a result above still wakes it
+        return None
     if running or idle_min < idle_limit or now - last_nudge < reask:
         return None
     return f'{status} on cadence' if status in BEHIND else 'quiet'
@@ -80,6 +83,25 @@ def unread_output(globs, lane, last_turn, now, settle=15 * 60):
             if last_turn < m <= now - settle and (best is None or m > best):
                 newest, best = f, m
     return newest
+
+
+BLOCKED_HOURS = 12
+
+
+def blocked_on(lane_dir, now, hours=BLOCKED_HOURS):
+    """The first line of lanes/<lane>/BLOCKED when it was written in the last `hours`, else None.
+
+    friends, 11-13: blocked on seven decisions only the owner can make, every in-brief job done, and nudged
+    three times in a night to "keep working on something else", which only invites busywork. A lane writes
+    BLOCKED (first line: the decision it waits on and where it was sent) and deletes it once answered.
+    It lapses after `hours` so a forgotten one cannot silence a lane; rewrite it to stay blocked."""
+    path = Path(lane_dir) / 'BLOCKED'
+    try:
+        if now - path.stat().st_mtime > hours * 3600:
+            return None
+        return (path.read_text(errors='replace').strip().splitlines() or ['(no reason given)'])[0][:200]
+    except OSError:
+        return None
 
 
 def panes(tmux, prefix):
@@ -208,6 +230,8 @@ def main():
     ap.add_argument('--alert', default=os.environ.get('LANE_NUDGE_ALERT', ''),
                     help='command run with one message argument when the cadence read fails (and on recovery)')
     ap.add_argument('--log', default=os.environ.get('LANE_NUDGE_LOG', ''), help='append each nudge to this file')
+    ap.add_argument('--lanes', default=os.environ.get('LANE_NUDGE_LANES', '~/.local/share/research-harness/lanes'),
+                    help='lanes root, for lanes/<lane>/BLOCKED')
     ap.add_argument('--outputs', default=os.environ.get('LANE_NUDGE_OUTPUTS', ''),
                     help='comma-separated globs of finished-job outputs, {lane} for the lane name; one newer than '
                          "the session's last turn nudges it even while a watcher shell runs")
@@ -236,8 +260,11 @@ def main():
         c = cad.get(lane, {})
         now = time.time()
         unread = unread_output(outputs, lane, now - idle * 60, now) if outputs else None
+        blocked = blocked_on(Path(os.path.expanduser(a.lanes)) / lane, now)
         why = decide(idle, bool(RUNNING.search(tail)), c.get('status'), last, now, a.idle_min, a.reask,
-                     unread, saved.get('output'))
+                     unread, saved.get('output'), blocked)
+        if blocked and not why and idle >= a.idle_min:
+            say(a.log, f'{a.prefix}{lane}: blocked, not nudged ({blocked})', True)
         if not why:
             continue
         if c.get('status') in BEHIND and c.get('deliverable'):
