@@ -57,7 +57,7 @@ def test_a_new_problem_alerts_once_and_shows_until_it_clears(tmp_path, monkeypat
     run = lambda: subprocess.run([sys.executable, str(TOOLS / 'job-health'), '--prefix', 'com.nothing-matches.',
                                   '--registry', str(reg), '--alert', alert],
                                  env=dict(os.environ, RSTACK_STATE_DIR=str(state)), capture_output=True, text=True)
-    assert run().returncode == 1 and run().returncode == 1
+    assert run().returncode == 0 and run().returncode == 0               # a run that reports is not a failed job
     assert sent.read_text().count('job-health:') == 1                     # once per new problem, not per run
     listed = list((state / 'asks-waiting').glob('*-jobs.tsv'))[0].read_text()
     assert 'out.md' in listed                                             # the conductor sees it every turn

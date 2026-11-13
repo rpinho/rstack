@@ -133,7 +133,9 @@ def main(argv=None):
     if a.push:
         subprocess.run(['ssh', '-o', 'BatchMode=yes', a.push, 'mkdir -p ' + str(out.parent)], capture_output=True, timeout=60)
         subprocess.run(['scp', '-q', str(out), '{}:{}'.format(a.push, out)], capture_output=True, timeout=60)
-    return 1 if rows else 0
+    # Problems are reported above, not through this exit code: a scheduled run that found problems
+    # exiting 1 would list job-health itself as a failing job (11-12, its own first day).
+    return 0
 
 
 if __name__ == '__main__':
