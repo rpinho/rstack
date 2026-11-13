@@ -606,3 +606,17 @@ def test_target_check_needs_the_friends_own_commits_this_year():
     for bad in ('2026', 2026, '26-01-01'):
         with pytest.raises(ValueError):
             bughunt.check_settings(dict(target_author_since=bad))
+
+
+def test_a_bioconductor_package_counts_last_months_downloads():
+    """11-12 (friends): a Bioconductor package's users are its downloads; bioc:NAME was not read at all."""
+    table = ('Year\tMonth\tNb_of_distinct_IPs\tNb_of_downloads\n2026\tSep\t631\t1019\n2026\tOct\t312\t409\n'
+             '2026\tNov\t52\t52\n2026\tall\t1709\t2671\n')
+    urls = []
+    got = bughunt.downloads(['bioc:phylobar'], fetch_json=None, fetch_text=lambda url: urls.append(url) or table,
+                            clock=CLOCK)
+    assert got == {'bioc:phylobar': 409}                                  # October: November is still partial
+    assert urls == ['https://bioconductor.org/packages/stats/bioc/phylobar/phylobar_stats.tab']
+    assert bughunt.downloads(['bioc:x'], None, fetch_text=lambda url: 'Year\tMonth\n', clock=CLOCK) == {'bioc:x': None}
+    january = bughunt.dt.datetime(2027, 1, 5, tzinfo=bughunt.dt.timezone.utc)
+    assert bughunt.bioc_last_month('h\n2026\tDec\t1\t77\n', january) == 77

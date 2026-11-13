@@ -77,7 +77,21 @@ def usage_defaults():
                 usage_min_conda_downloads=1000, usage_window_days=1095)
 
 
-def downloads(packages, fetch_json):
+MONTHS = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
+
+
+def bioc_last_month(table, clock):
+    """Downloads in the last complete month from a Bioconductor NAME_stats.tab (Year, Month,
+    Nb_of_distinct_IPs, Nb_of_downloads; the current month is partial and there is an 'all' row)."""
+    year, month = (clock.year, clock.month - 1) if clock.month > 1 else (clock.year - 1, 12)
+    for line in table.splitlines()[1:]:
+        cells = line.split('\t')
+        if len(cells) >= 4 and cells[0] == str(year) and cells[1] == MONTHS[month - 1]:
+            return int(cells[3])
+    raise ValueError('no row for {} {}'.format(MONTHS[month - 1], year))
+
+
+def downloads(packages, fetch_json, fetch_text=None, clock=None):
     """{'pypi:name': last-month downloads, ...} for the packages named; None where unreadable."""
     out = {}
     for spec in packages:
@@ -87,6 +101,10 @@ def downloads(packages, fetch_json):
                 out[spec] = int(fetch_json('https://pypistats.org/api/packages/{}/recent'.format(name))['data']['last_month'])
             elif index == 'cran':
                 out[spec] = int(fetch_json('https://cranlogs.r-pkg.org/downloads/total/last-month/' + name)[0]['downloads'])
+            elif index == 'bioc':
+                # 11-12 (friends): a Bioconductor package's users are its downloads, as for pypi and cran.
+                table = (fetch_text or text_get)('https://bioconductor.org/packages/stats/bioc/{0}/{0}_stats.tab'.format(name))
+                out[spec] = bioc_last_month(table, clock or dt.datetime.now(UTC))
             elif index in ('bioconda', 'conda-forge'):
                 files = fetch_json('https://api.anaconda.org/package/{}/{}'.format(index, name)).get('files', [])
                 out[spec] = sum(int(f.get('ndownloads', 0)) for f in files)
@@ -123,7 +141,7 @@ def usage(target, repo, get, packages=(), fetch_json=None, cfg=None, clock=None)
     outside = {a for a, new in accounts if new}
     older = {a for a, _ in accounts} - outside
     stars = int(repo.get('stargazers_count') or 0)
-    counts = downloads(packages, fetch_json or json_get) if packages else {}
+    counts = downloads(packages, fetch_json or json_get, clock=clock) if packages else {}
     signals = []
     if len(outside) >= cfg['usage_min_outside_accounts']:
         signals.append('{} outside accounts opened issues or PRs or forked it in the last {} days'.format(
@@ -137,6 +155,12 @@ def usage(target, repo, get, packages=(), fetch_json=None, cfg=None, clock=None)
             signals.append('{} downloads ({})'.format(n, spec))
     return dict(verdict='PASS' if signals else 'FAIL', signals=signals, outside_accounts=len(outside),
                 outside_accounts_older=len(older), stars=stars, forks=int(repo.get('forks_count') or 0), downloads=counts)
+
+
+def text_get(url):
+    request = urllib.request.Request(url, headers={'User-Agent': 'research-harness bughunt'})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return response.read().decode('utf-8')
 
 
 def json_get(url):
@@ -499,7 +523,7 @@ def arguments(sub):
     p.add_argument('target', help='OWNER/REPO or its GitHub URL')
     p.add_argument('--author', help="the friend's GitHub login (required when OUTREACH target_author_since is set)")
     p.add_argument('--package', action='append', default=[], metavar='INDEX:NAME',
-                   help='a package to count downloads for: pypi:NAME, cran:NAME, bioconda:NAME, conda-forge:NAME')
+                   help='a package to count downloads for: pypi:NAME, cran:NAME, bioc:NAME, bioconda:NAME, conda-forge:NAME')
     p.add_argument('--json', action='store_true')
     p = actions.add_parser('speedup-verify', help='apply a speedup patch to their commit, check equal outputs, benchmark')
     p.add_argument('lane')
