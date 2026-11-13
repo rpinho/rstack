@@ -54,6 +54,9 @@ Three parts of that live in this repository. Until recently they were three repo
   without finding anything, and require a published result to be reproduced by a command before it
   counts as a baseline. Several checks are opt-in and the isolation is yours to supply, not the
   harness's to create; [its Limits section](harness/README.md#limits) says which.
+  A lane can require a [Claude Science](https://support.claude.com/en/articles/16563838-get-started-with-claude-science)
+  review before a result counts (`claude_science_required`), and [`harness/cs.py`](harness/CLAUDE_SCIENCE.md)
+  drives Claude Science from the command line so agents can send it proofs, certificates and plans to referee.
 - **[`kb/`](kb/README.md)**: a file-based knowledge base an agent maintains over years. Each session
   works in its own copy of the repository and merges when it is done, so two agents never fight over
   the same file. The memory is the filesystem, not a context window.
