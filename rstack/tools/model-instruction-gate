@@ -21,13 +21,23 @@ def triage(raw, event):
                                        'Agent', 'claude', 'codex'))
 
 
+RAW_CLAUDE_PIN = re.compile(r'(?m)(?:^|[;&|(]\s*)\s*(?:\S*/)?claude\b(?:(?!\s--\s)[^\n;&|])*?\s(?:--model[= ]|-m\s*)\S*(?:sonnet|haiku)', re.I)
+RAW_CODEX_PIN = re.compile(r'(?m)(?:^|[;&|(]\s*)\s*(?:\S*/)?codex\s+exec\b(?:(?!\s--\s)[^\n;&|])*?\s(?:--model[= ]|-m\s*)\S+')
+
+
 def commands(command):
     """Shell command segments, including pipelines and env prefixes."""
     lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|()\n')
     lexer.whitespace = ' \t\r'
     lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        # 11-14: heredocs and quotes inside them leave shlex with an unclosed quote, and the hook then
+        # failed closed on ordinary Bash calls. Fall back to a plain split, which still sees the words.
+        tokens = re.findall(r'[;&|()\n]+|[^\s;&|()]+', command)
     segment = []
-    for token in list(lexer) + [';']:
+    for token in tokens + [';']:
         if token and all(c in ';&|()\n' for c in token):
             i = 0
             while i < len(segment) and (segment[i] in ('env', 'command', 'exec', 'sudo')
@@ -82,6 +92,11 @@ def body(event):
                             and any(pinned_models(args[2:])))):
                     print(REASON, file=sys.stderr)
                     return 2
+        # Quotes that balance by accident across a heredoc merge commands into one token, so the
+        # segments above can miss a pinned launch. A line-level pass sees it regardless of quoting.
+        if JUDGMENT.search(command) and (RAW_CLAUDE_PIN.search(command) or RAW_CODEX_PIN.search(command)):
+            print(REASON, file=sys.stderr)
+            return 2
     else:
         path = payload['file_path']
         if not isinstance(path, str):

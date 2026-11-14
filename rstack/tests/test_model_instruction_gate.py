@@ -111,10 +111,18 @@ def test_guarded_broken_inputs_refuse_and_unrelated_errors_are_loud():
                     {'tool_name': 'Write', 'tool_input': {'file_path': '/lane-briefs/x', 'content': []}},
                     '{"tool_name":"Agent",',
                     {'tool_name': 'Agent', 'tool_input': {'model': 'sonnet', 'prompt': []}},
-                    bash('claude -p --model sonnet "unterminated'),
-                    bash('codex exec -m gpt-6-astra "unterminated'),
-                    bash('tell-general fyi "unterminated')):
+                    # 11-14: unbalanced quotes are read by the fallback split, not refused outright
+                    bash('claude -p --model sonnet "review unterminated'),
+                    bash('codex exec -m gpt-6-astra "audit unterminated'),
+                    bash('tell-general fyi "use Sonnet referees unterminated')):
         blocked(HOOK, payload)
     loud(HOOK, 'not json')
     loud(HOOK, {'tool_name': 'Bash', 'tool_input': []})
     allowed(HOOK, {'tool_name': 'Read', 'tool_input': {}})
+
+
+def test_a_heredoc_with_an_open_quote_is_checked_not_refused():
+    """11-14: shlex raised on a heredoc holding an apostrophe, and the hook failed closed on ordinary Bash."""
+    allowed(HOOK, bash("python3 - <<'EOF'\ns = '''it's fine'''\nEOF\nls ~/.claude/hooks"))
+    blocked(HOOK, bash("cat <<EOF\nit's late\nEOF\nclaude -p --model claude-sonnet-5-5 'review this proof"))
+    allowed(HOOK, bash('claude -p --model sonnet "extract the table unterminated'))
