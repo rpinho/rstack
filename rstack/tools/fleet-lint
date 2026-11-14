@@ -256,6 +256,15 @@ def executable_positions(tokens, depth=0):
 
 
 def launcher_command(cmd, launchers):
+    # tmux reports some pane commands quoted whole ("exec ~/.local/bin/codex ..."), 11-14 live run.
+    cmd = cmd.strip()
+    if len(cmd) > 1 and cmd[0] == cmd[-1] == '"':
+        cmd = cmd[1:-1]
+    elif cmd.startswith('"') and cmd.count('"') == 1:
+        cmd = cmd[1:]
+    cmd = cmd.strip()
+    if cmd.startswith('exec '):
+        cmd = cmd[5:]
     for token in executable_positions(words(cmd)):
         for launcher in launchers:
             if (expand(token) == expand(launcher) if '/' in launcher else Path(token).name == launcher):
@@ -280,7 +289,8 @@ def app_server_command(cmd):
 
 def attached_codex(cmd):
     args = codex_args(cmd)
-    return args[:1] == ['resume'] and any(t == '--remote' or t.startswith('--remote=') for t in args[1:])
+    # `resume` may follow the global flags (codex --remote SOCK -c ... -m MODEL resume ID), 11-14 live run.
+    return 'resume' in args and any(t == '--remote' or t.startswith('--remote=') for t in args)
 
 
 def launched(agent, launchers, registered):
@@ -299,6 +309,8 @@ def launched(agent, launchers, registered):
 def findings(snapshot):
     bad = [{'check': 'collection', 'subject': 'host', 'detail': e} for e in snapshot['errors']]
     for agent in snapshot['agents']:
+        if app_server_command(agent.get('command', '')):
+            continue  # the Codex app-server daemon hosts sessions; the sessions attached to it are checked
         subject = 'pid={} session={}'.format(agent['pid'], agent.get('session') or '(outside tmux)')
         if not launched(agent, snapshot['launchers'], snapshot['registry_sessions']):
             bad.append({'check': 'launcher', 'subject': subject, 'detail': 'no harness launcher or registered tmux session'})

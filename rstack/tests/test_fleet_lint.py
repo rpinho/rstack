@@ -388,3 +388,13 @@ def test_stamp_compares_real_harness_trees_not_commit_ids(tmp_path):
     git('update-ref', 'refs/remotes/origin/main', 'HEAD')
     fleet.compare_with_repo(snapshot, repo)
     assert [row['check'] for row in fleet.findings(snapshot)] == ['harness']
+
+
+def test_quoted_exec_pane_and_late_resume_count_as_launched():
+    """11-14 live run: tmux showed a pane as '"exec ~/.local/bin/codex --remote SOCK -m M resume ID "'."""
+    import runpy
+    m = runpy.run_path(str(TOOLS / "fleet-lint"))
+    pane = '"exec /home/u/.local/bin/codex --remote unix:///s.sock -m some-model resume 1 -C /w "'
+    assert m['launcher_command'](pane, ['/home/u/.local/bin/codex'])
+    assert m['attached_codex']('/opt/codex --remote unix:///s.sock -c k=v -m some-model resume 1')
+    assert m['app_server_command']('/x/codex app-server daemon pid-update-loop')
