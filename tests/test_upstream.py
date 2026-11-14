@@ -30,10 +30,10 @@ def pr(n, state='open', merged=None, created='2026-10-30T19:48:29Z', author='rpi
                 url='https://github.com/{}/pull/{}'.format(REPO, n), base='main')
 
 
-def lane(tmp_path, prs, fetched=None, max_open=10):
+def lane(tmp_path, prs, fetched=None):
     d = tmp_path / 'lanes' / 'math'
     d.mkdir(parents=True)
-    (d / 'UPSTREAM.json').write_text(json.dumps(dict(repo=REPO, author='rpinho', max_open=max_open)))
+    (d / 'UPSTREAM.json').write_text(json.dumps(dict(repo=REPO, author='rpinho')))
     upstream.refresh(d, fetch=lambda repo: prs, now=fetched or dt.datetime.now(dt.timezone.utc))
     return d
 
@@ -49,35 +49,6 @@ def test_the_summary_counts_our_open_unmerged_prs_and_the_oldest(tmp_path):
     assert s['open_unmerged'] == 3 and s['merged'] == 1 and s['last_merge_ours'].startswith('2026-10-26')
     assert s['oldest_open_days'] == pytest.approx(13.6, abs=0.1)
     assert 'open-unmerged 3, oldest 13.6 d; merged 1' in upstream.line(s)
-
-
-def test_a_new_pr_waits_at_the_cap_and_an_update_does_not(tmp_path, monkeypatch):
-    lane(tmp_path, ours_open(10), fetched=NOW)
-    monkeypatch.setenv('RH_ROOT', str(tmp_path))
-    errors = publish_lint.publication_errors('/no/body.md', REPO, now=NOW)
-    assert len(errors) == 1 and errors[0].startswith('open-PR cap: 10 of our PRs are open and unmerged')
-    assert 'Update an existing PR' in errors[0]
-    # An edit of an existing PR is not a new PR: it reaches the ordinary receipt check instead.
-    edit = publish_lint.publication_errors('/no/body.md', REPO + '#298', now=NOW)
-    assert not any(e.startswith('open-PR cap') for e in edit)
-
-
-def test_under_the_cap_a_new_pr_goes_on_to_the_receipt_check(tmp_path, monkeypatch):
-    lane(tmp_path, ours_open(9), fetched=NOW)
-    monkeypatch.setenv('RH_ROOT', str(tmp_path))
-    errors = publish_lint.publication_errors('/no/body.md', REPO, now=NOW)
-    assert errors and not errors[0].startswith('open-PR cap')
-
-
-def test_a_stale_pr_list_refuses_rather_than_guesses(tmp_path):
-    lane(tmp_path, ours_open(1), fetched=NOW - dt.timedelta(hours=7))
-    errors = upstream.new_pr_errors(tmp_path, REPO, NOW)
-    assert errors and 'over 6 h old' in errors[0] and '--refresh' in errors[0]
-
-
-def test_another_repo_is_not_capped(tmp_path):
-    lane(tmp_path, ours_open(12), fetched=NOW)
-    assert upstream.new_pr_errors(tmp_path, 'someone/else', NOW) == []
 
 
 def test_yield_counts_a_result_only_once_merged(tmp_path):
@@ -184,3 +155,11 @@ def test_the_x_fix_wording_itself_passes(tmp_path):
     lane(tmp_path, [pr(347)])
     assert upstream.report_lint("Candidate bound for C22b (Tao's optimization table), PR open: "
                                 'https://github.com/teorth/optimizationproblems/pull/347', tmp_path) == []
+
+
+def test_a_new_pr_is_not_capped_by_how_many_are_open(tmp_path, monkeypatch):
+    """11-14: the open-PR cap is removed (Ricardo: "Why do we have that rule? Just remove it.")."""
+    lane(tmp_path, ours_open(25), fetched=NOW)
+    monkeypatch.setenv('RH_ROOT', str(tmp_path))
+    errors = publish_lint.publication_errors('/no/body.md', REPO, now=NOW)
+    assert not any('open-PR cap' in e for e in errors)          # it goes on to the receipt check

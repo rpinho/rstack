@@ -7,11 +7,9 @@ Tao's table". A push or an opened PR is activity. So, for a lane with UPSTREAM.j
 
   * lane-yield counts a result only when its link is a merged PR (or a commit) in that repo;
   * `rh lanes upstream` shows open-unmerged N and the oldest one's age;
-  * publish_lint refuses a NEW PR there while we have max_open or more open (stacked ones count;
-    updating an existing PR is still allowed);
   * tell-general refuses a report that calls an unmerged PR "live".
 
-lanes/LANE/UPSTREAM.json:  {"repo": "owner/name", "author": "github-login", "max_open": 10}
+lanes/LANE/UPSTREAM.json:  {"repo": "owner/name", "author": "github-login"}
 
 The PR list is fetched with `gh api` (refresh) and cached beside it as .upstream-prs.json. Readers
 never touch the network (the publish hook may not); a cache older than MAX_AGE_H is a refusal for
@@ -48,9 +46,6 @@ def config(lane):
         raise ValueError('{}: repo must be owner/name'.format(path))
     if not re.fullmatch(r'[A-Za-z0-9-]+', str(cfg.get('author', ''))):
         raise ValueError('{}: author must be a GitHub login'.format(path))
-    cfg.setdefault('max_open', 10)
-    if type(cfg['max_open']) is not int or cfg['max_open'] < 1:
-        raise ValueError('{}: max_open must be a positive integer'.format(path))
     return cfg
 
 
@@ -108,7 +103,7 @@ def summary(lane, now=None):
                 if open_ else None,
                 oldest_open=open_[0]['url'] if open_ else None, merged=len(merged),
                 last_merge_ours=max((p['merged_at'] for p in merged), default=None),
-                last_merge_anyone=max(anyone, default=None), max_open=cfg['max_open'],
+                last_merge_anyone=max(anyone, default=None),
                 cache_age_h=round(age_hours(data, now), 1))
 
 
@@ -131,30 +126,6 @@ def taken(lane, link):
     if m:
         return any(p['number'] == int(m.group(1)) and p.get('merged_at') for p in data['prs'])
     return bool(re.match(r'https://github\.com/' + repo + r'/commit/[0-9a-f]{7,40}', str(link), re.I))
-
-
-def new_pr_errors(root, repo, now=None):
-    """Why a NEW PR to repo must wait, or [] (no lane has that upstream, or we are under the cap)."""
-    errors = []
-    for lane in lanes_with_upstream(root):
-        cfg = config(lane)
-        if cfg['repo'].lower() != repo.lower():
-            continue
-        data = cached(lane)
-        if data is None or age_hours(data, now) > MAX_AGE_H:
-            errors.append('cannot confirm how many of our PRs are open in {}: the PR list is {}. '
-                          'Refresh it with: rh lanes upstream --lane {} --refresh'.format(
-                              repo, 'missing' if data is None else 'over {} h old'.format(MAX_AGE_H),
-                              lane.name))
-            continue
-        s = summary(lane, now)
-        if s['open_unmerged'] >= cfg['max_open']:
-            errors.append('{n} of our PRs are open and unmerged in {repo} (oldest {d} d, last merge of ours '
-                          '{lo}). No new PR while {cap} or more are open; stacked PRs count. Update an '
-                          'existing PR instead, or wait for merges.'.format(
-                              n=s['open_unmerged'], repo=repo, d=s['oldest_open_days'],
-                              lo=(s['last_merge_ours'] or 'never')[:10], cap=cfg['max_open']))
-    return errors
 
 
 PR_REF = re.compile(r'github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)|(?<![\w/])#(\d+)\b', re.I)
