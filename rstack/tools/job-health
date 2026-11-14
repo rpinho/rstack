@@ -87,6 +87,42 @@ def fresh_problems(entries, now):
     return rows
 
 
+def report(rows, tool, stem, label, alert='', push=None):
+    """Show (kind, what, detail) rows to the conductor while they last, and alert once per new one.
+
+    Writes $RSTACK_STATE_DIR/asks-waiting/<host>-<stem>.tsv (`label<TAB>what<TAB>kind: detail`), which
+    the asks-waiting hook prints on every conductor turn; runs `alert` once for each (kind, what) not
+    seen on the last run, with a one-line summary as its last argument; logs NEW and RECOVERED lines to
+    $RSTACK_STATE_DIR/<tool>/log. repo-freshness reuses this, so both report the same way."""
+    host = socket.gethostname().split('.')[0]
+    out = state_dir() / 'asks-waiting' / '{}-{}.tsv'.format(host, stem)
+    seen_file = state_dir() / tool / 'seen.json'
+    out.parent.mkdir(parents=True, exist_ok=True)
+    seen_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        seen = set(json.loads(seen_file.read_text()))
+    except (OSError, ValueError):
+        seen = set()
+    keys = {'{}\t{}'.format(k, w) for k, w, _ in rows}
+    new = [r for r in rows if '{}\t{}'.format(r[0], r[1]) not in seen]
+    gone = seen - keys
+    with open(state_dir() / tool / 'log', 'a') as fh:
+        for k, w, d in new:
+            fh.write('{} NEW {} {} {}\n'.format(time.strftime('%F %T'), k, w, d))
+        for key in sorted(gone):
+            fh.write('{} RECOVERED {}\n'.format(time.strftime('%F %T'), key.replace('\t', ' ')))
+    if new and alert:
+        summary = '{} on {}: {}'.format(len(new), host, '; '.join('{} {} ({})'.format(k, w, d) for k, w, d in new))[:900]
+        subprocess.run(shlex.split(alert) + [tool + ': ' + summary], capture_output=True, timeout=60)
+    tmp = out.with_suffix('.tmp')
+    tmp.write_text(''.join('{}\t{}\t{}\n'.format(label, w, '{}: {}'.format(k, d)) for k, w, d in rows))
+    os.replace(tmp, out)
+    seen_file.write_text(json.dumps(sorted(keys)))
+    if push:
+        subprocess.run(['ssh', '-o', 'BatchMode=yes', push, 'mkdir -p ' + str(out.parent)], capture_output=True, timeout=60)
+        subprocess.run(['scp', '-q', str(out), '{}:{}'.format(push, out)], capture_output=True, timeout=60)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--prefix', default=os.environ.get('JOB_HEALTH_PREFIX', ''),
@@ -117,34 +153,7 @@ def main(argv=None):
         return 0
     if a.dry:
         return 1 if rows else 0
-    host = socket.gethostname().split('.')[0]
-    out = state_dir() / 'asks-waiting' / (host + '-jobs.tsv')
-    seen_file = state_dir() / 'job-health' / 'seen.json'
-    out.parent.mkdir(parents=True, exist_ok=True)
-    seen_file.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        seen = set(json.loads(seen_file.read_text()))
-    except (OSError, ValueError):
-        seen = set()
-    keys = {'{}\t{}'.format(k, w) for k, w, _ in rows}
-    new = [r for r in rows if '{}\t{}'.format(r[0], r[1]) not in seen]
-    gone = seen - keys
-    log = state_dir() / 'job-health' / 'log'
-    with open(log, 'a') as fh:
-        for k, w, d in new:
-            fh.write('{} NEW {} {} {}\n'.format(time.strftime('%F %T'), k, w, d))
-        for key in sorted(gone):
-            fh.write('{} RECOVERED {}\n'.format(time.strftime('%F %T'), key.replace('\t', ' ')))
-    if new and a.alert:
-        summary = '{} on {}: {}'.format(len(new), host, '; '.join('{} {} ({})'.format(k, w, d) for k, w, d in new))[:900]
-        subprocess.run(shlex.split(a.alert) + ['job-health: ' + summary], capture_output=True, timeout=60)
-    tmp = out.with_suffix('.tmp')
-    tmp.write_text(''.join('{}\t{}\t{}\n'.format('job', w, '{}: {}'.format(k, d)) for k, w, d in rows))
-    os.replace(tmp, out)
-    seen_file.write_text(json.dumps(sorted(keys)))
-    if a.push:
-        subprocess.run(['ssh', '-o', 'BatchMode=yes', a.push, 'mkdir -p ' + str(out.parent)], capture_output=True, timeout=60)
-        subprocess.run(['scp', '-q', str(out), '{}:{}'.format(a.push, out)], capture_output=True, timeout=60)
+    report(rows, 'job-health', 'jobs', 'job', a.alert, a.push)
     # Problems are reported above, not through this exit code: a scheduled run that found problems
     # exiting 1 would list job-health itself as a failing job (11-12, its own first day).
     return 0

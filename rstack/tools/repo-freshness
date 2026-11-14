@@ -1,0 +1,640 @@
+#!/usr/bin/env python3
+"""The nightly check that no public repo drifts silently: the 11-13 audit, as code.
+
+Why (11-13): an audit found 8 stale public repos, 7 stale or missing retros, and live code that
+differed from the repo it came from. Nothing had failed; each had simply aged, and nobody runs an
+audit by hand every night. This lists every public repo, says how it reaches the public (its kind),
+and checks each kind the way it can drift:
+
+  pushed     the public repo is the working clone. Drift: a clone with uncommitted changes (`dirty`), a
+             checked-out branch with commits on no remote (`unpushed`), and a local branch that tracks
+             the public default branch but carries commits not on it, so a plain push publishes them
+             (`private-commits`).
+  published  the public repo is a release of a private working repo through a PUBLISH whitelist
+             (publish-public). Drift: what a publish would export now (the whitelisted files committed
+             at the source's HEAD, agent working files dropped) differs from the public default
+             branch (`unpublished`). The private repo being ahead of or behind the public one is not
+             drift; only the export is compared.
+  archived   read-only on GitHub; listed, not checked.
+  declared   a public repo with no clone on purpose (config `declared`, with a reason).
+  unknown    a public repo that is none of these: a FAILURE. Every public repo must have one way in.
+
+Also, on whichever host each entry names: README auto-blocks that differ from a fresh render
+(`readme-blocks check`, in every clone or source whose README has `<!-- auto:` markers), installed files
+whose hash differs from their repo copy (`installed`), a retro older than a lane result that has sat
+out of it for more than `max_days` (`retro`), and a backup command that no launchd job or crontab
+line runs on a schedule (`backup`). A host that cannot be reached, a source that cannot be read, or a
+GitHub call that fails is a problem too: the check fails closed.
+
+Problems go to $RSTACK_STATE_DIR/asks-waiting/<host>-repos.tsv (the conductor's asks-waiting hook
+prints it every turn) and each NEW one runs --alert once, the same way job-health reports. A run that
+reported exits 0; only --dry (print, write nothing) exits 1 when it finds a problem.
+
+    repo-freshness [--config FILE] [--alert CMD] [--push HOST] [--dry]
+
+Config (default ~/.config/rstack/repo-freshness.json). Every entry may name a `host` (an ssh alias);
+without one it is read on the machine running the check. Paths may start with ~ (that host's home).
+
+    {"owners": ["example-user"],                          GitHub owners whose public repos are listed
+     "roots": [{"path": "~/dev", "depth": 4},              where clones and PUBLISH files are found
+               {"path": "~/dev", "depth": 4, "host": "other-mac"}],
+     "exclude": ["~/dev/scratch/*"],                       clone or source paths (globs) never counted
+     "declared": {"example-user/old-site": {"kind": "frozen", "why": "kept for links; no clone"}},
+     "agent_files": "~/.config/git/agent-files.gitignore", dropped from a publish, as publish-public does
+     "readme_blocks": "readme-blocks",                     the render/check command on each host
+     "installed": [{"live": "~/.local/bin", "repo": "~/dev/tools/bin", "names": ["a-tool", "b-tool"]},
+                   {"live": "~/.claude/hooks/gate.py", "repo": "~/dev/tools/hooks/gate.py"}],
+     "retros": [{"lane": "demo", "retro": "~/dev/demo/RETRO.md",
+                 "results": "~/.local/share/research-harness/lanes/demo/RESULTS.jsonl", "max_days": 7}],
+     "backups": [{"name": "kb", "match": "backup-kb"}]}   a string some scheduled job's command contains
+"""
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+import fnmatch
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+HERE = Path(__file__).resolve().parent
+TIMEOUT = 120
+LOCAL = ''
+
+
+def load_tool(name):
+    loader = importlib.machinery.SourceFileLoader(name.replace('-', '_'), str(HERE / name))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+class Host:
+    """Run a command here, or on an ssh alias over one shared connection."""
+
+    def __init__(self, name):
+        self.name = name or LOCAL
+        self._home = None
+        self.error = None
+
+    def label(self, path=''):
+        return '{}:{}'.format(self.name, path) if self.name else path
+
+    def run(self, argv, timeout=TIMEOUT, stdin=None):
+        if self.name:
+            argv = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ControlMaster=auto',
+                    '-o', 'ControlPath=/tmp/repo-freshness-%C', '-o', 'ControlPersist=60', self.name,
+                    ' '.join(shlex.quote(a) for a in argv)]
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, input=stdin, errors='replace')
+        except subprocess.TimeoutExpired:
+            return 124, '', 'timed out after {} s'.format(timeout)
+        except OSError as exc:
+            return 127, '', str(exc)
+        return r.returncode, r.stdout, r.stderr
+
+    def sh(self, script, *args, timeout=TIMEOUT):
+        return self.run(['sh', '-c', script, 'sh', *args], timeout=timeout)
+
+    @property
+    def home(self):
+        if self._home is None:
+            if not self.name:
+                self._home = os.path.expanduser('~')
+            else:
+                rc, out, err = self.run(['sh', '-c', 'echo "$HOME"'], timeout=30)
+                if rc != 0 or not out.strip():
+                    self.error = (err.strip() or 'exit {}'.format(rc))[:200]
+                    self._home = ''
+                else:
+                    self._home = out.strip()
+        return self._home
+
+    def path(self, p):
+        p = str(p)
+        return self.home + p[1:] if p == '~' or p.startswith('~/') else p
+
+
+def repo_id(url):
+    """git@github.com:o/r.git, https://github.com/o/r, ssh://... -> github.com/o/r (egress-gate's rule)."""
+    u = re.sub(r'\.git/?$', '', url.strip().rstrip('/')).lower()
+    m = re.match(r'^(?:[a-z+]+://)?(?:[^@/]+@)?([^:/]+)[:/](.+)$', u)
+    return '{}/{}'.format(m.group(1), m.group(2)) if m else u
+
+
+def glob_rx(g):
+    """A PUBLISH line as publish-public reads it: ** any depth, * within a folder, a trailing / the folder."""
+    g = g.strip().lstrip('/')
+    if g.endswith('/'):
+        g += '**'
+    out, i = '', 0
+    while i < len(g):
+        if g.startswith('**/', i):
+            out, i = out + '(?:.*/)?', i + 3
+        elif g.startswith('**', i):
+            out, i = out + '.*', i + 2
+        elif g[i] == '*':
+            out, i = out + '[^/]*', i + 1
+        elif g[i] == '?':
+            out, i = out + '[^/]', i + 1
+        else:
+            out, i = out + re.escape(g[i]), i + 1
+    return re.compile(out + r'\Z')
+
+
+def parse_publish(text):
+    remote, inc, exc = None, [], []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if line.startswith('remote '):
+            remote = line.split(None, 1)[1]
+        elif line.startswith('!'):
+            exc.append(glob_rx(line[1:]))
+        else:
+            inc.append(glob_rx(line))
+    return remote, inc, exc
+
+
+# ---------------------------------------------------------------- inventory
+
+SCAN = r'''
+root=$1; depth=$2
+[ -d "$root" ] || { echo "@@missing $root"; exit 0; }
+find "$root" -maxdepth "$depth" \( -name node_modules -o -name .venv -o -name .Trash \) -prune -o \
+     -name .git -print -prune 2>/dev/null | while read -r g; do
+  d=$(dirname "$g")
+  printf '@@clone\t%s\n' "$d"
+  git -C "$d" remote -v 2>/dev/null | awk '$3 == "(fetch)" {print "remote\t" $1 "\t" $2}'
+done
+find "$root" -maxdepth "$((depth + 1))" \( -name node_modules -o -name .venv -o -name .Trash -o -name .git \) -prune -o \
+     -name PUBLISH -type f -print 2>/dev/null | while read -r f; do
+  printf '@@publish\t%s\t%s\n' "$(dirname "$f")" "$(sed -n 's/^[[:space:]]*remote[[:space:]][[:space:]]*//p' "$f" | head -1)"
+done
+'''
+
+
+def scan_root(host, root, depth, problems):
+    """[(host, path, {remote name: repo id})] and [(host, dir, remote id)] under one root."""
+    rc, out, err = host.sh(SCAN, host.path(root), str(int(depth)), timeout=600)
+    if rc != 0:
+        problems.append(('host', host.label(root), 'scan failed: {}'.format((err.strip() or 'exit {}'.format(rc))[:200])))
+        return [], []
+    clones, sources = [], []
+    for line in out.splitlines():
+        parts = line.split('\t')
+        if line.startswith('@@missing'):
+            problems.append(('config', host.label(root), 'scan root does not exist'))
+        elif parts[0] == '@@clone' and len(parts) == 2:
+            clones.append((host, parts[1], {}))
+        elif parts[0] == 'remote' and len(parts) == 3 and clones:
+            clones[-1][2][parts[1]] = repo_id(parts[2])
+        elif parts[0] == '@@publish' and len(parts) == 3:
+            sources.append((host, parts[1], repo_id(parts[2]) if parts[2] else ''))
+    return clones, sources
+
+
+def public_repos(owners, gh):
+    """{repo id: {name, archived, branch}}; raises RuntimeError when GitHub cannot be read."""
+    out = {}
+    for owner in owners:
+        r = subprocess.run(shlex.split(gh) + ['repo', 'list', owner, '--visibility', 'public', '--limit', '1000',
+                                              '--json', 'nameWithOwner,isArchived,defaultBranchRef'],
+                           capture_output=True, text=True, timeout=TIMEOUT)
+        if r.returncode != 0:
+            raise RuntimeError('gh repo list {} failed: {}'.format(owner, r.stderr.strip()[:200]))
+        for repo in json.loads(r.stdout or '[]'):
+            name = repo['nameWithOwner']
+            out['github.com/' + name.lower()] = dict(name=name, archived=bool(repo.get('isArchived')),
+                                                     branch=(repo.get('defaultBranchRef') or {}).get('name') or 'main')
+        # `gh repo list` exits 0 on an empty owner; an owner with nothing public is fine, a typo is caught by
+        # nothing being listed for it, so say so.
+    return out
+
+
+def excluded(host, path, globs):
+    return any(fnmatch.fnmatch(path, host.path(g)) for g in globs)
+
+
+def classify(public, clones, sources, declared):
+    """{repo id: (kind, detail, [clones], source or None)} and the problems the inventory itself finds."""
+    problems, inv = [], {}
+    by_remote = {}
+    for c in clones:
+        for rid in set(c[2].values()):
+            by_remote.setdefault(rid, []).append(c)
+    pub_src = {}
+    for s in sources:
+        pub_src.setdefault(s[2], []).append(s)
+    for rid, meta in sorted(public.items(), key=lambda kv: kv[1]['name'].lower()):
+        name = meta['name']
+        srcs = pub_src.get(rid, [])
+        src_paths = {(s[0].name, s[1]) for s in srcs}
+        others = [c for c in by_remote.get(rid, []) if (c[0].name, c[1]) not in src_paths]
+        if meta['archived']:
+            inv[rid] = ('archived', 'read-only on GitHub', [], None)
+        elif srcs:
+            if len(srcs) > 1:
+                problems.append(('inventory', name, 'published from {} sources: {}'.format(
+                    len(srcs), ', '.join(s[0].label(s[1]) for s in srcs))))
+            inv[rid] = ('published', 'source ' + srcs[0][0].label(srcs[0][1]), others, srcs[0])
+        elif others:
+            inv[rid] = ('pushed', '{} clone(s): {}'.format(len(others), ', '.join(
+                c[0].label(c[1]) for c in others[:3]) + (', ...' if len(others) > 3 else '')), others, None)
+        elif name in declared or name.lower() in {k.lower() for k in declared}:
+            d = declared.get(name) or next(v for k, v in declared.items() if k.lower() == name.lower())
+            inv[rid] = ('declared:' + str(d.get('kind', 'other')), d.get('why', ''), [], None)
+            if not d.get('why'):
+                problems.append(('inventory', name, 'declared without a "why"'))
+        else:
+            inv[rid] = ('unknown', 'no clone, no PUBLISH source, not declared', [], None)
+            problems.append(('unknown', name, 'public repo that is neither pushed (a clone under the scan roots) '
+                                              'nor published (a PUBLISH file naming it); give it one way in, '
+                                              'archive it, or declare it with a reason'))
+    for s in sources:
+        if s[2] and s[2] not in public and s[2].startswith('github.com/'):
+            problems.append(('inventory', s[0].label(s[1]), 'PUBLISH names {} which is not a public repo of '
+                                                             'the listed owners'.format(s[2])))
+    return inv, problems
+
+
+# ---------------------------------------------------------------- checks
+
+CLONE = r'''
+cd "$1" || exit 3
+r=$2; b=$3
+echo "dirty $(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+c=$(git rev-parse --git-common-dir 2>/dev/null) && echo "common $(cd "$c" && pwd -P)"
+echo "head $(git symbolic-ref -q --short HEAD)"
+echo "unpushed $(git rev-list --count HEAD --not --remotes 2>/dev/null)"
+git for-each-ref --format='%(refname:short) %(upstream:short)' refs/heads | while read -r br up; do
+  [ "$up" = "$r/$b" ] && echo "track $br $(git rev-list --count "$br" --not "$up" 2>/dev/null)"
+done
+[ -d .git ] && grep -qE '<!--[[:space:]]*auto:' README.md 2>/dev/null && echo "readme README.md"
+exit 0
+'''
+
+
+def clone_state(host, path, remote, branch):
+    rc, out, err = host.sh(CLONE, path, remote, branch)
+    if rc != 0:
+        return None, (err.strip() or 'exit {}'.format(rc))[:200]
+    st = dict(dirty=0, common=path, head='', unpushed=0, track=[], readme=None)
+    for line in out.splitlines():
+        k, _, v = line.partition(' ')
+        if k in ('dirty', 'unpushed'):
+            st[k] = int(v) if v.strip().isdigit() else 0
+        elif k in ('common', 'head'):
+            st[k] = v.strip()
+        elif k == 'track':
+            br, _, n = v.rpartition(' ')
+            st['track'].append((br, int(n) if n.isdigit() else 0))
+        elif k == 'readme':
+            st['readme'] = v.strip()
+    return st, None
+
+
+def pushed_problems(name, branch, clones, states):
+    """dirty / unpushed / private-commits for one pushed repo's clones, one row per kind.
+
+    One row per (kind, repo), not per clone: one repo had 51 worktrees, and a row each would flood the
+    conductor's prompt the way 121 job rows did on 11-13. The row names the count and the worst three."""
+    found, checked_out, seen = {'dirty': [], 'unpushed': [], 'private-commits': []}, {}, set()
+    for (host, path, remotes), st in zip(clones, states):
+        if st is not None:
+            checked_out.setdefault((host.name, st['common']), set()).add(st['head'])
+    for (host, path, remotes), st in zip(clones, states):
+        if st is None:
+            continue
+        where = host.label(path)
+        if st['dirty']:
+            found['dirty'].append((st['dirty'], where))
+        if st['unpushed']:
+            found['unpushed'].append((st['unpushed'], '{} {}'.format(where, st['head'] or '(detached)')))
+        for br, n in st['track']:
+            key = (host.name, st['common'], br)
+            if n and br not in checked_out.get(key[:2], ()) and key not in seen:
+                seen.add(key)
+                found['private-commits'].append((n, '{} {}'.format(where, br)))
+    what = {'dirty': 'clone(s) with uncommitted changes',
+            'unpushed': 'checked-out branch(es) with commits on no remote',
+            'private-commits': 'local branch(es) tracking public {} with commits not on it; a plain push '
+                               'publishes them'.format(branch)}
+    rows = []
+    for kind, items in found.items():
+        if items:
+            items.sort(key=lambda x: -x[0])
+            worst = ', '.join('{} ({})'.format(w, n) for n, w in items[:3]) + (', ...' if len(items) > 3 else '')
+            rows.append((kind, name, '{} {}: {}'.format(len(items), what[kind], worst)))
+    return rows
+
+
+def published_problems(name, branch, source, agent_globs, gh, gate):
+    host, src = source[0], source[1]
+    rc, text, err = host.run(['cat', src + '/PUBLISH'])
+    if rc != 0:
+        return [('unpublished', name, 'cannot read {}: {}'.format(host.label(src + '/PUBLISH'), err.strip()[:200]))]
+    _remote, inc, exc = parse_publish(text)
+    rc, tree, err = host.run(['git', '-C', src, 'ls-tree', '-r', '-z', 'HEAD'])
+    if rc != 0:
+        return [('unpublished', name, 'cannot list {} HEAD: {}'.format(host.label(src), err.strip()[:200]))]
+    export = {}
+    for entry in filter(None, tree.split('\0')):
+        meta, _, path = entry.partition('\t')
+        parts = meta.split()
+        if len(parts) != 3 or parts[1] != 'blob':
+            continue
+        if any(r.match(path) for r in inc) and not any(r.match(path) for r in exc) \
+                and not gate.is_agent_file(path, agent_globs):
+            export[path] = parts[2]
+    r = subprocess.run(shlex.split(gh) + ['api', 'repos/{}/git/trees/{}?recursive=1'.format(name, branch)],
+                       capture_output=True, text=True, timeout=TIMEOUT)
+    if r.returncode != 0:
+        return [('unpublished', name, 'cannot read the public {} tree: {}'.format(branch, (r.stderr or r.stdout).strip()[:200]))]
+    data = json.loads(r.stdout)
+    if data.get('truncated'):
+        return [('unpublished', name, 'public tree listing was truncated; cannot compare')]
+    public = {t['path']: t['sha'] for t in data.get('tree', []) if t.get('type') == 'blob'}
+    changed = sorted(p for p in export if public.get(p) != export[p])
+    removed = sorted(p for p in public if p not in export)
+    if not changed and not removed:
+        return []
+    shown = ', '.join((changed + removed)[:5]) + (', ...' if len(changed) + len(removed) > 5 else '')
+    return [('unpublished', name, 'a publish from {} would change {} file(s) and remove {} on public {}: {}'.format(
+        host.label(src), len(changed), len(removed), branch, shown))]
+
+
+def readme_problem(host, path, readme, cmd):
+    rc, out, err = host.run(shlex.split(cmd) + ['check', path + '/' + readme])
+    if rc == 0:
+        return []
+    if rc == 1:
+        stale = re.findall(r'block "([^"]+)"', out)
+        return [('readme', host.label(path + '/' + readme), 'auto-blocks differ from a fresh render: {}'.format(
+            ', '.join(stale) or out.strip()[:200]))]
+    return [('readme', host.label(path + '/' + readme), 'readme-blocks could not check it (exit {}): {}'.format(
+        rc, (err or out).strip()[:200]))]
+
+
+# Each side as a git blob id: the repo side as committed at HEAD when it is in a checkout (a working-tree
+# edit is not what was installed from), the file itself otherwise.
+HASH = r'''live=$1; repo=$2
+if [ -f "$live" ]; then git hash-object "$live"; else echo missing; fi
+if [ ! -f "$repo" ]; then echo missing
+else git -C "$(dirname "$repo")" rev-parse -q --verify "HEAD:./$(basename "$repo")" 2>/dev/null || git hash-object "$repo"; fi'''
+
+
+def installed_problems(entries, host_of):
+    rows = []
+    for e in entries:
+        host = host_of(e.get('host'))
+        if e.get('names'):
+            pairs = [(e['live'].rstrip('/') + '/' + n, e['repo'].rstrip('/') + '/' + n) for n in e['names']]
+        else:
+            pairs = [(e['live'], e['repo'])]
+        for live, repo in pairs:
+            rc, out, err = host.sh(HASH, host.path(live), host.path(repo))
+            got = out.split()
+            if rc != 0 or len(got) != 2:
+                rows.append(('installed', host.label(live), 'cannot hash: {}'.format((err.strip() or 'exit {}'.format(rc))[:200])))
+            elif 'missing' in got:
+                which = live if got[0] == 'missing' else repo
+                rows.append(('installed', host.label(live), '{} is missing'.format(which)))
+            elif got[0] != got[1]:
+                rows.append(('installed', host.label(live), 'differs from {} as committed: live code is not the '
+                             'repo\'s'.format(repo)))
+    return rows
+
+
+RETRO = r'''f=$1
+[ -f "$f" ] || { echo none; exit 0; }
+t=$(git -C "$(dirname "$f")" log -1 --format=%ct -- "$(basename "$f")" 2>/dev/null)
+[ -n "$t" ] && echo "$t" || date -r "$f" +%s'''
+
+
+def stamp(row):
+    for k in ('utc', 'ts', 'date'):
+        v = row.get(k)
+        if isinstance(v, str):
+            try:
+                d = datetime.fromisoformat(v.replace('Z', '+00:00'))
+                return d.timestamp() if d.tzinfo else time.mktime(d.timetuple())
+            except ValueError:
+                continue
+    return None
+
+
+def retro_problems(entries, host_of, now):
+    rows = []
+    for e in entries:
+        host = host_of(e.get('host'))
+        lane, max_days = e.get('lane', e.get('retro')), float(e.get('max_days', 7))
+        rc, out, err = host.run(['cat', host.path(e['results'])])
+        if rc != 0:
+            rows.append(('retro', lane, 'cannot read results {}: {}'.format(e['results'], err.strip()[:200])))
+            continue
+        times = []
+        for line in out.splitlines():
+            try:
+                t = stamp(json.loads(line))
+            except ValueError:
+                continue
+            if t is not None:
+                times.append(t)
+        rc, out, err = host.sh(RETRO, host.path(e['retro']))
+        if rc != 0:
+            rows.append(('retro', lane, 'cannot date {}: {}'.format(e['retro'], err.strip()[:200])))
+            continue
+        retro_t = None if out.strip() in ('', 'none') else float(out.split()[0])
+        after = [t for t in times if retro_t is None or t > retro_t]
+        if not after:
+            continue
+        waiting = (now - min(after)) / 86400
+        if waiting <= max_days:
+            continue
+        if retro_t is None:
+            rows.append(('retro', lane, 'no retro at {}; {} result(s), the oldest {:.0f} days old'.format(
+                e['retro'], len(after), waiting)))
+        else:
+            rows.append(('retro', lane, '{} is from {}; {} newer result(s), the oldest {:.0f} days out of it '
+                         '(limit {:g})'.format(e['retro'], time.strftime('%Y-%m-%d', time.localtime(retro_t)),
+                                               len(after), waiting, max_days)))
+    return rows
+
+
+BACKUP = r'''m=$1
+crontab -l 2>/dev/null | grep -v '^[[:space:]]*#' | grep -qF -- "$m" && { echo cron; exit 0; }
+for p in "$HOME"/Library/LaunchAgents/*.plist /Library/LaunchAgents/*.plist /Library/LaunchDaemons/*.plist; do
+  [ -f "$p" ] || continue
+  grep -qF -- "$m" "$p" || continue
+  l=$(plutil -extract Label raw "$p" 2>/dev/null)
+  s=no; grep -qE 'StartCalendarInterval|StartInterval' "$p" && s=yes
+  ld=no; [ -n "$l" ] && launchctl list "$l" >/dev/null 2>&1 && ld=yes
+  echo "plist $l $s $ld"
+done
+exit 0'''
+
+
+def backup_problems(entries, host_of):
+    rows = []
+    for e in entries:
+        host = host_of(e.get('host'))
+        name = e.get('name', e['match'])
+        rc, out, err = host.sh(BACKUP, e['match'])
+        if rc != 0:
+            rows.append(('backup', name, 'cannot read the schedules: {}'.format(err.strip()[:200])))
+            continue
+        lines = out.split('\n')
+        if 'cron' in lines:
+            continue
+        plists = [l.split() for l in lines if l.startswith('plist ')]
+        if any(p[-2:] == ['yes', 'yes'] for p in plists):
+            continue
+        if not plists:
+            detail = 'no launchd job or crontab line runs "{}"'.format(e['match'])
+        else:
+            detail = 'launchd job(s) {} run it but {}'.format(', '.join(p[1] for p in plists if len(p) > 3), '; '.join(
+                'not on a schedule' if p[-2] != 'yes' else 'not loaded' for p in plists))
+        rows.append(('backup', host.label(name), detail))
+    return rows
+
+
+# ---------------------------------------------------------------- main
+
+def check(cfg, gh='gh', now=None, workers=6):
+    """(inventory lines, problem rows)."""
+    now = now or time.time()
+    gate = load_tool('egress-gate')
+    hosts = {}
+
+    def host_of(name):
+        name = name or LOCAL
+        if name not in hosts:
+            hosts[name] = Host(name)
+        return hosts[name]
+
+    problems = []
+    for name in {r.get('host') or LOCAL for r in cfg.get('roots', [])} | \
+            {e.get('host') or LOCAL for k in ('installed', 'retros', 'backups') for e in cfg.get(k, [])}:
+        h = host_of(name)
+        if not h.home:
+            problems.append(('host', name, 'unreachable: {}'.format(h.error)))
+    live = lambda e: not host_of(e.get('host')).error
+    clones, sources = [], []
+    excl = cfg.get('exclude', [])
+    for r in cfg.get('roots', []):
+        if not live(r):
+            continue
+        h = host_of(r.get('host'))
+        c, s = scan_root(h, r['path'], r.get('depth', 4), problems)
+        clones += [x for x in c if not excluded(h, x[1], excl)]
+        sources += [x for x in s if not excluded(h, x[1], excl)]
+    try:
+        public = public_repos(cfg.get('owners', []), gh)
+    except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        return [], problems + [('inventory', 'github', str(exc)[:300])]
+    if not public:
+        problems.append(('inventory', 'github', 'no public repos listed for owners {}'.format(cfg.get('owners'))))
+    inv, more = classify(public, clones, sources, cfg.get('declared') or {})
+    problems += more
+    if any(h.error for h in hosts.values()):
+        problems = [(k, w, d + ' (a host was unreachable, so its clones were not seen)' if k == 'unknown' else d)
+                    for k, w, d in problems]
+    lines = ['{}\t{}\t{}'.format(kind, public[rid]['name'], detail) for rid, (kind, detail, _, _) in inv.items()]
+    rb = cfg.get('readme_blocks', 'readme-blocks')
+    agent_globs_by_host = {}
+
+    def agent_globs(h):
+        if h.name not in agent_globs_by_host:
+            rc, out, _ = h.run(['cat', h.path(cfg.get('agent_files', '~/.config/git/agent-files.gitignore'))])
+            agent_globs_by_host[h.name] = [l.strip().lower() for l in out.splitlines()
+                                           if rc == 0 and l.strip() and not l.lstrip().startswith('#')]
+        return agent_globs_by_host[h.name]
+
+    jobs = []
+    for rid, (kind, _, cl, src) in inv.items():
+        meta = public[rid]
+        if kind == 'pushed':
+            for c in cl:
+                remote = next(n for n, v in c[2].items() if v == rid)
+                jobs.append(('clone', rid, c, remote, meta['branch']))
+        elif kind == 'published':
+            jobs.append(('published', rid, src, None, meta['branch']))
+            for c in cl:   # another clone of a published repo still must not hold unpushed work for it
+                remote = next(n for n, v in c[2].items() if v == rid)
+                jobs.append(('clone', rid, c, remote, meta['branch']))
+
+    def do(job):
+        what, rid, c, remote, branch = job
+        if what == 'published':
+            h = c[0]
+            out = published_problems(public[rid]['name'], branch, c, agent_globs(h), gh, gate)
+            rc, txt, _ = h.sh('[ -d "$1/.git" ] && grep -qE "<!--[[:space:]]*auto:" "$1/README.md" 2>/dev/null && echo y',
+                              c[1])
+            if txt.strip() == 'y':
+                out += readme_problem(h, c[1], 'README.md', rb)
+            return job, None, out
+        st, err = clone_state(c[0], c[1], remote, branch)
+        out = [('host', c[0].label(c[1]), 'cannot read clone: ' + err)] if err else []
+        if st and st['readme']:
+            out += readme_problem(c[0], c[1], st['readme'], rb)
+        return job, st, out
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(do, jobs))
+    by_repo = {}
+    for job, st, rows in results:
+        problems += rows
+        if job[0] == 'clone':
+            by_repo.setdefault(job[1], ([], []))
+            by_repo[job[1]][0].append(job[2])
+            by_repo[job[1]][1].append(st)
+    for rid, (cl, states) in by_repo.items():
+        problems += pushed_problems(public[rid]['name'], public[rid]['branch'], cl, states)
+    problems += installed_problems([e for e in cfg.get('installed', []) if live(e)], host_of)
+    problems += retro_problems([e for e in cfg.get('retros', []) if live(e)], host_of, now)
+    problems += backup_problems([e for e in cfg.get('backups', []) if live(e)], host_of)
+    return lines, problems
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--config', default=os.environ.get('REPO_FRESHNESS_CONFIG',
+                                                       os.path.expanduser('~/.config/rstack/repo-freshness.json')))
+    ap.add_argument('--alert', default=os.environ.get('REPO_FRESHNESS_ALERT', ''),
+                    help='command run once per new problem, with a one-line summary as its last argument')
+    ap.add_argument('--push', help="copy this host's list to the same path on HOST (the conductor's Mac)")
+    ap.add_argument('--dry', action='store_true', help='print the inventory and problems; write and alert nothing')
+    a = ap.parse_args(argv)
+    gh = os.environ.get('REPO_FRESHNESS_GH', 'gh')
+    try:
+        cfg = json.loads(Path(a.config).expanduser().read_text())
+        lines, rows = check(cfg, gh)
+    except FileNotFoundError:
+        print('repo-freshness: no config at {} (see --help for its shape); nothing was checked'.format(a.config),
+              file=sys.stderr)
+        return 2
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:   # a broken config is a problem, not an all-clear
+        lines, rows = [], [('config', a.config, 'unreadable: {}'.format(exc))]
+    print('# inventory: kind\trepo\thow it reaches the public')
+    for l in lines:
+        print(l)
+    print('# problems: {}'.format(len(rows)))
+    for k, w, d in rows:
+        print('{}\t{}\t{}'.format(k, w, d))
+    if a.dry:
+        return 1 if rows else 0
+    load_tool('job-health').report(rows, 'repo-freshness', 'repos', 'repo', a.alert, a.push)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
