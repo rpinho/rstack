@@ -53,6 +53,8 @@ Restart/re-arm the background watcher with the printed exports as well.
 | `CONDUCTOR_NAME` | `conductor`; exact name denied by the hook, also when followed by a display annotation. |
 | `CONDUCTOR_HUMAN_KIND` | `human`; optional additional escalation keyword for compatibility with a local caller's terminology. The public `human` spelling always works. |
 | `CONDUCTOR_SOCKET_DIR` | `/tmp/cc-socks`; installer socket discovery only. |
+| `CONDUCTOR_QUARANTINE_TERMS` | Unset: nothing is quarantined. A file of terms, one per line (`#` comments). A message matching one is kept out of the conductor's context: the full text goes to `quarantine/` under the inbox (mode 600) and the row carries the sender's `--summary`, the path and a count of matched terms, never the terms. The kind is kept, so a wake still happens. A configured file that cannot be read quarantines every message. |
+| `CONDUCTOR_HOST`, `CONDUCTOR_REMOTE_COMMAND`, `CONDUCTOR_SSH` | Unset: file here. An ssh alias: hand each message to `tell-conductor` on that machine (default command `~/.local/bin/tell-conductor`) with the same kind, sender and summary, for peers on a machine whose inbox the conductor does not read. An unreachable host is an error, never a silent local filing. |
 | `EVENT_WATCH_CONF` | Installer defaults to `$HOME/.config/event-watch`. Export the printed value: the repository watcher itself otherwise defaults to `.runtime/event-watch/config`. |
 | `EVENT_WATCH_STATE` | Installer defaults to `$XDG_STATE_HOME/event-watch` or `$HOME/.local/state/event-watch`. Export it to share the installer's baseline; the watcher itself otherwise uses `.runtime/event-watch/state`. |
 | `CLAUDE_SESSION_NAME` | Default sender; falls back to the current directory basename. Override with `--from NAME`. |
@@ -69,8 +71,10 @@ tell-conductor human "An operator approval is needed."
 tell-conductor break "A dependency is blocking all workers."
 ```
 
-Every command appends one UTF-8 JSON row (`utc`, `from`, `kind`, `text`) to
-`inbox.jsonl`. `fyi` creates no wake file. `decision`, `human`, the configured
+Every command appends one UTF-8 JSON row (`utc`, `from`, `kind`, `text`, plus
+`quarantined` and `quarantine_match_count` for a quarantined message) to
+`inbox.jsonl`. Pass `--summary "what is needed, from whom, where the detail lives"`
+with anything that might be quarantined, so the conductor can act on the pointer. `fyi` creates no wake file. `decision`, `human`, the configured
 human alias, and `break` also create a unique file under `wake/`. The first 200
 characters are copied into the marker. Scripts never send a peer message or
 connect to the socket. The gate denies the configured conductor name and recorded

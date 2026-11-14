@@ -191,3 +191,68 @@ def test_installer_refuses_a_missing_socket_before_installing(inbox_env):
     assert not (home / ".local/bin").exists()
     assert not (home / ".config/event-watch").exists()
     assert not Path(inbox_env["CONDUCTOR_INBOX_DIR"]).exists()
+
+
+# Placeholder vocabulary only; real quarantine lists never enter this repository.
+TERM = "projectcodename"
+
+
+def rows_of(env):
+    root = Path(env["CONDUCTOR_INBOX_DIR"])
+    return [json.loads(line) for line in (root / "inbox.jsonl").read_text().splitlines()]
+
+
+def test_cli_quarantines_matching_detail_and_never_names_the_terms(inbox_env, tmp_path):
+    terms = tmp_path / "terms.txt"
+    terms.write_text("# synthetic\n" + TERM + "\n")
+    inbox_env["CONDUCTOR_QUARANTINE_TERMS"] = str(terms)
+    detail = f"results for {TERM.upper()} are in run-104"
+    out = run("tell-conductor", "--summary", "run finished; needs a choice", "break", detail,
+              env=inbox_env).stdout
+    row = rows_of(inbox_env)[-1]
+    assert TERM not in json.dumps(row).lower() and TERM not in out.lower()
+    assert row["quarantine_match_count"] == 1 and row["kind"] == "break"
+    assert row["text"].startswith("run finished; needs a choice")
+    held = Path(row["quarantined"])
+    assert held.read_text() == detail and (held.stat().st_mode & 0o777) == 0o600
+    wake = list((Path(inbox_env["CONDUCTOR_INBOX_DIR"]) / "wake").iterdir())
+    assert len(wake) == 1 and TERM not in wake[0].read_text().lower()   # the kind still wakes
+
+    # a summary that matches is withheld too; a clean message passes through untouched
+    run("tell-conductor", "--summary", "about " + TERM, "fyi", TERM + " detail", env=inbox_env)
+    assert TERM not in json.dumps(rows_of(inbox_env)[-1]) and "withheld too" in rows_of(inbox_env)[-1]["text"]
+    run("tell-conductor", "fyi", "a plain status line", env=inbox_env)
+    assert rows_of(inbox_env)[-1]["text"] == "a plain status line"
+    assert "quarantined" not in rows_of(inbox_env)[-1]
+
+
+def test_cli_with_an_unreadable_terms_file_quarantines_everything(inbox_env, tmp_path):
+    inbox_env["CONDUCTOR_QUARANTINE_TERMS"] = str(tmp_path / "missing.txt")
+    result = run("tell-conductor", "fyi", "anything at all", env=inbox_env)
+    assert "cannot be read" in result.stderr
+    row = rows_of(inbox_env)[-1]
+    assert "anything at all" not in row["text"] and Path(row["quarantined"]).exists()
+
+
+def test_cli_forwards_to_the_conductor_host_and_never_files_locally(inbox_env, tmp_path):
+    log = tmp_path / "ssh.log"
+    ssh = tmp_path / "fake-ssh"
+    # Stands in for ssh: skips -o options, records host and command, runs the command here.
+    ssh.write_text("#!/bin/sh\nwhile [ \"$1\" = \"-o\" ]; do shift 2; done\n"
+                   f"printf 'host=%s\\n' \"$1\" >> {shlex.quote(str(log))}\nshift\nexec sh -c \"$*\"\n")
+    ssh.chmod(0o755)
+    remote_root = tmp_path / "remote inbox"
+    inbox_env.update(CONDUCTOR_HOST="control-box", CONDUCTOR_SSH=str(ssh),
+                     CONDUCTOR_REMOTE_COMMAND=(f"CONDUCTOR_INBOX_DIR={shlex.quote(str(remote_root))} "
+                                               f"{shlex.quote(sys.executable)} "
+                                               f"{shlex.quote(str(SCRIPTS / 'tell-conductor'))}"))
+    out = run("tell-conductor", "--summary", "one line", "decision", "it's ready; see notes",
+              env=inbox_env).stdout
+    assert "(via control-box)" in out and "host=control-box" in log.read_text()
+    assert not Path(inbox_env["CONDUCTOR_INBOX_DIR"]).exists()
+    row = json.loads((remote_root / "inbox.jsonl").read_text())
+    assert row["text"] == "it's ready; see notes" and row["from"] == "worker" and row["kind"] == "decision"
+
+    inbox_env["CONDUCTOR_HOST"] = "-oProxyCommand=x"
+    with pytest.raises(subprocess.CalledProcessError):
+        run("tell-conductor", "fyi", "x", env=inbox_env)

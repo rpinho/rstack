@@ -1,29 +1,79 @@
 #!/usr/bin/env python3
-"""File an inbox message; only decision, human and break request a wake."""
+"""File an inbox message; only decision, human and break request a wake.
+
+  tell-conductor fyi "..."        filed only; the conductor reads it on its next real wake
+  tell-conductor decision "..."   filed + wake (a choice the sender cannot make itself)
+  tell-conductor human "..."      filed + wake (needs the human, or answers a request the human made)
+  tell-conductor break "..."      filed + wake (something broken that blocks the sender)
+
+Options: --from NAME (default $CLAUDE_SESSION_NAME or the cwd name), --summary "one safe line".
+
+QUARANTINE. The conductor is a general-purpose session. Worker detail from a sensitive research
+domain, relayed into it, can trip a safety classifier and stall it, and compaction does not help
+because the inbox is re-read on every wake. CONDUCTOR_QUARANTINE_TERMS names a file of terms, one
+per line (`#` comments; case-insensitive, word-bounded where a term starts or ends with a letter or
+digit). A message that matches one is NOT put into the conductor's context and is NOT lost: the full
+text goes to quarantine/ under the inbox (mode 600) and the row carries the --summary plus that
+path. The kind is kept, so a human or break message still wakes the conductor. The row and the
+sender's output carry a COUNT of matched terms, never the terms: the row is re-read on every wake,
+and naming them there would put the withheld vocabulary into the context the quarantine protects.
+No file configured: nothing is quarantined. A configured file that cannot be read quarantines
+everything until it is fixed, since a filter that silently became no filter is the failure.
+
+Write the summary so the conductor can act without the detail: what is needed, from whom, and
+where the detail lives.
+
+CONDUCTOR_HOST (an ssh alias) hands the message to tell-conductor on that machine instead, with the
+same kind, sender and summary, for workers on a machine whose inbox the conductor never reads. The
+quarantine then applies there. CONDUCTOR_REMOTE_COMMAND is the command run there (default
+~/.local/bin/tell-conductor, where the installer links it; a non-interactive ssh PATH lacks it).
+"""
 import argparse
 import json
 import os
 from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
 import time
 import uuid
 
 
-def main():
-    kinds = {"fyi", "decision", "human", "break"}
-    kinds.add(os.environ.get("CONDUCTOR_HUMAN_KIND") or "human")
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--from", dest="sender", default=(
-        os.environ.get("CLAUDE_SESSION_NAME") or Path.cwd().name))
-    parser.add_argument("kind", choices=sorted(kinds))
-    parser.add_argument("text", nargs="+")
-    args = parser.parse_args()
-    root = Path(os.environ.get("CONDUCTOR_INBOX_DIR") or (
+def inbox_dir():
+    return Path(os.environ.get("CONDUCTOR_INBOX_DIR") or (
         Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
         / "conductor-inbox")).expanduser()
-    root.mkdir(parents=True, exist_ok=True)
-    text = " ".join(args.text)
-    row = {"utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-           "from": args.sender, "kind": args.kind, "text": text}
+
+
+class Unreadable(Exception):
+    pass
+
+
+def load_terms():
+    """Compiled terms from CONDUCTOR_QUARANTINE_TERMS; [] when none is configured."""
+    configured = os.environ.get("CONDUCTOR_QUARANTINE_TERMS")
+    if not configured:
+        return []
+    try:
+        lines = Path(configured).expanduser().read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        raise Unreadable(configured)
+    terms = []
+    for line in lines:
+        t = line.strip()
+        if t and not t.startswith("#"):
+            left = r"\b" if t[:1].isalnum() else ""
+            right = r"\b" if t[-1:].isalnum() else ""
+            terms.append(re.compile(left + re.escape(t) + right, re.I))
+    return terms
+
+
+def count_hits(text, terms):
+    return sum(1 for rx in terms if rx.search(text))
+
+
+def append_row(root, row):
     # One append write keeps concurrent small messages from interleaving.
     payload = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
     fd = os.open(root / "inbox.jsonl", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -32,14 +82,102 @@ def main():
             raise OSError("incomplete inbox append")
     finally:
         os.close(fd)
+
+
+def quarantine(root, sender, kind, text):
+    qdir = root / "quarantine"
+    qdir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", sender)[:40] or "sender"
+    path = qdir / f"{stamp}-{safe}-{kind}-{uuid.uuid4().hex[:8]}.txt"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    return path
+
+
+def forward(host, args, text):
+    """Run tell-conductor on HOST with the same message; never fall back to the local inbox."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}", host):
+        sys.exit(f"tell-conductor: CONDUCTOR_HOST must be an ssh alias, got {host!r}; not sent")
+    remote = os.environ.get("CONDUCTOR_REMOTE_COMMAND") or "~/.local/bin/tell-conductor"
+    argv = ["--from", args.sender] + (["--summary", args.summary] if args.summary else [])
+    # The remote command is left unquoted so ~ expands there; every argument is quoted.
+    cmd = " ".join(["CONDUCTOR_FORWARDED=1", remote] + [shlex.quote(a) for a in argv + [args.kind, text]])
+    ssh = shlex.split(os.environ.get("CONDUCTOR_SSH") or "ssh")
+    try:
+        run = subprocess.run(ssh + ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, cmd],
+                             capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        sys.exit(f"tell-conductor: could not reach the conductor on {host} ({e}); not sent")
+    if run.returncode:
+        sys.exit(f"tell-conductor: could not reach the conductor on {host} "
+                 f"(ssh exit {run.returncode}); not sent")
+    print(run.stdout.strip() + f" (via {host})")
+
+
+def main():
+    kinds = {"fyi", "decision", "human", "break"}
+    kinds.add(os.environ.get("CONDUCTOR_HUMAN_KIND") or "human")
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--from", dest="sender", default=(
+        os.environ.get("CLAUDE_SESSION_NAME") or Path.cwd().name))
+    parser.add_argument("--summary")
+    parser.add_argument("kind", choices=sorted(kinds))
+    parser.add_argument("text", nargs="+")
+    args = parser.parse_args()
+    text = " ".join(args.text)
+
+    host = os.environ.get("CONDUCTOR_HOST", "").strip()
+    if host and os.environ.get("CONDUCTOR_FORWARDED") != "1":
+        forward(host, args, text)
+        return
+
+    root = inbox_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    unreadable = False
+    try:
+        terms = load_terms()
+    except Unreadable:
+        terms, unreadable = [], True
+        print("tell-conductor: CONDUCTOR_QUARANTINE_TERMS cannot be read, so this message is "
+              "quarantined whole until it is fixed.", file=sys.stderr)
+    matched = count_hits(text, terms)
+    row = {"utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "from": args.sender, "kind": args.kind, "text": text}
+    if matched or unreadable:
+        path = quarantine(root, args.sender, args.kind, text)
+        summary, why = args.summary, "no --summary was given"
+        if summary and (unreadable or count_hits(summary, terms)):
+            summary, why = None, "a --summary was given but it was withheld too"
+        cause = (f"{matched} withheld term(s)" if matched
+                 else "the quarantine terms file could not be read")
+        if summary:
+            row["text"] = (f"{summary}\n\n[{args.sender} sent detail kept out of this context "
+                           f"({cause}). Full text: {path}. Do not read it into this session; "
+                           f"ask {args.sender} directly.]")
+        else:
+            row["text"] = (f"{args.sender} has something for you ({args.kind}), and {why}. Its "
+                           f"detail is kept out of this context ({cause}). Full text: {path}. Do "
+                           f"not read it into this session; ask {args.sender} for a one-line "
+                           f"summary: what is needed, from whom, where the detail lives.")
+        row["quarantined"] = str(path)
+        row["quarantine_match_count"] = matched
+    append_row(root, row)
     if args.kind != "fyi":
         (root / "wake").mkdir(exist_ok=True)
         # Sender and message text must never become a filesystem path.
         marker = root / "wake" / f"{time.time_ns()}-{uuid.uuid4().hex}"
-        marker.write_text(text[:200], encoding="utf-8")
+        marker.write_text(row["text"][:200], encoding="utf-8")
     name = os.environ.get("CONDUCTOR_NAME") or "conductor"
     suffix = "wake requested" if args.kind != "fyi" else "filed for the next wake"
-    print(f"{name}: {args.kind}; {suffix}")
+    if "quarantined" in row:
+        print(f"{name}: {args.kind}; {suffix}; filed as a POINTER: {matched} term(s) matched, so "
+              f"the text was quarantined to {row['quarantined']}")
+        if not args.summary:
+            print('Next time pass --summary "what is needed, from whom, where the detail lives".')
+    else:
+        print(f"{name}: {args.kind}; {suffix}")
 
 
 if __name__ == "__main__":
