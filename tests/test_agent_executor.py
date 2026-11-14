@@ -174,3 +174,68 @@ def test_a_job_runs_only_where_the_osascript_shim_comes_first(tmp_path):
     shim.write_text('#!/bin/sh\n')
     assert shim_first(home, lambda name: str(shim)) is None
     assert '/usr/bin/osascript' in shim_first(home, lambda name: '/usr/bin/osascript')
+
+
+def _launch_claude_fixture(tmp_path, **extra):
+    """Run tools/launch.sh with a fake claude CLI that records its argv; returns (proc, argv)."""
+    import os
+    repo = Path(__file__).resolve().parents[1]
+    jobs = tmp_path / 'jobs'; jobs.mkdir(exist_ok=True)
+    (jobs / 'fixture.md').write_text('synthetic fixture')
+    roles = tmp_path / 'roles.json'
+    roles.write_text(json.dumps(dict(roles={'batch': ['fixture-claude']}, routes={
+        'fixture-claude': {'canonical': 'fixture-claude', 'cli': 'claude'}})))
+    argv_file = tmp_path / 'argv.json'
+    fake = tmp_path / 'fake-cli'
+    fake.write_text('#!' + sys.executable + '\nimport json, sys\n'
+                    'open(' + repr(str(argv_file)) + ', "w").write(json.dumps(sys.argv[1:]))\n'
+                    'print(\'{"is_error":false,"subtype":"success","result":"ok"}\')\n')
+    fake.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k not in ('AGENT_BACKEND', 'LAUNCH_BACKEND')}
+    env.update(LAUNCH_CLAUDE=str(fake), LAUNCH_ARTIFACT_DIR=str(jobs),
+               LAUNCH_STATE=str(tmp_path / 'registry'), RH_ROLES_FILE=str(roles), FORCE_LAUNCH='1')
+    env.update(extra)
+    proc = subprocess.run(['zsh', str(repo / 'tools/launch.sh'), 'fixture', str(tmp_path)],
+                          env=env, capture_output=True, text=True, timeout=30)
+    argv = json.loads(argv_file.read_text()) if argv_file.exists() else None
+    return proc, argv
+
+
+def test_launch_backend_selects_claude_and_passes_its_bounds(tmp_path):
+    """LAUNCH_BACKEND is the launcher's own name for AGENT_BACKEND. A Claude job gets the tool list
+    and the wall-clock cap from the launcher, not just the executor's defaults."""
+    proc, argv = _launch_claude_fixture(tmp_path, LAUNCH_BACKEND='claude',
+                                        LAUNCH_CLAUDE_TOOLS='Read,Write,Edit,Bash')
+    assert proc.returncode == 0, proc.stderr
+    assert argv[argv.index('--allowedTools') + 1] == 'Read,Write,Edit,Bash'
+    log = (tmp_path / 'jobs' / 'fixture.log').read_text()
+    outcome = json.loads(next(l.split(' ', 1)[1] for l in log.splitlines() if l.startswith('MODEL_OUTCOME ')))
+    assert outcome['executor'] == 'claude'
+
+
+def test_launch_backend_names_that_disagree_refuse_before_any_run(tmp_path):
+    proc, argv = _launch_claude_fixture(tmp_path, LAUNCH_BACKEND='claude', AGENT_BACKEND='codex')
+    assert proc.returncode == 2 and 'disagree' in proc.stderr and argv is None
+    proc, argv = _launch_claude_fixture(tmp_path, LAUNCH_BACKEND='claude', LAUNCH_TIMEOUT_SECONDS='soon')
+    assert proc.returncode == 2 and 'whole seconds' in proc.stderr and argv is None
+
+
+def test_launch_timeout_reaches_the_executor(tmp_path):
+    """The clock cap is passed through: a hanging Claude job launched with a 2 s cap stops with 124."""
+    import os
+    repo = Path(__file__).resolve().parents[1]
+    jobs = tmp_path / 'jobs'; jobs.mkdir()
+    (jobs / 'fixture.md').write_text('synthetic fixture')
+    roles = tmp_path / 'roles.json'
+    roles.write_text(json.dumps(dict(roles={'batch': ['fixture-claude']}, routes={
+        'fixture-claude': {'canonical': 'fixture-claude', 'cli': 'claude'}})))
+    fake = tmp_path / 'hang-cli'
+    fake.write_text('#!' + sys.executable + '\nimport time\ntime.sleep(600)\n')
+    fake.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k not in ('AGENT_BACKEND', 'LAUNCH_BACKEND')}
+    env.update(LAUNCH_BACKEND='claude', LAUNCH_CLAUDE=str(fake), LAUNCH_ARTIFACT_DIR=str(jobs),
+               LAUNCH_STATE=str(tmp_path / 'registry'), RH_ROLES_FILE=str(roles), FORCE_LAUNCH='1',
+               LAUNCH_TIMEOUT_SECONDS='2')
+    proc = subprocess.run(['zsh', str(repo / 'tools/launch.sh'), 'fixture', str(tmp_path)],
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 124, proc.stderr

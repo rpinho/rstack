@@ -30,8 +30,21 @@ LAUNCH_ROUND=${LAUNCH_ROUND:-}; LAUNCH_FAMILY=${LAUNCH_FAMILY:-}
 LAUNCH_GENERATOR=${LAUNCH_GENERATOR:-}; LAUNCH_PARAMS=${LAUNCH_PARAMS:-}
 LAUNCH_SCORER=${LAUNCH_SCORER:-}; LAUNCH_HYPOTHESIS=${LAUNCH_HYPOTHESIS:-}
 LAUNCH_NEW_EVIDENCE=${LAUNCH_NEW_EVIDENCE:-}
-backend=${AGENT_BACKEND:-codex}
+# LAUNCH_BACKEND is the launcher's own name for AGENT_BACKEND (the name hosts that run this launcher
+# directly already use). Either selects the backend; set to different values they refuse, since a
+# job that might run on either CLI has no single spend cap or route to check.
+if [[ -n $AGENT_BACKEND && -n $LAUNCH_BACKEND && $AGENT_BACKEND != $LAUNCH_BACKEND ]]; then
+  print -u2 -- "launch.sh: AGENT_BACKEND=$AGENT_BACKEND and LAUNCH_BACKEND=$LAUNCH_BACKEND disagree"; exit 2
+fi
+backend=${AGENT_BACKEND:-${LAUNCH_BACKEND:-codex}}
 [[ $backend == (codex|claude) ]] || { print -u2 -- 'AGENT_BACKEND must be codex or claude'; exit 2; }
+# A Claude job is bounded by spend (LAUNCH_CLAUDE_BUDGET) and by the clock: that CLI has no
+# --max-turns. LAUNCH_TIMEOUT_SECONDS is the clock (default 90 minutes; 0 means none) and
+# LAUNCH_CLAUDE_TOOLS widens the executor's read/write/edit default for a job that runs its own code.
+LAUNCH_TIMEOUT_SECONDS=${LAUNCH_TIMEOUT_SECONDS:-5400}
+[[ $LAUNCH_TIMEOUT_SECONDS == <-> ]] || { print -u2 -- 'LAUNCH_TIMEOUT_SECONDS must be whole seconds'; exit 2; }
+LAUNCH_CLAUDE_TOOLS=${LAUNCH_CLAUDE_TOOLS:-Read,Write,Edit}
+[[ $LAUNCH_CLAUDE_TOOLS =~ '^[A-Za-z0-9_(),:*. -]+$' ]] || { print -u2 -- 'LAUNCH_CLAUDE_TOOLS must be a tool list'; exit 2; }
 [[ $LAUNCH_EFFORT == (low|medium|high|xhigh) ]] || { print -u2 -- 'bad LAUNCH_EFFORT'; exit 2; }
 while (( $# )); do
   case $1 in
@@ -210,6 +223,7 @@ for (( i = start; i <= 5; i++ )); do
     nice -n 10 python3 "${self:h:h}/harness/agent_executor.py" --backend "$backend" \
       --executable "$cx" --directory "$dir" --model "$m" --effort "$LAUNCH_EFFORT" \
       --output "$out" --budget "${LAUNCH_CLAUDE_BUDGET:-1.00}" \
+      --allowed-tools "$LAUNCH_CLAUDE_TOOLS" --timeout-seconds "$LAUNCH_TIMEOUT_SECONDS" \
       < "$log.prompt" > "$attempt_log" 2>&1
     rc=$?
   else
@@ -263,7 +277,7 @@ export PATH=\$HOME/.local/bin:/opt/homebrew/bin:\$PATH
 mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
 mkdir -p $rmarks 2>/dev/null || true
 echo \$\$ > $rmarks/${(q)${job:t}}.pid 2>/dev/null || true
-exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)${LAUNCH_CLAUDE_BUDGET:-1.00}}"
+exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)${LAUNCH_CLAUDE_BUDGET:-1.00}} --allowed-tools ${(q)LAUNCH_CLAUDE_TOOLS} --timeout-seconds ${(q)LAUNCH_TIMEOUT_SECONDS}"
     # 11-08: this was one foreground ssh, so the job lived exactly as long as the connection. A
     # network blip ended a 5 h job, and the controller's reset at 22:16 took every job on the host
     # with it. remote_run.py starts the executor detached THERE (nohup, files for stdio, a watcher

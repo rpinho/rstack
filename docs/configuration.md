@@ -53,8 +53,9 @@ provider-specific config directories before invocation.
 
 | Additional setting | Meaning |
 |---|---|
-| `AGENT_BACKEND` | `codex` (default) or `claude`; invalid values refuse. |
+| `AGENT_BACKEND` (or `LAUNCH_BACKEND`) | `codex` (default) or `claude`; invalid values refuse. `tools/launch.sh` reads either name; both set to different values refuse. The role still comes from `LAUNCH_ROLE` (default `batch`), and a role whose top model has no route for the chosen CLI refuses rather than falling back, so a Claude job names a role that ranks a Claude model. |
 | `LAUNCH_CLAUDE`, `LAUNCH_CLAUDE_BUDGET` | Claude executable and per-run dollar cap (default `1.00`); no automatic Claude retries. |
+| `LAUNCH_CLAUDE_TOOLS`, `LAUNCH_TIMEOUT_SECONDS` | Claude jobs from `tools/launch.sh`: the `--allowedTools` list (default `Read,Write,Edit`; a job that runs its own code adds `Bash` and says so) and the wall-clock cap in whole seconds (default `5400`; `0` means none). The CLI has no turn limit, so spend and the clock are the two bounds. |
 | `LAUNCH_CODEX_SANDBOX` | How much a codex job may touch: `read-only`, `workspace-write` (the default), `danger-full-access`, or `bypass`. The first three become `--sandbox MODE`; `bypass` is the single `--dangerously-bypass-approvals-and-sandbox` flag, which turns off approvals and the sandbox together and is not a sandbox level. An unknown value refuses rather than being passed through. The default is deliberate: a job whose transcript is written outside its work dir needs a wider mode, and the host says so once rather than the tool shipping with the sandbox off. |
 | `RH_POD_GATE_CONFIG`, `RH_POD_GATE_AUDIT` | Capacity policy (default `$RH_ROOT/pod-gate.json`) and audit log (default `$RH_ROOT/.runtime/pod-gate-audit.jsonl`). |
 | `RH_HARVEST_STATE` | Snapshot state override; default `<root>/.harvest-state`. |

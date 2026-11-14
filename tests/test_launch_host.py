@@ -103,6 +103,8 @@ def test_the_executor_runs_on_the_host_and_the_prompt_arrives_over_stdin(tmp_pat
     assert 'host=m5' in sent
     program, prompt = staged(tmp_path)
     assert '--backend claude' in program and '--directory ' + str(tmp_path) in program
+    # the Claude bounds cross to the host with the executor, not only on a local run
+    assert '--timeout-seconds 5400' in program and '--allowed-tools Read,Write,Edit' in program
     assert prompt == (tmp_path / 'jobs/fixture-job.log.prompt').read_text()
     # The agent only ever sees the prompt the controller built, and it built it from the spec.
     assert ASK in (tmp_path / 'jobs/fixture-job.log.prompt').read_text()
