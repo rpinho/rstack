@@ -35,6 +35,7 @@ RULE_BLOCKED = re.compile(r'rule-blocked|prohibited|not allowed|forbidden|holdou
 
 MODELS = {'anthropic/claude-opus-5.5': ('claude', 'claude-opus-5-5'),
  'anthropic/claude-fable-5.1': ('claude', 'claude-fable-5-1'),
+ 'anthropic/claude-fable-5.2': ('claude', 'claude-fable-5-2'),
  'anthropic/claude-sonnet-5.5': ('claude', 'claude-sonnet-5-5'),
  'anthropic/claude-haiku-5.5': ('claude', 'claude-haiku-5-5'),
  'anthropic/claude-opus-4.6': ('claude', 'claude-opus-4-6'),

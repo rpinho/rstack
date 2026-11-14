@@ -97,16 +97,16 @@ def test_legacy_receipt_filename_supplies_job_and_zero_exit_does_not_score(setup
 
 def test_new_model_enters_unscored_and_can_move_only_with_existing_evidence_rule(setup_reader, tmp_path, monkeypatch):
     reader, roles, _ = setup_reader
-    new = roles.canon('claude-fable-5-2')
+    new = roles.canon('claude-fable-5-3')
     assert new != roles.canon('claude-fable-5-1')
     path = tmp_path / 'ledger.jsonl'
     write_rows(path, [roles.obs('synthetic', 'a', new, 'design', 'held', '2026-01-01', ['fixture'], 'synthetic')])
     monkeypatch.setattr(roles, 'LEDGER', path)
     data = roles.recompute(write=False)
-    assert data['roles']['design'][-1] == 'claude-fable-5-2'
+    assert data['roles']['design'][-1] == 'claude-fable-5-3'
     page = tmp_path / 'LEADERBOARD.md'
     roles.public(data, page)
-    assert '| design | claude-fable-5-2 | 3 | - | - |' in page.read_text()
+    assert '| design | claude-fable-5-3 | 3 | - | - |' in page.read_text()
     strong = {'design': {new: dict(n=100, k=100, days={'2026-01-01', '2026-01-02'})}}
     assert roles.rank('design', strong)[0][0] == new
     assert roles.SEED['judge'] == roles.SEED['review']
@@ -541,7 +541,7 @@ def test_interim_full_panel_verdict_stays_pending(setup_reader, tmp_path):
 def test_public_merge_retains_scored_and_observation_history(setup_reader, tmp_path, monkeypatch):
     _, roles, _ = setup_reader
     ledger = tmp_path / 'ledger.jsonl'
-    new = roles.canon('claude-fable-5-2')
+    new = roles.canon('claude-fable-5-3')
     write_rows(ledger, [roles.obs('synthetic', 'recent', new, 'design', 'held', '2026-01-03', ['fixture'], 'synthetic')])
     monkeypatch.setattr(roles, 'LEDGER', ledger)
     page = tmp_path / 'public.md'
@@ -553,12 +553,12 @@ def test_public_merge_retains_scored_and_observation_history(setup_reader, tmp_p
     roles.public(data, page)
     for line in historical.splitlines():
         assert line in page.read_text()
-    assert '| design | claude-fable-5-2 | 3 | - | - | 2026-01-03 |' in page.read_text()
+    assert '| design | claude-fable-5-3 | 3 | - | - | 2026-01-03 |' in page.read_text()
     once = page.read_text()
     roles.public(data, page)
     assert page.read_text() == once
     restored = roles.bootstrap(page)
-    assert restored['roles']['design'][-1] == 'claude-fable-5-2'
+    assert restored['roles']['design'][-1] == 'claude-fable-5-3'
 
 
 def test_entered_role_is_public_even_without_resolved_observation(setup_reader, tmp_path, monkeypatch):
