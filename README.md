@@ -69,9 +69,9 @@ Three parts of that live in this repository. Until recently they were three repo
   egress scan, a clean-identity runner and a lint for the files every session rereads. Each ships
   with the test that proves it refuses what it should. None ships a term list; you supply yours.
 
-**[`rstack/STACK.md`](rstack/STACK.md) is the system they came from**, counted on 7 November 2026:
-449 items across 16 hooks, 77 launch agents, 23 lints, 16 skills and 309 memory rules, every one
-mapped to a layer. 111 of the 317 rules have something enforcing them; 206 are still prose, and
+**[`rstack/STACK.md`](rstack/STACK.md) is the system they came from**, counted on 13 November 2026:
+503 items across 25 hooks, 80 launch agents, 23 lints, 19 skills and 348 memory rules, every one
+mapped to a layer. 131 of the 356 rules have something enforcing them; 225 are still prose, and
 the page lists the ones broken most. It also goes through the main hooks and scheduled jobs with the
 failure that made each necessary.
 

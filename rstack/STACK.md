@@ -1,8 +1,8 @@
 # The stack as it actually runs
 
 The rest of this repository is the part anyone can reuse. This page is the thing it was taken
-from: one always-on Mac Mini running my agents every day since July 2026, counted by
-`inventory.py` and graded by `coverage.py` on 7 November 2026.
+from: two always-on Macs (a Mac Mini for control, a second Mini for compute) running my agents
+every day since July 2026, counted by `inventory.py` and graded by `coverage.py` on 13 November 2026.
 
 It is here because "a map plus some principles" undersells it. Most of what keeps the system
 working is not the agents. It is the hooks that refuse, the scheduled jobs that notice, and the
@@ -12,17 +12,17 @@ lints that run before anything leaves.
 
 | What | Count | Notes |
 |---|---:|---|
-| Hooks | 16 | Run before a tool call and can refuse it. All 16 are mapped to a layer. |
-| Launch agents | 77 | 74 are mine; 3 belong to an installed vendor app and are excluded with that reason. |
+| Hooks | 25 | Run before a tool call and can refuse it. All 25 are mapped to a layer. |
+| Launch agents | 80 | On both machines. 77 are mine; 3 belong to an installed vendor app and are excluded with that reason. |
 | Lints | 23 | 11 are live; the other 12 are backup copies the inventory still finds, excluded by name. |
-| Skills | 16 | One task each: email, X, publishing, the research harness, recovery after a reboot. |
-| Memory rules | 309 | One fact per file, with the reason it exists. |
+| Skills | 19 | One task each: email, X, publishing, the research harness, recovery after a reboot. |
+| Memory rules | 348 | One fact per file, with the reason it exists. |
 | Lane rules | 8 | Shared rules every research lane carries, synced from one source. |
-| **Total** | **449** | 432 mapped to a layer, 17 excluded with a written reason, 0 unmapped. |
+| **Total** | **503** | 486 mapped to a layer, 17 excluded with a written reason, 0 unmapped. |
 
-Of the 317 rules (memories plus lane rules), **111 have something that enforces them and 206 are
+Of the 356 rules (memories plus lane rules), **131 have something that enforces them and 225 are
 still prose.** That second number is the honest one. `coverage.py --top` ranks the prose rules by
-how often they have actually been broken, from a ledger of 45 recorded corrections, and that list
+how often they have actually been broken, from a ledger of 47 recorded corrections, and that list
 is the queue for turning prose into checks. A selection from the top of it:
 
 | Breaks | Rule, in general terms |
@@ -50,15 +50,15 @@ life and stay private, along with their playbooks.
 
 | Layer | Items | What it owns |
 |---|---:|---|
-| Fleet and orchestration | 22 | One conductor session, many lane sessions; lanes reach the conductor only through a relay script. |
-| Guards | 2 | The two skills for changing the machine: this map, and a re-runnable security pass. The hooks themselves are counted under the layer each one protects. |
-| Outbound communication | 63 | Email, X, the voice rules, contacts. Linted before it leaves. |
-| Research harness | 94 | Lanes, frozen selection, referees, the yield check, the model leaderboard. |
-| Publishing and egress | 5 | Nothing leaves unscanned; agents whose output leaves run with an empty identity. |
-| Cross-machine handoff | 11 | A second machine, and a contract for what may cross in each direction. |
-| Memory and the knowledge base | 33 | A worktree per session, then land; the main tree is never edited directly. |
-| Background jobs | 14 | Wait on events, never poll; heavy compute goes to rented machines. |
-| Family apps | 108 | Learning games I build for my two kids, and the jobs that serve and check them. |
+| Fleet and orchestration | 29 | One conductor session, many lane sessions; lanes reach the conductor only through a relay script. |
+| Guards | 3 | The two skills for changing the machine (this map, and a re-runnable security pass) and the daily hook audit. The hooks themselves are counted under the layer each one protects. |
+| Outbound communication | 72 | Email, X, the voice rules, contacts. Linted before it leaves. |
+| Research harness | 106 | Lanes, frozen selection, referees, the yield check, the model leaderboard. |
+| Publishing and egress | 6 | Nothing leaves unscanned; agents whose output leaves run with an empty identity. |
+| Cross-machine handoff | 19 | A second machine, and a contract for what may cross in each direction. |
+| Memory and the knowledge base | 35 | A worktree per session, then land; the main tree is never edited directly. |
+| Background jobs | 19 | Wait on events, never poll; heavy compute goes to rented machines. |
+| Family apps | 111 | Learning games I build for my two kids, and the jobs that serve and check them. |
 | Session mechanics | 4 | Context limits, save-then-compact, session naming. |
 
 The family layer is the largest, at 108 items.
