@@ -78,6 +78,9 @@ def state_dir():
     return Path(os.environ.get('RH_VOICE_CUTS_STATE', '.runtime/voice-cuts')).expanduser()
 
 
+FACT = re.compile(r"(?<=[\w,;:)(-] )[A-Z][\w'-]*|\b\w*\d[\w-]*")
+
+
 def words(text):
     return [w.lower() for w in WORD.findall(text)]
 
@@ -157,7 +160,12 @@ def check(draft, cuts, incoming='', banks=None, cfg=None, signature_names=()):
         fails.append("VOICE_CUTS_LANGUAGE: the draft is {} but every cut is from a {} bank; cut from the author's "
                      "own {} messages, don't translate".format(want.upper(), '/'.join(sorted(langs)).upper(),
                                                                 want.upper()))
-    swap = set(words(incoming))
+    # 11-14: the check scored a street address as composed words and blocked a one-line factual
+    # correction. Names, addresses and figures are facts, not phrasing, so a mid-sentence
+    # Capitalized word or any token with a digit is swappable, like the incoming message's words.
+    # Sentence-initial words still count.
+    facts = {w.lower() for w in FACT.findall(mine)}
+    swap = set(words(incoming)) | {w for f in facts for w in words(f)}
     src = [words(t) for t in cited]
     src_words = {w for s in src for w in s}
     src_pairs = {p for s in src for p in zip(s, s[1:])}

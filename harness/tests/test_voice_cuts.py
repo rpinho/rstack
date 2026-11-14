@@ -138,3 +138,19 @@ def test_a_line_he_dictated_or_approved_is_added_and_can_be_cut_from(tmp_path):
     (tmp_path / 'reply.txt.cuts').write_text('dicten:1\n')
     fails, _ = voice_cuts.check(draft.read_text(), voice_cuts.cuts_for(draft), '', banks)
     assert fails == []
+
+
+def test_names_and_addresses_are_facts_not_phrasing():
+    banks = {'corpus': (None, 'en')}
+    import voice_cuts as vc
+    orig = vc.bank_line
+    vc.bank_line = lambda b, n, i: ({1: 'Sorry my bad.', 2: 'thank you.', 3: "It's just that it's at the end."}[i], None)
+    try:
+        ok, _ = vc.check("Sorry my bad, it's at 646 Virginia St #202, Dunedin, FL 34698. Thank you",
+                         'corpus:1\ncorpus:2\ncorpus:3', banks=banks)
+        bad, _ = vc.check('we would greatly appreciate a quick update on the overall timeline for this request',
+                          'corpus:1\ncorpus:2', banks=banks)
+    finally:
+        vc.bank_line = orig
+    assert not [f for f in ok if f.startswith('VOICE_CUTS_WORDS')]
+    assert [f for f in bad if f.startswith('VOICE_CUTS_WORDS')]
