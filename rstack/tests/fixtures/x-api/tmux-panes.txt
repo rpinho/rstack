@@ -1,1 +1,1 @@
-lane-a	20
+lane-a	20	/bin/zsh

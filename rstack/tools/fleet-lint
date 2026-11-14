@@ -7,11 +7,11 @@ import os
 from pathlib import Path
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 
-DEFAULT_LAUNCHERS = ['launch.sh', 'lane-session', '~/.local/bin/claude', '~/.local/bin/codex']
+DEFAULT_LAUNCHERS = ['launch.sh', 'lane-session', 'run.sh', 'agent_executor.py',
+                     '~/.local/bin/claude', '~/.local/bin/codex']
 
 
 def command(argv, errors, optional=False):
@@ -75,6 +75,36 @@ def expand(value):
     return str(Path(value).expanduser())
 
 
+def shell_paths(errors):
+    shells = []
+    for mode in ('-lc', '-ic'):
+        resolved = command(['zsh', mode, 'whence -p xurl'], errors).strip().splitlines()
+        path = command(['zsh', mode, 'print -r -- "$PATH"'], errors).strip().splitlines()
+        shells.append({'shell': 'zsh ' + mode,
+                       'xurl': str(Path(resolved[-1]).resolve()) if resolved else None,
+                       'path': path[-1] if path else None})
+    return shells
+
+
+def path_xurls(paths, errors):
+    """Inventory every executable xurl, including ones shadowed by the wrapper."""
+    directories = set()
+    for path in paths:
+        if path is None:
+            continue
+        for directory in path.split(os.pathsep):
+            if not Path(directory).is_absolute():
+                errors.append('relative PATH entry cannot be inspected: ' + repr(directory))
+                continue
+            directories.add(os.path.abspath(directory))
+    found = []
+    for directory in sorted(directories):
+        candidate = Path(directory) / 'xurl'
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            found.append({'path': str(candidate), 'resolved': str(candidate.resolve())})
+    return found
+
+
 def registry_sessions(path):
     """Registry JSON: a list of session names, or {sessions: [name | {tmux_session: name}]}.
 
@@ -101,32 +131,34 @@ def collect(cfg):
     errors = []
     processes = ps_rows(command(['ps', '-axo', 'pid,ppid,command'], errors))
     listing = command(['tmux', 'list-sessions', '-F', '#{session_name}'], errors, optional=True)
-    panes_text = command(['tmux', 'list-panes', '-a', '-F', '#{session_name}\t#{pane_pid}'], errors, optional=True)
+    panes_text = command(['tmux', 'list-panes', '-a', '-F',
+                          '#{session_name}\t#{pane_pid}\t#{pane_start_command}'], errors, optional=True)
     panes = {}
     for line in panes_text.splitlines():
-        parts = line.split('\t')
-        if len(parts) == 2 and parts[1].isdigit():
-            panes[int(parts[1])] = parts[0]
+        parts = line.split('\t', 2)
+        if len(parts) == 3 and parts[1].isdigit():
+            panes[int(parts[1])] = (parts[0], parts[2])
     sessions = [{'name': s, 'processes': []} for s in listing.splitlines() if s]
     session_map = {s['name']: s for s in sessions}
-    agents = []
+    agents, paths = [], []
+    shells = shell_paths(errors)
+    paths.extend(shell['path'] for shell in shells)
     for pid, row in processes.items():
         if not is_agent(row['command']):
             continue
-        chain, seen, current, session = [], set(), pid, None
+        chain, seen, current, session, pane_command = [], set(), pid, None, None
         while current in processes and current not in seen:
             seen.add(current)
             parent = processes[current]
             chain.append(parent['command'])
-            session = session or panes.get(current)
+            if session is None and current in panes:
+                session, pane_command = panes[current]
             current = parent['ppid']
         env = command(['ps', 'eww', '-p', str(pid)], errors)
         path = process_path(env)
-        resolved = None
-        if path and all(Path(p).is_absolute() for p in path.split(os.pathsep)):
-            resolved = shutil.which('xurl', path=path)
+        paths.append(path)
         agent = dict(row, session=session, chain=chain, path_present=path is not None,
-                     xurl=str(Path(resolved).resolve()) if resolved else None)
+                     pane_command=pane_command)
         agents.append(agent)
         if session:
             session_map.setdefault(session, {'name': session, 'processes': []})['processes'].append(row)
@@ -140,8 +172,6 @@ def collect(cfg):
             parts = line.split(None, 2)
             if len(parts) == 3 and parts[2].startswith(prefix):
                 jobs.append({'label': parts[2], 'pid': parts[0], 'exit': parts[1]})
-    repo = Path(cfg['repo']).expanduser()
-    head = command(['git', '-C', str(repo), 'rev-parse', 'origin/main^{commit}'], errors).strip()
     stamp = None
     stamp_path = cfg.get('harness_stamp')
     try:
@@ -155,14 +185,14 @@ def collect(cfg):
     if not install_map:
         errors.append('install_map is empty')
     # PATH must resolve to actual repo gate code, even if the operator omitted it from the map.
-    wrapper = Path(cfg.get('wrapper', '~/.local/bin/xurl')).expanduser().resolve()
-    targets = {(source, str(Path(target).expanduser().resolve())) for source, target in install_map.items()}
-    targets |= {('rstack/tools/xurl', str(wrapper)),
-                                        ('rstack/tools/xurl-policy', str(wrapper.with_name('xurl-policy')))}
-    for source, target in sorted(targets):
-        row = {'source': source, 'target': target, 'matches': False}
+    wrapper = Path(cfg.get('wrapper', '~/.local/bin/xurl')).expanduser().absolute()
+    targets = {str(Path(target).expanduser().resolve()): source for source, target in install_map.items()}
+    targets[str(wrapper.resolve())] = 'rstack/tools/xurl'
+    targets[str(wrapper.with_name('xurl-policy').resolve())] = 'rstack/tools/xurl-policy'
+    for target, source in sorted(targets.items()):
+        row = {'source': source, 'target': target, 'sha256': None}
         try:
-            row['matches'] = digest(repo / source) == digest(expand(target))
+            row['sha256'] = digest(target)
         except OSError:
             pass
         installed.append(row)
@@ -173,43 +203,118 @@ def collect(cfg):
         except (OSError, ValueError, TypeError):
             errors.append('lane registry is unreadable')
     return {'sessions': list(session_map.values()), 'agents': agents, 'launchd': jobs,
-            'origin_main': head, 'harness_commit': stamp, 'installed': installed,
-            'wrapper': str(Path(cfg.get('wrapper', '~/.local/bin/xurl')).expanduser().resolve()),
+            'harness_commit': stamp, 'installed': installed,
+            'wrapper': str(wrapper.resolve()), 'wrapper_path': str(wrapper),
+            'shells': shells, 'xurls': path_xurls(paths, errors),
             'launchers': [expand(p) if '/' in p else p for p in cfg.get('launchers', DEFAULT_LAUNCHERS)],
             'registry_sessions': registry, 'errors': errors}
+
+
+def compare_with_repo(snapshot, repo):
+    """Only the controller's checkout is a source, even for SSH-host installs."""
+    repo = Path(repo).expanduser()
+    for tool in snapshot['installed']:
+        try:
+            expected = digest(repo / tool['source'])
+        except OSError:
+            expected = None
+        tool['repo_sha256'] = expected
+        tool['matches'] = expected is not None and tool['sha256'] == expected
+    errors = snapshot['errors']
+    snapshot['origin_main_tree'] = command(
+        ['git', '-C', str(repo), 'rev-parse', '--verify', 'origin/main:harness'], errors).strip()
+    stamp = snapshot['harness_commit']
+    snapshot['harness_tree'] = ''
+    if isinstance(stamp, str) and re.fullmatch(r'[0-9a-fA-F]{40,64}', stamp):
+        snapshot['harness_tree'] = command(
+            ['git', '-C', str(repo), 'rev-parse', '--verify', stamp + ':harness'], errors).strip()
+
+
+def executable_positions(tokens, depth=0):
+    """Executable/script positions, also inside the remote runner's sh -c command."""
+    if not tokens or depth > 3:
+        return []
+    positions = tokens[:1]
+    executable = Path(tokens[0]).name
+    shells = ('sh', 'bash', 'zsh')
+    if executable not in shells + ('python', 'python3'):
+        return positions
+    for i, token in enumerate(tokens[1:], 1):
+        if token.startswith('-'):
+            if token == '-c' or (executable in shells and not token.startswith('--') and 'c' in token[1:]):
+                if executable in shells and i + 1 < len(tokens):
+                    # ps may render the command string without its surrounding quotes.
+                    nested = words(tokens[i + 1]) if ' ' in tokens[i + 1] else tokens[i + 1:]
+                    positions.extend(executable_positions(nested, depth + 1))
+                return positions
+            if token == '-m':
+                return positions
+            continue
+        positions.append(token)
+        break
+    return positions
+
+
+def launcher_command(cmd, launchers):
+    for token in executable_positions(words(cmd)):
+        for launcher in launchers:
+            if (expand(token) == expand(launcher) if '/' in launcher else Path(token).name == launcher):
+                return True
+    return False
+
+
+def codex_args(cmd):
+    tokens = words(cmd)
+    if tokens and Path(tokens[0]).name == 'codex':
+        return tokens[1:]
+    if tokens and Path(tokens[0]).name in ('node', 'bun'):
+        for i in (1, 2):
+            if i < len(tokens) and Path(tokens[i]).name in ('codex', 'codex.js'):
+                return tokens[i + 1:]
+    return []
+
+
+def app_server_command(cmd):
+    return codex_args(cmd)[:1] == ['app-server']
+
+
+def attached_codex(cmd):
+    args = codex_args(cmd)
+    return args[:1] == ['resume'] and any(t == '--remote' or t.startswith('--remote=') for t in args[1:])
 
 
 def launched(agent, launchers, registered):
     if agent.get('session') in registered:
         return True
-    for cmd in agent['chain']:
-        tokens = words(cmd)
-        if not tokens:
-            continue
-        # Only executable/script positions count: mentioning launch.sh in an agent prompt does not.
-        positions = tokens[:1]
-        if Path(tokens[0]).name in ('sh', 'bash', 'zsh', 'python', 'python3'):
-            positions = tokens[:2]
-        for token in positions:
-            for launcher in launchers:
-                if (token == launcher if '/' in launcher else Path(token).name == launcher):
-                    return True
-    return False
+    if any(launcher_command(cmd, launchers) for cmd in agent['chain']):
+        return True
+    # A wrapper can exec/reparent the app-server, disappearing from ps. tmux retains
+    # the pane's original command; only app-server sessions/attachments may use it.
+    app_server = any(app_server_command(cmd) for cmd in agent['chain'])
+    attached = attached_codex(agent.get('command', ''))
+    return bool(agent.get('session') and (app_server or attached) and
+                launcher_command(agent.get('pane_command') or '', launchers))
 
 
 def findings(snapshot):
     bad = [{'check': 'collection', 'subject': 'host', 'detail': e} for e in snapshot['errors']]
     for agent in snapshot['agents']:
         subject = 'pid={} session={}'.format(agent['pid'], agent.get('session') or '(outside tmux)')
-        if agent.get('xurl') != snapshot['wrapper']:
-            bad.append({'check': 'path', 'subject': subject,
-                        'detail': 'xurl resolves to {}; expected {}'.format(agent.get('xurl') or '(missing/unresolvable)',
-                                                                         snapshot['wrapper'])})
         if not launched(agent, snapshot['launchers'], snapshot['registry_sessions']):
             bad.append({'check': 'launcher', 'subject': subject, 'detail': 'no harness launcher or registered tmux session'})
-    if not snapshot['origin_main'] or snapshot['harness_commit'] != snapshot['origin_main']:
-        bad.append({'check': 'harness', 'subject': 'install stamp', 'detail': 'installed={} origin/main={}'.format(
-            snapshot['harness_commit'] or '(missing)', snapshot['origin_main'] or '(unreadable)')})
+    for shell in snapshot['shells']:
+        if shell['xurl'] != snapshot['wrapper']:
+            bad.append({'check': 'path', 'subject': shell['shell'],
+                        'detail': 'xurl resolves to {}; expected {}'.format(
+                            shell['xurl'] or '(missing/unresolvable)', snapshot['wrapper'])})
+    for executable in snapshot['xurls']:
+        if executable['path'] != snapshot['wrapper_path']:
+            bad.append({'check': 'path', 'subject': executable['path'], 'detail': 'another xurl exists on PATH'})
+    if not snapshot['origin_main_tree'] or snapshot['harness_tree'] != snapshot['origin_main_tree']:
+        bad.append({'check': 'harness', 'subject': 'install stamp',
+                    'detail': 'installed={} harness tree={} origin/main:harness={}'.format(
+                        snapshot['harness_commit'] or '(missing)', snapshot['harness_tree'] or '(unreadable)',
+                        snapshot['origin_main_tree'] or '(unreadable)')})
     for tool in snapshot['installed']:
         if not tool['matches']:
             bad.append({'check': 'tools', 'subject': tool['target'], 'detail': 'differs from repo ' + tool['source']})
@@ -253,6 +358,7 @@ def main(argv=None):
                     raise ValueError('configure ssh_host or FLEET_LINT_SSH_HOST')
                 else:
                     snapshot = collect(settings)
+                compare_with_repo(snapshot, cfg['repo'])
                 result['hosts'].append({'name': name, **snapshot})
                 result['findings'].extend(dict(host=name, **row) for row in findings(snapshot))
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
@@ -266,6 +372,10 @@ def main(argv=None):
     else:
         for host in result['hosts']:
             print('HOST {}'.format(host['name']))
+            for shell in host['shells']:
+                print('  XURL {} {}'.format(shell['shell'], shell['xurl'] or '(missing/unresolvable)'))
+            for executable in host['xurls']:
+                print('  XURL {}'.format(executable['path']))
             for session in host['sessions']:
                 print('  TMUX {}'.format(session['name']))
                 for proc in session['processes']:

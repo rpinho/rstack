@@ -1,0 +1,2 @@
+app-session	20	~/.local/bin/codex --some-option
+bare-session	100	/bin/zsh

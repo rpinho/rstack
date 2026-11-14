@@ -1,0 +1,13 @@
+  PID  PPID COMMAND
+    1     0 /sbin/launchd
+   10     1 tmux new-session -s app-session
+   20    10 /bin/zsh
+   30     1 /bin/sh -c /bin/sh "$1/run.sh" < "$1/prompt" > "$1/out.log" 2>&1; echo $? > "$1/rc.tmp" sh /opt/state/job/1
+   40    30 /opt/agents/codex exec task
+   50     1 /usr/bin/python3 /opt/harness/agent_executor.py --backend claude
+   60    50 /opt/agents/claude -p task --max-budget-usd 1.00
+   70    20 /opt/agents/codex app-server
+   80    70 /opt/agents/codex exec task
+   90    20 /opt/agents/codex resume task --remote unix:///tmp/fixture-app-server.sock
+  100    10 /bin/zsh
+  110   100 /opt/agents/codex exec task

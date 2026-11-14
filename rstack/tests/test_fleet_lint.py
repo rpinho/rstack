@@ -20,7 +20,12 @@ FIXTURES = Path(__file__).parent / 'fixtures/x-api'
 
 
 @pytest.fixture
-def host(tmp_path, monkeypatch):
+def outputs():
+    return {}
+
+
+@pytest.fixture
+def host(tmp_path, monkeypatch, outputs):
     repo = tmp_path / 'repo'
     (repo / 'rstack/tools').mkdir(parents=True)
     wrapper = tmp_path / 'bin/xurl'
@@ -40,7 +45,9 @@ def host(tmp_path, monkeypatch):
     calls = []
     def run(argv, **kw):
         calls.append(argv)
-        if argv == ['ps', '-axo', 'pid,ppid,command']:
+        if tuple(argv) in outputs:
+            text = outputs[tuple(argv)]
+        elif argv == ['ps', '-axo', 'pid,ppid,command']:
             text = (FIXTURES / 'ps.txt').read_text()
         elif argv[:3] == ['ps', 'eww', '-p']:
             if argv[3] == '50':
@@ -55,8 +62,15 @@ def host(tmp_path, monkeypatch):
             text = (FIXTURES / 'tmux-panes.txt').read_text()
         elif argv == ['launchctl', 'list']:
             text = (FIXTURES / 'launchctl.txt').read_text()
-        elif argv == ['git', '-C', str(repo), 'rev-parse', 'origin/main^{commit}']:
-            text = 'a' * 40 + '\n'
+        elif argv[:2] in (['zsh', '-lc'], ['zsh', '-ic']):
+            if argv[2] == 'whence -p xurl':
+                text = str(wrapper) + '\n'
+            elif argv[2] == 'print -r -- "$PATH"':
+                text = str(wrapper.parent) + ':/usr/bin:/bin\n'
+            else:
+                raise AssertionError(argv)
+        elif argv[:5] == ['git', '-C', str(repo), 'rev-parse', '--verify']:
+            text = ('d' if argv[5] == 'b' * 40 + ':harness' else 'c') * 40 + '\n'
         else:
             raise AssertionError('unexpected subprocess (including any ssh): {!r}'.format(argv))
         return subprocess.CompletedProcess(argv, 0, text, '')
@@ -64,9 +78,15 @@ def host(tmp_path, monkeypatch):
     return cfg, calls
 
 
+def checked(cfg):
+    snapshot = fleet.collect(cfg)
+    fleet.compare_with_repo(snapshot, cfg['repo'])
+    return snapshot
+
+
 def test_collect_lists_all_sessions_agents_and_prefix_jobs(host):
     cfg, calls = host
-    snap = fleet.collect(cfg)
+    snap = checked(cfg)
     assert [s['name'] for s in snap['sessions']] == ['lane-a', 'empty']
     assert [p['pid'] for p in snap['sessions'][0]['processes']] == [40, 50]
     assert [a['pid'] for a in snap['agents']] == [40, 50, 60, 80]
@@ -75,7 +95,7 @@ def test_collect_lists_all_sessions_agents_and_prefix_jobs(host):
     assert len([c for c in calls if c[:2] == ['ps', 'eww']]) == 4
     bad = fleet.findings(snap)
     assert [(r['check'], r['subject'].split()[0]) for r in bad] == [
-        ('path', 'pid=50'), ('path', 'pid=60'), ('launcher', 'pid=60'), ('launcher', 'pid=80')]
+        ('launcher', 'pid=60'), ('launcher', 'pid=80')]
 
 
 def test_launcher_parent_chain_registry_and_prompt_mentions(host):
@@ -95,16 +115,16 @@ def test_stamp_and_each_installed_tool_report_drift(host):
     cfg, _ = host
     Path(cfg['harness_stamp']).write_text(json.dumps({'commit': 'b' * 40}))
     Path(cfg['wrapper']).write_text('changed')
-    bad = fleet.findings(fleet.collect(cfg))
+    bad = fleet.findings(checked(cfg))
     assert [r['check'] for r in bad][-2:] == ['harness', 'tools']
-    assert 'origin/main=' in bad[-2]['detail']
+    assert 'origin/main:harness=' in bad[-2]['detail']
 
 
 def test_config_errors_and_missing_installs_are_findings(host):
     cfg, _ = host
     cfg.update(harness_stamp=str(Path(cfg['repo']) / 'missing'), install_map={},
                lane_registry=str(Path(cfg['repo']) / 'missing-registry'), label_prefix='')
-    snap = fleet.collect(cfg)
+    snap = checked(cfg)
     assert len(snap['errors']) == 4
     assert any(r['check'] == 'harness' for r in fleet.findings(snap))
 
@@ -140,16 +160,19 @@ def test_main_two_hosts_json_alert_summary_and_remote_failure(host, monkeypatch,
     conf = tmp_path / 'fleet.json'
     conf.write_text(json.dumps(dict(cfg, ssh_host='worker')))
     alerts = []
+    fixture_run = fleet.subprocess.run
     def notify(argv, **kw):
+        if argv[:2] != ['tell-general', 'fyi']:
+            return fixture_run(argv, **kw)
         assert argv[:2] == ['tell-general', 'fyi']
         alerts.append(argv)
         return subprocess.CompletedProcess(argv, 0)
     monkeypatch.setattr(fleet.subprocess, 'run', notify)
     assert fleet.main(['--config', str(conf), '--json', '--alert']) == 1
     result = json.loads(capsys.readouterr().out)
-    assert len(result['hosts']) == 2 and len(result['findings']) == 8
+    assert len(result['hosts']) == 2 and len(result['findings']) == 4
     assert remote_calls[0][0] == 'worker'
-    assert len(alerts) == 1 and '8 findings on 2 hosts' in alerts[0][2]
+    assert len(alerts) == 1 and '4 findings on 2 hosts' in alerts[0][2]
     def unreachable(*args):
         raise subprocess.TimeoutExpired('ssh', 10)
     monkeypatch.setattr(fleet, 'remote_collect', unreachable)
@@ -206,4 +229,162 @@ def test_remote_collector_runs_standalone_with_fixture_commands(host, monkeypatc
     monkeypatch.setattr(fleet.subprocess, 'run', run)
     snapshot = fleet.remote_collect('worker', cfg)
     assert not snapshot['errors'] and len(snapshot['agents']) == 4
-    assert snapshot['harness_commit'] == snapshot['origin_main']
+    assert snapshot['harness_commit'] == 'a' * 40
+    assert snapshot['installed'][0]['sha256']
+    assert not any(argv[0] == 'git' for argv in calls)
+
+
+def test_bare_process_path_with_no_xurl_passes(host, outputs):
+    cfg, _ = host
+    outputs[('ps', 'eww', '-p', '40')] = '40 claude PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/home/example\n'
+    snapshot = checked(cfg)
+    assert not [row for row in fleet.findings(snapshot) if row['check'] == 'path']
+    assert [shell['xurl'] for shell in snapshot['shells']] == [cfg['wrapper']] * 2
+
+
+@pytest.mark.parametrize('path_source', ['login', 'interactive', 'process'])
+def test_stray_xurl_on_any_path_fails_even_when_shadowed(host, outputs, tmp_path, path_source):
+    cfg, _ = host
+    stray = tmp_path / 'opt/homebrew/bin/xurl'
+    stray.parent.mkdir(parents=True)
+    stray.write_text('#!/bin/sh\nexit 0\n')
+    stray.chmod(0o755)
+    path = str(Path(cfg['wrapper']).parent) + ':' + str(stray.parent)
+    if path_source == 'process':
+        outputs[('ps', 'eww', '-p', '40')] = '40 claude PATH=' + path + ' HOME=/home/example\n'
+    else:
+        mode = '-lc' if path_source == 'login' else '-ic'
+        outputs[('zsh', mode, 'print -r -- "$PATH"')] = path + '\n'
+    snapshot = checked(cfg)
+    bad = [row for row in fleet.findings(snapshot) if row['check'] == 'path']
+    assert bad == [{'check': 'path', 'subject': str(stray), 'detail': 'another xurl exists on PATH'}]
+    assert {row['path'] for row in snapshot['xurls']} == {cfg['wrapper'], str(stray)}
+
+
+@pytest.mark.parametrize('mode', ['-lc', '-ic'])
+@pytest.mark.parametrize('resolved', ['', '/opt/homebrew/bin/xurl'])
+def test_each_shell_must_resolve_the_wrapper(host, outputs, mode, resolved):
+    cfg, _ = host
+    outputs[('zsh', mode, 'whence -p xurl')] = resolved + '\n'
+    bad = [row for row in fleet.findings(checked(cfg)) if row['check'] == 'path']
+    assert len(bad) == 1 and bad[0]['subject'] == 'zsh ' + mode
+
+
+def test_remote_runner_executor_and_tmux_app_server_chains(host, outputs):
+    cfg, _ = host
+    cfg.pop('launchers')
+    outputs[('ps', '-axo', 'pid,ppid,command')] = (FIXTURES / 'ps-launchers.txt').read_text()
+    outputs[('tmux', 'list-panes', '-a', '-F',
+             '#{session_name}\t#{pane_pid}\t#{pane_start_command}')] = (FIXTURES / 'tmux-panes-launchers.txt').read_text()
+    outputs[('tmux', 'list-sessions', '-F', '#{session_name}')] = 'app-session\nbare-session\n'
+    snapshot = checked(cfg)
+    bad = fleet.findings(snapshot)
+    assert len(bad) == 1 and bad[0]['check'] == 'launcher' and bad[0]['subject'] == 'pid=110 session=bare-session'
+    assert {agent['pid'] for agent in snapshot['agents']} == {40, 60, 70, 80, 90, 110}
+    assert all(fleet.launched(agent, snapshot['launchers'], []) for agent in snapshot['agents'][:-1])
+
+
+@pytest.mark.parametrize('command', [
+    '/bin/sh /opt/state/job/run.sh',
+    '/bin/sh -c \'/bin/sh "$1/run.sh" < "$1/prompt" > "$1/out.log" 2>&1; echo $?\' sh /opt/state/job',
+    '/bin/sh -c /bin/sh "$1/run.sh" < "$1/prompt" > "$1/out.log" 2>&1; echo $? sh /opt/state/job',
+    'python3 /opt/harness/agent_executor.py --backend claude',
+])
+def test_launcher_script_positions(command):
+    assert fleet.launched({'chain': [command]}, fleet.DEFAULT_LAUNCHERS, [])
+
+
+@pytest.mark.parametrize('command', [
+    'codex exec "use run.sh or agent_executor.py"',
+    '/bin/sh -c "echo run.sh"',
+    '/bin/sh -c echo agent_executor.py',
+    'python3 -c "print(\'agent_executor.py\')"',
+])
+def test_launcher_names_in_arguments_do_not_count(command):
+    assert not fleet.launched({'chain': [command]}, fleet.DEFAULT_LAUNCHERS, [])
+
+
+@pytest.mark.parametrize('command', ['codex app-server', 'codex resume task --remote unix:///tmp/server.sock'])
+def test_app_server_needs_a_configured_launcher(command):
+    agent = {'command': command, 'chain': [command, '/bin/zsh'], 'session': 'bare', 'pane_command': '/bin/zsh'}
+    assert not fleet.launched(agent, ['/home/example/.local/bin/codex'], [])
+    agent['pane_command'] = '/home/example/.local/bin/codex --some-option'
+    assert fleet.launched(agent, ['/home/example/.local/bin/codex'], [])
+    agent.update(command='codex exec task', chain=['codex exec task', '/bin/zsh'])
+    assert not fleet.launched(agent, ['/home/example/.local/bin/codex'], [])
+
+
+def test_remote_tools_use_controller_repo_hashes_once_per_file(host, monkeypatch, tmp_path, capsys):
+    cfg, calls = host
+    source = 'rstack/tools/fixture-tool'
+    repo_tool = Path(cfg['repo']) / source
+    repo_tool.write_text('controller version\n')
+    local_target = Path(cfg['wrapper']).with_name('fixture-tool')
+    local_target.write_bytes(repo_tool.read_bytes())
+    cfg['install_map'][source] = str(local_target)
+    stale_repo = tmp_path / 'stale-checkout'
+    (stale_repo / source).parent.mkdir(parents=True)
+    (stale_repo / source).write_text('stale version\n')
+    remote_target = tmp_path / 'remote/bin/fixture-tool'
+    remote_target.parent.mkdir(parents=True)
+    remote_target.write_bytes((stale_repo / source).read_bytes())
+    remote_cfg = dict(cfg, repo=str(stale_repo), install_map=dict(cfg['install_map'], **{source: str(remote_target)}))
+    local = fleet.collect(cfg)
+    remote = fleet.collect(remote_cfg)
+    assert not any(argv[0] == 'git' for argv in calls)
+    remote_tool = next(tool for tool in remote['installed'] if tool['target'] == str(remote_target))
+    assert remote_tool['sha256'] == fleet.digest(stale_repo / source)
+    monkeypatch.setattr(fleet, 'collect', lambda settings: local)
+    monkeypatch.setattr(fleet, 'remote_collect', lambda host, settings: remote)
+    conf = tmp_path / 'fleet.json'
+    conf.write_text(json.dumps(dict(cfg, hosts=[{'name': 'local'},
+        {'name': 'worker', 'ssh': 'worker', 'repo': str(stale_repo), 'install_map': remote_cfg['install_map']}])))
+    assert fleet.main(['--config', str(conf), '--json']) == 1
+    result = json.loads(capsys.readouterr().out)
+    bad = [row for row in result['findings'] if row['check'] == 'tools']
+    assert bad == [{'host': 'worker', 'check': 'tools', 'subject': str(remote_target),
+                    'detail': 'differs from repo ' + source}]
+    assert all(argv[2] == cfg['repo'] for argv in calls if argv[0] == 'git')
+    assert remote_tool['repo_sha256'] == fleet.digest(repo_tool) != remote_tool['sha256']
+
+
+def test_install_target_aliases_report_drift_once_per_file(host):
+    cfg, _ = host
+    wrapper = Path(cfg['wrapper'])
+    cfg['install_map']['rstack/tools/xurl'] = str(wrapper.parent / '..' / 'bin/xurl')
+    wrapper.write_text('changed\n')
+    snapshot = checked(cfg)
+    assert len(snapshot['installed']) == 2  # Wrapper and policy, even with the aliased map entry.
+    bad = [row for row in fleet.findings(snapshot) if row['check'] == 'tools']
+    assert len(bad) == 1 and bad[0]['subject'] == cfg['wrapper']
+
+
+def test_stamp_compares_real_harness_trees_not_commit_ids(tmp_path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Fixture',
+            '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false',
+            '-c', 'core.hooksPath=/dev/null', *args], check=True, text=True, capture_output=True).stdout.strip()
+    git('init', '-q')
+    (repo / 'harness').mkdir()
+    (repo / 'harness/example.py').write_text('original\n')
+    git('add', '.')
+    git('commit', '-qm', 'initial harness')
+    installed = git('rev-parse', 'HEAD')
+    (repo / 'rstack').mkdir()
+    (repo / 'rstack/example').write_text('tool-only change\n')
+    git('add', '.')
+    git('commit', '-qm', 'rstack only')
+    git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+    snapshot = {'harness_commit': installed, 'installed': [], 'errors': [], 'agents': [],
+                'shells': [], 'xurls': []}
+    fleet.compare_with_repo(snapshot, repo)
+    assert installed != git('rev-parse', 'origin/main')
+    assert not fleet.findings(snapshot)
+    (repo / 'harness/example.py').write_text('changed harness\n')
+    git('add', '.')
+    git('commit', '-qm', 'harness change')
+    git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+    fleet.compare_with_repo(snapshot, repo)
+    assert [row['check'] for row in fleet.findings(snapshot)] == ['harness']

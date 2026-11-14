@@ -4,7 +4,7 @@
   "wrapper": "~/.local/bin/xurl",
   "harness_stamp": "~/.local/share/research-harness/.harness-sync.json",
   "lane_registry": "~/.config/rstack/lane-sessions.json",
-  "launchers": ["launch.sh", "lane-session", "~/.local/bin/claude", "~/.local/bin/codex"],
+  "launchers": ["launch.sh", "lane-session", "run.sh", "agent_executor.py", "~/.local/bin/claude", "~/.local/bin/codex"],
   "label_prefix": "com.example.",
   "install_map": {
     "rstack/tools/xurl": "~/.local/bin/xurl",
