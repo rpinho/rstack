@@ -668,8 +668,19 @@ def check(cfg, gh='gh', now=None, workers=6):
     with ThreadPoolExecutor(max_workers=workers) as pool:
         fresh_states = dict(pool.map(inspect, targets.values()))
     discovered = {(h.name, p) for h, p, _ in clones}
+    # 11-14 live run: 131 of 153 no-upstream rows were job folders with no remote at all (each job runs
+    # `git init`). A clone with no remote cannot fall behind or go unpushed; it is checked only if listed
+    # in `local_only` (paths that must still have no stale uncommitted work).
+    # Friends job folders also hold clones of OTHER people's repos (detached, patched copies): their
+    # drift is not ours. So the clone checks cover clones with a remote under one of `owners` (or
+    # `clone_owners` when set), plus anything listed in `local_only`.
+    mine = [o.lower() for o in (cfg.get('clone_owners') or cfg.get('owners') or [])]
+    has_remote = {(h.name, p): any(str(r).lower().startswith(tuple('github.com/{}/'.format(o) for o in mine))
+                                   for r in remotes.values()) if mine else bool(remotes)
+                  for h, p, remotes in clones}
+    local_only = {((e.get('host') or LOCAL), host_of(e.get('host')).path(e['path'])) for e in cfg.get('local_only', [])}
     for key, (h, p) in targets.items():
-        if key in discovered:
+        if key in discovered and (has_remote.get(key, True) or (h.name, p) in local_only):
             problems += clone_problems(h, p, fresh_states[key], cfg, now)
         elif fresh_states[key].get('fetch_error'):
             problems.append(('fetch', '{}:{}'.format(h.name or 'local', p),
