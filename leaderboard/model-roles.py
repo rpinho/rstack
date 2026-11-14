@@ -51,7 +51,7 @@ MODELS = {'anthropic/claude-opus-5.5': ('claude', 'claude-opus-5-5'),
  'google/gemini-4-carbon': ('openrouter', 'google/gemini-4-carbon')}
 
 ALIASES = [('opus[- ]?5[.-]5', 'anthropic/claude-opus-5.5'),
- ('fable', 'anthropic/claude-fable-5.1'),
+ ('fable[- ]?5[.-]1|fable-5-1', 'anthropic/claude-fable-5.1'),
  ('sonnet[- ]?5[.-]5', 'anthropic/claude-sonnet-5.5'),
  ('haiku[- ]?5[.-]5', 'anthropic/claude-haiku-5.5'),
  ('opus[- ]?4[.-]6', 'anthropic/claude-opus-4.6'),
@@ -90,6 +90,8 @@ FIELD_ROLE = {'scientific-verification': 'mechanical',
  'prioritization': 'taste',
  'scientific-interpretation': 'taste'}
 
+SEED['design'] = list(SEED['taste'])
+SEED['judge'] = list(SEED['review'])
 ROLES = tuple(SEED)
 
 
@@ -107,11 +109,30 @@ def close_faults_proposal(row, prose):
 
 
 def canon(s):
-    s = (s or "").lower()
-    for pat, c in ALIASES:
-        if re.search(pat, s):
-            return c
-    return None
+    s = (s or "").lower().strip()
+    if s in MODELS:
+        return s
+    for canonical, (_, native) in MODELS.items():
+        if s == native:
+            return canonical
+    # Versioned native names and canonical provider IDs register their own routes.
+    # A bare family name is deliberately insufficient to identify a model version.
+    if re.fullmatch(r'claude-[a-z]+-\d+(?:[.-]\d+)+', s):
+        canonical = 'anthropic/' + re.sub(r'-(\d+)-(\d+)$', r'-\1.\2', s)
+    elif re.fullmatch(r'gpt-\d+(?:\.\d+)?-[a-z0-9.-]+', s):
+        canonical = 'openai/' + s
+    elif re.fullmatch(r'[a-z][a-z0-9-]*/[a-z][a-z0-9_.-]*', s):
+        canonical = s
+    else:
+        for pat, c in ALIASES:
+            if re.search(pat, s):
+                return c
+        return None
+    provider, name = canonical.split('/', 1)
+    cli = {'anthropic': 'claude', 'openai': 'codex'}.get(provider, 'openrouter')
+    native = re.sub(r'(\d+)\.(\d+)', r'\1-\2', name) if provider == 'anthropic' else name if provider == 'openai' else canonical
+    MODELS[canonical] = (cli, native)
+    return canonical
 
 
 def now():
@@ -148,7 +169,10 @@ def jsonl(path):
 def obs(source, item, model, role, outcome, date, evidence, note):
     """One resolved outcome, in the ledger's own format (scripts/model-eval.py validates it)."""
     key = "|".join((source, item, model, role))
-    return {"id": "auto-" + hashlib.sha1(key.encode()).hexdigest()[:12], "case": f"{source}:{item}"[:120],
+    case = f"{source}:{item}"
+    if len(case) > 120:
+        case = case[:103] + "-" + hashlib.sha1(case.encode()).hexdigest()[:16]
+    return {"id": "auto-" + hashlib.sha1(key.encode()).hexdigest()[:12], "case": case,
             "date": date[:10], "model": model, "effort": "as run", "route": MODELS[model][0], "role": "harness",
             "task_family": f"auto-{role}", "layer": "model", "score": 4 if outcome == "held" else 0,
             "cost_usd": None, "evidence": [str(e) for e in evidence], "note": note,
@@ -197,21 +221,33 @@ def from_rh():
 
 
 def ingest(write=True):
-    existing = {r["id"]: r for r in jsonl(LEDGER)}
+    existing = {r["id"]: r for r in validate(LEDGER.read_text())} if LEDGER.exists() else {}
     latest = {}                                  # case-key -> newest active auto row
     for r in existing.values():
         if r.get("source"):
             latest[(r["case"], r["model"], r.get("pick_role"))] = r
     new, stats = [], {}
-    for name, fn in ADAPTERS.items():
+    adapters = ADAPTERS
+    if os.environ.get('RH_LAUNCH_RECEIPTS'):
+        spec = importlib.util.spec_from_file_location('outcome_adapters', HERE / 'outcome_adapters.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        receipt_rows, receipt_stats = module.collect(
+            os.environ.get('RH_EVIDENCE_ROOT'), os.environ['RH_LAUNCH_RECEIPTS'], canon, obs,
+            os.environ.get('MODEL_OUTCOMES_ROOT'), os.environ.get('MODEL_UPSTREAM_ROOT'))
+        adapters = {}  # This mode admits only outcomes joined to launch receipts.
+        for kind, counts in receipt_stats.items():
+            matching = [r for r in receipt_rows if r['source_kind'] == kind]
+            adapters['receipt-' + kind] = lambda r=matching, c=counts: (r, c['pending'], c['unlinked'])
+    for name, fn in adapters.items():
         rows, pending, unattributed = fn()
-        stats[name] = {"resolved": len(rows), "pending": pending, "unattributed": unattributed}
+        stats[name] = {"resolved": len(rows), "pending": pending, "unattributed": unattributed, "unlinked": unattributed}
         for r in rows:
             prev = latest.get((r["case"], r["model"], r["pick_role"]))
             if prev and prev["outcome"] == r["outcome"]:
                 continue
             if prev:                              # outcome flipped: supersede, never edit
-                r["id"] = r["id"] + "-" + hashlib.sha1(r["outcome"].encode()).hexdigest()[:4]
+                r["id"] = r["id"] + "-" + hashlib.sha1((prev["id"] + r["outcome"]).encode()).hexdigest()[:8]
                 if r["id"] in existing:
                     continue
                 r["supersedes"] = prev["id"]
@@ -291,7 +327,7 @@ def rank(role, ev):
         return e[m]["k"] / e[m]["n"] if eligible(m) else SEED_RATE
     def low(m):
         return wilson_low(e[m]["k"], e[m]["n"]) if eligible(m) else -1
-    order = list(SEED[role]) + sorted((m for m in e if m not in SEED[role] and eligible(m)), key=low, reverse=True)
+    order = list(SEED[role]) + sorted((m for m in e if m not in SEED[role]), key=low, reverse=True)
     for _ in range(len(order) ** 2):              # stable bubble: pass only on evidence
         swapped = False
         for i in range(len(order) - 1):
@@ -440,7 +476,7 @@ def recompute(write=True):
         order, _ = rank(role, ev)
         out['roles'][role] = [MODELS[m][1] for m in order]
         out['evidence'][role] = {MODELS[m][1]: {'n': v['n'], 'rate': round(v['k']/v['n'], 3),
-                      'low': round(wilson_low(v['k'], v['n']), 3), 'days': len(v['days'])}
+                      'low': round(wilson_low(v['k'], v['n']), 3), 'days': len(v['days']), 'scored': m in SEED[role] or (v['n'] >= MIN_N and len(v['days']) >= MIN_DAYS)}
                       for m, v in ev.get(role, {}).items() if v['n']}
     if write:
         write_roles(out)
@@ -478,6 +514,8 @@ def public(data, path, observations=()):
             if model not in {native for _, native in MODELS.values()}:
                 raise ValueError('unknown public model')
             observation = role_scores.get(model, {})
+            if observation.get('scored') is False:
+                observation = {}
             order = str(ranked.index(model) + 1) if model in ranked else '-'
             lines.append(f"| {role} | {model} | {order} | {score(observation.get('rate'))} | {score(observation.get('low'))} | {date} |")
     groups = collections.defaultdict(list)
@@ -517,6 +555,8 @@ def bootstrap(path):
         if role not in ROLES or (role, model) in seen:
             raise ValueError('unknown role or repeated model')
         seen.add((role, model))
+        if model.startswith('claude-') or model.startswith('gpt-') or '/' in model:
+            canon(model)
         dt.date.fromisoformat(date)
         dates.append(date)
         if position != '-':
@@ -544,8 +584,8 @@ def main(argv=None):
             data = bootstrap(args.snapshot)
             write_roles(data, args.output or ROLES_FILE)
         elif args.command in ('ingest', 'daily'):
-            if not any(os.environ.get(key) for key in ('RH_EVIDENCE_ROOT', 'MODEL_REVIEW_ROOT', 'MODEL_DRAFTS_LOG')):
-                raise ValueError('ingest requires explicit RH_EVIDENCE_ROOT, MODEL_REVIEW_ROOT or MODEL_DRAFTS_LOG')
+            if not any(os.environ.get(key) for key in ('RH_EVIDENCE_ROOT', 'MODEL_REVIEW_ROOT', 'MODEL_DRAFTS_LOG', 'MODEL_OUTCOMES_ROOT', 'MODEL_UPSTREAM_ROOT')):
+                raise ValueError('ingest requires explicit RH_EVIDENCE_ROOT, MODEL_REVIEW_ROOT, MODEL_DRAFTS_LOG, MODEL_OUTCOMES_ROOT or MODEL_UPSTREAM_ROOT')
             _, stats = ingest()
             print(json.dumps(stats))
             if args.command == 'daily':
@@ -554,6 +594,8 @@ def main(argv=None):
             recompute()
         elif args.command == 'public':
             data = json.loads(ROLES_FILE.read_text())
+            for route in data.get('routes', {}).values():
+                canon(route.get('canonical'))
             observations = validate(LEDGER.read_text()) if LEDGER.exists() else []
             print(public(data, args.output or args.snapshot, observations))
         else:

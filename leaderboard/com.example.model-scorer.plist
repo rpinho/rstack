@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.example.model-scorer</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>@REPO_ROOT@/leaderboard/daily.sh</string></array>
+  <key>WorkingDirectory</key><string>@REPO_ROOT@</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>@BIN_PATH@:/usr/bin:/bin</string>
+    <key>PYTHON</key><string>@PYTHON@</string>
+    <key>RH_EVIDENCE_ROOT</key><string>@EVIDENCE_ROOT@</string>
+    <key>RH_LAUNCH_RECEIPTS</key><string>@RECEIPTS_ROOT@</string>
+    <key>MODEL_OUTCOMES_ROOT</key><string>@OUTCOMES_ROOT@</string>
+    <key>MODEL_UPSTREAM_ROOT</key><string>@UPSTREAM_ROOT@</string>
+    <key>MODEL_STATE</key><string>@STATE_ROOT@</string>
+    <key>MODEL_LEDGER</key><string>@STATE_ROOT@/evaluations.jsonl</string>
+    <key>RH_ROLES_FILE</key><string>@ROLES_FILE@</string>
+  </dict>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>30</integer></dict>
+  <key>StandardOutPath</key><string>@STATE_ROOT@/daily.log</string>
+  <key>StandardErrorPath</key><string>@STATE_ROOT@/daily.err</string>
+</dict>
+</plist>

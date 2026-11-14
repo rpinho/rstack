@@ -34,3 +34,82 @@ python3 leaderboard/model-roles.py public --output /path/to/review/LEADERBOARD.m
 `model-mine.py --archive ROOT --out DIR` deterministically scans supplied bookmark JSON under `ROOT/raw/bookmarks/`. It prints file/item denominators and writes local text dumps; those dumps can contain personal material and must remain outside public content. Mining output never flows into the public exporter automatically.
 
 The ranker uses the [Wilson score interval](https://doi.org/10.1080/01621459.1927.10502953). Small samples, selected tasks, correlated runs, subjective outcomes and seed choices limit interpretation. This code does not run matched benchmark trials or establish causal comparisons between models.
+
+## Receipt-linked daily scoring
+
+`daily.sh` reads outcome evidence, recomputes routes, exports the page, and scans
+it with `rstack/tools/egress-gate`. A changed page is committed in a separate,
+reusable worktree based on the fetched remote main branch, then pushed to main.
+The main checkout is never edited or committed. A failed command exits nonzero;
+a rejected push leaves its commit in the landing worktree for inspection. There
+is no force push. Run only one writer against a ledger at a time.
+
+Configure paths explicitly (none are discovered from a personal home directory):
+
+```sh
+export RH_EVIDENCE_ROOT=/path/to/runtime
+export RH_LAUNCH_RECEIPTS=/path/to/launch-receipts
+export MODEL_OUTCOMES_ROOT=/path/to/outcomes
+export MODEL_STATE=/path/to/scorer-state
+export MODEL_LEDGER="$MODEL_STATE/evaluations.jsonl"
+export RH_ROLES_FILE=/path/to/roles.json
+leaderboard/daily.sh --dry-run --scratch-dir /path/to/new-scratch-directory
+```
+
+Dry run copies an existing ledger into the scratch directory and writes the new
+ledger, roles and page only there. It makes no Git changes and does not fetch or
+push. The scratch directory must not already contain scoring outputs. Omit
+`--dry-run` for publication. `PYTHON` can select an existing interpreter;
+`MODEL_SCORER_REMOTE` and `MODEL_SCORER_BRANCH` default to `origin` and `main`.
+The inactive `com.example.model-scorer.plist` template runs at 06:30 local time.
+Replace its placeholders, remove unused optional source variables, and configure
+Git authentication and executable paths before installing it yourself.
+
+With `RH_LAUNCH_RECEIPTS` set, receipt-linked adapters replace the legacy
+self-attributed readers. The older review/draft readers remain available through
+local ingestion without this variable; the daily runner uses receipt-linked sources only. Old receipts use their
+`JOB.log.selection.json` filename; newer receipts can declare `job` explicitly.
+Conflicting receipts and outcomes without a receipt are counted as `unlinked`;
+self-reported model names and exit codes never substitute for receipts. A new
+versioned native model ID or canonical `provider/model` ID registers its route
+automatically. Bare family names do not identify a model version. New models appear
+in their observed roles immediately, with unscored routing cells until they have
+five resolved observations on two days. Promotion still uses the existing Wilson
+rule. `design` starts with taste's order, and `judge` with review's order.
+
+`outcome_adapters.py` reads `lanes/*/IDEAS.jsonl`, `RESULTS.jsonl`,
+`REFEREE.jsonl` and `.upstream-prs.json`. It streams JSONL and rejects malformed
+rows with their source line. Idea histories credit `proposer_job` (or `job`) for
+reaching testing or a result; prior-art and duplicate closures count against it.
+A fair failure at the frozen bar or an engineering stop is neutral. Taste calls
+use `decider_job`/`decision_job`; promotion is settled by the later disposition,
+and an unreversed close settles after 14 days. Plant records score one batch:
+all plants caught is held, any plant confirmed is overturned, and an incomplete
+batch stays pending. The verdict artifact's path identifies its producing job;
+the referee's self-reported model is ignored.
+
+For additional structured sources, `MODEL_OUTCOMES_ROOT` reads direct `*.jsonl`
+and `*.outcomes.json` files, plus one-level `*.outcomes.json[l]`, `referee*.md`
+and `ledger_verdict.md` files. Direct `*.verdict.md` files are also supported.
+Each resolved record has `id`, `date` (or `utc`), `source_kind` and a producing
+job. The supported fields are:
+
+| Kind | Job link | Outcome |
+|---|---|---|
+| design | `design_job` or `job` | `referee`/`verdict`: HOLDS, HOLDS WITH CAVEATS, FAILS |
+| judge | `judge_job` or `job` | `judge_outcome`/`ruling_outcome`: confirmed, overturned |
+| review | `review_job`/`referee_job` or `job` | `plant_caught`: true, false |
+| ideation | `proposer_job` or `job` | `status` history and `close_kind` |
+| pull-request | `opened_by_job` or `job` | `merged_at`, or `state: closed` without a merge |
+
+Markdown verdicts use the same labelled fields, for example `Design job:`,
+`Judge job:`, `Judge outcome:` and `Date:`. A general HOLDS on a result does not
+confirm every earlier judge ruling. Unlabelled verdicts count as unlinked.
+Result artifact paths can identify a design directly, or through a producing
+run's `JOB.md` reference to `DESIGN.md`; a labelled `Working dir:` associates a
+receipt with a work directory. Ambiguous artifact links are skipped.
+
+`MODEL_UPSTREAM_ROOT` optionally reads supplied PR JSON/JSONL caches. Native
+upstream caches without opening-job metadata remain unlinked; mentioning a PR
+in a job spec does not establish who opened it. When a cached closed PR lacks a
+closure timestamp, its observation day is the cache's `fetched` date.
