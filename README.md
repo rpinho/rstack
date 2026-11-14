@@ -136,6 +136,9 @@ mechanism that enforces it, or an admission that there isn't one.
 - [**A failed read is never all clear**](rstack/principles/a-failed-read-is-not-all-clear.md): a
   watchdog that cannot read a source says so loudly. One read failed for eight hours and every lane
   read as fine.
+- [**A failure that only reaches a log has not been reported**](rstack/principles/failures-must-reach-a-person.md):
+  a step crashed every round for two days and only its log knew; engagement fell from 77 likes a day to 5.
+  `job-health` puts failed jobs and stale outputs in front of the conductor.
 - [**Degrade, never suppress**](rstack/principles/degrade-never-suppress.md): ship a flagged partial
   result, never nothing. Prose for now.
 - [**Verify before a destructive claim**](rstack/principles/verify-before-destructive-claims.md):
