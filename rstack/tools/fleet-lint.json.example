@@ -1,0 +1,17 @@
+{
+  "ssh_host": "worker",
+  "repo": "~/src/rstack",
+  "wrapper": "~/.local/bin/xurl",
+  "harness_stamp": "~/.local/share/research-harness/.harness-sync.json",
+  "lane_registry": "~/.config/rstack/lane-sessions.json",
+  "launchers": ["launch.sh", "lane-session", "~/.local/bin/claude", "~/.local/bin/codex"],
+  "label_prefix": "com.example.",
+  "install_map": {
+    "rstack/tools/xurl": "~/.local/bin/xurl",
+    "rstack/tools/xurl-policy": "~/.local/bin/xurl-policy",
+    "rstack/tools/x-usage-reconcile": "~/.local/bin/x-usage-reconcile",
+    "rstack/tools/fleet-lint": "~/.local/bin/fleet-lint",
+    "rstack/hooks/x-api-bypass-guard": "~/.claude/hooks/x-api-bypass-guard",
+    "rstack/hooks/_hookfail.py": "~/.claude/hooks/_hookfail.py"
+  }
+}

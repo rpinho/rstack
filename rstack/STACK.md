@@ -76,6 +76,7 @@ are in [`hooks/`](hooks/), with tests.
 | main-tree guard (**here**) | a commit straight onto the knowledge base's main tree (it denies; on its own internal error it asks) | A session read files from the main tree, then edited and committed there. The first version guarded a path that no longer existed and was dead for four months. |
 | pod gates (**here**) | creating a rented GPU machine without a self-termination deadline | A pod's only shutoff was a session remembering to stop it, and sessions die; now the start command carries its own kill. The first version of the gate crashed on unexpected input and let a pod through without one. |
 | conductor-inbox gate (**here**) | a lane messaging the conductor session directly | Every wake replays the conductor's whole context. Lanes file through the relay, which wakes it only for decisions. |
+| X API bypass guard (**here**) | direct X API and xurl-bin calls that skip the gated wrapper | Paid reads and engagement bypassed prose limits. Under outbound communication, `tools/xurl` is the only supported API path; it permits bookmarks, own posts, approved DMs, media and usage, and records decisions and outcomes. Grok Bot finds posts and the browser reads and engages. |
 | read the thread first (**here**) | sending an email reply unless the page text was read in the last 30 minutes | A screenshot is not reading. |
 | publish gate | a publication click or `gh` call that skips the publish checklist | Denies on every internal error. |
 | friend-reply gate, voice gate | sending to a friend without a passing lint in the last 20 minutes | Replies that ignored what the friend had just said. |
@@ -106,6 +107,13 @@ producing, after one ran 38 workers for two days with every check green and noth
 A generic event watcher (**here**, in [`tools/`](tools/)) that blocks until a file appears, a log
 goes stale or a process exits, which replaced an overnight watcher that took about 3,300 turns and
 19 compactions mostly confirming nothing had changed.
+
+**Keeping X access accountable.** A daily `x-usage-reconcile` (**here**) compares X's per-day Post
+consumption with the gated wrapper's allowed calls and returned items, alerting once per unexplained
+day. A daily `fleet-lint` (**here**) lists sessions and launchd agents across configured hosts and
+reports agent PATHs that bypass the wrapper, sessions outside the harness and installed copies that
+differ from the repo. It reports only; host configuration and scheduling remain operator steps.
+Both tools live in [`tools/`](tools/).
 
 **Keeping rented compute bounded.** Pod checks every 15 minutes, utilisation sampling every 5, and
 result harvesting every minute before a deadline, so results reach the Mini before a pod ends

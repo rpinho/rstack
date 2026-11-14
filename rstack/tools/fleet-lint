@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+"""Report ungated X access, agent sessions outside the harness, and installed tool drift."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+
+DEFAULT_LAUNCHERS = ['launch.sh', 'lane-session', '~/.local/bin/claude', '~/.local/bin/codex']
+
+
+def command(argv, errors, optional=False):
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            if optional and any(s in result.stderr.lower() for s in ('no server running', 'error connecting')):
+                return ''
+            raise ValueError('exit {}'.format(result.returncode))
+        return result.stdout
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        errors.append('{}: {}'.format(' '.join(argv[:2]), type(exc).__name__))
+        return ''
+
+
+def ps_rows(text):
+    rows = {}
+    for line in text.splitlines():
+        match = re.match(r'^\s*(\d+)\s+(\d+)\s+(.+)$', line)
+        if match:
+            pid, ppid, cmd = match.groups()
+            rows[int(pid)] = {'pid': int(pid), 'ppid': int(ppid), 'command': cmd}
+    return rows
+
+
+def words(cmd):
+    try:
+        return shlex.split(cmd)
+    except ValueError:
+        return cmd.split()
+
+
+def is_agent(cmd):
+    tokens = words(cmd)
+    if not tokens:
+        return False
+    executable = Path(tokens[0]).name
+    if executable in ('claude', 'codex'):
+        return True
+    # Node-based CLIs have node as argv[0], followed by the CLI's script.
+    if executable in ('node', 'bun', 'python', 'python3'):
+        return any(Path(t).name in ('claude', 'codex', 'claude.js', 'codex.js') or
+                   t.endswith('/claude-code/cli.js') for t in tokens[1:3])
+    return False
+
+
+def process_path(text):
+    match = re.search(r'(?:^|\s)PATH=(.*?)(?=\s+[A-Za-z_][A-Za-z_0-9]*=|$)', text.strip())
+    return match.group(1) if match else None
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(65536), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def expand(value):
+    return str(Path(value).expanduser())
+
+
+def registry_sessions(path):
+    """Registry JSON: a list of session names, or {sessions: [name | {tmux_session: name}]}.
+
+    A lane-root directory is also supported: its lanes/*/SESSION.json files use the same format.
+    """
+    path = Path(path).expanduser()
+    if path.is_dir():
+        return [name for p in sorted(path.glob('lanes/*/SESSION.json')) for name in registry_sessions(p)]
+    data = json.loads(path.read_text())
+    entries = data.get('sessions', [data] if 'tmux_session' in data else []) if isinstance(data, dict) else data
+    if not isinstance(entries, list):
+        raise ValueError('lane registry sessions must be a list')
+    out = []
+    for item in entries:
+        name = item.get('tmux_session') if isinstance(item, dict) else item
+        if not isinstance(name, str) or not name:
+            raise ValueError('lane registry entry needs a tmux session name')
+        out.append(name)
+    return out
+
+
+def collect(cfg):
+    """Read-only host collector. The same source runs locally or via ssh python3."""
+    errors = []
+    processes = ps_rows(command(['ps', '-axo', 'pid,ppid,command'], errors))
+    listing = command(['tmux', 'list-sessions', '-F', '#{session_name}'], errors, optional=True)
+    panes_text = command(['tmux', 'list-panes', '-a', '-F', '#{session_name}\t#{pane_pid}'], errors, optional=True)
+    panes = {}
+    for line in panes_text.splitlines():
+        parts = line.split('\t')
+        if len(parts) == 2 and parts[1].isdigit():
+            panes[int(parts[1])] = parts[0]
+    sessions = [{'name': s, 'processes': []} for s in listing.splitlines() if s]
+    session_map = {s['name']: s for s in sessions}
+    agents = []
+    for pid, row in processes.items():
+        if not is_agent(row['command']):
+            continue
+        chain, seen, current, session = [], set(), pid, None
+        while current in processes and current not in seen:
+            seen.add(current)
+            parent = processes[current]
+            chain.append(parent['command'])
+            session = session or panes.get(current)
+            current = parent['ppid']
+        env = command(['ps', 'eww', '-p', str(pid)], errors)
+        path = process_path(env)
+        resolved = None
+        if path and all(Path(p).is_absolute() for p in path.split(os.pathsep)):
+            resolved = shutil.which('xurl', path=path)
+        agent = dict(row, session=session, chain=chain, path_present=path is not None,
+                     xurl=str(Path(resolved).resolve()) if resolved else None)
+        agents.append(agent)
+        if session:
+            session_map.setdefault(session, {'name': session, 'processes': []})['processes'].append(row)
+    listing = command(['launchctl', 'list'], errors)
+    prefix = cfg.get('label_prefix', '')
+    jobs = []
+    if not prefix:
+        errors.append('label_prefix is missing')
+    else:
+        for line in listing.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) == 3 and parts[2].startswith(prefix):
+                jobs.append({'label': parts[2], 'pid': parts[0], 'exit': parts[1]})
+    repo = Path(cfg['repo']).expanduser()
+    head = command(['git', '-C', str(repo), 'rev-parse', 'origin/main^{commit}'], errors).strip()
+    stamp = None
+    stamp_path = cfg.get('harness_stamp')
+    try:
+        if not stamp_path:
+            raise ValueError('harness_stamp is missing')
+        stamp = json.loads(Path(stamp_path).expanduser().read_text())['commit']
+    except (OSError, ValueError, KeyError, TypeError):
+        errors.append('harness install stamp is missing or unreadable')
+    installed = []
+    install_map = cfg.get('install_map') or {}
+    if not install_map:
+        errors.append('install_map is empty')
+    # PATH must resolve to actual repo gate code, even if the operator omitted it from the map.
+    wrapper = Path(cfg.get('wrapper', '~/.local/bin/xurl')).expanduser().resolve()
+    targets = {(source, str(Path(target).expanduser().resolve())) for source, target in install_map.items()}
+    targets |= {('rstack/tools/xurl', str(wrapper)),
+                                        ('rstack/tools/xurl-policy', str(wrapper.with_name('xurl-policy')))}
+    for source, target in sorted(targets):
+        row = {'source': source, 'target': target, 'matches': False}
+        try:
+            row['matches'] = digest(repo / source) == digest(expand(target))
+        except OSError:
+            pass
+        installed.append(row)
+    registry = []
+    if cfg.get('lane_registry'):
+        try:
+            registry = registry_sessions(cfg['lane_registry'])
+        except (OSError, ValueError, TypeError):
+            errors.append('lane registry is unreadable')
+    return {'sessions': list(session_map.values()), 'agents': agents, 'launchd': jobs,
+            'origin_main': head, 'harness_commit': stamp, 'installed': installed,
+            'wrapper': str(Path(cfg.get('wrapper', '~/.local/bin/xurl')).expanduser().resolve()),
+            'launchers': [expand(p) if '/' in p else p for p in cfg.get('launchers', DEFAULT_LAUNCHERS)],
+            'registry_sessions': registry, 'errors': errors}
+
+
+def launched(agent, launchers, registered):
+    if agent.get('session') in registered:
+        return True
+    for cmd in agent['chain']:
+        tokens = words(cmd)
+        if not tokens:
+            continue
+        # Only executable/script positions count: mentioning launch.sh in an agent prompt does not.
+        positions = tokens[:1]
+        if Path(tokens[0]).name in ('sh', 'bash', 'zsh', 'python', 'python3'):
+            positions = tokens[:2]
+        for token in positions:
+            for launcher in launchers:
+                if (token == launcher if '/' in launcher else Path(token).name == launcher):
+                    return True
+    return False
+
+
+def findings(snapshot):
+    bad = [{'check': 'collection', 'subject': 'host', 'detail': e} for e in snapshot['errors']]
+    for agent in snapshot['agents']:
+        subject = 'pid={} session={}'.format(agent['pid'], agent.get('session') or '(outside tmux)')
+        if agent.get('xurl') != snapshot['wrapper']:
+            bad.append({'check': 'path', 'subject': subject,
+                        'detail': 'xurl resolves to {}; expected {}'.format(agent.get('xurl') or '(missing/unresolvable)',
+                                                                         snapshot['wrapper'])})
+        if not launched(agent, snapshot['launchers'], snapshot['registry_sessions']):
+            bad.append({'check': 'launcher', 'subject': subject, 'detail': 'no harness launcher or registered tmux session'})
+    if not snapshot['origin_main'] or snapshot['harness_commit'] != snapshot['origin_main']:
+        bad.append({'check': 'harness', 'subject': 'install stamp', 'detail': 'installed={} origin/main={}'.format(
+            snapshot['harness_commit'] or '(missing)', snapshot['origin_main'] or '(unreadable)')})
+    for tool in snapshot['installed']:
+        if not tool['matches']:
+            bad.append({'check': 'tools', 'subject': tool['target'], 'detail': 'differs from repo ' + tool['source']})
+    return bad
+
+
+def remote_collect(host, cfg):
+    # Constant collector code + JSON data, never a command supplied by the registry. No files written
+    # remotely; -B suppresses bytecode writes. Only read-only subprocesses in collect() can run.
+    source = Path(__file__).resolve().read_text()
+    code = source.rsplit("if __name__ == '__main__':", 1)[0] + '\nprint(json.dumps(collect(json.loads(sys.argv[1]))))\n'
+    remote = shlex.join(['python3', '-B', '-c', code, json.dumps(cfg)])
+    result = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
+                             '-o', 'ConnectTimeout=10', '--', host, remote],
+                            capture_output=True, text=True, check=True, timeout=120)
+    return json.loads(result.stdout)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', default=os.environ.get('FLEET_LINT_CONFIG',
+                        str(Path.home() / '.config/rstack/fleet-lint.json')))
+    parser.add_argument('--json', action='store_true')
+    parser.add_argument('--alert', action='store_true')
+    args = parser.parse_args(argv)
+    result = {'hosts': [], 'findings': []}
+    try:
+        cfg = json.loads(Path(args.config).expanduser().read_text())
+        hosts = cfg.get('hosts')
+        if hosts is None:
+            hosts = [{'name': 'local'}, {'name': 'ssh', 'ssh': cfg.get('ssh_host') or os.environ.get('FLEET_LINT_SSH_HOST')}]
+        if not isinstance(hosts, list) or not hosts:
+            raise ValueError('hosts must be a nonempty list')
+        for host in hosts:
+            name = host['name']
+            settings = dict(cfg, **host)
+            try:
+                if host.get('ssh'):
+                    snapshot = remote_collect(host['ssh'], settings)
+                elif name == 'ssh':
+                    raise ValueError('configure ssh_host or FLEET_LINT_SSH_HOST')
+                else:
+                    snapshot = collect(settings)
+                result['hosts'].append({'name': name, **snapshot})
+                result['findings'].extend(dict(host=name, **row) for row in findings(snapshot))
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+                result['findings'].append({'host': name, 'check': 'collection', 'subject': 'host',
+                                           'detail': 'collection failed: {}'.format(type(exc).__name__)})
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        result['findings'].append({'host': 'config', 'check': 'collection', 'subject': args.config,
+                                   'detail': 'unreadable configuration: {}'.format(type(exc).__name__)})
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        for host in result['hosts']:
+            print('HOST {}'.format(host['name']))
+            for session in host['sessions']:
+                print('  TMUX {}'.format(session['name']))
+                for proc in session['processes']:
+                    print('    pid={} {}'.format(proc['pid'], proc['command']))
+            for agent in host['agents']:
+                if not agent['session']:
+                    print('  OUTSIDE TMUX pid={} {}'.format(agent['pid'], agent['command']))
+            for job in host['launchd']:
+                print('  LAUNCHD {} pid={} exit={}'.format(job['label'], job['pid'], job['exit']))
+        for row in result['findings']:
+            print('{host}\t{check}\t{subject}\t{detail}'.format(**row))
+    if args.alert:
+        try:
+            counts = {}
+            for row in result['findings']:
+                counts[row['check']] = counts.get(row['check'], 0) + 1
+            summary = 'fleet-lint: {} findings on {} hosts ({})'.format(len(result['findings']),
+                len(result['hosts']), ', '.join('{}={}'.format(k, v) for k, v in sorted(counts.items())) or 'clear')
+            subprocess.run(['tell-general', 'fyi', summary], check=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            print('fleet-lint: alert failed', file=sys.stderr)
+            return 1
+    return int(bool(result['findings']))
+
+
+if __name__ == '__main__':
+    sys.exit(main())

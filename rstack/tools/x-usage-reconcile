@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Compare X's daily Post usage with allowed calls and items in the xurl ledger."""
+import argparse
+import datetime as dt
+import fcntl
+import json
+import os
+from pathlib import Path
+import runpy
+import subprocess
+import sys
+from collections import defaultdict
+
+
+def count(value):
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError('usage count must be a nonnegative integer')
+    result = int(value)
+    if result < 0:
+        raise ValueError('negative usage count')
+    return result
+
+
+def day(value):
+    if len(value) == 10:
+        return dt.date.fromisoformat(value).isoformat()
+    stamp = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if stamp.tzinfo is None:
+        raise ValueError('ledger timestamps need a timezone')
+    return stamp.astimezone(dt.timezone.utc).date().isoformat()
+
+
+def usage_days(payload):
+    # The API reference and the overview document different shapes; accept both.
+    # https://docs.x.com/x-api/usage/get-usage
+    # https://docs.x.com/x-api/usage/introduction
+    if payload.get('errors'):
+        raise ValueError('usage endpoint returned errors')
+    daily = payload['data']['daily_project_usage']
+    rows = daily['usage'] if isinstance(daily, dict) else daily
+    if not isinstance(rows, list) or not rows:
+        raise ValueError('usage response has no daily breakdown')
+    result = defaultdict(int)
+    for row in rows:
+        value = row['usage']
+        n = sum(count(app['tweets_consumed']) for app in value) if isinstance(value, list) else count(value)
+        result[day(row['date'])] += n
+    return dict(result)
+
+
+def ledger_days(paths):
+    totals = defaultdict(int)
+    for path in paths:
+        pending = {}
+        with Path(path).expanduser().open() as stream:
+            for number, line in enumerate(stream, 1):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                    if row.get('type') == 'outcome':
+                        old = pending.pop(row['call_id'], None)
+                        if old is not None:
+                            date, fallback = old
+                            items = row.get('items_returned')
+                            amount = count(items) if items is not None else (
+                                0 if row.get('exit_code', 0) != 0 else fallback)
+                            totals[date] += amount - fallback
+                        continue
+                    if row.get('decision') != 'ALLOW' or row.get('why') == 'local':
+                        continue
+                    if row.get('path', '').split('?', 1)[0].rstrip('/').startswith('/2/usage'):
+                        continue  # the detector's own free usage request is not a Post read
+                    date = day(row['utc'])
+                    amount = count(row['items_returned']) if row.get('items_returned') is not None else 1
+                    totals[date] += amount
+                    if row.get('call_id'):
+                        pending[row['call_id']] = date, amount
+                except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                    raise ValueError('invalid ledger row {}:{} ({})'.format(path, number, type(exc).__name__)) from None
+    return dict(totals)
+
+
+def failures(usage, ledger, absolute, percent):
+    rows = []
+    for date, actual in sorted(usage.items()):
+        explained = ledger.get(date, 0)
+        excess = actual - explained
+        # Both tolerances must be exceeded. At a zero ledger count the absolute floor applies.
+        if excess > absolute and excess > explained * percent / 100:
+            rows.append({'day': date, 'x_count': actual, 'ledger_count': explained})
+    return rows
+
+
+def message(row):
+    return 'X usage {}: X={} ledger={} (unexplained usage)'.format(
+        row['day'], row['x_count'], row['ledger_count'])
+
+
+def alert(rows, state_dir):
+    state = state_dir / 'x-usage-reconcile-alerts.jsonl'
+    state.parent.mkdir(parents=True, exist_ok=True)
+    with state.open('a+') as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        stream.seek(0)
+        seen = {json.loads(line)['day'] for line in stream if line.strip()}
+        for row in rows:
+            if row['day'] in seen:
+                continue
+            subprocess.run(['tell-general', 'fyi', message(row)], check=True, timeout=30)
+            stream.write(json.dumps({'day': row['day']}) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+            seen.add(row['day'])
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', default=os.environ.get('X_USAGE_RECONCILE_CONFIG'))
+    parser.add_argument('--days', type=int)
+    parser.add_argument('--ledger', action='append', help='repeat to include ledgers from other hosts')
+    parser.add_argument('--absolute-margin', type=int)
+    parser.add_argument('--percent-margin', type=float)
+    parser.add_argument('--usage-json', type=Path, help='offline captured response; makes no API call')
+    parser.add_argument('--alert', action='store_true')
+    args = parser.parse_args(argv)
+    try:
+        cfg = {}
+        config_path = Path(args.config or Path.home() / '.config/rstack/x-usage-reconcile.json').expanduser()
+        if args.config or config_path.exists():
+            cfg = json.loads(config_path.read_text())
+        policy = runpy.run_path(str(Path(__file__).resolve().with_name('xurl-policy')))
+        gate, _ = policy['load_config']()
+        days = args.days if args.days is not None else int(cfg.get('days', 7))
+        absolute = args.absolute_margin if args.absolute_margin is not None else int(cfg.get('absolute_margin', 25))
+        percent = args.percent_margin if args.percent_margin is not None else float(cfg.get('percent_margin', 20))
+        if not 1 <= days <= 90 or absolute < 0 or not 0 <= percent <= 100:
+            raise ValueError('days must be 1..90; margins must be nonnegative, percent at most 100')
+        paths = args.ledger or cfg.get('ledger_paths') or [gate['ledger_path']]
+        if args.usage_json:
+            payload = json.loads(args.usage_json.read_text())
+        else:
+            # Always invoke the adjacent gate, never a possibly ungated PATH xurl.
+            response = subprocess.run([str(Path(__file__).resolve().with_name('xurl')),
+                '/2/usage/tweets?days={}&usage.fields=daily_project_usage'.format(days)],
+                capture_output=True, text=True, check=True, timeout=120)
+            payload = json.loads(response.stdout)
+        usage, ledger = usage_days(payload), ledger_days(paths)
+        bad = failures(usage, ledger, absolute, percent)
+        for date, n in sorted(usage.items()):
+            print('X usage {}: X={} ledger={}'.format(date, n, ledger.get(date, 0)))
+        for row in bad:
+            print(message(row))
+        if args.alert and bad:
+            alert(bad, policy['state_dir']())
+        return int(bool(bad))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as exc:
+        print('x-usage-reconcile: {}'.format(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""Gate X API access: bookmarks, own posts, approved DMs, media and usage only."""
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+
+BLOCK = 86
+ENV = {'owner_id': 'XURL_OWNER_ID', 'ledger_path': 'XURL_LEDGER',
+       'real_binary': 'XURL_REAL_BINARY', 'sync_command': 'XURL_SYNC_COMMAND',
+       'auth_file': 'XURL_AUTH_FILE', 'sync_lock': 'XURL_SYNC_LOCK'}
+LOCAL = ('auth', 'version', '--help', '-h', 'help')
+REASON = ('X API is bookmarks-only. Find posts with Grok Bot; read exact text, like, follow and '
+          'reply in the browser. One-off override: XURL_ALLOW_REASON=<why>')
+
+
+def state_dir():
+    return Path(os.environ.get('RSTACK_STATE_DIR') or
+                Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'rstack').expanduser()
+
+
+def load_config():
+    path = Path(os.environ.get('XURL_POLICY_CONFIG') or Path.home() / '.config/rstack/xurl-policy.json').expanduser()
+    error = ''
+    try:
+        cfg = json.loads(path.read_text())
+        if not isinstance(cfg, dict):
+            raise ValueError('config must be an object')
+    except FileNotFoundError:
+        cfg = {}
+    except (OSError, ValueError):
+        cfg, error = {}, 'unreadable config'
+    for key, env in ENV.items():
+        if env in os.environ:
+            cfg[key] = os.environ[env]
+    cfg.setdefault('ledger_path', str(state_dir() / 'xurl-ledger.jsonl'))
+    # A fallback ledger records refused attempts even before a host is configured.
+    if not all(isinstance(cfg.get(k), str) and cfg[k].strip() for k in
+               ('owner_id', 'ledger_path', 'real_binary')):
+        error = error or 'missing config: owner_id, ledger_path and real_binary are required'
+    elif not cfg['owner_id'].isdigit():
+        error = error or 'owner_id must be numeric'
+    sync = cfg.get('sync_command') or []
+    if isinstance(sync, str):
+        try:
+            sync = shlex.split(sync)
+        except ValueError:
+            sync, error = [], 'invalid sync_command'
+    if not isinstance(sync, list) or not all(isinstance(x, str) and x for x in sync):
+        sync, error = [], 'sync_command must be an argv list or shell-quoted command'
+    cfg['sync_command'] = [os.path.expanduser(x) for x in sync]
+    for key in ('real_binary', 'ledger_path', 'auth_file', 'sync_lock'):
+        if isinstance(cfg.get(key), str):
+            cfg[key] = os.path.expanduser(cfg[key])
+    cfg.setdefault('auth_file', str(Path.home() / '.xurl'))
+    cfg.setdefault('sync_lock', str(state_dir() / 'xurl-sync.lock'))
+    return cfg, error
+
+
+def request(args):
+    method, explicit, body, paths = 'GET', False, False, []
+    i = 0
+    # Skip option values: a header or body that resembles a URL is not an endpoint.
+    values = {'-H', '--header', '-d', '--data', '-F', '--file', '-o', '--output',
+              '--auth', '-u', '--username', '--app'}
+    while i < len(args):
+        arg = args[i]
+        if arg in ('-X', '--method'):
+            if i + 1 >= len(args):
+                raise ValueError('method needs a value')
+            method, explicit = args[i + 1].upper(), True
+            i += 2
+            continue
+        if arg.startswith('--method=') or (arg.startswith('-X') and len(arg) > 2):
+            method, explicit = (arg.split('=', 1)[1] if '=' in arg else arg[2:]).upper(), True
+        elif arg in values:
+            body |= arg in ('-d', '--data', '-F', '--file')
+            if i + 1 >= len(args):
+                raise ValueError('option needs a value')
+            i += 2
+            continue
+        elif arg.startswith(('--data=', '--file=')) or (arg.startswith(('-d', '-F')) and len(arg) > 2):
+            body = True
+        elif not arg.startswith('-'):
+            paths.append(arg)
+        i += 1
+    path = paths[0] if paths else ''
+    path = re.sub(r'^https://api\.(x|twitter)\.com', '', path)
+    return method, path, body, explicit, len(paths)
+
+
+def caller():
+    try:
+        pid = os.getppid()
+        parent = subprocess.run(['ps', '-o', 'ppid=', '-p', str(pid)], capture_output=True,
+                                text=True, timeout=2).stdout.strip()
+        names = []
+        for p in (str(pid), parent):
+            if p:
+                result = subprocess.run(['ps', '-o', 'comm=', '-p', p], capture_output=True,
+                                        text=True, timeout=2)
+                names.append(os.path.basename(result.stdout.strip()))
+        return '/'.join(names)
+    except (OSError, subprocess.SubprocessError):
+        return '?'
+
+
+def decide(args, cfg, config_error):
+    first = args[0] if args else ''
+    method, path = 'GET', first
+    why, allow = REASON, False
+    local = not args or first in LOCAL
+    try:
+        method, path, body, explicit, npaths = request(args)
+        p = path.split('?', 1)[0].rstrip('/')
+        if local:
+            allow, why = True, 'local'
+        elif config_error:
+            why = config_error
+        elif body and (not explicit or method == 'GET'):
+            why = 'body arguments require an explicit non-GET method'
+        elif first == 'media':
+            allow, why = True, 'media upload for an own post'
+        elif npaths != 1:
+            why = 'expected one API endpoint'
+        elif method == 'GET' and p == '/2/users/{}/bookmarks'.format(cfg['owner_id']):
+            allow, why = True, 'bookmark pull'
+        elif method == 'GET' and (p == '/2/usage' or p.startswith('/2/usage/')):
+            allow, why = True, 'usage (free)'
+        elif method == 'POST' and p == '/2/tweets':
+            allow, why = True, 'own post (x_gate applies)'
+        elif method == 'DELETE' and re.fullmatch(r'/2/tweets/\d+', p):
+            allow, why = True, 'delete own post'
+        elif method == 'POST' and p.startswith('/2/dm_conversations/'):
+            allow, why = True, 'approved DM'
+        if not allow and not config_error and not (body and (not explicit or method == 'GET')):
+            override = os.environ.get('XURL_ALLOW_REASON', '').strip()
+            if override:
+                allow, why = True, 'override: ' + override[:200]
+    except ValueError:
+        why = 'invalid request arguments'
+    return {'utc': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
+            'host': socket.gethostname().split('.')[0], 'decision': 'ALLOW' if allow else 'BLOCK',
+            'method': method, 'path': (path or first)[:300], 'why': why, 'caller': caller(),
+            'cwd': os.getcwd()[:200], 'call_id': uuid.uuid4().hex}
+
+
+def append(cfg, row):
+    path = Path(cfg['ledger_path'])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a') as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        stream.write(json.dumps(row) + '\n')
+        stream.flush()
+
+
+def admission(args):
+    cfg, error = load_config()
+    row = decide(args, cfg, error)
+    try:
+        append(cfg, row)
+    except (OSError, TypeError):
+        row['decision'], row['why'] = 'BLOCK', 'cannot write decision ledger'
+    if row['decision'] == 'BLOCK':
+        print('xurl-policy: BLOCKED {} {} — {}'.format(row['method'], row['path'], row['why']), file=sys.stderr)
+    return cfg, row
+
+
+ANSI = re.compile(r'\x1b\[[0-9;]*m')
+
+
+def outcome(stdout, stderr, rc):
+    text = ANSI.sub('', stdout.decode('utf-8', errors='replace'))
+    err = ANSI.sub('', stderr.decode('utf-8', errors='replace'))
+    statuses = re.findall(r'(?m)^\s*(?:<\s+|HTTP/\S+\s+)([1-5]\d\d)\b', text + '\n' + err)
+    status = int(statuses[-1]) if statuses else None
+    payload = None
+    # Plain JSON normally; verbose output can have headers before the JSON.
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        for match in re.finditer(r'(?m)^\s*\{', text + '\n' + err):
+            try:
+                payload, _ = json.JSONDecoder().raw_decode((text + '\n' + err)[match.end() - 1:])
+                break
+            except ValueError:
+                continue
+    items = None
+    if isinstance(payload, dict):
+        data = payload.get('data')
+        if isinstance(data, list):
+            items = len(data)
+        elif isinstance(data, dict):
+            items = 1
+        elif 'data' in payload and data is None:
+            items = 0
+        if status is None and isinstance(payload.get('status'), int) and 100 <= payload['status'] <= 599:
+            status = payload['status']
+    failed = rc != 0 or (status is not None and status >= 400)
+    return {'items_returned': items, 'http_status': status,
+            'http_outcome': 'error' if failed else 'success', 'exit_code': rc}
+
+
+def auth_digest(path):
+    path = Path(path)
+    digest = hashlib.sha256()
+    paths = sorted(p for p in path.rglob('*') if p.is_file()) if path.is_dir() else [path]
+    for p in paths:
+        try:
+            digest.update(str(p).encode())
+            with p.open('rb') as stream:
+                for chunk in iter(lambda: stream.read(65536), b''):
+                    digest.update(chunk)
+        except FileNotFoundError:
+            pass
+    return digest.digest()
+
+
+def sync(cfg, direction):
+    if cfg['sync_command']:
+        # Like the original wrapper, a sync failure does not change the API exit code.
+        try:
+            subprocess.run(cfg['sync_command'] + [direction], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            print('xurl: auth sync failed ({})'.format(direction), file=sys.stderr)
+
+
+def execute(args, cfg, row):
+    binary = cfg.get('real_binary') or str(Path.home() / '.local/bin/xurl-bin')
+    if Path(binary).resolve() in {Path(sys.argv[0]).resolve(), Path(__file__).with_name('xurl').resolve()}:
+        raise ValueError('real_binary points to the wrapper')
+    lock_path = Path(cfg['sync_lock'])
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    # flock never steals another call's lock; release is automatic on process exit.
+    with lock_path.open('a') as lock:
+        for attempt in range(41):
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if attempt == 40:
+                    raise ValueError('auth sync lock timed out')
+                time.sleep(0.25)
+        sync(cfg, 'pull')
+        before = auth_digest(cfg['auth_file']) if cfg['sync_command'] else None
+        if row['why'] == 'local':
+            # Auth can be interactive. Preserve its terminal and prompts rather than capturing them.
+            try:
+                rc = subprocess.run([binary] + args).returncode
+            except OSError:
+                print('xurl: real binary could not start', file=sys.stderr)
+                rc = 127
+            if cfg['sync_command'] and auth_digest(cfg['auth_file']) != before:
+                sync(cfg, 'push')
+            append(cfg, dict(type='outcome', call_id=row['call_id'],
+                             utc=dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
+                             items_returned=None, http_status=None, http_outcome='local', exit_code=rc))
+            return rc if rc >= 0 else 128 - rc
+        # Disk-backed capture bounds RAM and preserves stdout/stderr bytes. Do not enable verbose:
+        # xurl's verbose request dump includes Authorization headers.
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            try:
+                rc = subprocess.run([binary] + args, stdout=out, stderr=err).returncode
+            except OSError:
+                rc = 127
+                err.write(b'xurl: real binary could not start\n')
+            if cfg['sync_command'] and auth_digest(cfg['auth_file']) != before:
+                sync(cfg, 'push')
+            out.seek(0)
+            err.seek(0)
+            # JSON parsing is capped; large/streaming output falls back to call counts.
+            summary = outcome(out.read(16 * 1024 * 1024), err.read(1024 * 1024), rc)
+            append(cfg, dict(type='outcome', call_id=row['call_id'],
+                             utc=dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'), **summary))
+            for stream, dest in ((out, sys.stdout.buffer), (err, sys.stderr.buffer)):
+                stream.seek(0)
+                for chunk in iter(lambda: stream.read(65536), b''):
+                    dest.write(chunk)
+                dest.flush()
+            return rc if rc >= 0 else 128 - rc
+
+
+def run(args):
+    cfg, row = admission(args)
+    if row['decision'] != 'ALLOW':
+        return BLOCK
+    try:
+        return execute(args, cfg, row)
+    except (OSError, ValueError) as exc:
+        print('xurl: refused execution ({})'.format(type(exc).__name__), file=sys.stderr)
+        return BLOCK
+
+
+if __name__ == '__main__':
+    _, row = admission(sys.argv[1:])
+    print(row['decision'])
+    sys.exit(0 if row['decision'] == 'ALLOW' else BLOCK)

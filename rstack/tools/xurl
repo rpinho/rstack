@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""The only supported path to the X API; policy and implementation live beside it."""
+from pathlib import Path
+import runpy
+import sys
+
+if __name__ == '__main__':
+    try:
+        policy = runpy.run_path(str(Path(__file__).resolve().with_name('xurl-policy')))
+        sys.exit(policy['run'](sys.argv[1:]))
+    except (OSError, ValueError, ImportError) as exc:
+        print('xurl: BLOCKED (policy unavailable: {})'.format(type(exc).__name__), file=sys.stderr)
+        sys.exit(86)

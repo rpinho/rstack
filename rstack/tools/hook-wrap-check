@@ -118,12 +118,18 @@ def script_of(command, project):
     except ValueError:
         words = command.split()
     home = str(Path.home())
-    for w in words:
+    for i, w in enumerate(words):
         w = w.replace('${CLAUDE_PROJECT_DIR}', project or '').replace('$CLAUDE_PROJECT_DIR', project or '')
-        w = os.path.expanduser(w.replace('${HOME}', home).replace('$HOME', home))
+        w = os.path.expanduser(os.path.expandvars(w.replace('${HOME}', home).replace('$HOME', home)))
+        words[i] = w
         if SCRIPT.search(w):
             return Path(w)
-    return Path(os.path.expanduser(words[0])) if words else None
+    # Python hooks may use an extensionless tool name.
+    if words and Path(words[0]).name in ('python', 'python3'):
+        scripts = [w for w in words[1:] if not w.startswith('-')]
+        if scripts:
+            return Path(scripts[0])
+    return Path(words[0]) if words else None
 
 
 TRAMPOLINE = re.compile(r'^python3\s+"?\$\(dirname\s+"\$0"\)"?/([\w.-]+\.py)"?\s+&&\s+exit\s+0$')
@@ -161,7 +167,8 @@ def verdict(row, allow, today, lib=LIB):
     if script is None or not script.is_file():
         return ('allowed', entry['reason']) if live else ('MISSING', 'no file at {}'.format(script))
     text = script.read_text(errors='replace')
-    if script.suffix == '.py' and MARK in text:
+    python_hook = script.suffix == '.py' or bool(re.match(r'^#![^\n]*\bpython[0-9.]*\b', text))
+    if python_hook and MARK in text:
         if re.search(r'fail_closed\s*=\s*True', text) and broad(row['matcher']):
             return 'BROAD_CLOSED', ('{} sets fail_closed=True on [{}], which covers every shell command or tool: '
                                     'use triage instead'.format(name, row['matcher']))
@@ -177,7 +184,7 @@ def verdict(row, allow, today, lib=LIB):
             else entry['reason']
     if entry and not live:
         return 'UNWRAPPED', '{}: its allowlist entry expired {}'.format(name, entry['until'])
-    if script.suffix != '.py':
+    if not python_hook:
         return 'UNWRAPPED', '{} is a shell guard: register a Python shim that calls {} instead'.format(name, MARK)
     return 'UNWRAPPED', '{} does not call {}'.format(name, MARK)
 

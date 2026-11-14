@@ -1,0 +1,8 @@
+{
+  "owner_id": "REPLACE_WITH_NUMERIC_OWNER_ID",
+  "ledger_path": "~/.local/state/rstack/xurl-ledger.jsonl",
+  "real_binary": "~/.local/bin/xurl-bin",
+  "sync_command": ["~/.local/bin/xurl-sync"],
+  "auth_file": "~/.xurl",
+  "sync_lock": "~/.local/state/rstack/xurl-sync.lock"
+}

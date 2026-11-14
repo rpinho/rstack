@@ -1,0 +1,10 @@
+  PID  PPID COMMAND
+    1     0 /sbin/launchd
+   10     1 tmux new-session -s lane-a
+   20    10 /bin/zsh
+   30    20 /bin/bash /opt/harness/launch.sh job work
+   40    30 /opt/agents/claude --resume
+   50    20 /opt/agents/codex exec task
+   60     1 /opt/agents/codex exec task
+   70     1 /usr/bin/grep codex file
+   80     1 node /opt/node_modules/@anthropic-ai/claude-code/cli.js

@@ -1,0 +1,6 @@
+{
+  "days": 7,
+  "absolute_margin": 25,
+  "percent_margin": 20,
+  "ledger_paths": ["~/.local/state/rstack/xurl-ledger.jsonl"]
+}

@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+"""PreToolUse(Bash): refuse direct X API calls that skip the xurl wrapper."""
+import os
+import re
+import shlex
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _hookfail
+
+TARGET = re.compile(r'xurl-bin|api\.(?:x|twitter)\.com(?:/|\b)|upload\.(?:x|twitter)\.com')
+READERS = {'grep', 'rg', 'cat', 'less', 'head', 'tail'}
+REASON = ('X API calls must go through the gated xurl wrapper. Use Grok Bot to find posts and '
+          'the browser for exact text, likes, follows and replies.')
+
+
+def triage(raw, event):
+    return any(s in raw for s in ('xurl-bin', 'api.x', 'api.twitter', 'upload.x', 'upload.twitter'))
+
+
+def body(event):
+    cmd = (event.get('tool_input') or {}).get('command')
+    if not isinstance(cmd, str):
+        raise ValueError('command is not a string')
+    if not TARGET.search(cmd):
+        return 0
+    # A read-only mention is fine, but a second command or command substitution is not
+    # exempt merely because the command begins with grep.
+    tokens = shlex.split(cmd)
+    safe = bool(tokens) and (tokens[0] in READERS or tokens[:2] == ['sed', '-n'])
+    safe = safe and not re.search(r'[;|&\n`]|\$\(|[<>]', cmd)
+    if not safe:
+        _hookfail.decide('deny', REASON)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(_hookfail.run('x-api-bypass-guard', body, triage, guards='direct X API calls', timeout=5))
