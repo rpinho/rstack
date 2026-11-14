@@ -17,7 +17,8 @@ asks-waiting hook shows them on every turn while they last, and each NEW problem
 
 Registry (default ~/.config/rstack/job-health.json):
     {"fresh": [{"path": "~/x/BOOKMARKS_FRESH.md", "max_hours": 6, "check_hours": [9, 22], "why": "X rounds read it"}],
-     "exit_ok": {"com.example.lane-yield": {"codes": [1], "why": "exit 1 is its FAIL verdict, alerted on its own"}}}
+     "exit_ok": {"com.example.lane-yield": {"codes": [1], "why": "exit 1 is its FAIL verdict, alerted on its own"}},
+     "disk": [{"path": "/", "min_free_gib": 25, "why": "deploys refuse under 15 GiB"}]}
 
     job-health [--prefix com.example.] [--registry FILE] [--alert CMD] [--push HOST] [--dry]
 """
@@ -123,6 +124,23 @@ def report(rows, tool, stem, label, alert='', push=None):
         subprocess.run(['scp', '-q', str(out), '{}:{}'.format(push, out)], capture_output=True, timeout=60)
 
 
+def disk_problems(entries, usage=None):
+    """A disk under its floor (11-14: the M4 at 97% full, under the 15 GiB floor, blocked games deploys; the
+    first anyone heard was a failed deploy). Set the floor above the point where jobs start refusing."""
+    import shutil
+    rows = []
+    for e in entries:
+        try:
+            free = (usage or shutil.disk_usage)(os.path.expanduser(e['path'])).free / 2 ** 30
+        except OSError as exc:
+            rows.append(('disk', e['path'], 'unreadable: {}'.format(type(exc).__name__)))
+            continue
+        if free < float(e['min_free_gib']):
+            rows.append(('disk', e['path'], '{:.1f} GiB free, floor {:g} GiB ({})'.format(
+                free, float(e['min_free_gib']), e.get('why', ''))))
+    return rows
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--prefix', default=os.environ.get('JOB_HEALTH_PREFIX', ''),
@@ -143,7 +161,8 @@ def main(argv=None):
     except ValueError as exc:   # a registry that does not parse is a problem of its own, not an all-clear
         reg, bad = {}, [('registry', a.registry, 'unreadable: {}'.format(exc))]
     now = time.time()
-    rows = bad + exit_problems(launchd_jobs(a.prefix), reg.get('exit_ok') or {}) + fresh_problems(reg.get('fresh') or [], now)
+    rows = (bad + exit_problems(launchd_jobs(a.prefix), reg.get('exit_ok') or {})
+            + fresh_problems(reg.get('fresh') or [], now) + disk_problems(reg.get('disk') or []))
     lines = ['{}\t{}\t{}'.format(kind, what, detail) for kind, what, detail in rows]
     for l in lines:
         print(l)

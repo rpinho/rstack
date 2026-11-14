@@ -100,3 +100,13 @@ def test_apple_agents_are_never_listed_and_a_bare_run_writes_nothing(tmp_path):
                        env=env, capture_output=True, text=True)
     assert r.returncode == 0 and 'only printed' in r.stderr
     assert not (state / 'asks-waiting').exists()
+
+
+def test_a_disk_under_its_floor_is_a_problem_before_jobs_refuse():
+    """11-14: the M4 hit 97% (15 GiB free, under the deploy floor) and the first signal was a failed deploy."""
+    from collections import namedtuple
+    U = namedtuple('U', 'total used free')
+    gib = 2 ** 30
+    entry = dict(path='/', min_free_gib=25, why='deploys refuse under 15 GiB')
+    assert jh.disk_problems([entry], usage=lambda p: U(500 * gib, 485 * gib, 15 * gib))[0][2].startswith('15.0 GiB free')
+    assert jh.disk_problems([entry], usage=lambda p: U(500 * gib, 400 * gib, 100 * gib)) == []
