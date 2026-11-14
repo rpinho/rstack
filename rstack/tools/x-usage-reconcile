@@ -141,11 +141,15 @@ def main(argv=None):
             payload = json.loads(args.usage_json.read_text())
         else:
             # Always invoke the adjacent gate, never a possibly ungated PATH xurl.
-            response = subprocess.run([str(Path(__file__).resolve().with_name('xurl')),
+            # /2/usage refuses user tokens (403 "OAuth 2.0 User Context is forbidden"); it takes the app token.
+            response = subprocess.run([str(Path(__file__).resolve().with_name('xurl')), '--auth', 'app',
                 '/2/usage/tweets?days={}&usage.fields=daily_project_usage'.format(days)],
                 capture_output=True, text=True, check=True, timeout=120)
             payload = json.loads(response.stdout)
         usage, ledger = usage_days(payload), ledger_days(paths)
+        # Days before the ledger existed cannot be explained by it; `start_date` (the first full ledger day) skips them.
+        start = str(cfg.get('start_date', ''))
+        usage = {date: n for date, n in usage.items() if date >= start}
         bad = failures(usage, ledger, absolute, percent)
         for date, n in sorted(usage.items()):
             print('X usage {}: X={} ledger={}'.format(date, n, ledger.get(date, 0)))

@@ -238,7 +238,7 @@ def test_reconcile_calls_adjacent_gate_and_alerts_once_per_failing_day(gate, mon
             alerts.append(argv)
             return subprocess.CompletedProcess(argv, 0)
         assert argv[0] == str(TOOLS / 'xurl')
-        assert argv[1] == '/2/usage/tweets?days=7&usage.fields=daily_project_usage'
+        assert argv[1:4] == ['--auth', 'app', '/2/usage/tweets?days=7&usage.fields=daily_project_usage']
         return run(argv, **kw)
     monkeypatch.setattr(reconcile.subprocess, 'run', stub)
     for _ in range(2):
