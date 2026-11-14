@@ -9,6 +9,8 @@
 #   * "never git add -A"               -> invisible at commit time, so we bound its blast radius
 #   * "every ingest reaches the digest" -> daytime ingests silently skipped the next digest
 #   * "hand-over docs must match state.md" -> a printed sheet claimed absence of a live open item
+#   * "an item opens with its current status" -> one answer quoted three dead statuses from openings
+#   * "no project detail in reloaded files" -> a general session stalled on an index line, three times
 #
 # Install once per clone (applies to the main tree and every worktree):
 #   git config core.hooksPath .githooks
@@ -20,6 +22,8 @@
 #   KB_NO_LEDGER=1           add raw/ files without a day-ledger entry (backfills only)
 #   KB_NIGHTLY=1             set by the scheduled run, which CONSUMES the ledger
 #   KB_PREP_LINT_SKIP=1      commit a hand-over doc that contradicts state.md
+#   KB_STATE_LINT_SKIP=1     commit a state.md item whose opening its own updates overturn (check 7)
+#   KB_CONTEXT_LINT_SKIP=1   commit working detail into state.md/index.md/goals.md (check 8)
 set -uo pipefail
 
 BULK_LIMIT="${KB_BULK_LIMIT:-40}"
@@ -96,6 +100,36 @@ if [ -n "$handover" ] && [ "${KB_PREP_LINT_SKIP:-}" != "1" ] && [ -f scripts/pre
     printf '%s\n' "$out" | sed 's/^/     /' >&2
     say "Put the true state on the page, or mark a checked claim with <!-- verified: state.md YYYY-MM-DD -->."
     say "Override (names itself): KB_PREP_LINT_SKIP=1 git commit ..."
+  fi
+fi
+
+# ------------------------------------------------------------------ 7. state.md stale openings
+# Updates are appended to the END of a state.md item and the bold opening is what a grep reads, so one
+# answer quoted three dead statuses from openings. An item you touch must open with its current status
+# (scripts/state-lint.py --staged: the same item, or another item resolving the same PR or id).
+if printf '%s\n' "$staged" | grep -qx 'state.md' && [ "${KB_STATE_LINT_SKIP:-}" != "1" ] && [ -f scripts/state-lint.py ]; then
+  if ! out=$(python3 scripts/state-lint.py --staged 2>&1); then
+    die "STALE state.md OPENING (scripts/state-lint.py):"
+    printf '%s\n' "$out" | sed 's/^/     /' >&2
+    say "Rewrite the item's bold opening to the current status, or prefix it: SUPERSEDED (<date>): <status>."
+    say "Override (names itself): KB_STATE_LINT_SKIP=1 git commit ..."
+  fi
+fi
+
+# ------------------------------------------------------------------ 8. context hygiene
+# state.md, index.md and goals.md are re-read at session start and after every compaction. An index
+# line carrying a sensitive project's identifiers and scores reached every general-purpose session on
+# every wake, and compacting could not clear it. scripts/context-hygiene-lint.py blocks a term from your
+# terms file NEXT TO one of your working-detail markers (co-occurrence only), plus standalone patterns.
+# With no terms file (KB_CONTEXT_TERMS) it checks nothing and says so. Audit: --all
+if [ "${KB_CONTEXT_LINT_SKIP:-}" != "1" ] && [ -f scripts/context-hygiene-lint.py ]; then
+  if printf '%s\n' "$staged" | grep -qxE 'state\.md|index\.md|goals\.md'; then
+    if ! out=$(python3 scripts/context-hygiene-lint.py 2>&1); then
+      die "WORKING DETAIL IN AN ALWAYS-RELOADED FILE (scripts/context-hygiene-lint.py):"
+      printf '%s\n' "$out" | sed 's/^/     /' >&2
+      say "Keep the summary-level fact; leave the detail in the project's own repo and link it."
+      say "Override (names itself): KB_CONTEXT_LINT_SKIP=1 git commit ..."
+    fi
   fi
 fi
 

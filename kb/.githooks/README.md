@@ -26,6 +26,8 @@ lives in the shared `.git/config`, so one command covers the main tree and every
 | 4 | **Ingest leaves a day-ledger line**: new `raw/` files need `raw/_index/day-ledger.jsonl` staged too | `KB_NO_LEDGER=1` (backfill), `KB_NIGHTLY=1` (the consumer) |
 | 5 | **Hand-over docs don't contradict `state.md`** (`scripts/prep-lint.py`) | `KB_PREP_LINT_SKIP=1` |
 | 6 | **Blast radius**: more than 40 staged files is what `git add -A` looks like | `KB_BULK_OK=1` |
+| 7 | **A touched `state.md` item opens with its current status**: an opening its own later text (or another item with the same PR/id) overturns is stale (`scripts/state-lint.py --staged`) | `KB_STATE_LINT_SKIP=1` |
+| 8 | **No working detail in always-reloaded files** (`state.md`, `index.md`, `goals.md`): a term next to a marker, from your own terms file (`scripts/context-hygiene-lint.py`, `KB_CONTEXT_TERMS`) | `KB_CONTEXT_LINT_SKIP=1` |
 
 Edit `NEVER_COMMIT` at the top of the hook for your own private folders.
 

@@ -221,3 +221,78 @@ def test_guard_main_tree_reads_its_areas_from_config_and_refuses_on_error(kb, tm
     assert decision(call('guard-main-tree.py', None, {'CLAUDE_PROJECT_DIR': main}, raw=raw)) == 'deny'
     r = call('guard-main-tree.py', None, {'CLAUDE_PROJECT_DIR': main}, raw='{"tool_input": {"file_path": "/elsewhere"')
     assert r.returncode == 0 and decision(r) is None
+
+
+# ------------------------------------------------------------------ pre-commit checks 7 and 8
+
+TERM = 'projectcodename'     # placeholder vocabulary only
+
+
+@pytest.fixture
+def kbrepo(tmp_path):
+    import shutil
+    repo = tmp_path / 'kb'
+    (repo / '.githooks').mkdir(parents=True)
+    (repo / 'scripts').mkdir()
+    shutil.copy(REPO / 'kb/.githooks/pre-commit', repo / '.githooks/pre-commit')
+    for s in ('state-lint.py', 'context-hygiene-lint.py'):
+        shutil.copy(REPO / 'kb/scripts' / s, repo / 'scripts' / s)
+    (repo / 'state.md').write_text('# State\n')
+    (repo / 'index.md').write_text('# Index\n')
+    git('init', '-q', '-b', 'main', cwd=repo)
+    git('add', '.', cwd=repo)
+    git('commit', '-qm', 'init', cwd=repo)
+    git('config', 'core.hooksPath', '.githooks', cwd=repo)
+    return repo
+
+
+def commit(repo, path, text, **env):
+    (repo / path).write_text(text)
+    subprocess.run(['git', 'add', path], cwd=str(repo), check=True)
+    e = {k: v for k, v in os.environ.items() if not k.startswith(('KB_', 'RSTACK_'))}
+    e.update(KB_ALLOW_MAIN_COMMIT='1', **env)
+    r = subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'x'],
+                       cwd=str(repo), env=e, capture_output=True, text=True)
+    if r.returncode:
+        subprocess.run(['git', 'reset', '-q'], cwd=str(repo), check=True)
+    return r
+
+
+def test_precommit_blocks_a_stale_state_opening(kbrepo):
+    stale = '# State\n\n- [ ] **Paper BLOCKED on endorsement.** 11-17: ENDORSED, then SUBMITTED.\n'
+    r = commit(kbrepo, 'state.md', stale)
+    assert r.returncode == 1 and 'STALE state.md OPENING' in r.stderr
+    assert commit(kbrepo, 'state.md', stale, KB_STATE_LINT_SKIP='1').returncode == 0
+    fixed = '# State\n\n- [ ] **SUPERSEDED (11-17): submitted.** Was blocked on endorsement; ENDORSED, SUBMITTED.\n'
+    assert commit(kbrepo, 'state.md', fixed).returncode == 0
+
+
+def test_state_lint_follows_an_id_across_items(tmp_path):
+    loader = importlib.machinery.SourceFileLoader('kb_state_lint', str(REPO / 'kb/scripts/state-lint.py'))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    sl = importlib.util.module_from_spec(spec)
+    loader.exec_module(sl)
+    lines = ['- [ ] **Table PR #229 opened**, waiting on review', '- [x] PR #229 MERGED 11-02']
+    assert [p[0] for p in sl.check(lines)] == [1]
+    ids = tmp_path / 'ids.tsv'
+    ids.write_text('ticket\t\\bTKT-(\\d{4})\\b\n')
+    lines = ['- [ ] **TKT-1234 awaiting review**', '- [x] TKT-1234 APPROVED']
+    assert sl.check(lines) == [] and [p[0] for p in sl.check(lines, extra=sl.load_ids(str(ids)))] == [1]
+
+
+def test_precommit_keeps_working_detail_out_of_reloaded_files(kbrepo, tmp_path):
+    line = '# Index\n\n- postmortem: {} run-104 scored best\n'.format(TERM)
+    assert commit(kbrepo, 'index.md', line).returncode == 0        # no terms file: nothing checked
+    subprocess.run(['git', 'reset', '-q', '--soft', 'HEAD~1'], cwd=str(kbrepo), check=True)
+    subprocess.run(['git', 'reset', '-q'], cwd=str(kbrepo), check=True)
+    terms = tmp_path / 'terms.txt'
+    terms.write_text('# synthetic\n{}\nmarker run id = \\brun-\\d{{3}}\\b\nstandalone dump = \\bDUMP-\\d{{6}}\\b\n'
+                     .format(TERM))
+    env = {'KB_CONTEXT_TERMS': str(terms)}
+    r = commit(kbrepo, 'index.md', line, **env)
+    assert r.returncode == 1 and 'run id' in r.stderr and TERM not in r.stderr
+    assert commit(kbrepo, 'index.md', '# Index\n\n- {} is mentioned alone\n'.format(TERM), **env).returncode == 0
+    r = commit(kbrepo, 'index.md', '# Index\n\n- see DUMP-123456\n', **env)
+    assert r.returncode == 1 and 'standalone: dump' in r.stderr
+    r = commit(kbrepo, 'index.md', '# Index\n\n- anything\n', KB_CONTEXT_TERMS=str(tmp_path / 'missing.txt'))
+    assert r.returncode == 1 and 'unusable' in r.stderr

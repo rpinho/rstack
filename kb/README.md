@@ -66,6 +66,8 @@ What it turned out to be for, a year in: [RETRO.md](RETRO.md).
 | Digest length, order, coverage, no permission-slip asks | `scripts/digest-lint.py` + repair pass |
 | The digest is never silently missing | `scripts/nightly/run.sh` (EXIT trap, fallback, failure notice) |
 | Failures reach a human the same day | `scripts/alert.py` (alerts dir -> digest top line + push loop) |
+| A touched `state.md` item opens with its current status | `scripts/state-lint.py` + pre-commit check 7 |
+| No project working detail in the files every session reloads | `scripts/context-hygiene-lint.py` (your own terms file, `KB_CONTEXT_TERMS`) + pre-commit check 8 |
 | Stale or contradictory open items get fixed | `scripts/coherence.py` (weekly report) + `scripts/state-hygiene.py` (nightly, judged) |
 
 ---
@@ -106,6 +108,8 @@ agent-kb/
     ├── coherence.py            deterministic coherence report (+ kb-coherence.sh weekly job)
     ├── state-hygiene.py        close open items a newer entry resolved (candidates -> judge -> apply)
     ├── prep-lint.py · print.sh hand-over docs: claims of absence vs open items, then print
+    ├── state-lint.py           state.md openings must carry the current status (pre-commit check 7)
+    ├── context-hygiene-lint.py keep working detail out of state/index/goals (pre-commit check 8)
     ├── kb-server.py            read-only, token-gated web reader with /home and a "Latest" box
     ├── kb-title-index.sh       compact page-title index (feeds the SessionStart hook)
     ├── kb-encrypted-backup.sh  encrypted snapshots to a synced folder; media excluded; counted prune
