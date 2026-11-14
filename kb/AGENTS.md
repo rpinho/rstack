@@ -103,6 +103,15 @@ When delegating, give the worker a bounded spec, allowed paths, budget, checkpoi
 
 Long builds run as tracked shell jobs; small scheduler scripts watch for events. Do not keep a large conversation polling a log. Resume from durable state and read the short result first. Model choices, fallback boundaries and resource limits belong in explicit configuration. See [the operations guide](docs/agent-operations.md) for routing, compute and recovery patterns; these are deployment recipes, not additional installed services.
 
+## Coordinating sessions: the tools that ship beside this KB
+
+These live in the rstack repo this template ships in, not in the KB itself; wire them in where you run several sessions.
+
+- **Messages to the conductor go through a script, never a peer message:** [`tell-conductor`](../harness/tools/conductor-inbox/tell-conductor) (alias `tell-general`) files `fyi` without a wake and `decision`/`human`/`break` with one; detail matching your quarantine terms (`CONDUCTOR_QUARANTINE_TERMS`) is kept out of the conductor's context and replaced by your `--summary`.
+- **Sessions waiting on a person are listed for the conductor:** [`asks-waiting`](../rstack/tools/asks-waiting) scans transcripts for a last turn that ends on a question or a pending permission prompt (and, with `--prs`, our untouched PRs), and its `--hook` shows the list on every conductor turn.
+- **Briefs and reports state results, not activity:** [`results-brief-guard.py`](../rstack/hooks/results-brief-guard.py) refuses a subagent brief without "You asked: X. I will: Y." and a "Done when:" line; [`results-report-guard.py`](../rstack/hooks/results-report-guard.py) blocks a subagent's stop once until its report opens "You asked: X. Shipped: Y".
+- **Text in your name is cut from your own messages:** `rh voice-cuts DRAFT` ([`voice_cuts.py`](../harness/voice_cuts.py)) passes a draft only when it is built from lines in your own voice banks, and records the pass that `.claude/hooks/voice-send-gate.py` checks.
+
 ## Structure
 
 ```
