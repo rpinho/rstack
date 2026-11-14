@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Synchronous job runner: role selection, exit receipts and bounded capacity retries.
-# usage: launch.sh JOB WORKDIR [--role ROLE] [--model MODEL --model-override REASON] [--host HOST]
+# usage: launch.sh JOB WORKDIR [--role ROLE] [--made-by MODEL] [--model MODEL --model-override REASON] [--host HOST]
 setopt pipefail
 # 11-09 (planets on the m5): a non-login shell there has only the system PATH, the detached job inherits
 # it, and the executor (codex in /opt/homebrew/bin) was "command not found" (exit 127).
@@ -15,7 +15,8 @@ fi
 (( $# >= 2 )) || { print -u2 -- 'usage: launch.sh JOB WORKDIR'; exit 2; }
 self=${0:A}
 job=$1; dir=$2; shift 2
-LAUNCH_ROLE=${LAUNCH_ROLE:-batch}; LAUNCH_MODEL=${LAUNCH_MODEL:-}; LAUNCH_MODEL_OVERRIDE=${LAUNCH_MODEL_OVERRIDE:-}
+LAUNCH_ROLE=${LAUNCH_ROLE:-batch}; LAUNCH_MODEL=${LAUNCH_MODEL:-}; LAUNCH_MODEL_OVERRIDE=${LAUNCH_MODEL_OVERRIDE:-$MODEL_OVERRIDE_REASON}
+LAUNCH_MADE_BY=${LAUNCH_MADE_BY:-}
 LAUNCH_EFFORT=${LAUNCH_EFFORT:-high}
 # --host runs the executor on another machine (Ricardo, 11-07: "move the science runs to the m5").
 # Only that one step crosses the network. Admission, the spec word cap, the job registry, model
@@ -49,6 +50,7 @@ LAUNCH_CLAUDE_TOOLS=${LAUNCH_CLAUDE_TOOLS:-Read,Write,Edit}
 while (( $# )); do
   case $1 in
     --role) (( $# >= 2 )) || exit 2; LAUNCH_ROLE=$2; shift 2;;
+    --made-by) (( $# >= 2 )) || exit 2; LAUNCH_MADE_BY=$2; shift 2;;
     --model) (( $# >= 2 )) || exit 2; LAUNCH_MODEL=$2; shift 2;;
     --model-override) (( $# >= 2 )) || exit 2; LAUNCH_MODEL_OVERRIDE=$2; shift 2;;
     --host) (( $# >= 2 )) || exit 2; LAUNCH_HOST=$2; shift 2;;
@@ -195,11 +197,6 @@ finished() {
 trap finished EXIT
 stopped() { print -- "exit stopped by signal $(date)" >> "$log"; exit 143; }
 trap stopped TERM HUP
-if [[ $backend == codex ]]; then
-  cx=${LAUNCH_CODEX:-codex}
-else
-  cx=${LAUNCH_CLAUDE:-claude}
-fi
 selector=${LAUNCH_SELECTOR:-${self:h:h}/harness/worker_models.py}
 # lane and lane_dir are derived above, with the round gate that needs them. A missing GOAL.md or
 # an unavailable `rh` is not fatal: a job that cannot read its goal still runs, and the gap shows
@@ -207,7 +204,14 @@ selector=${LAUNCH_SELECTOR:-${self:h:h}/harness/worker_models.py}
 lessons=$(rh --root "${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-$PWD/.runtime}}" lessons for "$lane" -n "${LAUNCH_LESSONS:-12}" 2>/dev/null)
 start=1; [[ -n $LAUNCH_RESUME ]] && start=2
 for (( i = start; i <= 5; i++ )); do
-  m=$(python3 "$selector" --role "$LAUNCH_ROLE" --executor "$backend" --model "$LAUNCH_MODEL" --model-override "$LAUNCH_MODEL_OVERRIDE" --log "$log" --receipt "$log.selection.json") || { print -- "exit 2 model-selection-refused $(date)" >> "$log"; exit 2; }
+  selection=$(python3 "$selector" --role "$LAUNCH_ROLE" --executor "$backend" --model "$LAUNCH_MODEL" --model-override "$LAUNCH_MODEL_OVERRIDE" --made-by "$LAUNCH_MADE_BY" --job "$job" --lane "$lane" --spec "$spec" --print-route --log "$log" --receipt "$log.selection.json") || { print -- "exit 2 model-selection-refused $(date)" >> "$log"; exit 2; }
+  selected_route=("${(@f)selection}")
+  m=$selected_route[1]; backend=$selected_route[2]
+  case $backend in
+    codex) cx=${LAUNCH_CODEX:-codex};;
+    claude) cx=${LAUNCH_CLAUDE:-claude};;
+    *) print -u2 -- "launch.sh refused $job: unsupported executor route $backend"; exit 2;;
+  esac
   # Shared context every job gets, injected here and never counted against the word cap above:
   # the job rules (prior art first), the lane's goal in the owner's words, and the lessons the
   # lane has already paid for. Before 11-06 only `rh ideas promote` enforced prior art and only

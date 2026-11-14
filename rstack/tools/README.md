@@ -1,6 +1,6 @@
 # rstack tools
 
-Standalone scripts (Python 3.9+ standard library, plus bash for `clean-room`). Each has its test in `../tests/test_rstack_tools.py`. None ships a term or pattern list; you supply your own and keep it private.
+Standalone scripts (Python 3.9+ standard library, plus bash for `clean-room`). Tests live under `../tests/`. Private-content filters take your own term files; the model instruction guard uses public model spellings.
 
 - `event-watch`: wakes a session only when a configured event happens (new file, stale output, dead pid, log match, deadline). One overnight watcher loop spent about 3,300 turns and 19 compactions confirming nothing had changed.
 - `fleet-context-watch`: on a schedule, asks each tmux-hosted Claude Code session over a context threshold to save its state and reply `SAVED <path>`, then types `/compact` once that reply is in and the session is quiet. Its first version read only the latest reply, so a SAVED buried under a later reply left two sessions at 530k and 680k for hours; the test pins that.
@@ -19,3 +19,20 @@ Standalone scripts (Python 3.9+ standard library, plus bash for `clean-room`). E
 - `job-health`: every scheduled job's failure reaches a person, not just its log. It lists launchd jobs whose last run exited with a code they don't declare as fine, and required outputs (a registry with max ages) that are missing or stale, into the conductor's asks-waiting list while they last, and alerts once per new problem. Twice in one day a failure only reached a log: a crashed step left X rounds working from a 72-hour-old list for two days, and a lane sat idle with its result in.
 - `readme-blocks`: renders and checks the marked blocks in a README (`<!-- auto:NAME -->...<!-- /auto -->`) from a PR count, a JSONL ledger or a command, so no number in a README is typed by hand. An audit on 11-13 found 8 public READMEs out of date. `log-result` uses it to refuse a public result until the README shows it. Its test is `../tests/test_readme_blocks.py`.
 - `repo-freshness`: the nightly check that every public repo is pushed (a clone) or published (a PUBLISH whitelist) and has not drifted: dirty or unpushed clones, private commits on a branch tracking public main, an export that differs from the public repo, stale README blocks, live code that differs from the repo, stale retros and unscheduled backups. Reports like `job-health`, one row per repo and kind. Its test is `../tests/test_repo_freshness.py`; see [repo freshness](../../docs/repo-freshness.md).
+- `model-instruction-gate`: refuses model names in the same sentence as a judgment instruction in SendMessage text, `tell-general` arguments, or Write/Edit content under `lane-briefs`. Tests: `../tests/test_model_instruction_gate.py`. It uses `../hooks/_hookfail.py` to refuse guarded malformed events and report unrelated errors.
+- `leaderboard-freshness LEADERBOARD.md`: checks the newest table Date (default `--max-age-days 2`) and whether models in `--used FILE` have a routing role row. Canonical/native version spellings are normalised. `--used-from-receipts DIR` reads `*.selection.json` recursively and uses selection `utc` timestamps from the last seven days, not file modification times. `--alert` calls `tell-general fyi "..."` once per failing UTC day, recording it under `RSTACK_STATE_DIR` (default `$XDG_STATE_HOME/rstack`), then runs `--refresh-command 'executable args'` if supplied; that command uses shell quoting but no shell expansion. Refresh does not change the current failure exit status. Tests: `../tests/test_leaderboard_freshness.py`.
+
+Register the instruction gate in the desired Claude Code `settings.json` with this PreToolUse matcher. Set `RSTACK_ROOT` to the directory containing this `tools/` and its sibling `hooks/`; keep the two together. Registration is an operator step; the tool does not edit settings.
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "SendMessage|Bash|Write|Edit",
+        "hooks": [{"type": "command", "command": "python3 \"$RSTACK_ROOT/tools/model-instruction-gate\"", "timeout": 10}]
+      }
+    ]
+  }
+}
+```

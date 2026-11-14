@@ -49,8 +49,9 @@ def test_even_ranked_hardcoded_model_requires_override_reason(tmp_path):
 
 def test_missing_role_or_incompatible_route_never_falls_back(tmp_path):
     p=roles(tmp_path/'roles.json')
-    for role,executor in [('missing','codex'),('taste','codex'),('batch','claude')]:
+    for role,executor in [('missing','codex'),('batch','claude')]:
         with pytest.raises(ValueError):wm.select(role,executor,path=p)
+    assert wm.select('taste', 'codex', path=p)['executor'] == 'claude'
     with pytest.raises(ValueError):wm.select('batch','codex',override='reason without model',path=p)
     p.write_text('{}')
     with pytest.raises((ValueError,KeyError)):wm.select('batch','codex',path=p)
@@ -210,3 +211,106 @@ def test_an_openrouter_model_is_selected_only_on_its_own_route(tmp_path):
         '--model','vendor/fixture-third','--model-override','x','--roles-file',str(p),'--log',str(tmp_path/'l'),
         '--receipt',str(tmp_path/'r.json')],capture_output=True,text=True)
     assert out.returncode==0 and out.stdout.strip()=='vendor/fixture-third', out.stderr
+
+
+def judgment_roles(path):
+    ranked = ['claude-opus-5-5', 'gpt-6-astra', 'claude-fable-5-2', 'gpt-6.1-sol']
+    routes = {m: {'cli': 'claude' if m.startswith('claude') else 'codex',
+                  'canonical': ('anthropic/' if m.startswith('claude') else 'openai/') + m}
+              for m in ranked + ['claude-sonnet-5']}
+    path.write_text(json.dumps({'roles': {'review': ranked, 'taste': ranked, 'ideation': ranked},
+                                'routes': routes}))
+    return path
+
+
+@pytest.mark.parametrize('role', sorted(wm.JUDGMENT))
+def test_judgment_pin_requires_owner_reason_and_names_pick(tmp_path, role):
+    path = judgment_roles(tmp_path / 'roles.json')
+    with pytest.raises(ValueError, match=role + '.*leaderboard picks claude-opus-5-5'):
+        wm.select(role, 'codex', 'claude-sonnet-5', 'save budget', path, made_by='gpt-6.1-sol')
+    assert not (tmp_path / 'model-overrides.jsonl').exists()
+
+
+@pytest.mark.parametrize('role', ['review', 'judge', 'audit'])
+def test_review_requires_maker_and_uses_first_other_family(tmp_path, role):
+    path = judgment_roles(tmp_path / 'roles.json')
+    with pytest.raises(ValueError, match='requires --made-by'):
+        wm.select(role, 'codex', path=path)
+    got = wm.select(role, 'codex', path=path, made_by='gpt-6.1-sol')
+    assert (got['model'], got['executor']) == ('claude-opus-5-5', 'claude')
+    got = wm.select(role, 'claude', path=path, made_by='claude-opus-5-5')
+    assert (got['model'], got['executor']) == ('gpt-6-astra', 'codex')
+
+
+def test_judgment_own_row_and_exclusions_are_respected(tmp_path):
+    path = judgment_roles(tmp_path / 'roles.json')
+    data = json.loads(path.read_text())
+    data['roles']['judge'] = ['claude-fable-5-2']
+    data['overrides'] = {'review': {'exclude': ['anthropic/claude-opus-5-5']}}
+    path.write_text(json.dumps(data))
+    assert wm.select('judge', 'codex', path=path, made_by='gpt-6.1-sol')['model'] == 'claude-fable-5-2'
+    assert wm.select('audit', 'codex', path=path, made_by='gpt-6.1-sol')['model'] == 'claude-fable-5-2'
+
+
+def test_owner_override_env_is_accepted_and_logged(tmp_path, monkeypatch):
+    path = judgment_roles(tmp_path / 'roles.json')
+    target = tmp_path / 'owner-overrides.jsonl'
+    monkeypatch.setenv('RH_MODEL_OVERRIDE_LOG', str(target))
+    monkeypatch.setenv('MODEL_OVERRIDE_REASON', 'Ricardo: frozen comparison')
+    monkeypatch.setenv('LAUNCH_MADE_BY', 'gpt-6.1-sol')
+    got = wm.select('review', 'codex', 'claude-sonnet-5', path=path, job='fixture-review')
+    assert got['executor'] == 'claude'
+    row = json.loads(target.read_text())
+    assert row == dict(role='review', model='claude-sonnet-5', reason='Ricardo: frozen comparison',
+                       job='fixture-review', utc=got['utc'])
+
+
+def test_review_launch_pin_refused_before_executor(fake_home):
+    _, _, _, env = fake_home
+    judgment_roles(Path(env['RH_ROLES_FILE']))
+    result = run_launcher(fake_home, '--role', 'review', '--made-by', 'gpt-6.1-sol',
+                          '--model', 'claude-sonnet-5', '--model-override', 'save budget')
+    assert result.returncode == 2
+    assert 'review' in result.stderr and 'leaderboard picks claude-opus-5-5' in result.stderr
+    assert not Path(env['FAKE_CALL']).exists()
+
+
+def test_review_pin_refusal_names_pick_even_without_maker(tmp_path):
+    path = judgment_roles(tmp_path / 'roles.json')
+    with pytest.raises(ValueError, match='review.*leaderboard picks claude-opus-5-5'):
+        wm.select('review', 'codex', 'claude-sonnet-5', 'save budget', path)
+
+
+@pytest.mark.parametrize('name', ['sonnet', 'OPUS', 'gpt-6-astra', 'claude-fable-5-2', 'deepseek'])
+def test_judgment_spec_names_are_refused_before_executor(fake_home, name):
+    _, artifacts, _, env = fake_home
+    judgment_roles(Path(env['RH_ROLES_FILE']))
+    (artifacts / 'fixture-job.md').write_text('Use {} for the next review.\n'.format(name))
+    result = run_launcher(fake_home, '--role', 'review', '--made-by', 'gpt-6.1-sol')
+    assert result.returncode == 2
+    assert ('launch.sh refused fixture-job: name the leaderboard role, not a model (LEADERBOARD.md); '
+            'the leaderboard picks claude-opus-5-5') in result.stderr
+    assert not Path(env['FAKE_CALL']).exists()
+
+
+@pytest.mark.parametrize('made_by,expected', [('gpt-6.1-sol', 'claude-opus-5-5'),
+                                           ('claude-opus-5-5', 'gpt-6-astra')])
+def test_review_launch_switches_executor_and_preserves_receipt(fake_home, made_by, expected):
+    _, artifacts, _, env = fake_home
+    judgment_roles(Path(env['RH_ROLES_FILE']))
+    claude = artifacts / 'fake-claude'
+    claude.write_text('#!' + sys.executable + '\nimport json,os,sys\nfrom pathlib import Path\n'
+                      'Path(os.environ["FAKE_CALL"]).write_text(json.dumps(sys.argv))\n'
+                      'print(json.dumps({"is_error":False,"subtype":"success","result":"fixture"}))\n')
+    claude.chmod(0o755)
+    env['LAUNCH_CLAUDE'] = str(claude)
+    env['AGENT_BACKEND'] = 'codex' if made_by.startswith('gpt') else 'claude'
+    result = run_launcher(fake_home, '--role', 'review', '--made-by', made_by)
+    assert result.returncode == 0, result.stderr
+    argv = json.loads(Path(env['FAKE_CALL']).read_text())
+    assert expected in argv
+    assert argv[1] == ('-p' if made_by.startswith('gpt') else 'exec')
+    receipt = json.loads((artifacts / 'fixture-job.log.selection.json').read_text())
+    assert {k: receipt[k] for k in ('model', 'role', 'lane', 'job', 'made_by')} == dict(
+        model=expected, role='review', lane='fixture', job='fixture-job', made_by=made_by)
+    assert receipt['utc'] and receipt['roles_sha256']

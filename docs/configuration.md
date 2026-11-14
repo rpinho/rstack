@@ -51,9 +51,15 @@ CLI path or lane configuration. Standard system executable paths such as
 Provider CLIs manage their own login/config outside the harness; choose HOME and
 provider-specific config directories before invocation.
 
+Judgment roles are `review`, `judge`, `audit`, `taste`, `design`, and `ideation`; `judge`/`audit` use `review` and `design` uses `taste` unless an explicit row exists.
+Pass `--role ROLE --made-by MODEL` (or `LAUNCH_MADE_BY`); the maker is required for review/judge/audit, and the first eligible model from another family is selected.
+Judgment jobs follow the selected model's CLI route automatically; their specs name the role and must contain no model names.
+A judgment `--model` pin requires `--model-override 'Ricardo: REASON'` (or `MODEL_OVERRIDE_REASON`), while family independence and exclusions still apply.
+Accepted overrides append role/model/reason/job/utc to `RH_MODEL_OVERRIDE_LOG` (default `model-overrides.jsonl` beside `RH_ROLES_FILE`); other roles retain their explicit-executor behavior.
+
 | Additional setting | Meaning |
 |---|---|
-| `AGENT_BACKEND` (or `LAUNCH_BACKEND`) | `codex` (default) or `claude`; invalid values refuse. `tools/launch.sh` reads either name; both set to different values refuse. The role still comes from `LAUNCH_ROLE` (default `batch`), and a role whose top model has no route for the chosen CLI refuses rather than falling back, so a Claude job names a role that ranks a Claude model. |
+| `AGENT_BACKEND` (or `LAUNCH_BACKEND`) | `codex` (default) or `claude`; invalid values refuse. `tools/launch.sh` reads either name; both set to different values refuse. The role comes from `LAUNCH_ROLE` (default `batch`). Judgment roles use the selected model's CLI; other roles refuse when their top model has no compatible route for the chosen CLI. |
 | `LAUNCH_CLAUDE`, `LAUNCH_CLAUDE_BUDGET` | Claude executable and per-run dollar cap (default `1.00`); no automatic Claude retries. |
 | `LAUNCH_CLAUDE_TOOLS`, `LAUNCH_TIMEOUT_SECONDS` | Claude jobs from `tools/launch.sh`: the `--allowedTools` list (default `Read,Write,Edit`; a job that runs its own code adds `Bash` and says so) and the wall-clock cap in whole seconds (default `5400`; `0` means none). The CLI has no turn limit, so spend and the clock are the two bounds. |
 | `LAUNCH_CODEX_SANDBOX` | How much a codex job may touch: `read-only`, `workspace-write` (the default), `danger-full-access`, or `bypass`. The first three become `--sandbox MODE`; `bypass` is the single `--dangerously-bypass-approvals-and-sandbox` flag, which turns off approvals and the sandbox together and is not a sandbox level. An unknown value refuses rather than being passed through. The default is deliberate: a job whose transcript is written outside its work dir needs a wider mode, and the host says so once rather than the tool shipping with the sandbox off. |

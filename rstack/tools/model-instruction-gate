@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""PreToolUse: judgment instructions name leaderboard roles instead of models."""
+from pathlib import Path
+import re
+import shlex
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hooks'))
+import _hookfail
+
+MODEL = re.compile(r'\b(?:sonnet|haiku|opus|fable|astra|sol|deepseek|kimi|glm)\b|\b(?:gpt-|claude-)', re.I)
+JUDGMENT = re.compile(r'\b(?:referees?|reviews?|judges?|audits?|taste|design)\b', re.I)
+REASON = ('name the leaderboard role, not a model (LEADERBOARD.md). '
+          'Budget limits are job counts or caps, never a model swap.')
+
+
+def triage(raw, event):
+    return any(word in raw for word in ('SendMessage', 'tell-general', 'lane-briefs'))
+
+
+def tell_text(command):
+    """Outgoing arguments of tell-general commands, including pipelines and env prefixes."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|()\n')
+    lexer.whitespace = ' \t\r'
+    lexer.whitespace_split = True
+    segment = []
+    for token in list(lexer) + [';']:
+        if token and all(c in ';&|()\n' for c in token):
+            i = 0
+            while i < len(segment) and (segment[i] in ('env', 'command', 'exec', 'sudo')
+                                       or re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', segment[i])):
+                i += 1
+            if i < len(segment) and Path(segment[i]).name == 'tell-general':
+                yield ' '.join(segment[i + 1:])
+            segment = []
+        else:
+            segment.append(token)
+
+
+def body(event):
+    tool = event.get('tool_name')
+    if tool not in ('SendMessage', 'Bash', 'Write', 'Edit'):
+        return 0
+    payload = event.get('tool_input')
+    if not isinstance(payload, dict):
+        raise ValueError('tool_input must be an object')
+    texts = []
+    if tool == 'SendMessage':
+        texts = [payload['message']]
+    elif tool == 'Bash':
+        texts = list(tell_text(payload['command']))
+    else:
+        path = payload['file_path']
+        if not isinstance(path, str):
+            raise ValueError('file_path must be text')
+        if 'lane-briefs' in Path(path).parts:
+            texts = [payload['content' if tool == 'Write' else 'new_string']]
+    for text in texts:
+        if not isinstance(text, str):
+            raise ValueError('outgoing text must be text')
+        # A wrapped line is still the same sentence; dots between digits are versions.
+        for sentence in re.split(r'[!?]+|(?<!\d)\.|\.(?!\d)', text):
+            if MODEL.search(sentence) and JUDGMENT.search(sentence):
+                print(REASON, file=sys.stderr)
+                return 2
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(_hookfail.run('model-instruction-gate', body, triage,
+                          guards='judgment instructions in messages, tell-general and lane-briefs'))

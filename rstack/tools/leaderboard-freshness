@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Check the newest leaderboard table date and membership of recently used models."""
+import argparse
+import datetime as dt
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+
+
+def normalise(model):
+    # Native and canonical ids differ by provider prefix and version punctuation.
+    return re.sub(r'[^a-z0-9]', '', model.strip().strip('`').casefold().rsplit('/', 1)[-1])
+
+
+def tables(text):
+    """Yield Markdown table rows keyed by their header, without relying on column order."""
+    header = None
+    for line in text.splitlines():
+        if not line.strip().startswith('|'):
+            header = None
+            continue
+        cells = [c.strip().strip('`') for c in line.strip().strip('|').split('|')]
+        lowered = [c.casefold() for c in cells]
+        if 'date' in lowered:
+            header = lowered
+        elif header and len(cells) == len(header) and not all(re.fullmatch(r'[-: ]+', c) for c in cells):
+            yield dict(zip(header, cells))
+
+
+def used_receipts(directory, now):
+    models = set()
+    cutoff = now - dt.timedelta(days=7)
+    for path in sorted(directory.rglob('*.selection.json')):
+        receipt = json.loads(path.read_text())
+        stamp = dt.datetime.fromisoformat(receipt['utc'].replace('Z', '+00:00'))
+        if stamp.tzinfo is None:
+            raise ValueError('receipt utc needs a timezone: ' + str(path))
+        if cutoff <= stamp <= now:
+            model = receipt.get('canonical') or receipt['model']
+            if not isinstance(model, str) or not model.strip():
+                raise ValueError('receipt model is missing: ' + str(path))
+            models.add(model)
+    return models
+
+
+def alert(problems, args, today):
+    base = os.environ.get('RSTACK_STATE_DIR') or str(
+        Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'rstack')
+    state = Path(base).expanduser() / 'leaderboard-freshness-alerts.jsonl'
+    state.parent.mkdir(parents=True, exist_ok=True)
+    with state.open('a+') as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        stream.seek(0)
+        if any(json.loads(line).get('day') == today.isoformat() for line in stream if line.strip()):
+            return
+        message = 'leaderboard freshness: ' + '; '.join(problems)
+        subprocess.run(['tell-general', 'fyi', message], check=True, timeout=30)
+        stream.write(json.dumps({'day': today.isoformat()}) + '\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+    if args.refresh_command:
+        subprocess.run(shlex.split(args.refresh_command), check=True, timeout=300)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('leaderboard', type=Path)
+    parser.add_argument('--max-age-days', type=int, default=2)
+    parser.add_argument('--used', type=Path)
+    parser.add_argument('--used-from-receipts', type=Path)
+    parser.add_argument('--alert', action='store_true')
+    parser.add_argument('--refresh-command', help='executable and arguments (shell-quoted; no shell evaluation)')
+    args = parser.parse_args(argv)
+    try:
+        if args.max_age_days < 0:
+            raise ValueError('--max-age-days must be nonnegative')
+        now = dt.datetime.now(dt.timezone.utc)
+        rows = list(tables(args.leaderboard.read_text()))
+        dates = [dt.date.fromisoformat(row['date']) for row in rows]
+        models = {normalise(row['model']) for row in rows if row.get('role') and row.get('model')
+                  and 'scores' not in row}
+        used = set(args.used.read_text().splitlines()) if args.used else set()
+        if args.used_from_receipts:
+            if not args.used_from_receipts.is_dir():
+                raise ValueError('receipt directory does not exist: ' + str(args.used_from_receipts))
+            used.update(used_receipts(args.used_from_receipts, now))
+        problems = []
+        if not dates:
+            problems.append('leaderboard has no table Date')
+        elif (now.date() - max(dates)).days > args.max_age_days:
+            problems.append('newest leaderboard Date {} is older than {} days'.format(max(dates), args.max_age_days))
+        for model in sorted(m for m in used if m.strip()):
+            if normalise(model) not in models:
+                problems.append('used model {} is on no role row'.format(model))
+        for problem in problems:
+            print(problem)
+        if problems and args.alert:
+            alert(problems, args, now.date())
+        return int(bool(problems))
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        print('leaderboard freshness: ' + str(exc))
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
