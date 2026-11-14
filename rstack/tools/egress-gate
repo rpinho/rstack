@@ -22,7 +22,9 @@ What it looks for:
   - in pre-push mode, agent working files (handoffs, briefs, error logs) whatever their content:
     $RSTACK_EGRESS_DIR/agent-files.gitignore, gitignore-style globs, label `agent-file`.
   Per-repo exceptions: $RSTACK_EGRESS_DIR/allow.txt, `repo-glob<TAB>label<TAB>path-glob<TAB>reason`,
-  for content the owner decided may be public in that repo.
+  for content the owner decided may be public in that repo. pre-push matches the repo glob against
+  the work tree and the remote URL. scan matches it against each scanned directory's real path (paths
+  relative to it), and against the enclosing git work tree's top when there is one.
 
 Your patterns are NOT in this file, and must not be: a list of what you do not want published is
 itself a summary of your private context, so shipping it inside a copied script is the leak. With
@@ -174,21 +176,44 @@ def report(hits, where, cfg):
           'Do not bypass with --no-verify.'.format(cfg.allow_file))
 
 
+def scan_scopes(p, cfg):
+    """(rules, base) pairs whose allow rules apply under scanned path p: the rules a push would use.
+
+    A scanned directory is a repo of its own (its realpath matched against the repo glob, each file's
+    path taken relative to it), so a scoped rule for a staging directory can pass an upload. A scan
+    inside a git work tree also gets that tree's rules, paths relative to its top, exactly as
+    pre-push sees them. Nothing else: a parent directory never inherits a child's rules."""
+    base = os.path.realpath(str(p if p.is_dir() else p.parent))
+    scopes = [base]
+    top = git('rev-parse', '--show-toplevel', cwd=base).strip()
+    if top and os.path.realpath(top) != base:
+        scopes.append(os.path.realpath(top))
+    return [(cfg.allow_rules(b), b) for b in scopes]
+
+
+def scan_allowed(label, f, scopes):
+    real = os.path.realpath(str(f))
+    return any(allowed(label, os.path.relpath(real, b), rules) for rules, b in scopes
+               if rules and not os.path.relpath(real, b).startswith('..'))
+
+
 def scan_paths(paths):
     cfg = Config()
     cfg.say_notes()
     hits, files = [], []
+    excused = 0
     for p in map(Path, paths):
         if p.is_file():
-            files.append(p)
+            files.append((p, scan_scopes(p, cfg)))
         elif p.is_dir():
+            scopes = scan_scopes(p, cfg)
             for dp, dns, fns in os.walk(str(p)):
                 dns[:] = [d for d in dns if d not in SKIP_DIRS]
-                files += [Path(dp) / f for f in fns]
+                files += [(Path(dp) / f, scopes) for f in fns]
         else:
             print('egress-gate: not found: {}'.format(p))
             return 1
-    for f in files:
+    for f, scopes in files:
         if f.suffix.lower() in SKIP_SUFFIX or f.is_symlink():
             continue
         try:
@@ -202,16 +227,22 @@ def scan_paths(paths):
             continue
         for ln, line in enumerate(raw.decode('utf-8', 'replace').splitlines(), 1):
             for label, _ in hits_in(line, cfg.patterns):
-                hits.append((str(f), ln, label, line.strip()))
+                if scan_allowed(label, f, scopes):
+                    excused += 1
+                else:
+                    hits.append((str(f), ln, label, line.strip()))
     if hits:
         report(hits, ', '.join(paths), cfg)
         return 2
-    print('egress-gate: PASS ({} file(s) scanned)'.format(len(files)))
+    print('egress-gate: PASS ({} file(s) scanned{})'.format(
+        len(files), '; {} signal(s) passed by scoped rules in {}'.format(excused, cfg.allow_file)
+        if excused else ''))
     return 0
 
 
-def git(*a):
-    return subprocess.run(['git', *a], capture_output=True, text=True, errors='replace').stdout
+def git(*a, cwd=None):
+    return subprocess.run(['git', *a], capture_output=True, text=True, cwd=cwd,
+                          errors='replace').stdout
 
 
 def pre_push(remote, url):

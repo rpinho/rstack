@@ -203,6 +203,59 @@ def test_egress_gate_user_patterns_terms_and_blind_refusal(tmp_path):
     assert egress(env=env).returncode == 1
 
 
+def test_egress_gate_masks_only_the_ciphertext_field(tmp_path):
+    """Provider-encrypted reasoning (a Fernet token under "encrypted_content") spells key prefixes by
+    chance and is masked; the same text in any other field is still scanned."""
+    out = tmp_path / 'out'
+    out.mkdir()
+    blob = 'gAAAAA' + 'Q' * 10 + '-sk-' + 'A' * 60
+    (out / 'rollout.jsonl').write_text('{"encrypted_content":"' + blob + '"}\n')
+    env = {'HOME': str(tmp_path)}
+    assert egress('scan', str(out), env=env).returncode == 0
+    (out / 'rollout.jsonl').write_text('{"text":"' + blob + '"}\n')
+    r = egress('scan', str(out), env=env)
+    assert r.returncode == 2 and '[api-key]' in r.stdout
+
+
+def test_egress_gate_scan_honours_scoped_allow_rules(tmp_path):
+    conf = tmp_path / 'egress'
+    conf.mkdir()
+    (conf / 'patterns.txt').write_text('# none\n')
+    (conf / 'terms.txt').write_text(TERM + '\n')
+    env = {'RSTACK_EGRESS_DIR': str(conf)}
+    stage = tmp_path / 'stage'
+    (stage / 'docs').mkdir(parents=True)
+    (stage / 'docs' / 'about.md').write_text('the {} release\n'.format(TERM))
+    (stage / 'other.md').write_text('also {}\n'.format(TERM))
+    real = os.path.realpath(str(stage))
+
+    # a rule scoped to the staging directory passes only the path it names
+    (conf / 'allow.txt').write_text('{}\tterm\tdocs/*\tdecided public\n'.format(real))
+    r = egress('scan', str(stage), env=env)
+    assert r.returncode == 2 and 'other.md' in r.stdout and 'about.md' not in r.stdout
+    (stage / 'other.md').write_text('nothing\n')
+    r = egress('scan', str(stage), env=env)
+    assert r.returncode == 0 and '1 signal(s) passed by scoped rules' in r.stdout
+
+    # the rule is scoped: the same content in another directory still blocks
+    elsewhere = tmp_path / 'elsewhere' / 'docs'
+    elsewhere.mkdir(parents=True)
+    (elsewhere / 'about.md').write_text('the {} release\n'.format(TERM))
+    assert egress('scan', str(elsewhere.parent), env=env).returncode == 2
+    # and a parent directory does not inherit the child's rule
+    assert egress('scan', str(tmp_path), env=env).returncode == 2
+
+    # inside a git work tree, the tree's own rules apply with paths relative to its top
+    repo = tmp_path / 'repo'
+    (repo / 'site').mkdir(parents=True)
+    git('init', '-q', '-b', 'main', cwd=repo)
+    (repo / 'site' / 'index.md').write_text('{} home\n'.format(TERM))
+    assert egress('scan', str(repo / 'site'), env=env).returncode == 2
+    (conf / 'allow.txt').write_text('*/repo\tterm\tsite/index.md\tdecided public\n')
+    r = egress('scan', str(repo / 'site'), env=env)
+    assert r.returncode == 0, r.stdout
+
+
 def test_egress_gate_pre_push(tmp_path):
     conf = tmp_path / 'egress'
     conf.mkdir()
