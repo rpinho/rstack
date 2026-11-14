@@ -43,6 +43,17 @@ that nothing maps (a hook, a scheduled job, a skill, a memory) makes `coverage.p
 map can't quietly fall behind what's on disk. It was at 0 unmapped when these numbers were taken,
 and a new item breaks that the day it's added.
 
+## Third-party skills
+
+Third-party skill packs are pinned by commit and reviewed as text before inclusion. The
+[K-Dense subset](vendor/kdense/REVIEW.md) is available **per lane**, with a
+[file manifest](vendor/kdense/manifest.json) and SHA-256 verification through
+[`tools/skills-vendor`](tools/README.md#skills-vendor). It is not installed globally.
+An update produces a proposed manifest and review diff; a person or the conductor must
+explicitly accept it before installation. Fleet lint inventories global and session skills,
+reports denied names and misplaced packs, and checks installed pack integrity. Static review
+and hashes do not provide execution isolation or authorize service calls.
+
 ## Layers
 
 There are fourteen. Ten are about the machinery and are listed here. The other four cover my own

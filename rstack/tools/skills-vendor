@@ -1,0 +1,444 @@
+#!/usr/bin/env python3
+"""Review untrusted skill text and manage pinned, explicitly accepted lane packs."""
+import argparse
+import difflib
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+from urllib.parse import quote
+
+from skills_vendor_integrity import (MARKER, vendor_canonical, vendor_check,
+                                    vendor_expected, vendor_hash, vendor_inventory,
+                                    vendor_relative)
+
+REPO = 'https://github.com/K-Dense-AI/scientific-agent-skills.git'
+INITIAL_PIN = '2d2065fb4520fa3f3f2bcf61cff26ec8b7eba4b5'
+CANDIDATES = '''rdkit datamol medchem molfeat deepchem torchdrug pytdc biopython pysam
+scanpy anndata scvi-tools cellxgene-census pydeseq2 pathway-enrichment esm alphagenome
+diffdock gget database-lookup depmap primekg adaptyv rowan latchbio-integration
+opentrons-integration pylabrobot'''.split()
+EXPLICIT = {'autoskill': 'screen recordings',
+            'paperclip': 'browser cookies, uploads and pipe-to-shell installation',
+            'pi-agent': 'pipe-to-shell installation',
+            'citation-management': 'retained explicit exclusion from the supplied review; no provider-key match at this pin'}
+DEFAULT_MANIFEST = Path(__file__).resolve().parents[1] / 'vendor/kdense/manifest.json'
+PROVIDER = re.compile(r'\b(?:OPENROUTER|EXA|PARALLEL|ANTHROPIC|OPENAI|AZURE_OPENAI|'
+                      r'GEMINI|GOOGLE_AI|GOOGLE_API|GROQ|XAI|MISTRAL|COHERE|'
+                      r'TOGETHER|FIREWORKS|DEEPSEEK)[A-Z_]*(?:KEY|TOKEN)\b')
+ENV_PATTERNS = [
+    r'''(?:os\.)?(?:getenv|environ\.get|environ\.setdefault)\s*\(\s*['"]([A-Za-z_][\w]*)['"]''',
+    r'''(?:os\.)?environ\s*\[\s*['"]([A-Za-z_][\w]*)['"]''',
+    r'''(?:process\.env\.|\$\{?)([A-Z][A-Z0-9_]+)''',
+    r'''\b([A-Z][A-Z0-9_]*(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN))\b''',
+]
+PATTERNS = {
+    'shell': r'```(?:bash|sh|zsh|shell)\b|\b(?:subprocess(?:\.[A-Za-z_]+)?|os\.(?:system|popen|spawn\w*|exec\w*)|'
+             r'shell\s*=\s*True|(?:bash|zsh|sh)\s+-c)\b',
+    'install': r'\b(?:(?:pip[3]?|uv\s+pip|npm|brew)\s+install|npm\s+(?:i|ci)|npx\s+\S+|uv\s+tool\s+install)\b',
+    'pipe_to_shell': r'\b(?:curl|wget)\b[^\n|]*(?:\|\s*(?:sudo\s+)?(?:env\s+)?(?:/[\w./-]+/)?(?:ba|z|da|k)?sh\b)|'
+                     r'\b(?:ba|z)?sh\s+<\(\s*(?:curl|wget)\b|'
+                     r'''\b(?:ba|z)?sh\s+-c\s+["']?\$\(\s*(?:curl|wget)\b''',
+    'dynamic_code': r'(?<![\w.])(?:eval|exec|compile)\s*\(|\b(?:base64\.)?(?:b64decode|decodebytes)\s*\(|'
+                    r'\b(?:pickle|marshal|cloudpickle|dill)\.loads?\s*\(',
+    'home_paths': r'~[/\\][^\s`\)\]"\x27<>]+|\bPath\.home\s*\(\)|\bexpanduser\s*\(|'
+                  r'\$(?:\{HOME\}|HOME)\b|/(?:Users|home)/[^\s`\)\]"\x27<>]+',
+    'sensitive_access': r'(?i)(?:browser_cookie\w*|browser profiles?|\bcookies?\b|\bkeychain\b|'
+                        r'\.ssh(?:/|\b)|\bid_rsa\b|\bid_ed25519\b|'
+                        r'\b(?:ssh|scp|sftp)\s+|\bparamiko\b|'
+                        r'(?:Chrome|Chromium|Firefox|Safari)[/\\].*(?:Profiles|Default)|'
+                        r'\bscreen[ -](?:recordings?|captures?|shots?)\b|\bscreencapture\b|'
+                        r'pyautogui\.(?:screenshot|grab)|ImageGrab\.grab|mss\.mss|ScreenCaptureKit)',
+    'clipboard': r'(?i)\b(?:clipboard|pbpaste|pbcopy|pyperclip|xclip|xsel)\b',
+    'outside_writes': r'''(?i)(?:\b(?:mkdir|touch|tee|cp|mv)\b[^\n]*\s(?:~[/\\]|/(?:tmp|var|etc|usr|opt|home|Users)/)|>{1,2}\s*(?:["']?)(?:~/|/)|(?:open|write_text|write_bytes|save|to_csv)\s*\(\s*["'](?:~/|/))''',
+    'settings_hooks': r'''(?i)(?:\.claude/settings(?:\.local)?\.json|\.codex/(?:config\.toml|settings)|PreToolUse|PostToolUse|dangerously-skip-permissions|bypassPermissions|(?:edit|modify|update|write|configure|install|enable|disable|change|add)\b[^\n]{0,90}\b(?:settings\.json|agent settings|hooks?|permission mode|permission settings)\b)''',
+    'environment_access': r'\b(?:os\.)?(?:getenv|environ)(?:\.(?:get|copy|items|values|setdefault))?\b|'
+                          r'\bprocess\.env\b|\b(?:load_dotenv|dotenv_values|printenv)\b',
+    'remote_code_reference': r'\btrust_remote_code\s*=\s*True|\btorch\.hub\.load\s*\(',
+}
+FAIL_CATEGORIES = {'provider_key': 'LLM-provider key reference/read instruction',
+                   'pipe_to_shell': 'pipe-to-shell installation',
+                   'sensitive_access': 'cookie, keychain, SSH or screen access',
+                   'settings_hooks': 'settings or hook instruction',
+                   'remote_execution': 'fetches and runs remote code',
+                   'obfuscation': 'obfuscated code execution',
+                   'unreviewable': 'non-text, linked or special file'}
+URL = re.compile(r'[A-Za-z][A-Za-z0-9+.-]*://[^\s<>`"\x27\\]+')
+HOST = re.compile(r'\b(?:[A-Za-z0-9-]+\.)+(?:com|org|net|io|ai|gov|edu|app|dev|cloud|co|uk|bio|science|tech|eu|us|cn|de|fr|jp|no|int|info|site|google|local|internal|invalid)\b(?::\d+)?|\blocalhost\b(?::\d+)?|\b(?:\d{1,3}\.){3}\d{1,3}\b(?::\d+)?')
+
+
+def git(cache, *args):
+    return subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', '-C', str(cache), *args],
+                          capture_output=True, check=True, timeout=300).stdout.decode('utf-8').strip()
+
+
+def cache_default():
+    base = Path(os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local/share')))
+    return base / 'rstack-vendor/scientific-agent-skills'
+
+
+def identities(cache):
+    return git(cache, 'rev-parse', 'HEAD'), git(cache, 'rev-parse', 'HEAD^{tree}')
+
+
+def verify_source_tree(cache):
+    """Compare bytes with Git blobs, without filters, hooks, or external diff tools."""
+    listing = git(cache, 'ls-tree', '-rz', 'HEAD', '--', 'skills', 'LICENSE.md')
+    tracked = set()
+    for record in listing.split('\0'):
+        if not record:
+            continue
+        metadata, name = record.split('\t', 1)
+        mode, kind, digest = metadata.split()
+        if kind != 'blob' or mode not in ('100644', '100755'):
+            raise ValueError('non-regular source entry: ' + name)
+        path = cache / str(vendor_relative(name))
+        if path.is_symlink():
+            raise ValueError('linked source entry: ' + name)
+        raw = path.read_bytes()
+        blob = hashlib.sha1(b'blob ' + str(len(raw)).encode('ascii') + b'\0' + raw).hexdigest()
+        if blob != digest:
+            raise ValueError('source differs from pinned Git tree: ' + name)
+        tracked.add(name)
+    actual = {'skills/' + p for p in vendor_inventory(cache / 'skills')} | {'LICENSE.md'}
+    if actual != tracked:
+        raise ValueError('source file set differs from pinned Git tree')
+
+
+def load_json(path):
+    return json.loads(Path(path).read_text(encoding='utf-8'))
+
+
+def save_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+
+
+def scan_file(path):
+    """Lexical evidence only: no imports, AST evaluation, shell, or pack executables."""
+    findings = {}
+    if path.is_symlink() or not path.is_file():
+        return {'unreviewable': [{'line': 0, 'match': 'link or special file'}]}
+    raw = path.read_bytes()
+    try:
+        text = raw.decode('utf-8')
+        if '\0' in text:
+            raise UnicodeError('NUL')
+    except UnicodeError:
+        return {'unreviewable': [{'line': 0, 'match': 'non-UTF-8 or binary data'}]}
+    patterns = dict(PATTERNS, provider_key=PROVIDER.pattern)
+    patterns['env'] = '|'.join('(?:' + p + ')' for p in ENV_PATTERNS)
+    patterns['urls'] = URL.pattern
+    patterns['hosts'] = HOST.pattern
+    for category, pattern in patterns.items():
+        compiled = re.compile(pattern)
+        rows = []
+        for number, line in enumerate(text.splitlines(), 1):
+            if category == 'settings_hooks':
+                explicit = re.search(r'(?i)\.claude|\.codex|PreToolUse|PostToolUse|settings\.json|permission', line)
+                if not explicit and (path.name != 'SKILL.md' or re.search(r'(?i)(?:training|lifecycle) hooks?', line)):
+                    continue
+            for match in compiled.finditer(line):
+                value = next((g for g in match.groups() if g is not None), match.group(0))
+                if category == 'urls':
+                    value = value.rstrip('.,;:)]}')
+                rows.append({'line': number, 'match': value})
+        if rows:
+            findings[category] = rows
+    # Join continued shell lines, so a newline cannot hide a pipe-to-shell installer.
+    joined = re.sub(r'\\\r?\n\s*', ' ', text)
+    if re.search(PATTERNS['pipe_to_shell'], joined) and 'pipe_to_shell' not in findings:
+        findings['pipe_to_shell'] = [{'line': 0, 'match': 'continued pipe-to-shell command'}]
+    if ('dynamic_code' in findings and re.search(r'(?<![\w.])(?:exec|eval)\s*\(', text) and
+            re.search(r'b64decode|decodebytes|fromhex|codecs\.decode|zlib\.decompress', text)):
+        findings['obfuscation'] = [{'line': 0, 'match': 'decoded content and dynamic execution'}]
+    if 'home_paths' in findings and re.search(r'\.write_(?:text|bytes)\s*\(|\.mkdir\s*\(|\b(?:download|save|datasets\.)', text):
+        findings.setdefault('outside_writes', []).append({
+            'line': 0, 'match': 'potential home/cache write: home-derived path and write/download/dataset operation in this file'})
+    fetches = re.finditer(r'\b(?:curl|wget)\b[^\n]*(?:-o|-O|--output(?:-document)?[= ])\s*["\x27]?([^\s"\x27;]+)', joined)
+    network_call = r'(?:(?:requests|httpx)\.(?:get|post|request)|(?:urllib\.)?request\.urlopen|urlopen|fetch)\s*\('
+    remote_dynamic = re.search(r'(?<![\w.])(?:exec|eval)\s*\(\s*' + network_call, text)
+    for assignment in re.finditer(r'^\s*([A-Za-z_]\w*)\s*=\s*' + network_call, text, re.MULTILINE):
+        if re.search(r'(?<![\w.])(?:exec|eval)\s*\(\s*' + re.escape(assignment.group(1)) + r'\b', text):
+            remote_dynamic = True
+    fetched_script = any(re.search(r'\b(?:bash|sh|zsh|python[3]?|node)\s+["\x27]?' + re.escape(fetch.group(1)), joined) for fetch in fetches)
+    if remote_dynamic or fetched_script or re.search(r'\b(?:uv\s+run|source)\s+https?://', joined):
+        findings['remote_execution'] = [{'line': 0, 'match': 'download followed by execution'}]
+    for match in re.finditer(r'\bfrom_pretrained\s*\([^)]{0,2000}\btrust_remote_code\s*=\s*True', text):
+        findings.setdefault('remote_execution', []).append({
+            'line': text.count('\n', 0, match.start()) + 1,
+            'match': 'from_pretrained call enables trust_remote_code=True'})
+    return findings
+
+
+def scan_pack(cache):
+    skills = cache / 'skills'
+    if not skills.is_dir() or skills.is_symlink():
+        raise ValueError('cache has no real skills directory')
+    result = {}
+    for directory in sorted(skills.iterdir()):
+        if not (directory / 'SKILL.md').exists():
+            continue
+        files = {}
+        # os.walk does not follow a linked directory; report it as unreviewable instead.
+        for current, dirs, names in os.walk(directory, followlinks=False):
+            for name in sorted(dirs + names):
+                path = Path(current) / name
+                if path.is_symlink() or not path.is_dir():
+                    files[path.relative_to(directory).as_posix()] = scan_file(path)
+        reasons = sorted({FAIL_CATEGORIES[k] for hits in files.values() for k in hits if k in FAIL_CATEGORIES})
+        if directory.name in EXPLICIT:
+            reasons.append('explicit exclusion: ' + EXPLICIT[directory.name])
+        hosts = sorted({row['match'].split('://', 1)[1].split('/', 1)[0]
+                        for f in files.values() for row in f.get('urls', [])} |
+                       {row['match'] for f in files.values() for row in f.get('hosts', [])})
+        env = sorted({row['match'] for f in files.values() for row in f.get('env', [])} |
+                     {row['match'] for f in files.values() for row in f.get('provider_key', [])})
+        result[directory.name] = {'status': 'FAIL' if reasons else 'PASS', 'reasons': reasons,
+                                  'hosts': hosts, 'env': env, 'files': files}
+    return result
+
+
+def make_manifest(cache, scan, candidates):
+    commit, tree = identities(cache)
+    license_path = cache / 'LICENSE.md'
+    if license_path.is_symlink() or not license_path.read_text(encoding='utf-8').startswith('MIT License'):
+        raise ValueError('expected MIT license')
+    missing = set(candidates) - set(scan)
+    if missing:
+        raise ValueError('missing candidate names (map explicitly): ' + ', '.join(sorted(missing)))
+    included, excluded = [], []
+    for name, row in scan.items():
+        if name in candidates and row['status'] == 'PASS':
+            source = 'skills/' + name
+            included.append({'name': name, 'source': source, 'files': [
+                {'path': p, 'sha256': vendor_hash((cache / source / p).read_bytes())}
+                for p in sorted(row['files'])]})
+        else:
+            reasons = row['reasons'][:]
+            if name not in candidates:
+                reasons.append('outside the scoped candidate list')
+            excluded.append({'name': name, 'status': row['status'], 'reasons': reasons})
+    manifest = {'version': 1, 'repo': REPO, 'commit': commit, 'tree': tree,
+                'acceptance': {'state': 'accepted'}, 'candidates': sorted(candidates),
+                'license': {'spdx': 'MIT', 'path': 'LICENSE.md', 'sha256': vendor_hash(license_path.read_bytes())},
+                'skills': included, 'excluded': excluded}
+    vendor_expected(manifest)
+    return manifest
+
+
+def md(value):
+    return (str(value).rstrip().replace('|', '\\|').replace('`', '\\`')
+            .replace('<', '&lt;').replace('>', '&gt;').replace('\n', ' '))
+
+
+def review_text(manifest, scan):
+    repo_url = manifest['repo'][:-4] if manifest['repo'].endswith('.git') else manifest['repo']
+
+    def source_link(name, path):
+        url = repo_url + '/blob/' + manifest['commit'] + '/skills/' + quote(name + '/' + path, safe='/')
+        return '[' + md(path) + '](' + url + ')'
+
+    included = {s['name'] for s in manifest['skills']}
+    failed = sum(s['status'] == 'FAIL' for s in scan.values())
+    lines = ['# K-Dense static review', '',
+             'Repository: ' + manifest['repo'], '',
+             'Commit: `' + manifest['commit'] + '`; tree: `' + manifest['tree'] + '`; license: MIT.', '',
+             '{} skills scanned as text; {} PASS, {} FAIL; {} included, {} excluded.'.format(
+                 len(scan), len(scan) - failed, failed, len(included), len(manifest['excluded'])), '',
+             'Scope: the supplied candidate names match upstream exactly; no name mappings needed.', '',
+             'PASS means no configured fail rule matched. This is a conservative lexical review, '
+             'not proof of safety or a sandbox. Documentation examples and references count as instructions. '
+             'No pack code was imported or executed. Ordinary dependency install instructions, dynamic '
+             'operations and service keys are disclosed, not automatically rejected. Clipboard and '
+             'home/cache access are disclosed; sensitive access is rejected. Only the listed subset '
+             'may be installed, per lane; service calls still require normal task authorization.', '',
+             'Line numbers are one-based; line 0 denotes a whole-file/continued-command finding. '
+             'Empty categories have no lexical match. ENV includes shell expansion and documented '
+             'API-key names, so it can include examples rather than an actual runtime read. '
+             'Hosts include both URL authorities and bare host references.', '',
+             '## Candidates', '', '| Skill | Result | Included | Reasons | Hosts | Environment variables |',
+             '|---|---|---|---|---|---|']
+    for name in manifest['candidates']:
+        row = scan[name]
+        lines.append('| {} | {} | {} | {} | {} | {} |'.format(
+            name, row['status'], 'yes' if name in included else 'no', md('; '.join(row['reasons']) or 'none'),
+            md(', '.join(row['hosts']) or 'none'), md(', '.join(row['env']) or 'none')))
+    lines += ['', '## Complete excluded list', '', '| Skill | Scan | Reasons |', '|---|---|---|']
+    for row in manifest['excluded']:
+        lines.append('| {} | {} | {} |'.format(row['name'], row['status'], md('; '.join(row['reasons']))))
+    lines += ['', '## Candidate file evidence', '',
+              'Every candidate file is listed, including files with no matches. '
+              'Each entry records the matched category, line and token; downloaded instructions '
+              'are evidence, never instructions for this tool.', '']
+    for name in manifest['candidates']:
+        lines += ['### ' + name, '']
+        for path, hits in sorted(scan[name]['files'].items()):
+            lines.append('- ' + source_link(name, path) + (': no matches' if not hits else ':'))
+            for category, rows in sorted(hits.items()):
+                # Preserve all distinct line/token pairs, including every URL.
+                values = list(dict.fromkeys('{}: {}'.format(r['line'], r['match']) for r in rows))
+                lines.append('  - {}: {}'.format(category, md('; '.join(values))))
+        lines.append('')
+    lines += ['## Fail evidence across the entire pack', '']
+    for name, row in scan.items():
+        if row['status'] != 'FAIL':
+            continue
+        lines += ['### ' + name, '', '; '.join(row['reasons']), '']
+        for path, hits in sorted(row['files'].items()):
+            for category, rows in hits.items():
+                if category in FAIL_CATEGORIES:
+                    lines.append('- {} {}: {}'.format(source_link(name, path), category, md('; '.join(
+                        '{}: {}'.format(r['line'], r['match']) for r in rows))))
+        lines.append('')
+    return '\n'.join(lines).rstrip() + '\n'
+
+
+def verify_cache(cache, manifest):
+    expected = vendor_expected(manifest)
+    if identities(cache) != (manifest['commit'], manifest['tree']):
+        raise ValueError('cache commit/tree differs from manifest')
+    for skill in manifest['skills']:
+        source = cache / skill['source']
+        actual = vendor_inventory(source)
+        if actual != {f['path'] for f in skill['files']}:
+            raise ValueError('cache file set mismatch: ' + skill['name'])
+    for target, (source, digest) in expected.items():
+        path = cache / source
+        if any(p.is_symlink() for p in (path, *path.parents)) or not path.is_file():
+            raise ValueError('cache link or missing file: ' + source)
+        if vendor_hash(path.read_bytes()) != digest:
+            raise ValueError('cache sha256 mismatch: ' + source)
+    return expected
+
+
+def install(cache, manifest, dest):
+    expected = verify_cache(cache, manifest)
+    dest = Path(dest).absolute()
+    if any(p.is_symlink() for p in (dest, *dest.parents)):
+        raise ValueError('destination contains a link')
+    if dest.exists():
+        if not dest.is_dir() or any(dest.iterdir()):
+            raise ValueError('destination must be absent or empty; no files overwritten')
+    dest.mkdir(parents=True, exist_ok=True)
+    for target, (source, digest) in expected.items():
+        data = (cache / source).read_bytes()
+        if vendor_hash(data) != digest:
+            raise ValueError('cache changed during copy: ' + source)
+        path = dest / target
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('xb') as stream:
+            stream.write(data)
+    save_json(dest / MARKER, {'manifest': manifest,
+              'manifest_sha256': vendor_hash(vendor_canonical(manifest))})
+    vendor_check(dest, manifest)
+
+
+def update(cache, current, revision, proposal):
+    vendor_expected(current)
+    if not re.fullmatch('[0-9a-fA-F]{7,40}', revision):
+        raise ValueError('--to must be a commit hash')
+    git(cache, 'fetch', '--no-tags', 'origin')
+    commit = git(cache, 'rev-parse', '--verify', revision + '^{commit}')
+    snapshot = cache.parent / ('review-' + commit)
+    if not snapshot.exists():
+        git(cache, 'worktree', 'add', '--detach', str(snapshot), commit)
+    if identities(snapshot)[0] != commit:
+        raise ValueError('snapshot identity mismatch')
+    verify_source_tree(snapshot)
+    scan = scan_pack(snapshot)
+    proposed = make_manifest(snapshot, scan, current['candidates'])
+    proposed['repo'] = current['repo']
+    proposed['acceptance'] = {'state': 'proposed', 'base_sha256': vendor_hash(vendor_canonical(current))}
+    proposal = Path(proposal)
+    if proposal.exists() and any(proposal.iterdir()):
+        raise ValueError('proposal directory must be absent or empty')
+    proposal.mkdir(parents=True, exist_ok=True)
+    save_json(proposal / 'manifest.json', proposed)
+    (proposal / 'REVIEW.md').write_text(review_text(proposed, scan), encoding='utf-8')
+    paths = sorted({s['source'] for s in current['skills'] + proposed['skills']})
+    diff = git(cache, 'diff', '--no-ext-diff', '--no-textconv', current['commit'], commit, '--', *paths) if paths else ''
+    review_diff = '\n'.join(difflib.unified_diff(
+        json.dumps(current, indent=2, sort_keys=True).splitlines(),
+        json.dumps(proposed, indent=2, sort_keys=True).splitlines(), fromfile='accepted', tofile='proposed'))
+    (proposal / 'review.diff').write_text(review_diff + '\n\n' + diff + '\n', encoding='utf-8')
+    return proposed
+
+
+def accept(proposal, destination):
+    proposal, destination = Path(proposal), Path(destination)
+    proposed = load_json(proposal / 'manifest.json')
+    old = load_json(destination)
+    acceptance = proposed['acceptance']
+    if acceptance['state'] != 'proposed' or acceptance['base_sha256'] != vendor_hash(vendor_canonical(old)):
+        raise ValueError('proposal is not based on the current accepted manifest')
+    if proposed['repo'] != old['repo'] or proposed['candidates'] != old['candidates']:
+        raise ValueError('proposal changes repository or scope')
+    proposed['acceptance'] = {'state': 'accepted'}
+    vendor_expected(proposed)
+    review = (proposal / 'REVIEW.md').read_text(encoding='utf-8')
+    save_json(destination, proposed)
+    destination.with_name('REVIEW.md').write_text(review, encoding='utf-8')
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='command', required=True)
+    review = sub.add_parser('review', help='read all skills as text; write review and pinned manifest')
+    review.add_argument('--cache', type=Path, default=cache_default())
+    review.add_argument('--manifest', type=Path, default=DEFAULT_MANIFEST)
+    review.add_argument('--review', type=Path)
+    review.add_argument('--candidate', action='append', help='override candidate list (fixtures/custom scope)')
+    ins = sub.add_parser('install')
+    ins.add_argument('--manifest', type=Path, required=True)
+    ins.add_argument('--cache', type=Path, default=cache_default())
+    ins.add_argument('--dest', type=Path, required=True)
+    check = sub.add_parser('check')
+    check.add_argument('--dest', type=Path, required=True)
+    check.add_argument('--manifest', type=Path)
+    upd = sub.add_parser('update', help='fetch and propose; never installs or accepts')
+    upd.add_argument('--to', required=True)
+    upd.add_argument('--manifest', type=Path, default=DEFAULT_MANIFEST)
+    upd.add_argument('--cache', type=Path, default=cache_default())
+    upd.add_argument('--proposal', type=Path, default=Path('skills-vendor-proposal'))
+    acc = sub.add_parser('accept', help='person/conductor explicitly accepts a reviewed proposal')
+    acc.add_argument('proposal', type=Path)
+    acc.add_argument('--manifest', type=Path, default=DEFAULT_MANIFEST)
+    args = parser.parse_args(argv)
+    try:
+        if args.command == 'review':
+            verify_source_tree(args.cache)
+            scan = scan_pack(args.cache)
+            manifest = make_manifest(args.cache, scan, args.candidate or CANDIDATES)
+            # A fresh review must not silently replace an accepted pin with a new commit.
+            pin = load_json(args.manifest)['commit'] if args.manifest.exists() else INITIAL_PIN
+            if pin != manifest['commit']:
+                raise ValueError('new commit requires update and explicit accept')
+            save_json(args.manifest, manifest)
+            (args.review or args.manifest.with_name('REVIEW.md')).write_text(review_text(manifest, scan), encoding='utf-8')
+            print('{} scanned; {} included; {} excluded'.format(len(scan), len(manifest['skills']), len(manifest['excluded'])))
+        elif args.command == 'install':
+            manifest = load_json(args.manifest)
+            install(args.cache, manifest, args.dest)
+            print('installed ' + manifest['commit'])
+        elif args.command == 'check':
+            manifest = vendor_check(args.dest, load_json(args.manifest) if args.manifest else None)
+            print('OK ' + manifest['commit'])
+        elif args.command == 'update':
+            proposed = update(args.cache, load_json(args.manifest), args.to, args.proposal)
+            print('proposed {}; person/conductor must review and accept {}'.format(proposed['commit'], args.proposal))
+        elif args.command == 'accept':
+            accept(args.proposal, args.manifest)
+            print('accepted; no installation performed')
+        return 0
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        print('skills-vendor: ' + str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

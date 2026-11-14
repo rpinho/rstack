@@ -6,11 +6,17 @@
   "lane_registry": "~/.config/rstack/lane-sessions.json",
   "launchers": ["launch.sh", "lane-session", "run.sh", "agent_executor.py", "~/.local/bin/claude", "~/.local/bin/codex"],
   "label_prefix": "com.example.",
+  "skills": {
+    "denied": ["autoskill", "paperclip", "pi-agent", "gget", "citation-management", "research-lookup", "scientific-schematics", "scientific-slides", "infographics", "latex-posters", "literature-review"],
+    "allowed_dirs": ["~/lanes/example/.claude/skills"]
+  },
   "install_map": {
     "rstack/tools/xurl": "~/.local/bin/xurl",
     "rstack/tools/xurl-policy": "~/.local/bin/xurl-policy",
     "rstack/tools/x-usage-reconcile": "~/.local/bin/x-usage-reconcile",
     "rstack/tools/fleet-lint": "~/.local/bin/fleet-lint",
+    "rstack/tools/skills-vendor": "~/.local/bin/skills-vendor",
+    "rstack/tools/skills_vendor_integrity.py": "~/.local/bin/skills_vendor_integrity.py",
     "rstack/hooks/x-api-bypass-guard": "~/.claude/hooks/x-api-bypass-guard",
     "rstack/hooks/_hookfail.py": "~/.claude/hooks/_hookfail.py"
   }

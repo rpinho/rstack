@@ -105,9 +105,102 @@ Configuration: `~/.config/rstack/fleet-lint.json`, `FLEET_LINT_CONFIG`, or `--co
 | `lane_registry` | Optional JSON file: `["session"]` or `{"sessions": ["session", {"tmux_session": "other"}]}`. A lane root with `lanes/*/SESSION.json` files containing `tmux_session` also works. A listed tmux session satisfies the launcher check. |
 | `label_prefix` | Required launchd label prefix, e.g. `com.example.`. |
 | `ssh_host` | SSH alias for the default second host. Per-host `ssh` overrides this. |
+| `skills.denied` | Skill names prohibited on this host, matched against directory names and SKILL.md frontmatter names. Defaults to an empty list. Use the complete excluded list in the relevant vendor manifest for a lane's policy. |
+| `skills.allowed_dirs` | Absolute or home-relative directories under which vendored packs may live, including their descendants. Defaults to none. Configure lane directories explicitly. |
 
 Collection runs `ps -axo pid,ppid,command`, `ps eww -p PID` (reading only PATH), tmux listing commands, `launchctl list`, and file reads/hashes. On each host, `zsh -lc 'whence -p xurl'` and `zsh -ic 'whence -p xurl'` must resolve to the wrapper. Both shells' PATHs and all agent process PATHs are scanned for every executable named xurl, including shadowed copies; any extra path is a finding. A bare process PATH with no xurl passes. Relative PATH entries cannot be inspected and are findings; use absolute PATH entries in launchers.
 
 Each host returns SHA-256 hashes for installed targets; the controller compares them with its own repo files, once per target. The wrapper and its adjacent policy are always included, even if omitted from `install_map`. Harness stamps are compared using `git rev-parse --verify COMMIT:harness` and `origin/main:harness` on the controller. Remote checkouts are never consulted. Remote collection sends the same Python collector through SSH with batch mode, strict host-key checking and bytecode writes disabled; no remote install or configuration change occurs. Collection races or inaccessible hosts are findings, not an all-clear. Empty sessions remain in the inventory. launchd inventory covers loaded agents; process ancestry proves only what remains observable after exec/reparenting, so the lane registry supplies the alternative evidence.
 
 Tests for these tools and the hook: `../tests/test_x_api_gate.py` and `../tests/test_fleet_lint.py`. They use a stub executable and synthetic usage/ps/tmux/launchctl fixtures; no X request, real SSH connection or real notification runs.
+
+The `skills` check inventories `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`,
+every tmux pane's `cwd/.claude/skills`, and every running Claude/Codex process's
+`cwd/.claude/skills`, including agents outside tmux. It reads process working directories
+through `/proc/PID/cwd` on Linux or `lsof -a -p PID -d cwd -Fn` on macOS. Inaccessible
+working directories are collection findings. Skill links are followed with cycle detection;
+denied directory aliases still count. Each `.skills-vendor.json` marker identifies a pack:
+a location outside `allowed_dirs` and an unsuccessful integrity check are separate findings.
+Unmarked skills are inventoried and checked against denied names; they have no vendor
+manifest to check. Both local and SSH hosts use the controller's shared integrity checker,
+sent with the read-only collector. Keep `skills_vendor_integrity.py` beside both installed
+tools; remote hosts need no installed copy of it.
+
+## skills-vendor
+
+`skills-vendor` uses Python's standard library and Git. It treats an upstream pack as
+untrusted text: it never imports, runs, installs dependencies from, or follows instructions
+in that pack. This repository contains only the reviewed manifest and review, not upstream
+skill code. The manifest records the repository, full commit and tree, MIT license hash,
+included file lists and SHA-256 hashes, and every excluded skill with reasons.
+
+The initial K-Dense pin is `2d2065fb4520fa3f3f2bcf61cff26ec8b7eba4b5`, tree
+`390fe361644ba6ef88019af55a45a28ace2014ba`. The default cache is
+`$XDG_DATA_HOME/rstack-vendor/scientific-agent-skills`, falling back to
+`~/.local/share/rstack-vendor/scientific-agent-skills`. Populate it without running upstream
+code, for example:
+
+```sh
+CACHE="${XDG_DATA_HOME:-$HOME/.local/share}/rstack-vendor/scientific-agent-skills"
+git clone --no-checkout https://github.com/K-Dense-AI/scientific-agent-skills.git "$CACHE"
+git -c core.hooksPath=/dev/null -C "$CACHE" checkout --detach 2d2065fb4520fa3f3f2bcf61cff26ec8b7eba4b5
+python3 rstack/tools/skills-vendor review --cache "$CACHE"
+```
+
+`review [--cache DIR] [--manifest M] [--review FILE]` verifies source bytes against the Git
+tree, scans every file of all skills for fail rules, and writes the manifest and Markdown
+review. The review contains candidate PASS/FAIL rows, hosts, environment names, per-file
+line evidence, and the complete excluded list. No candidate name mapping is needed at this
+pin. The scoped candidate list is explicit in the tool; `--candidate NAME` can override it
+for custom reviews. Review cannot replace an existing pin with another commit, and a fresh
+manifest is restricted to the initial approved pin. Further commits use update and accept.
+
+The scanner discloses environment access, URLs/hosts, shell/process use, dependency
+install instructions, dynamic/deserialization operations, home and clipboard access, and
+potential writes outside the working directory. It rejects provider-key references/read
+instructions (including EXA and Parallel), pipe-to-shell installers, sensitive browser,
+cookie, keychain, SSH or screen access, agent settings/hook instructions, and recognizable
+obfuscated or downloaded code execution. Ordinary science service keys are listed rather
+than rejected. Explicit exclusions remain excluded even if the lexical scan has no match;
+in particular citation-management has no provider-key match at this pin. Lexical findings
+can be conservative, and computed names, indirect paths and arbitrary obfuscation can evade
+static analysis. PASS is scoped to these rules, not a guarantee of safety. Potential home
+writes are marked as such when the exact destination depends on runtime arguments.
+
+For an authorized lane installation, use an absent or empty pack directory:
+
+```sh
+python3 rstack/tools/skills-vendor install --manifest rstack/vendor/kdense/manifest.json --dest /path/to/lane/.claude/skills
+python3 rstack/tools/skills-vendor check --dest /path/to/lane/.claude/skills --manifest rstack/vendor/kdense/manifest.json
+```
+
+`install` verifies the cache's commit/tree, every source SHA-256 and the exact included
+skill file sets before copying only manifest files, plus the MIT license. It refuses
+modified/missing/extra files, links, unsafe paths and nonempty destinations. It writes
+`.skills-vendor.json` with the accepted manifest and its digest. `check --dest DIR` checks
+the installed file set and every hash against that record; `--manifest M` also compares
+the record with a separately trusted manifest. The marker is local inventory, not a
+signature. None of these commands executes skill code, changes agent settings, or enables
+global discovery. The tool performs no destructive cleanup; keep or Trash an old pack
+before choosing a fresh destination.
+
+```sh
+python3 rstack/tools/skills-vendor update --to FULL_COMMIT --proposal /path/to/proposal
+# Person or conductor reviews manifest.json, REVIEW.md and review.diff, then explicitly:
+python3 rstack/tools/skills-vendor accept /path/to/proposal
+```
+
+`update` fetches origin, creates a detached snapshot at `rstack-vendor/review-FULL_COMMIT`,
+re-scans the entire pack, and diffs both previously and newly included skills. It writes a
+**proposed** manifest, complete review and review diff without changing the accepted pin,
+the original cache checkout, any installation, or settings. A proposed manifest refuses
+installation. `accept PROPOSAL [--manifest M]` checks the proposal's base pin, repository
+and scope and replaces only the accepted manifest and adjacent review. It never installs.
+Acceptance is an explicit operator/conductor decision; the CLI does not authenticate the
+person invoking it. After acceptance, install with `--cache` pointing to that reviewed
+snapshot, because the original cache stays pinned. Retained snapshots are cache data and
+are never run automatically.
+
+Tests: `python3 -m pytest -q rstack/tests/test_skills_vendor.py rstack/tests/test_fleet_lint.py`.
+They use synthetic packs, local Git fixture origins and simulated SSH; no downloaded skill
+is installed or executed, and no external network or notification is needed.

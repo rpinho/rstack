@@ -10,6 +10,10 @@ import shlex
 import subprocess
 import sys
 
+if 'vendor_check' not in globals():
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from skills_vendor_integrity import vendor_check
+
 DEFAULT_LAUNCHERS = ['launch.sh', 'lane-session', 'run.sh', 'agent_executor.py',
                      '~/.local/bin/claude', '~/.local/bin/codex']
 
@@ -126,6 +130,86 @@ def registry_sessions(path):
     return out
 
 
+def process_cwd(pid, errors):
+    path = Path('/proc/{}/cwd'.format(pid))
+    if path.exists():
+        return str(path.resolve())
+    output = command(['lsof', '-a', '-p', str(pid), '-d', 'cwd', '-Fn'], errors)
+    paths = [line[1:] for line in output.splitlines() if line.startswith('n/')]
+    if not paths:
+        errors.append('cannot inspect cwd for pid={}'.format(pid))
+        return None
+    return paths[0]
+
+
+def skill_inventory(settings, cwds):
+    """Read skill names and vendor markers on this host, without loading skill code."""
+    if not isinstance(settings, dict):
+        raise ValueError('skills must be an object')
+    denied = settings.get('denied', [])
+    allowed = settings.get('allowed_dirs', [])
+    if not isinstance(denied, list) or not all(isinstance(n, str) and n for n in denied):
+        raise ValueError('skills.denied must be a list of names')
+    if not isinstance(allowed, list) or not all(isinstance(n, str) and n for n in allowed):
+        raise ValueError('skills.allowed_dirs must be a list of directories')
+    allowed = [Path(p).expanduser() for p in allowed]
+    if any(not p.is_absolute() for p in allowed):
+        raise ValueError('skills.allowed_dirs must be absolute or home-relative')
+    allowed = [p.resolve() for p in allowed]
+    roots = {Path.home() / agent / 'skills' for agent in ('.claude', '.codex', '.agents')}
+    roots.update(Path(cwd) / '.claude/skills' for cwd in cwds)
+    inventory, packs, bad, seen = [], [], [], set()
+
+    def issue(path, detail):
+        bad.append({'check': 'skills', 'subject': str(path), 'detail': detail})
+
+    def fail(exc):
+        issue(exc.filename or 'skill directory', 'unreadable: ' + type(exc).__name__)
+
+    for root in sorted(roots):
+        if not root.exists():
+            if root.is_symlink():
+                issue(root, 'broken skill directory link')
+            continue
+        if not root.is_dir():
+            issue(root, 'skill location is not a directory')
+            continue
+        for current, dirs, files in os.walk(root, followlinks=True, onerror=fail):
+            path = Path(current)
+            real = path.resolve()
+            duplicate = real in seen
+            if duplicate:
+                dirs[:] = []
+            seen.add(real)
+            if path.name in denied or 'SKILL.md' in files:
+                name = path.name
+                names = {name}
+                if 'SKILL.md' in files:
+                    try:
+                        with (path / 'SKILL.md').open(encoding='utf-8') as stream:
+                            head = stream.read(8192)
+                        match = re.search(r'^name:\s*[\"\x27]?([^\s\"\x27]+)', head, re.MULTILINE)
+                        if match:
+                            names.add(match.group(1))
+                    except (OSError, UnicodeError) as exc:
+                        issue(path, 'unreadable skill name: ' + type(exc).__name__)
+                inventory.append({'path': str(path), 'names': sorted(names)})
+                for name in sorted(names.intersection(denied)):
+                    issue(path, 'denied skill: ' + name)
+            if '.skills-vendor.json' in files:
+                row = {'path': str(path), 'ok': False}
+                if not any(real == a or a in real.parents for a in allowed):
+                    issue(path, 'vendored pack outside skills.allowed_dirs')
+                try:
+                    manifest = vendor_check(path)
+                    row.update(ok=True, commit=manifest['commit'])
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    issue(path, 'installed pack check failed: ' + str(exc))
+                packs.append(row)
+    return {'roots': [str(r) for r in sorted(roots)], 'directories': inventory,
+            'packs': packs, 'findings': bad}
+
+
 def collect(cfg):
     """Read-only host collector. The same source runs locally or via ssh python3."""
     errors = []
@@ -139,6 +223,10 @@ def collect(cfg):
         if len(parts) == 3 and parts[1].isdigit():
             panes[int(parts[1])] = (parts[0], parts[2])
     sessions = [{'name': s, 'processes': []} for s in listing.splitlines() if s]
+    cwd_text = command(['tmux', 'list-panes', '-a', '-F',
+                        '#{session_name}\t#{pane_current_path}'], errors, optional=True)
+    cwds = {line.split('\t', 1)[1] for line in cwd_text.splitlines()
+            if '\t' in line and line.split('\t', 1)[1].startswith('/')}
     session_map = {s['name']: s for s in sessions}
     agents, paths = [], []
     shells = shell_paths(errors)
@@ -159,6 +247,9 @@ def collect(cfg):
         paths.append(path)
         agent = dict(row, session=session, chain=chain, path_present=path is not None,
                      pane_command=pane_command)
+        agent['cwd'] = process_cwd(pid, errors)
+        if agent['cwd']:
+            cwds.add(agent['cwd'])
         agents.append(agent)
         if session:
             session_map.setdefault(session, {'name': session, 'processes': []})['processes'].append(row)
@@ -207,6 +298,7 @@ def collect(cfg):
             'wrapper': str(wrapper.resolve()), 'wrapper_path': str(wrapper),
             'shells': shells, 'xurls': path_xurls(paths, errors),
             'launchers': [expand(p) if '/' in p else p for p in cfg.get('launchers', DEFAULT_LAUNCHERS)],
+            'skills': skill_inventory(cfg.get('skills', {}), cwds),
             'registry_sessions': registry, 'errors': errors}
 
 
@@ -308,6 +400,7 @@ def launched(agent, launchers, registered):
 
 def findings(snapshot):
     bad = [{'check': 'collection', 'subject': 'host', 'detail': e} for e in snapshot['errors']]
+    bad.extend(snapshot.get('skills', {}).get('findings', []))
     for agent in snapshot['agents']:
         if app_server_command(agent.get('command', '')):
             continue  # the Codex app-server daemon hosts sessions; the sessions attached to it are checked
@@ -337,7 +430,8 @@ def remote_collect(host, cfg):
     # Constant collector code + JSON data, never a command supplied by the registry. No files written
     # remotely; -B suppresses bytecode writes. Only read-only subprocesses in collect() can run.
     source = Path(__file__).resolve().read_text()
-    code = source.rsplit("if __name__ == '__main__':", 1)[0] + '\nprint(json.dumps(collect(json.loads(sys.argv[1]))))\n'
+    integrity = Path(__file__).resolve().with_name('skills_vendor_integrity.py').read_text()
+    code = integrity + '\n' + source.rsplit("if __name__ == '__main__':", 1)[0] + '\nprint(json.dumps(collect(json.loads(sys.argv[1]))))\n'
     remote = shlex.join(['python3', '-B', '-c', code, json.dumps(cfg)])
     result = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
                              '-o', 'ConnectTimeout=10', '--', host, remote],
@@ -392,6 +486,10 @@ def main(argv=None):
                 print('  TMUX {}'.format(session['name']))
                 for proc in session['processes']:
                     print('    pid={} {}'.format(proc['pid'], proc['command']))
+            for skill in host.get('skills', {}).get('directories', []):
+                print('  SKILL {} {}'.format(','.join(skill['names']), skill['path']))
+            for pack in host.get('skills', {}).get('packs', []):
+                print('  SKILL PACK {} check={}'.format(pack['path'], 'OK' if pack['ok'] else 'FAIL'))
             for agent in host['agents']:
                 if not agent['session']:
                     print('  OUTSIDE TMUX pid={} {}'.format(agent['pid'], agent['command']))

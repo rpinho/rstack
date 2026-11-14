@@ -1,0 +1,2526 @@
+{
+  "acceptance": {
+    "state": "accepted"
+  },
+  "candidates": [
+    "adaptyv",
+    "alphagenome",
+    "anndata",
+    "biopython",
+    "cellxgene-census",
+    "database-lookup",
+    "datamol",
+    "deepchem",
+    "depmap",
+    "diffdock",
+    "esm",
+    "gget",
+    "latchbio-integration",
+    "medchem",
+    "molfeat",
+    "opentrons-integration",
+    "pathway-enrichment",
+    "primekg",
+    "pydeseq2",
+    "pylabrobot",
+    "pysam",
+    "pytdc",
+    "rdkit",
+    "rowan",
+    "scanpy",
+    "scvi-tools",
+    "torchdrug"
+  ],
+  "commit": "2d2065fb4520fa3f3f2bcf61cff26ec8b7eba4b5",
+  "excluded": [
+    {
+      "name": "13c-metabolic-flux",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "aeon",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "analytical-method-validation",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "arbor",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "arboreto",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "astropy",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "autoskill",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "cookie, keychain, SSH or screen access",
+        "explicit exclusion: screen recordings",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "benchling-integration",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "bgpt-paper-search",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "bids",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "bioservices",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "bulk-rnaseq",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "cantera",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "cellprofiler",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "cirq",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "citation-management",
+      "reasons": [
+        "explicit exclusion: retained explicit exclusion from the supplied review; no provider-key match at this pin",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "clinical-decision-support",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "clinical-reports",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "cobrapy",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "consciousness-council",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "dask",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "datalad",
+      "reasons": [
+        "cookie, keychain, SSH or screen access",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "deepspot-m",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "deeptools",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "dhdna-profiler",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "dnanexus-integration",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "etetoolkit",
+      "reasons": [
+        "cookie, keychain, SSH or screen access",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "exa-search",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "experimental-design",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "exploratory-data-analysis",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "fictiv",
+      "reasons": [
+        "cookie, keychain, SSH or screen access",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "flowio",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "flowkit",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "fluidsim",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "folklore-variant-evidence",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "generate-image",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "geniml",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "genomic-coordinates",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "genomic-intelligence",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "geomaster",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "geopandas",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "get-available-resources",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "gget",
+      "reasons": [
+        "LLM-provider key reference/read instruction"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "ginkgo-cloud-lab",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "glycoengineering",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "gtars",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "histolab",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "hugging-science",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "hypogenic",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "hypothesis-generation",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "imaging-data-commons",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "infographics",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "iso-standards-readiness",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "lab-hardware-cad",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "labarchive-integration",
+      "reasons": [
+        "cookie, keychain, SSH or screen access",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "lamindb",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "latex-posters",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "liteparse",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "literature-review",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "mageck",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "marine-carbonate-chemistry",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "markdown-mermaid-writing",
+      "reasons": [
+        "cookie, keychain, SSH or screen access",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "market-research-reports",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "markitdown",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "cookie, keychain, SSH or screen access",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "matchms",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "matlab",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "matplotlib",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "modal",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "molecular-dynamics",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "ncats-arax",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "networkx",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "neurokit2",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "neuropixels-analysis",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "nextflow",
+      "reasons": [
+        "fetches and runs remote code",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "nmrglue",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "nwb-conversion",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "omero-integration",
+      "reasons": [
+        "cookie, keychain, SSH or screen access",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "onekgpd",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "ontology-term-resolution",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "open-notebook",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "openpiv",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "optimize-for-gpu",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pacsomatic",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "paper-lookup",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "paperclip",
+      "reasons": [
+        "cookie, keychain, SSH or screen access",
+        "pipe-to-shell installation",
+        "explicit exclusion: browser cookies, uploads and pipe-to-shell installation",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "paperzilla",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "parallel-web",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "pathml",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pathogen-variant-surveillance",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "peer-review",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pennylane",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "phylogenetics",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pi-agent",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "cookie, keychain, SSH or screen access",
+        "pipe-to-shell installation",
+        "settings or hook instruction",
+        "explicit exclusion: pipe-to-shell installation",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "pkpd-modeling",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "polars",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "polars-bio",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pptx-posters",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "primer-design",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "protocolsio-integration",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pufferlib",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pybamm",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pycalphad",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pydicom",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pyhealth",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pymatgen",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pymc",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pymoo",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pyopenms",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pytorch-lightning",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "pyzotero",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "qiime2-amplicon",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "qiskit",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "qutip",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "relion",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "relsa-severity-assessment",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "research-grants",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "research-lookup",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "scholar-evaluation",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "scientific-brainstorming",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "scientific-critical-thinking",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "scientific-schematics",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "scientific-slides",
+      "reasons": [
+        "LLM-provider key reference/read instruction",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "scientific-visualization",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "scientific-writing",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "scikit-bio",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "scikit-learn",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "scikit-survival",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "scvelo",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "seaborn",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "shap",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "simpy",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "stable-baselines3",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "statistical-analysis",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "statistical-power",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "statsmodels",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "sympy",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "tamarind",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "tellurium",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "tiledbvcf",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "timesfm-forecasting",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "torch-geometric",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "transformers",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "treatment-plans",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "umap-learn",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "uncertainty-and-units",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "usfiscaldata",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "vaex",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "venue-templates",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "waypoint-bio",
+      "reasons": [
+        "fetches and runs remote code",
+        "outside the scoped candidate list"
+      ],
+      "status": "FAIL"
+    },
+    {
+      "name": "what-if-oracle",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "zarr-python",
+      "reasons": [
+        "outside the scoped candidate list"
+      ],
+      "status": "PASS"
+    }
+  ],
+  "license": {
+    "path": "LICENSE.md",
+    "sha256": "09b02a3c9df3053c55531d503357a9c7cde275970e6c3ceaa1ddf5f0e90b40c1",
+    "spdx": "MIT"
+  },
+  "repo": "https://github.com/K-Dense-AI/scientific-agent-skills.git",
+  "skills": [
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "5de115067c118609dc096f9d582c687fdf331150e3f21c54eedb2ade24d12846"
+        },
+        {
+          "path": "references/api-endpoints.md",
+          "sha256": "d613b0f33425ac4a2703c47c58773525cf5e850c0fde04f7d6eb0a7bddc3bdf3"
+        }
+      ],
+      "name": "adaptyv",
+      "source": "skills/adaptyv"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "b133d2a9ff99652b439e0a6f00f93bad49f388be207f7e0241837e001a964947"
+        },
+        {
+          "path": "references/atlas.md",
+          "sha256": "f5758ec1925d6706f3df4548bfd1fc70c0892181c020f45212c336cba255d269"
+        },
+        {
+          "path": "references/interpretation.md",
+          "sha256": "3a4f86b6746f1a8239d7c175e4b40f382e95f4ec1b167ed59f4b43ca6e39ac0d"
+        },
+        {
+          "path": "references/model-api.md",
+          "sha256": "081add87e6da4045adb6526d9bc92cbadc817588a7502edea5532d7a4d5d2dfc"
+        },
+        {
+          "path": "scripts/_common.py",
+          "sha256": "46fc7074233e36c4cb341294480ce2481ced5f6cd06677847522499b3cd2e7f1"
+        },
+        {
+          "path": "scripts/atlas_link.py",
+          "sha256": "2545ad4816fb996900bbf47268c085571a1e3091af45c32ddbf6ed428fe3b89c"
+        },
+        {
+          "path": "scripts/atlas_query.py",
+          "sha256": "7c19884f9dd7b7115916d56d036d152efded82432f57fcea3941e34a17bf6015"
+        },
+        {
+          "path": "scripts/score_variants.py",
+          "sha256": "aa2e199f7982180c672bea81db1d72ddc68c7b8c06ce3bdf4b13f63ed56ec5b7"
+        }
+      ],
+      "name": "alphagenome",
+      "source": "skills/alphagenome"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "a619c4088e1be6f6feaa5838c63ff8c4381fa21b4adee2a9276aa61464f3a034"
+        },
+        {
+          "path": "references/best_practices.md",
+          "sha256": "bdc271aeb64c884cc0ebe5b6bdfde09855ca76862bb374783a5e8d113ce63a3b"
+        },
+        {
+          "path": "references/concatenation.md",
+          "sha256": "0a34a1f21ed9577f521c6ef649ed5f15972ca1cc7e6b9906aeb00ec16b4b142c"
+        },
+        {
+          "path": "references/data_structure.md",
+          "sha256": "5ee825849caf215f7810bfe00facdd9f1a00a099f346dafc149f7da024346b11"
+        },
+        {
+          "path": "references/io_operations.md",
+          "sha256": "63bf1113076a0d74fe2ab1e02d84c2d32fb29489b7df5e74c981c62c31007af7"
+        },
+        {
+          "path": "references/manipulation.md",
+          "sha256": "0c253c29e199bd75ad0ebf47741942aae23732f735f4c0990aaf6dccc5912258"
+        }
+      ],
+      "name": "anndata",
+      "source": "skills/anndata"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "b617561b38a2e3ecc8f8cf3dd8bb0307ac1aaf4d67e6e0432b0c248bc4382245"
+        },
+        {
+          "path": "references/advanced.md",
+          "sha256": "b023aa7df32c4c5f8db621929e23dde64ae0ef77169cbfdefdf479068c0001a8"
+        },
+        {
+          "path": "references/alignment.md",
+          "sha256": "99668ee8cf0314f655149a8383f931d51ec039dea566a51219f7f37b02ef6bd4"
+        },
+        {
+          "path": "references/blast.md",
+          "sha256": "487953c8120658887de77fe794cc07881b0a223f68e29b4575ec317995fa7151"
+        },
+        {
+          "path": "references/databases.md",
+          "sha256": "87dcee5bb51eff9959c313b6680aebf7ff064155599bbb03630325148809bb50"
+        },
+        {
+          "path": "references/phylogenetics.md",
+          "sha256": "c0129d6636b7628a512f5338e2afc0101561377210467d17c47008115d851ac6"
+        },
+        {
+          "path": "references/review.md",
+          "sha256": "a44292d82f9ec99f1b232a835275e694275709b928e297ed9cc24ed1dbc2f139"
+        },
+        {
+          "path": "references/sequence_io.md",
+          "sha256": "cb858b46c28873e5b681b54eba37cbf919dc9febe7d282ca3aeafafe3603c514"
+        },
+        {
+          "path": "references/structure.md",
+          "sha256": "c5805632d9bd56cc933374a932a3669444329b135ba275216492659d5420da2e"
+        }
+      ],
+      "name": "biopython",
+      "source": "skills/biopython"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "123b66d6701c7c0587d0a615a2394caee52e62745b3fd31176381ea64aaa794a"
+        },
+        {
+          "path": "references/api_access.md",
+          "sha256": "231a947443ea6bd1f3b827951a4db2603a2dc203908f59bfeb24ca55a8f913a9"
+        },
+        {
+          "path": "references/census_schema.md",
+          "sha256": "4ddd1a51d473f2402cef91cda2c94cd148837df0e56ce684614d3d0c845b5fb1"
+        },
+        {
+          "path": "references/common_patterns.md",
+          "sha256": "0421a761bfccb08419ce14ffffcf3100618aeab84c3a1329cdc7fb136585525f"
+        },
+        {
+          "path": "references/core_workflow_patterns.md",
+          "sha256": "28580f45bfeba8c2b1594006956cbd92c7c2c5211fa58fc667bb51bf81b4d455"
+        }
+      ],
+      "name": "cellxgene-census",
+      "source": "skills/cellxgene-census"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "ead247f623212ca1560486d863a2d0a8c0555d8d20b975d55053eeb4ed043d37"
+        },
+        {
+          "path": "references/addgene.md",
+          "sha256": "f00236e01cc49c837104a0becab4c9583bf826c0d352c1f026363448954a4c25"
+        },
+        {
+          "path": "references/alphafold.md",
+          "sha256": "887217bb9a0174a64b0d2b84475fa961e9d9c2c48dfac1e0bc7b6c0bb958b5bc"
+        },
+        {
+          "path": "references/alphavantage.md",
+          "sha256": "d7f38702848cff7239fa1c00271dc4fff445f4eda88774ad65724468d1497f97"
+        },
+        {
+          "path": "references/bea.md",
+          "sha256": "2ceb06d34c26bb679de7d8645b754e1da0e9461de2a595006971877a9b06b757"
+        },
+        {
+          "path": "references/bindingdb.md",
+          "sha256": "390dabcc89dd9750bedca0b9d8d2edefc984157202b83a5e8b39138d3e26873f"
+        },
+        {
+          "path": "references/biogrid.md",
+          "sha256": "887c72e6858db7ab113c37dcd93378ba422e7e6a195f27c466f50e45c611bf0d"
+        },
+        {
+          "path": "references/bls.md",
+          "sha256": "711e31c51e600970a31815fd3b224d61501bb12705496c498de3379868612620"
+        },
+        {
+          "path": "references/brenda.md",
+          "sha256": "4cb904eadbe76a2a392b5826e4eec46d9e59c4c61acddf0322059d94ca07af0c"
+        },
+        {
+          "path": "references/cbioportal.md",
+          "sha256": "d57ec6a08a5538e38bb1b73bc1eea855b14b87bf0babdf62730a312298f6c85b"
+        },
+        {
+          "path": "references/census.md",
+          "sha256": "ceaeae4a0c35cf87ba20de4b7405b867bb105dc7f6f82ab80685d0b1af437ff1"
+        },
+        {
+          "path": "references/chebi.md",
+          "sha256": "657014c7416c6418c911fd710c10c02221edf17fba08f22e54dd9619ab614a43"
+        },
+        {
+          "path": "references/chembl.md",
+          "sha256": "8b48ee10535d4df944c0a1c5bede8efe8c6a96ee39744191e7d4827ab8fcd25c"
+        },
+        {
+          "path": "references/clinicaltrials.md",
+          "sha256": "aaa72ade4740edee237cb10371fc07e0b662145f45b03f95410f16a9e93c02e9"
+        },
+        {
+          "path": "references/clinpgx.md",
+          "sha256": "563c95c97fbad8f5cbc4b9ff1783e32439a916beb0d579cb73215accdb8ef0a3"
+        },
+        {
+          "path": "references/clinvar.md",
+          "sha256": "5c051b539f8df9f292cdb63f627e19d754388e627c0d891d4b0293be30d30a3c"
+        },
+        {
+          "path": "references/cod.md",
+          "sha256": "45569fbad65309ddff67bba27f2b7f231bc6e10d715e6ccd60ae8263fb509ed1"
+        },
+        {
+          "path": "references/cosmic.md",
+          "sha256": "06639396334327201880e26a52647c41675411c56bd6a89c22bd2bdd527a6100"
+        },
+        {
+          "path": "references/dailymed.md",
+          "sha256": "2a4ed938cc7b2611e272a655699a0a98105b926eeb00cb68d41c9aafd306088e"
+        },
+        {
+          "path": "references/database_selection_guide.md",
+          "sha256": "02fb77429b15d8e599f05ab5ee7de4988b8d04d815285112f2dc182e86e18d6b"
+        },
+        {
+          "path": "references/datacommons.md",
+          "sha256": "4e080cd83e5a9fedbf8c0b1c2be71c2d4cd0cbc333810834a8c24d574138e258"
+        },
+        {
+          "path": "references/dbsnp.md",
+          "sha256": "bdee23c89aca51a6a0e33593da3059ffca314f29e399891713cf57583d86da8d"
+        },
+        {
+          "path": "references/disgenet.md",
+          "sha256": "0c3fda50de43234d4e213cc7c572c6edbb58b47fc5abe2458fe1a4eca7ddad4f"
+        },
+        {
+          "path": "references/drugbank.md",
+          "sha256": "5f874bda7098c244e65b69a08894f25ced01c548ae116a49f6388ff7d465b841"
+        },
+        {
+          "path": "references/ecb.md",
+          "sha256": "8452e47f271c9f0b6ec7f346af2c72ab296dfaa1e13a83310e1170e3f48bd372"
+        },
+        {
+          "path": "references/emdb.md",
+          "sha256": "3d07236a2b91bed128afbab61cfb60e397e79ec17fb659359ea86029e61cb185"
+        },
+        {
+          "path": "references/ena.md",
+          "sha256": "7ab747fbcf9be9e4f22caf88c7a6912d3e676382baf80c3bb5d699e572d18729"
+        },
+        {
+          "path": "references/encode.md",
+          "sha256": "e11c15b74cb30f3b6222ed7bb398967027ebcaa3ca5e789e3a4022cfdc658735"
+        },
+        {
+          "path": "references/ensembl.md",
+          "sha256": "80d118b56d9e250f69570e651d60961ddddc8ada3a117bad94c38b66d8a9a935"
+        },
+        {
+          "path": "references/epa.md",
+          "sha256": "d5bbac5283f1caae1d6ab7013787f8abeabf85c354e1a2caf58d286e7bb882fa"
+        },
+        {
+          "path": "references/eurostat.md",
+          "sha256": "46b125c99fb756ce62655e6a6d5d5562d0694b329844c7089ce6612daf8c9dfb"
+        },
+        {
+          "path": "references/fda.md",
+          "sha256": "b42a94499aadea58802a6116731244d84941ba9ffca698eac31bead5ceb38331"
+        },
+        {
+          "path": "references/federal-reserve.md",
+          "sha256": "a8b47c7925eba9cc268106a1a8bb54f2fdf849ffbda6fa2dd00f0f561473d11e"
+        },
+        {
+          "path": "references/fred.md",
+          "sha256": "cabb0f8c96da6dd5cc53c11861ea179477800896260c9753f490079962542f96"
+        },
+        {
+          "path": "references/gene-ontology.md",
+          "sha256": "59cdfdf414893ee82d1a51f390fe96ca3713da780e96dd2c6a3cdb354afe63a8"
+        },
+        {
+          "path": "references/geo.md",
+          "sha256": "43fcec5baddb616903e2811bbc49fe5c5f24fda6e491498e98d775c6671015b1"
+        },
+        {
+          "path": "references/gnomad.md",
+          "sha256": "bf319407d088b321295211aaff377db8f21d60dae0f75bd9311f2e2e65e3ed20"
+        },
+        {
+          "path": "references/gtex.md",
+          "sha256": "ff4b57debc74a39f2e879e81a43d18193714bb75dc855d1dd9a5bb12dd09593b"
+        },
+        {
+          "path": "references/gwas-catalog.md",
+          "sha256": "93d34d7047bfbcde62de6458814d83608a7dc99a4e0599fc32322f923cebc333"
+        },
+        {
+          "path": "references/hca.md",
+          "sha256": "4a8afd752e835065feab3b21989f27dde56172af7fa0b79acdac7eb7536750e1"
+        },
+        {
+          "path": "references/hpo.md",
+          "sha256": "74f281daf81f4e544b62a0a9177242816ede3de45b8b6c58ba509a2cd8642a75"
+        },
+        {
+          "path": "references/human-protein-atlas.md",
+          "sha256": "e93b1038d79249e58aa22ea60e1c954edd32db8b8ace7aa76a14a9b88a9a11f3"
+        },
+        {
+          "path": "references/interpro.md",
+          "sha256": "18304f87ac9c9f11d399040be52290bc2287c583bff43348bf875a50cd6ba0f4"
+        },
+        {
+          "path": "references/jaspar.md",
+          "sha256": "53d0f4111fb7ca547062bbde4fe2f4ebc418e0088da0e401733287018a4cd837"
+        },
+        {
+          "path": "references/kegg.md",
+          "sha256": "10af18380cd77b3651854519a60f2a28e4dec53172e8db658b7681d4cbabd99f"
+        },
+        {
+          "path": "references/lincs-l1000.md",
+          "sha256": "ddbc6b02bd394782b824c9f084b9079bf79168dc99bd1085163778c5e91de8cb"
+        },
+        {
+          "path": "references/materials-project.md",
+          "sha256": "0c54129b9294a9464623faa362b91bf32a73bfcdbe5b514802f3e0acd12c2d12"
+        },
+        {
+          "path": "references/metabolomics-workbench.md",
+          "sha256": "c5d33c855da6f96c23a923703bfea13818650ce6c7755ee7e4ed6eac788c943e"
+        },
+        {
+          "path": "references/monarch.md",
+          "sha256": "dedd349124dba2f685ab9e041e624e61ea93e3672181c2a7c7c9b3e986e75660"
+        },
+        {
+          "path": "references/mousemine.md",
+          "sha256": "4d63c40019bc259ab6eb72cbf5ab23c14b6cb9a992ee3a18c6a7f07554ef6e21"
+        },
+        {
+          "path": "references/myvariant.md",
+          "sha256": "4bcb1c829fdb89ad5af864135c84aa40667cbeb8271d80999c1518c223600cb0"
+        },
+        {
+          "path": "references/nasa-exoplanet-archive.md",
+          "sha256": "9be3b02563289e9cf4351d5f4f185d022fe6e5de76450a8e1b477545c5721ffe"
+        },
+        {
+          "path": "references/nasa.md",
+          "sha256": "bd7719904299fd8bd93a87804e1eb281388b57e7d64c984d3f7728c7c2c7c2a2"
+        },
+        {
+          "path": "references/ncbi-gene.md",
+          "sha256": "c1d32a4eddb24e20129467adafc177366327c9e48ee5a67b78515b07c36370c1"
+        },
+        {
+          "path": "references/ncbi-protein.md",
+          "sha256": "7b5489a99bddb357567a6287cb7630413db9e298378397e4d16f3ae0bdb8733a"
+        },
+        {
+          "path": "references/ncbi-taxonomy.md",
+          "sha256": "f9508cebfb72825c9752fe96ef72e52d057a7ea46dd64fe8fb3aab435f85f266"
+        },
+        {
+          "path": "references/nist.md",
+          "sha256": "8587c7dbb384718b4bc0e769b2279e355ad6acc0273bb2dedf7619feb9e67738"
+        },
+        {
+          "path": "references/noaa.md",
+          "sha256": "54c296b7bacd0b3b0321a8889428534e6b56c9ceac126914c09016d8f09b2dcc"
+        },
+        {
+          "path": "references/omim.md",
+          "sha256": "ea5d3063474fec788ed4fa6d0f2e1d972d843ae34ee6538456386a57c36e161a"
+        },
+        {
+          "path": "references/opentargets.md",
+          "sha256": "e72ab37f5cd87a748c91bc9ccecde2627329523c85f6d024a9093611b3eafc52"
+        },
+        {
+          "path": "references/openweathermap.md",
+          "sha256": "89caa890cd45dcc1b500cdc6bd927a2aac846c4bb6af3109bca51e5a0191a531"
+        },
+        {
+          "path": "references/pdb.md",
+          "sha256": "38eaeeff4ca768c9545450233ac3942b5cf389b9347f9541cdd0267036cd30fc"
+        },
+        {
+          "path": "references/pride.md",
+          "sha256": "cff5062cd99d22d928732383c6142408be83c95d2d166e9d265866352b94ce4d"
+        },
+        {
+          "path": "references/pubchem.md",
+          "sha256": "93225212346b327623446874090cb458c954f5820cba66a4163e5e8eb6d75524"
+        },
+        {
+          "path": "references/quickgo.md",
+          "sha256": "b567b7e4b17f5d91c6b09476fcbd06d2c772538805c45655f00309bae84d4de6"
+        },
+        {
+          "path": "references/reactome.md",
+          "sha256": "c91bc6c1464005d405c5d5320d9e7527ac7c9fcd0ef8497a9e8e988e24c70424"
+        },
+        {
+          "path": "references/regulomedb.md",
+          "sha256": "933970cc4586ec2d6d342ccda90c7378d085129b94f8654605b6bca43a9c5883"
+        },
+        {
+          "path": "references/retrieval-contract.md",
+          "sha256": "a268604e226309c291aa7c981a99219edde25346d69645ad9d8acc3cbabbaaf2"
+        },
+        {
+          "path": "references/rummageo.md",
+          "sha256": "1dce8be4c7ac7b3f79e59988da7cef6358176a2619bd09d56ad00ffd89ddb443"
+        },
+        {
+          "path": "references/sdss.md",
+          "sha256": "b6c1dc13446aaad2ebd5cd6a894a69b979da4a93b047d8a48bd507a33ee2a75f"
+        },
+        {
+          "path": "references/sec-edgar.md",
+          "sha256": "282e045e9675e309a6c720045fd10475da3b9759459d876b3a8ba10beab457e6"
+        },
+        {
+          "path": "references/simbad.md",
+          "sha256": "d14a765a17f1de3299cdb68e5ed64a38b5790fe7529cde19b1534f78fd34ed25"
+        },
+        {
+          "path": "references/sra.md",
+          "sha256": "f70d0b4ce1d0a2b2ce01fdbd358929ffbc99eb77256d18ae3d215d190a5fc452"
+        },
+        {
+          "path": "references/string.md",
+          "sha256": "8d39fe9d9fb46bf7ce6830703603f07777ea21770e83f883bc98cba5ab20f699"
+        },
+        {
+          "path": "references/tcga-gdc.md",
+          "sha256": "91f8be4bf809b9f3ac87641980fd33b6ec5f76ddf17b32e9c2f5c5b9f090d70b"
+        },
+        {
+          "path": "references/treasury.md",
+          "sha256": "a1b4c3a4d18d1f5a55135585384c4e51705722a7b04c1e1ba151b954f01dd7f6"
+        },
+        {
+          "path": "references/ucsc-genome.md",
+          "sha256": "8be92a6a4978a12e56c412b94195f44128837ae66528779859dd994aa57f4781"
+        },
+        {
+          "path": "references/uniprot.md",
+          "sha256": "8e625f9f6e3becd9dde739d8937b306feafd29482af2c359b579915ea560f2de"
+        },
+        {
+          "path": "references/usgs.md",
+          "sha256": "343bb71e510f43b54a444f486b97f1e47e957aed4f35b81fa588c3e3247bbd30"
+        },
+        {
+          "path": "references/uspto.md",
+          "sha256": "858002e1a231ae0eae30c48b7dec00d97b80fe7e08c9305dfbec0805434c19b0"
+        },
+        {
+          "path": "references/who.md",
+          "sha256": "9260f58512a9de4f3647207c759451931ffbd4e15415afa39b0bfdedbdb12d4b"
+        },
+        {
+          "path": "references/worldbank.md",
+          "sha256": "673144b300cdbef6fc0a6bb995df3182f13230dd5dd83264db593c13b3e4f0c4"
+        },
+        {
+          "path": "references/zinc.md",
+          "sha256": "7aa76cb2cd7f2cdae05c73faf95be0445f86c404259e4efabb352ed179e97274"
+        }
+      ],
+      "name": "database-lookup",
+      "source": "skills/database-lookup"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "3a0d725456f37c650595a1bdf0cd104936acc5e2bf4146be6829d3fcd4ea6c59"
+        },
+        {
+          "path": "references/conformers_module.md",
+          "sha256": "9af2cc31acb77aa703ac4da839175da002043abd50a55cc7e3ccd83f24dfe3a5"
+        },
+        {
+          "path": "references/core_api.md",
+          "sha256": "b79d8668c7baacc11c83b4cfb4dd46d4ffcbebfd8d2a7773b20549d0c4113772"
+        },
+        {
+          "path": "references/core_workflows.md",
+          "sha256": "f322bf91b377620db2ff8842eb66bb25fc0bfd8627fd7fe6b196e048f62a061c"
+        },
+        {
+          "path": "references/descriptors_viz.md",
+          "sha256": "b728295888f173f19bc1155ca3d8595358e333b6cf8230437879cb4d070ef558"
+        },
+        {
+          "path": "references/fragments_scaffolds.md",
+          "sha256": "b00ed48bb38ebf0a6135cfaa5aa6355c41184552ce8ee9e4426e440aed583bf4"
+        },
+        {
+          "path": "references/io_module.md",
+          "sha256": "9351e472a952e6d8e372a5892f513c84e8c5097a53988c57326e0c80fa7ca317"
+        },
+        {
+          "path": "references/reactions_data.md",
+          "sha256": "d17db50dee1225c4ad060a4f5274899c42a4e1adb47395fce20dd388e289e208"
+        },
+        {
+          "path": "references/review.md",
+          "sha256": "bc066f602ea4d0bda473ddf715e9a51f7a8cb4240cb69c99ba31e9b32ce0082c"
+        },
+        {
+          "path": "references/workflow_patterns.md",
+          "sha256": "bd84b971b4d60472fb0d5905c5fa5b6e2f8c11c092be5ee06de861b5206cfc51"
+        }
+      ],
+      "name": "datamol",
+      "source": "skills/datamol"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "2965735ee473cf70d63c6170f1c8867bd533539809d4535c162acacc07d0b17d"
+        },
+        {
+          "path": "references/api_reference.md",
+          "sha256": "486d7070eba75919fb501389fff0df8394e10fcc27296d96ef6ab89fa24d1611"
+        },
+        {
+          "path": "references/core_capabilities.md",
+          "sha256": "e9e808dd57b55c8d326f94ed2f7feddec0463f97d5f59f71fb5711daf312f555"
+        },
+        {
+          "path": "references/review.md",
+          "sha256": "0934d78d899d47a6180b2f351d8843308d641fa3c0b13b264f87369c59baa845"
+        },
+        {
+          "path": "references/typical_workflows.md",
+          "sha256": "3a072edc8b262ecf000ac665f6f59fa5354c26d71949433a07f43746889074c9"
+        },
+        {
+          "path": "references/workflows.md",
+          "sha256": "327707341e5e4e18dfa6aee1e7860935c30ef56ba77653e07b01683dd3259c4a"
+        },
+        {
+          "path": "scripts/_common.py",
+          "sha256": "61fb1c4ac183953eb08b163296e809295a7242349ada274f1db254efb7b43ac1"
+        },
+        {
+          "path": "scripts/graph_neural_network.py",
+          "sha256": "2f3be84ad1ded9a3cd2d55257f9ab31e77f2df4ca623186b5def07a43076694a"
+        },
+        {
+          "path": "scripts/predict_solubility.py",
+          "sha256": "df8364ba832f7fe04cc401ef4fe3413714683fabdf7c8cf5f530a02c16b10c4b"
+        },
+        {
+          "path": "scripts/transfer_learning.py",
+          "sha256": "7d1d866b6320f19177cd90ae9edde15e711d838cbfb23479afd9766551f52aee"
+        }
+      ],
+      "name": "deepchem",
+      "source": "skills/deepchem"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "893eb02a2dc8a77e61260dfb74b2acdf6c85e08f33028329d73657a23d398586"
+        },
+        {
+          "path": "references/dependency_analysis.md",
+          "sha256": "4bf745e94ff70da89f8c3d67c3de625d2d06b24812012fe446fa9d9c2422cd96"
+        },
+        {
+          "path": "scripts/depmap_data.py",
+          "sha256": "28604159f7c87d7e5a5002a0512af100a440d73f0fa5f2ba6794ccafce66ebfb"
+        }
+      ],
+      "name": "depmap",
+      "source": "skills/depmap"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "5fafc5d9f53fa35a47c498f1cf3bad20fbee7404f248226e76e62bb327749912"
+        },
+        {
+          "path": "assets/batch_template.csv",
+          "sha256": "fa759ceb9e93d6be7c972bb0150987230e1bab1cc7ca215c7f3411b9b9f5aa15"
+        },
+        {
+          "path": "assets/custom_inference_config.yaml",
+          "sha256": "2fc8591df8808d025468483f00743c66dc8bad341b70a02b092e2e93df57e67d"
+        },
+        {
+          "path": "references/confidence_and_limitations.md",
+          "sha256": "766668ff5c653e42f44de6d8409cc12a68e9dc5f1bb7bfc4e47a02902a2a4d58"
+        },
+        {
+          "path": "references/parameters_reference.md",
+          "sha256": "c7e5cc0c71f89f5620de973f967095eb76119d4716400d776bf4e11d155e4906"
+        },
+        {
+          "path": "references/workflows_examples.md",
+          "sha256": "dcc1444c0090fcca35b4563897a505b506ac93e2168c311e1ce226e5e041b322"
+        },
+        {
+          "path": "scripts/analyze_results.py",
+          "sha256": "c19179691697c87fae5dee610dbf83b0c7cee93ac2a3340274786af0c67ecfe5"
+        },
+        {
+          "path": "scripts/prepare_batch_csv.py",
+          "sha256": "237c8b851c0967905c9af14c8abc0190ea929924f827d53afc0a44170890a5f7"
+        },
+        {
+          "path": "scripts/setup_check.py",
+          "sha256": "f3b8207c947516020fce95dd109f987cd901aa623b71a9a22cc83c802ab0becc"
+        }
+      ],
+      "name": "diffdock",
+      "source": "skills/diffdock"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "49da3c6f5c81359d48b7c0b4416a212e7106f777b4c7174b2b42ce0c02bd95f6"
+        },
+        {
+          "path": "references/biohub-platform.md",
+          "sha256": "a2aad56b7801c393b8db4e0348dbdd121b7a43277a7f258237ae7b15e976c735"
+        },
+        {
+          "path": "references/esm-c-api.md",
+          "sha256": "7d99506dc1fe931f1ad80dc6a07e80b5b5c8cd199b683c49da822606837e8444"
+        },
+        {
+          "path": "references/esm3-api.md",
+          "sha256": "e279f167ef136a8b16e27687086a108e9f5785eb0330edaef78e96b84b505edf"
+        },
+        {
+          "path": "references/forge-api.md",
+          "sha256": "5adf748a4b60b06fdb2236f2d473d2bd4d9ac4ab63d0bdf9e68e99cc7b7541ae"
+        },
+        {
+          "path": "references/review.md",
+          "sha256": "a8685316dc695ac878bcb5c6d27730d989b6e8fe0748350de71e1c8edc7a391b"
+        },
+        {
+          "path": "references/workflows.md",
+          "sha256": "8dfd67723fc2ad01aba912bb3522bcaa7706b315ffaf554337d477625f38c41d"
+        },
+        {
+          "path": "scripts/esm_embeddings.py",
+          "sha256": "3047f16e784730fd730010e98d0ce5b02643958f2224109df1fe1ba9606c0ada"
+        }
+      ],
+      "name": "esm",
+      "source": "skills/esm"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "0f01df45ed4aecb81d672a5576820aee37c32864b4fe84bb4d049471a14d3e5c"
+        },
+        {
+          "path": "references/data-management.md",
+          "sha256": "ebf84cc2c89efde3197931ecd03fe5df0cdee32f2e2bbb1adac3a353ba9ce7c4"
+        },
+        {
+          "path": "references/latch-mcp.md",
+          "sha256": "cdac8dbc81d4c741c80f644c6680ce07e4ecec10531b968e4bc6c169c3a60100"
+        },
+        {
+          "path": "references/nextflow-snakemake.md",
+          "sha256": "57a414b365f7748b363d290cf87c14a1ad705440c732bec84c1039052fed20aa"
+        },
+        {
+          "path": "references/operations-and-debugging.md",
+          "sha256": "0f50e19345e0d783b7abca1915a79f7955314ee8b798f4581a4554326a342a47"
+        },
+        {
+          "path": "references/registry.md",
+          "sha256": "aba14f42f224f81108a654b42d5d4a9ad63148d99bdacd80a6668056d1c3e1ae"
+        },
+        {
+          "path": "references/resource-configuration.md",
+          "sha256": "c6d1c5d4638cb108e289a222e7a09f1586c71fde886b27c66ddca37b45ceeab5"
+        },
+        {
+          "path": "references/ui-and-automation.md",
+          "sha256": "6e2289e697bfe5ad2f9da45f99190dba5e1a7b30cc402dc0cf23ef9601774c96"
+        },
+        {
+          "path": "references/verified-workflows.md",
+          "sha256": "0d9859f8a33889d3b9f7d55dd445f0037e926068f1718894f0f084d8a85f77a4"
+        },
+        {
+          "path": "references/workflow-creation.md",
+          "sha256": "4be31ac20fa562c082a89db56ce6c23aac5a51bf694c7059b161eea9888ed2ea"
+        },
+        {
+          "path": "scripts/inspect_latch_sdk.py",
+          "sha256": "b81764ac0efb6d6302e3c50b22a0ca06fe45a6b11fd6c102d0e3f60ec674496c"
+        }
+      ],
+      "name": "latchbio-integration",
+      "source": "skills/latchbio-integration"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "07e44d0dc965278ab8e4fe9a325e89198bccd7e3ee26c1c454e788e1f4df9c2f"
+        },
+        {
+          "path": "references/api_guide.md",
+          "sha256": "acba89f01dfba48e3ef18edba2ee25859f8f98cc488d7c39eca9f71d32c23bd2"
+        },
+        {
+          "path": "references/rules_catalog.md",
+          "sha256": "0a429dfe34cf877f9a581ffac6c584d2334038a8303c5d85f6be293ca709e9aa"
+        },
+        {
+          "path": "scripts/filter_molecules.py",
+          "sha256": "bed43299e25f3f12acb8e30f506e2de57a71a24852b6b19f7c3560b8fe455d67"
+        }
+      ],
+      "name": "medchem",
+      "source": "skills/medchem"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "6bc3c336b58c8c7214042c5679cd793e655c15e703fa5d5ac34e09250d11df5e"
+        },
+        {
+          "path": "references/api_reference.md",
+          "sha256": "079989fb679122c2d1962ee5266e2d36af0ee510e8ac9cf9d5208106e1e2fcf1"
+        },
+        {
+          "path": "references/available_featurizers.md",
+          "sha256": "d7ada0b18bbdcfcd5d3a241048e05ea09a6e46f2772b99243024460ce35dced6"
+        },
+        {
+          "path": "references/choosing_a_featurizer.md",
+          "sha256": "611573acb4603040a2c9f39c87dd616fb606e348c57917806d03b400fc595f30"
+        },
+        {
+          "path": "references/examples.md",
+          "sha256": "e8623e34848b985bc1dccb46470a62cd28fd664ab821cb2a97b3d6203f477e43"
+        }
+      ],
+      "name": "molfeat",
+      "source": "skills/molfeat"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "3600fece96f89e7cedc23d13e48ce7eb25a90698d7ae3d8bae65035d89f392ff"
+        },
+        {
+          "path": "references/api_reference.md",
+          "sha256": "b9eb6f69448aac21280873001f7d1987025788f73bb094e8d146fa2e84fb717a"
+        },
+        {
+          "path": "references/liquid_handling.md",
+          "sha256": "43ecc24ca569f1d838187fe2b429afa5efa8385a0dcdf4efd147f87033ef6390"
+        },
+        {
+          "path": "references/migration-api-2-19-to-2-29.md",
+          "sha256": "e86cb298aa962abfe837ef15d91ff28854814a57b8d56d3eefbee810a0038df0"
+        },
+        {
+          "path": "references/modules_and_deck.md",
+          "sha256": "1f591afa878fc53690c30de9a74ad0193b785b46b6160c92c8d22404bdf39c47"
+        },
+        {
+          "path": "references/protocol_authoring.md",
+          "sha256": "c4df26ea1df2f6262b5cccab1aba48582cc87c16c8ac7c5462678f2c40aaca7d"
+        },
+        {
+          "path": "references/sources.md",
+          "sha256": "473c62c41d48f3dd05b23ab74b151828f30c1cb02b33d8dd7953feee62af60d4"
+        },
+        {
+          "path": "references/validation_and_operations.md",
+          "sha256": "fd10cf66e300b9f75dd0114e9224aeb211a6672ae057fa0c82654482933e5eb3"
+        },
+        {
+          "path": "requirements-flex.txt",
+          "sha256": "3662419994f7633377dbcfb12b7c99093ad80159b398a8cd805b44aa0b7dded0"
+        },
+        {
+          "path": "requirements-ot2.txt",
+          "sha256": "95b907a29f0a2307bafb7849429e2e551fd484b846a43681d909c397e1e5d95d"
+        },
+        {
+          "path": "scripts/absorbance_reader_template.py",
+          "sha256": "2a88d00fdbccbcc35c1a17c6dc72bbf56321e308abc0c915759ea41fea0f9284"
+        },
+        {
+          "path": "scripts/basic_protocol_template.py",
+          "sha256": "f95d2488c28180f3427d426bb7a8b0de80661070328813f2a3dc7af8c44ff5ce"
+        },
+        {
+          "path": "scripts/ot2_basic_protocol_template.py",
+          "sha256": "9514eb6d4ab0a737cea93a8a0c0b8990c1a9d8fcd7d1f9f8ef250a35d65a126f"
+        },
+        {
+          "path": "scripts/pcr_setup_template.py",
+          "sha256": "bd1a6a55cf687a11baea88381b6be028391105917d7c5aa299abe3bf42c645bd"
+        },
+        {
+          "path": "scripts/runtime_parameters_template.py",
+          "sha256": "0deec847b4f355400a5ed149f42f85bed703932486ee71ee12d18419fd860ae7"
+        },
+        {
+          "path": "scripts/serial_dilution_template.py",
+          "sha256": "b86d6a752f3d33f44a7b3b508d6729fa8234774554a037abd9d9fd0737d22586"
+        }
+      ],
+      "name": "opentrons-integration",
+      "source": "skills/opentrons-integration"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "82783d8ba63b6b03646492ee75afcdf591903a213decf7e7c9d844eb517acd78"
+        },
+        {
+          "path": "references/databases-and-gene-sets.md",
+          "sha256": "bd9dc1b2df10a2eb8794bdbe2ade248b8987ddf200a8e90b19235af8f20fd414"
+        },
+        {
+          "path": "references/gseapy.md",
+          "sha256": "0305a6c545c2aa5e1ac655d8a39f99e437f02a29f5f23f9786e5cf3ab98959fa"
+        },
+        {
+          "path": "references/interpretation.md",
+          "sha256": "d1356ee0f94c4e64191c7436c641c01592e323be1e55f4c037957b7b833d4f73"
+        },
+        {
+          "path": "references/verified-api.md",
+          "sha256": "911a352451ec52066f044f8eac671ad8aa6a4e8b09d455918bea790b26d882bb"
+        },
+        {
+          "path": "scripts/run_enrichment.py",
+          "sha256": "973a06c03e9d1df49423ca0744f7c5be5185ec9decc7de8ccbb72d0f2ac6bc06"
+        }
+      ],
+      "name": "pathway-enrichment",
+      "source": "skills/pathway-enrichment"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "b20698944fa51b287a13e7dc22ac033b83836b73614a21cff725ad7d6d807226"
+        },
+        {
+          "path": "references/data-contract.md",
+          "sha256": "f6cacb8285f0fc3ff04e56b8f7fb64da384bb3ae660604623186d856dd35c72e"
+        },
+        {
+          "path": "scripts/query_primekg.py",
+          "sha256": "20d80d19440ca3beb3cf2939f226b7d40dbc430fd2bf44e5fb21b3f868d49815"
+        }
+      ],
+      "name": "primekg",
+      "source": "skills/primekg"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "f06a9f5ece540c05bd8a8208bb3970d000b13cb1032abc9488cfbfe6106cd843"
+        },
+        {
+          "path": "references/analysis_patterns.md",
+          "sha256": "de25b02590029166c9e22d845f6b194ddbc1f66ef8dfd4a99bffa54186e61894"
+        },
+        {
+          "path": "references/api_reference.md",
+          "sha256": "8f60f7302417b8c094e3e716c1435aea4ebff556c3e90fe389dc0f5bb8509f75"
+        },
+        {
+          "path": "references/core_workflow_steps.md",
+          "sha256": "af01451d1ed181f7d0194e28a0ece6ee16bdc5896f463f9b245eff8b47fd2a78"
+        },
+        {
+          "path": "references/workflow_guide.md",
+          "sha256": "abcb6571119c4aa1611e959a8d780f76b0036b6da0f90277e2cba66ab7cd83c5"
+        },
+        {
+          "path": "scripts/run_deseq2_analysis.py",
+          "sha256": "d99ee5d170fdeea2f80ab3282a9a5fff6e4bf7c3f784af5a4cc4211b1ab2b622"
+        }
+      ],
+      "name": "pydeseq2",
+      "source": "skills/pydeseq2"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "b2aab8871006d84e53621fc0f4886d0fd0c671007d112569e444e0a56a564d76"
+        },
+        {
+          "path": "assets/protocol-manifest.schema.json",
+          "sha256": "ba9d2a52b5e5eb76b1e0ae88b30c6a16e89b22fd0b9b6019d90f09640b16ec17"
+        },
+        {
+          "path": "references/analytical-equipment.md",
+          "sha256": "64f8ae4292d5843aa95fe0e9bcf13913eb4cc0cf551cfb3a3d7d759753f25c03"
+        },
+        {
+          "path": "references/hardware-backends.md",
+          "sha256": "72dbc55c38bb15ec196fef7cd5d609a0d25899208829d5dd533839ab72ca1227"
+        },
+        {
+          "path": "references/liquid-handling.md",
+          "sha256": "8e804c5f533213e46e09b13e87f33532f305e43bc28aa525aecf4eaba4fdbf67"
+        },
+        {
+          "path": "references/material-handling.md",
+          "sha256": "7b62fc0874982c94c77e2e5a2dabf8c22201eec1bb1098ec539456cbc0900d5a"
+        },
+        {
+          "path": "references/resources.md",
+          "sha256": "f694f2fe5f778cfbc94da7034a6a119d7e0dde676315c514ede8e3c4b28a5bab"
+        },
+        {
+          "path": "references/review.md",
+          "sha256": "1b99979ebe35c23840d80e3f347b75b8e5200034c342431d904e52184d68b10c"
+        },
+        {
+          "path": "references/visualization.md",
+          "sha256": "35411f5dba90978ef896270fd6f82f03dbb65810abc9a6fbeee61bf5787b7cb7"
+        },
+        {
+          "path": "scripts/__init__.py",
+          "sha256": "d1a981fe4edf160c2ed51409244c623b0bb6d73b1ffc9b50e6b729303c640cca"
+        },
+        {
+          "path": "scripts/_common.py",
+          "sha256": "48cce3a8ea9ee313e657ca1fd63176448ef6f0e30bdb73472c494d4c0c5c23ef"
+        },
+        {
+          "path": "scripts/check_deck_geometry.py",
+          "sha256": "0e219941e7013cb1a812966ec730a29f17037be819c19a08d4ab3342a5b0b74b"
+        },
+        {
+          "path": "scripts/generate_simulation_plan.py",
+          "sha256": "071e42a404830476134331af47bc0d103882c2d5a5f2773b8b220bdd7efa6092"
+        },
+        {
+          "path": "scripts/inspect_backends.py",
+          "sha256": "e082a60332e96d91324aafed1fe729513bfbece7eff6b62a436dfe9fc2bf2d71"
+        },
+        {
+          "path": "scripts/plan_transfers.py",
+          "sha256": "92a059726a5707506c2bd68877e7bf3fc36a61201f4de4f8e0d8ad66963fd0ab"
+        },
+        {
+          "path": "scripts/validate_manifest.py",
+          "sha256": "6fe09732a1fc75fa5ee534a2e79abd8724bd149c4ef3a698c0960c093762ca1c"
+        }
+      ],
+      "name": "pylabrobot",
+      "source": "skills/pylabrobot"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "afc275bbeb084553cd6507c4ffee848c46bef94dcd24c3b8a58d8b14d021ea09"
+        },
+        {
+          "path": "references/alignment_files.md",
+          "sha256": "f7577248277849f36dcfea68a6bf38b92113369cfddeecd46bb670ba1b358790"
+        },
+        {
+          "path": "references/api_reference.md",
+          "sha256": "019b24b516f5cd964d68d8782f7c364f5de3b71a864d56ca8806a6692905bc49"
+        },
+        {
+          "path": "references/common_workflows.md",
+          "sha256": "ed2247dc745fe635dd7818ec6103eeec269efe9503c0f20c4946ba0be6e670de"
+        },
+        {
+          "path": "references/coordinates_and_indexing.md",
+          "sha256": "9cfcb78a05d6b9bb8a28f5464c6d0cc83625a99994c23a710d26b909dd2fe57d"
+        },
+        {
+          "path": "references/cram_and_performance.md",
+          "sha256": "f7a15b37e1b7ca3039ed5183ff13f6d5903d835baebf1d19a6a9c3bcc2e699ba"
+        },
+        {
+          "path": "references/migration_to_0_24.md",
+          "sha256": "9f258110e9e959aedaf0a1997deb790d5833c730a6c1dcc9b5a6d8ea86a8033a"
+        },
+        {
+          "path": "references/sequence_files.md",
+          "sha256": "2e1d901500e1c202e86f8e92d254d913aabb804505f75455ee19bdb63748f2a6"
+        },
+        {
+          "path": "references/sources.md",
+          "sha256": "75f4efa0870a3c5448f9e292cd8a876a27bc199fec4326bde464c6d3fc07d7ae"
+        },
+        {
+          "path": "references/variant_files.md",
+          "sha256": "7d961e738272ffb98c39c78e21886fe774139a99948f7f1a3cc2bc77384212d3"
+        },
+        {
+          "path": "scripts/alignment_qc.py",
+          "sha256": "6cb6084fd467bcd3a6048ffa6f2cb3865f87d62f01699e026cf43e13a75a314c"
+        },
+        {
+          "path": "scripts/filter_alignments.py",
+          "sha256": "ef80dca3d48e5b713f49fdd87c52b58e933a9aad1e4bf0dfbf994f08e931b7ef"
+        },
+        {
+          "path": "scripts/inspect_hts.py",
+          "sha256": "1db21bbae44d00554076c8a326c78be0a19ba53ead7e2db191615d2f0c329546"
+        },
+        {
+          "path": "scripts/variant_summary.py",
+          "sha256": "79bad44cd398e1dc227b920de26433284c75bfc9865441a413248a7b19861731"
+        }
+      ],
+      "name": "pysam",
+      "source": "skills/pysam"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "b7df3f50c1c618a47a81e994b2863ddd8adf695e795aa495c3a8fef5e78a0493"
+        },
+        {
+          "path": "references/datasets.md",
+          "sha256": "a056e9e0cd4ce0d29f21f66c01bd76e6dc9f0ffcd0dcfebcea9756d84cdbda9f"
+        },
+        {
+          "path": "references/oracles.md",
+          "sha256": "bb2dfa8f0a3924d86317873a0b6f4b23560bffb60226d11816d3bf9b611035f5"
+        },
+        {
+          "path": "references/sources.md",
+          "sha256": "452714c37a4b65da76f50d3749934f67106093910149572c0aea8fb4b9b0a21f"
+        },
+        {
+          "path": "references/utilities.md",
+          "sha256": "cc3c0ab067029e7dff37c5480b483092387993555567aa3b0fe1b7df88f6c95f"
+        },
+        {
+          "path": "scripts/_common.py",
+          "sha256": "5400062833084d7dfbe6fa603901d2d931689c1d2ad587c9ae67052f50b98791"
+        },
+        {
+          "path": "scripts/benchmark_evaluation.py",
+          "sha256": "821c3f05b0752ecc93852251c2e72d6e5e066c7d14fb1e9975d0d41cc5ed667c"
+        },
+        {
+          "path": "scripts/cache_audit.py",
+          "sha256": "8525adb221fe0a5cdf87475f10db1317bc74015ee5719e34de0a2c2b92523db9"
+        },
+        {
+          "path": "scripts/discover_metadata.py",
+          "sha256": "e761eb71b2c7c131db661920e252d88ef72402004e3445055487a344dace1e0f"
+        },
+        {
+          "path": "scripts/load_and_split_data.py",
+          "sha256": "dff84d0a97fa83e809e0033c440c3574452feeeed18daffd6604f0952503873e"
+        },
+        {
+          "path": "scripts/molecular_generation.py",
+          "sha256": "128701240a4f5d5258cf6ab12d6ac96166353551f6fb914c060da3eee4f2bbd2"
+        }
+      ],
+      "name": "pytdc",
+      "source": "skills/pytdc"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "9f32d5d229bc1a5bac3e57de5fb87895cdb85dcc99132c57373905db0e1a941e"
+        },
+        {
+          "path": "references/api_reference.md",
+          "sha256": "160f14e37cfaff3a93e77d77c772b0a06b5dd413fbefddc9a6bc414f5dd63d70"
+        },
+        {
+          "path": "references/core_capabilities.md",
+          "sha256": "6ec3d2334012a4b6bbd46a1a055fccad3aa01650c778e6d9c2793d06fa666306"
+        },
+        {
+          "path": "references/descriptors_reference.md",
+          "sha256": "5213da1e42c99249490e5a619d213911cafc708056c2e3444f8514cd9e9ce4f9"
+        },
+        {
+          "path": "references/review.md",
+          "sha256": "66c4364a9949942203c32aa40766291da75112833576834c272fa24e80817119"
+        },
+        {
+          "path": "references/smarts_patterns.md",
+          "sha256": "3746ed0bf7d7ca99b945e5c4ac53077f539e7a20d9091ec59c8c3e0f2a37f190"
+        },
+        {
+          "path": "references/workflows_and_best_practices.md",
+          "sha256": "13ac8e6ce522b5585a6c964b10b539d06e18e1c3d4c18880a9733b0be5e54a3f"
+        },
+        {
+          "path": "scripts/_common.py",
+          "sha256": "b9de71f55294e9587b42173a49f688f03808678fdf085604fd0a3b3d1ec4fafc"
+        },
+        {
+          "path": "scripts/molecular_properties.py",
+          "sha256": "93deadbda64b763d5ff07e88f48de57968e8f2cf1ed210898899bc73f173806a"
+        },
+        {
+          "path": "scripts/similarity_search.py",
+          "sha256": "fa935d7cb14f9aa601c15ae2daec539513a397727946b2b62126b77dcf1b52a6"
+        },
+        {
+          "path": "scripts/substructure_filter.py",
+          "sha256": "3a737d874bab1007409aea7398d001602142cf54f8fc64b080109da91ac6b513"
+        }
+      ],
+      "name": "rdkit",
+      "source": "skills/rdkit"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "d631f00ae0f9325aa58912bb571b7eb43bc42c553498e4c97f4d65a1683c8599"
+        },
+        {
+          "path": "references/access_and_pricing.md",
+          "sha256": "17509f5c4f9de6830297ac6d7a58e1f6eaa0eee5cf55e3c21f8db7f4bed720a3"
+        },
+        {
+          "path": "references/batch_and_webhooks.md",
+          "sha256": "23db22ce9b76acd18b1fae33137f42ad9f8a85729ea3f5d2ac608cc37a82bd4e"
+        },
+        {
+          "path": "references/end_to_end_example.md",
+          "sha256": "5e83a545e024878216aec81e5a7a875be2268c51ce4386a5900fed53d5343995"
+        },
+        {
+          "path": "references/troubleshooting.md",
+          "sha256": "8b1840d7ce5652014bac3e78c31a3fd77117f46a5aaf208c031afe11fa52759c"
+        },
+        {
+          "path": "references/workflow_catalog.md",
+          "sha256": "eb3c5ccbefa809dcaaabfcf17531087243dc2634fc4f9f1ba5a9f862d95e8f40"
+        }
+      ],
+      "name": "rowan",
+      "source": "skills/rowan"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "4a59f87933a1e9ed49eac603719af1b0c606dd99050fe59ffa1c1bf807900cb8"
+        },
+        {
+          "path": "assets/analysis_template.py",
+          "sha256": "c66689f25eeb96c688fd4d66dcd8c78dad22e1f964efed36de1f1ab51f16137e"
+        },
+        {
+          "path": "assets/celltype_mapping.json",
+          "sha256": "57252f2224f1ff8cf1e43661bc8a2fabec36bd5d65f996945599fd010c8edf7c"
+        },
+        {
+          "path": "assets/gene_signatures.json",
+          "sha256": "96b2cf9b5f56d3b1a110eba1ea585fa624618b6648378ce55d5d82c621e8d286"
+        },
+        {
+          "path": "assets/pipeline_config.json",
+          "sha256": "c4cb974ad55afbb3befac85fedb7b2b4daf8799a9ce37c590d4e43ac8b675ee4"
+        },
+        {
+          "path": "references/analysis_workflow.md",
+          "sha256": "4ec79d994dfb121b2b79559b3d1b07696ca4cbbfd40b8d2d8ad926176e82f187"
+        },
+        {
+          "path": "references/api_reference.md",
+          "sha256": "62cd2efbf21c47b86e52ca25e5b77fd505956d0982c85eb9693c7f94cdf8b759"
+        },
+        {
+          "path": "references/plotting_guide.md",
+          "sha256": "6e6de91dce872b00a383ba4a8ba4a87d6f39d53b182857c1defd3a3375c2fd2f"
+        },
+        {
+          "path": "references/r_interop.md",
+          "sha256": "8ec8ed4257e18a66fe258da573fb7be9c4261366536edc9ec1298e8271aa79c1"
+        },
+        {
+          "path": "references/standard_workflow.md",
+          "sha256": "b7164b502c37779e4c16e41bdbabb8c780da11fa11366c752fc5c889b0b4b7f7"
+        },
+        {
+          "path": "references/upstream-review.md",
+          "sha256": "d8cf1606bd21f4772f09b3666f1349e265de3e5c0e8fbea881cbaea18e8b9b28"
+        },
+        {
+          "path": "scripts/_common.py",
+          "sha256": "048948933c9fa6831520a512bce6e0a221e31352b6a1b2091d838e9460942e9f"
+        },
+        {
+          "path": "scripts/annotate.py",
+          "sha256": "c6f438cdf97db25b493abf072f51cbe9679313966fd9110bdfc9442ec2d79181"
+        },
+        {
+          "path": "scripts/batch_correct.py",
+          "sha256": "598178094764aa082894b433d2c9196d45432f3b1bb3928a221519fc5f4cbb45"
+        },
+        {
+          "path": "scripts/cluster.py",
+          "sha256": "4b3e8d97351b22452d9898d14bda28759fc35bb885c85c7a99bca0e88b028c7f"
+        },
+        {
+          "path": "scripts/convert.py",
+          "sha256": "05e4ced7479b99ed2d98154da1b7c35f822f95ddf1ff25a27b4b6c821f2b9647"
+        },
+        {
+          "path": "scripts/find_markers.py",
+          "sha256": "892650b8935fad0d664fad6fe5766468687cf08d7bc231d48f7a40f2635ddfd3"
+        },
+        {
+          "path": "scripts/inspect_data.py",
+          "sha256": "587cd7331064126721b814984acf3a15b7cd8e4ed6c4179063b967fbcc965a99"
+        },
+        {
+          "path": "scripts/plot.py",
+          "sha256": "afa4163d2eda3e1ae4db2998891d3716e0baf671286260a63dc9d23c0ce38ba8"
+        },
+        {
+          "path": "scripts/preprocess.py",
+          "sha256": "513dd9009dd3fe8a300c7d1d7d8a25f3769333945131b8dd50f49184b54ed60c"
+        },
+        {
+          "path": "scripts/pseudobulk.py",
+          "sha256": "2050b357a55a00eb91c9f80970465fdf464e601d2350ddaf774bed5d572b6da6"
+        },
+        {
+          "path": "scripts/qc_analysis.py",
+          "sha256": "a4ba9a873839c39934c6255708bd5d0542087f54fdb5bc3a295a2b4d8197c104"
+        },
+        {
+          "path": "scripts/reduce_dimensions.py",
+          "sha256": "03d8170077c88f90ba28f86d05002ae7009ee1f61d37e4bb06ce50c4550f907a"
+        },
+        {
+          "path": "scripts/run_pipeline.py",
+          "sha256": "380209ebe35bddb3e70eaa1f94dd245494e86013619a736688fb81156cde2733"
+        },
+        {
+          "path": "scripts/score_genes.py",
+          "sha256": "c18c02410b3797450da4e2d001bf21a216ab0fdef70eeadc6dfb2e8460302b29"
+        },
+        {
+          "path": "scripts/subset.py",
+          "sha256": "e245e03f887efc0b662fc7ac623d4cb0929d873eb2e471cc29c09bfe5955e79e"
+        }
+      ],
+      "name": "scanpy",
+      "source": "skills/scanpy"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "b22633470d40ddaf31451fbbf811941fc89c3174c404ca359f25378691267e73"
+        },
+        {
+          "path": "references/differential-expression.md",
+          "sha256": "9dc04bb8ff13d54e3eb0ae8c040346b9d7b0f39d60d378573c01f9e8b38c0022"
+        },
+        {
+          "path": "references/models-atac-seq.md",
+          "sha256": "ce60d208321a6a5a8d88a3b487b7bc675a8f4d77e1a35cb9b5bfa176d0aa066f"
+        },
+        {
+          "path": "references/models-multimodal.md",
+          "sha256": "a7a7a49311f06c9bef9bc88376ea4c28fe82512bf472e68abba44767f9868a16"
+        },
+        {
+          "path": "references/models-scrna-seq.md",
+          "sha256": "9c266357e7c96eeeaa4a69ca231081f8223f719d31fe2d28b30c8f27af022120"
+        },
+        {
+          "path": "references/models-spatial.md",
+          "sha256": "b89125cb6b1ba2ffeeef6d7581fc4b3ac20b589a98336b5edba55e0a8c293bdc"
+        },
+        {
+          "path": "references/models-specialized.md",
+          "sha256": "ccfb14775e32cecfadbbe40af3ea401bbfefbe9dcfb18f91fd47aadcf41238e2"
+        },
+        {
+          "path": "references/theoretical-foundations.md",
+          "sha256": "db2fd946f940cbdc5656dbc3a451b180c8fb02ac11e135a9e8db15df990e8106"
+        },
+        {
+          "path": "references/workflows.md",
+          "sha256": "9fe7442e11db73fd0f65f421a12e6b11fd0a848953aea4ec4f21c00b697d51b4"
+        }
+      ],
+      "name": "scvi-tools",
+      "source": "skills/scvi-tools"
+    },
+    {
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "03538274e00aad262d159ca5ebed55fe6519d605171569feff44afeb781088fd"
+        },
+        {
+          "path": "references/core_concepts.md",
+          "sha256": "717b98e9cb474b99b6afeb59eacddde96a99ffcec9b85ee6a1ee0d4be1dddf19"
+        },
+        {
+          "path": "references/datasets.md",
+          "sha256": "e9e99e7fdec54700804832c2d0f60a4391a9cbaa01efaab6efe5d30dbd7ff189"
+        },
+        {
+          "path": "references/knowledge_graphs.md",
+          "sha256": "b612d4034cd7e8ec8680993f11128df29cd3294c08915b50129c4a65779b82fe"
+        },
+        {
+          "path": "references/models_architectures.md",
+          "sha256": "5e5cdc50729e2ae4ab17e8f66eb4bb953f474e2b5e5ea1b9682ac765ed3f6adb"
+        },
+        {
+          "path": "references/molecular_generation.md",
+          "sha256": "1ff3b721c18fa00336842de9d12efe233e0151b6a0eee45b75269d60b6cee00f"
+        },
+        {
+          "path": "references/molecular_property_prediction.md",
+          "sha256": "554fe03c4ca9b715dee8465bbe1a926ae22add1a90ebc7c75bbb6ba30f50ef08"
+        },
+        {
+          "path": "references/protein_modeling.md",
+          "sha256": "a692fc181a088f0133aa3465525a2d84871db8e69ac0b37c5fd784d15a1d9719"
+        },
+        {
+          "path": "references/retrosynthesis.md",
+          "sha256": "3fce683d22e5f7664e87708289045808ef71d8c0e62983f5c7411578d4feed26"
+        },
+        {
+          "path": "references/review.md",
+          "sha256": "c0296fef4087759bf2044da2b98345894a7c5c00c82b658951b7b2ce6786764f"
+        }
+      ],
+      "name": "torchdrug",
+      "source": "skills/torchdrug"
+    }
+  ],
+  "tree": "390fe361644ba6ef88019af55a45a28ace2014ba",
+  "version": 1
+}

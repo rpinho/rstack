@@ -1,5 +1,6 @@
 """Fleet inventory and findings from recorded command shapes; never execute ssh in tests."""
 import contextlib
+import hashlib
 import io
 import importlib.machinery
 import importlib.util
@@ -26,6 +27,10 @@ def outputs():
 
 @pytest.fixture
 def host(tmp_path, monkeypatch, outputs):
+    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    # Fixture PIDs must never resolve to real Linux processes, including in the SSH source.
+    path_exists = Path.exists
+    monkeypatch.setattr(Path, 'exists', lambda path: False if str(path).startswith('/proc/') else path_exists(path))
     repo = tmp_path / 'repo'
     (repo / 'rstack/tools').mkdir(parents=True)
     wrapper = tmp_path / 'bin/xurl'
@@ -58,6 +63,10 @@ def host(tmp_path, monkeypatch, outputs):
                 text = 'PID COMMAND\n{} claude PATH={} HOME=/home/example\n'.format(argv[3], wrapper.parent)
         elif argv[:2] == ['tmux', 'list-sessions']:
             text = (FIXTURES / 'tmux-sessions.txt').read_text()
+        elif argv == ['tmux', 'list-panes', '-a', '-F', '#{session_name}\t#{pane_current_path}']:
+            text = 'lane-a\t{}\n'.format(tmp_path / 'work')
+        elif argv[0] == 'lsof':
+            text = 'p{}\nn{}\n'.format(argv[3], tmp_path / 'work')
         elif argv[:2] == ['tmux', 'list-panes']:
             text = (FIXTURES / 'tmux-panes.txt').read_text()
         elif argv == ['launchctl', 'list']:
@@ -96,6 +105,80 @@ def test_collect_lists_all_sessions_agents_and_prefix_jobs(host):
     bad = fleet.findings(snap)
     assert [(r['check'], r['subject'].split()[0]) for r in bad] == [
         ('launcher', 'pid=60'), ('launcher', 'pid=80')]
+
+
+def synthetic_skill_pack(dest):
+    dest.mkdir(parents=True)
+    (dest / 'passing').mkdir()
+    (dest / 'passing/SKILL.md').write_text('---\nname: passing\n---\nLocal fixture only.\n')
+    (dest / 'LICENSE').write_text('MIT License\n')
+    sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest = {'version': 1, 'repo': 'https://example.invalid/pack', 'commit': 'a' * 40,
+                'tree': 'b' * 40, 'acceptance': {'state': 'accepted'},
+                'license': {'spdx': 'MIT', 'path': 'LICENSE.md', 'sha256': sha(dest / 'LICENSE')},
+                'skills': [{'name': 'passing', 'source': 'skills/passing',
+                            'files': [{'path': 'SKILL.md', 'sha256': sha(dest / 'passing/SKILL.md')}]}]}
+    canonical = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
+    (dest / '.skills-vendor.json').write_text(json.dumps({
+        'manifest': manifest, 'manifest_sha256': hashlib.sha256(canonical).hexdigest()}))
+
+
+@pytest.mark.parametrize('location', ['.claude', '.codex', '.agents', 'cwd'])
+def test_skills_denied_in_every_global_location_and_agent_cwd(host, tmp_path, location):
+    cfg, _ = host
+    root = tmp_path / 'work/.claude/skills' if location == 'cwd' else Path.home() / location / 'skills'
+    skill = root / 'paperclip'
+    skill.mkdir(parents=True)
+    (skill / 'SKILL.md').write_text('---\nname: paperclip\n---\n')
+    cfg['skills'] = {'denied': ['paperclip'], 'allowed_dirs': []}
+    snapshot = checked(cfg)
+    bad = [r for r in fleet.findings(snapshot) if r['check'] == 'skills']
+    assert bad == [{'check': 'skills', 'subject': str(skill), 'detail': 'denied skill: paperclip'}]
+    assert any(row['path'] == str(skill) for row in snapshot['skills']['directories'])
+
+
+def test_skills_scans_tmux_pane_cwd_and_frontmatter_alias(host, outputs, tmp_path):
+    cfg, _ = host
+    skill = tmp_path / 'different/.claude/skills/renamed'
+    skill.mkdir(parents=True)
+    (skill / 'SKILL.md').write_text('---\nname: paperclip\n---\n')
+    outputs[('tmux', 'list-panes', '-a', '-F', '#{session_name}\t#{pane_current_path}')] = 'empty\t{}\n'.format(tmp_path / 'different')
+    cfg['skills'] = {'denied': ['paperclip']}
+    assert any(r['detail'] == 'denied skill: paperclip' for r in fleet.findings(checked(cfg)))
+
+
+def test_skills_vendor_placement_and_failed_integrity_are_independent(host, tmp_path):
+    cfg, _ = host
+    dest = tmp_path / 'work/.claude/skills/vendor'
+    synthetic_skill_pack(dest)
+    cfg['skills'] = {'allowed_dirs': [str(tmp_path / 'other')]}
+    bad = [r for r in fleet.findings(checked(cfg)) if r['check'] == 'skills']
+    assert len(bad) == 1 and 'outside skills.allowed_dirs' in bad[0]['detail']
+    cfg['skills']['allowed_dirs'] = [str(tmp_path / 'work')]
+    assert not [r for r in fleet.findings(checked(cfg)) if r['check'] == 'skills']
+    (dest / 'passing/extra').write_text('unexpected')
+    bad = [r for r in fleet.findings(checked(cfg)) if r['check'] == 'skills']
+    assert len(bad) == 1 and 'check failed' in bad[0]['detail'] and 'extra' in bad[0]['detail']
+    (dest / 'passing/SKILL.md').write_text('tampered')
+    snapshot = checked(cfg)
+    assert not snapshot['skills']['packs'][0]['ok']
+
+
+def test_skills_denied_directory_alias_cannot_hide_behind_seen_target(host, tmp_path):
+    cfg, _ = host
+    root = Path.home() / '.claude/skills'
+    target = root / 'aaa'
+    target.mkdir(parents=True)
+    (target / 'SKILL.md').write_text('---\nname: passing\n---\n')
+    (root / 'paperclip').symlink_to(target, target_is_directory=True)
+    cfg['skills'] = {'denied': ['paperclip']}
+    assert any(r['detail'] == 'denied skill: paperclip' for r in fleet.findings(checked(cfg)))
+
+
+def test_skills_unreadable_agent_cwd_is_a_collection_finding(host, outputs):
+    cfg, _ = host
+    outputs[('lsof', '-a', '-p', '40', '-d', 'cwd', '-Fn')] = ''
+    assert any('cwd for pid=40' in r['detail'] for r in fleet.findings(checked(cfg)))
 
 
 def test_launcher_parent_chain_registry_and_prompt_mentions(host):
@@ -232,6 +315,33 @@ def test_remote_collector_runs_standalone_with_fixture_commands(host, monkeypatc
     assert snapshot['harness_commit'] == 'a' * 40
     assert snapshot['installed'][0]['sha256']
     assert not any(argv[0] == 'git' for argv in calls)
+
+
+def test_remote_skills_use_controller_checker_without_remote_install(host, monkeypatch, tmp_path):
+    cfg, _ = host
+    dest = tmp_path / 'work/.claude/skills/vendor'
+    synthetic_skill_pack(dest)
+    (dest / 'passing/SKILL.md').write_text('tampered')
+    cfg['skills'] = {'denied': ['passing'], 'allowed_dirs': [str(tmp_path / 'work')]}
+    fixture_run = fleet.subprocess.run
+
+    def remote(argv, **kw):
+        if argv[0] != 'ssh':
+            return fixture_run(argv, **kw)
+        remote_words = fleet.shlex.split(argv[-1])
+        namespace = {'__name__': '__main__'}
+        monkeypatch.setattr(fleet.sys, 'argv', ['-c', remote_words[4]])
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exec(remote_words[3], namespace)
+        return subprocess.CompletedProcess(argv, 0, output.getvalue(), '')
+
+    monkeypatch.setattr(fleet.subprocess, 'run', remote)
+    snapshot = fleet.remote_collect('worker', cfg)
+    rows = snapshot['skills']['findings']
+    assert len(rows) == 2
+    assert any('denied skill: passing' in row['detail'] for row in rows)
+    assert any('sha256 mismatch' in row['detail'] for row in rows)
 
 
 def test_bare_process_path_with_no_xurl_passes(host, outputs):
