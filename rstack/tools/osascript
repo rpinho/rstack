@@ -36,5 +36,13 @@ paths = [p for p in paths if os.path.lexists(p)]
 if not paths:
     os.execv(REAL, [REAL] + args)
 
+# iCloud Drive files must go through Finder, so they land in iCloud's Recently Deleted; /usr/bin/trash cannot
+# move them (11-14: the KB backup's prune of old iCloud bundles failed every day after this shim went in).
+# A trash that fails for any other reason also falls back to the real osascript: a sound beats a skipped delete.
+ICLOUD = os.path.expanduser('~/Library/Mobile Documents') + os.sep
+if any(os.path.abspath(p).startswith(ICLOUD) for p in paths):
+    os.execv(REAL, [REAL] + args)
 r = subprocess.run([TRASH] + paths)
-sys.exit(r.returncode)
+if r.returncode:
+    os.execv(REAL, [REAL] + args)
+sys.exit(0)

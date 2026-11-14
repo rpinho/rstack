@@ -52,3 +52,23 @@ def test_everything_else_reaches_the_real_osascript_unchanged(tmp_path):
     lines = log.read_text().splitlines()
     assert [l.split()[0] for l in lines] == ['real'] * 3
     assert lines[0] == 'real -e display notification "done"'
+
+
+def test_icloud_files_and_failed_trashes_go_to_finder(tmp_path):
+    """11-14: the KB backup prunes old iCloud bundles through Finder (they belong in Recently Deleted), and
+    /usr/bin/trash cannot move iCloud Drive files, so every prune failed after the shim went in."""
+    log, env = setup(tmp_path)
+    home = tmp_path / 'home'
+    icloud = home / 'Library/Mobile Documents/com~apple~CloudDocs/backups'
+    icloud.mkdir(parents=True)
+    old = icloud / 'old.bundle.enc'
+    old.write_text('x')
+    run(dict(env, HOME=str(home)), '-e', FINDER.format(old))
+    assert [l.split()[0] for l in log.read_text().splitlines()] == ['real']      # straight to Finder
+    log.write_text('')
+    failing = tmp_path / 'trash'
+    failing.write_text('#!/bin/sh\necho "trash $*" >> {}\nexit 1\n'.format(log))
+    local = tmp_path / 'local.txt'
+    local.write_text('x')
+    run(env, '-e', FINDER.format(local))
+    assert [l.split()[0] for l in log.read_text().splitlines()] == ['trash', 'real']   # tried, then fell back
