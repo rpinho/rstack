@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""Render and check the generated facts in a README: every number sits in a marked block.
+
+Why (11-13): an audit of our public repos found 8 READMEs out of date. Each had a hand-typed count
+(open PRs, results, a status) that was right the day it was written. A number that is typed by hand
+goes stale; a number rendered from its source is checked. So a README marks each fact
+
+    We have <!-- auto:merged-prs -->12<!-- /auto --> merged PRs.
+
+and a config maps the name to the place the fact comes from. `check` fails on any block whose text
+differs from a fresh render; `render` rewrites the blocks in place.
+
+    readme-blocks check  README.md [--config FILE] [--with-row LEDGER=JSON ...]
+    readme-blocks render README.md [--config FILE] [--with-row LEDGER=JSON ...] [--stdout]
+
+Config (default: readme-blocks.json next to the README). Paths are relative to the config file:
+
+    {"blocks": {
+      "merged-prs": {"source": "gh-prs", "author": "someone", "repo": "owner/name", "state": "merged"},
+      "new-results": {"source": "jsonl", "path": "lanes/demo/RESULTS.jsonl",
+                      "where": {"new": true, "referee": "HOLDS"}, "format": "{count} new results"},
+      "latest": {"source": "jsonl", "path": "lanes/demo/RESULTS.jsonl", "latest": "what", "format": "{value} ({utc})"},
+      "version": {"source": "command", "run": "git describe --tags --abbrev=0"}}}
+
+    gh-prs    the number of pull requests (GitHub search), state open, merged or all; `repo` and `query` optional
+    jsonl     `count` of the rows matching `where` (field equals value, or is one of a list), or with
+              `latest: FIELD` that field of the last matching row (the row's other fields format too)
+    command   the command's stdout, stripped (run by the shell, in the config file's directory)
+
+`format` defaults to {count}, {value} or {stdout}. A block whose content starts with a newline is
+rendered on its own lines. `--with-row LEDGER=JSON` reads that ledger as if JSON were appended to it:
+`rh log-result` uses it to require the README to show a result before the result is logged.
+
+Fails closed. A source that cannot be read, a block with no config entry, or an unclosed marker is an
+error: check exits 2, render leaves that block as it was, renders the rest and exits 2. A stale block
+makes check exit 1, naming every one; render exits 0 once all blocks are fresh.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+
+OPEN = re.compile(r'<!--\s*auto:([A-Za-z0-9_.-]+)\s*-->')
+CLOSE = re.compile(r'<!--\s*/auto\s*-->')
+TIMEOUT = 60
+
+
+class SourceError(Exception):
+    pass
+
+
+def blocks(text):
+    """[(name, start, end)] of each block's content span; raises SourceError on a malformed marker."""
+    out, pos = [], 0
+    while True:
+        m = OPEN.search(text, pos)
+        stray = CLOSE.search(text, pos)
+        if stray and (not m or stray.start() < m.start()):
+            raise SourceError('a <!-- /auto --> at offset {} closes no block'.format(stray.start()))
+        if not m:
+            return out
+        c = CLOSE.search(text, m.end())
+        nxt = OPEN.search(text, m.end())
+        if not c or (nxt and nxt.start() < c.start()):
+            raise SourceError('block "{}" is not closed before the next block or the end'.format(m.group(1)))
+        out.append((m.group(1), m.end(), c.start()))
+        pos = c.end()
+
+
+def matches(row, where):
+    for k, want in (where or {}).items():
+        have = row.get(k)
+        if isinstance(want, list):
+            if have not in want:
+                return False
+        elif have != want:
+            return False
+    return True
+
+
+def read_rows(path, extra):
+    try:
+        lines = Path(path).read_text().splitlines()
+    except OSError as exc:
+        raise SourceError('cannot read {}: {}'.format(path, exc.strerror or exc))
+    rows = []
+    for n, line in enumerate(lines, 1):
+        if line.strip():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                raise SourceError('{}:{} is not JSON'.format(path, n))
+    return rows + list(extra.get(os.path.realpath(path), []))
+
+
+def value(spec, base, extra):
+    kind = spec.get('source')
+    if kind == 'jsonl':
+        if not spec.get('path'):
+            raise SourceError('jsonl source needs "path"')
+        rows = [r for r in read_rows(base / os.path.expanduser(spec['path']), extra) if matches(r, spec.get('where'))]
+        field = spec.get('latest')
+        if field:
+            if not rows:
+                raise SourceError('no row in {} matches {}'.format(spec['path'], json.dumps(spec.get('where') or {})))
+            row = rows[-1]
+            if field not in row:
+                raise SourceError('the latest matching row in {} has no "{}"'.format(spec['path'], field))
+            return spec.get('format', '{value}').format(**dict(row, value=row[field]))
+        return spec.get('format', '{count}').format(count=len(rows))
+    if kind == 'gh-prs':
+        state = spec.get('state', 'open')
+        q = ['is:pr']
+        if state == 'open':
+            q.append('is:open')
+        elif state == 'merged':
+            q.append('is:merged')
+        elif state != 'all':
+            raise SourceError('gh-prs state must be open, merged or all, not {!r}'.format(state))
+        if spec.get('author'):
+            q.append('author:' + spec['author'])
+        if spec.get('repo'):
+            q.append('repo:' + spec['repo'])
+        if spec.get('query'):
+            q.append(spec['query'])
+        gh = os.environ.get('READMEBLOCKS_GH', 'gh')
+        try:
+            r = subprocess.run(shlex.split(gh) + ['api', '-X', 'GET', 'search/issues', '-f', 'q=' + ' '.join(q),
+                                                  '-f', 'per_page=1', '-q', '.total_count'],
+                               capture_output=True, text=True, timeout=TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SourceError('gh failed: {}'.format(exc))
+        out = r.stdout.strip()
+        if r.returncode != 0 or not out.isdigit():
+            raise SourceError('gh search failed ({}): {}'.format(r.returncode, (r.stderr or out).strip()[:200]))
+        return spec.get('format', '{count}').format(count=int(out))
+    if kind == 'command':
+        if not spec.get('run'):
+            raise SourceError('command source needs "run"')
+        try:
+            r = subprocess.run(spec['run'], shell=True, cwd=str(base), capture_output=True, text=True, timeout=TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise SourceError('command timed out after {} s: {}'.format(TIMEOUT, spec['run']))
+        if r.returncode != 0:
+            raise SourceError('command exited {}: {}'.format(r.returncode, spec['run']))
+        return spec.get('format', '{stdout}').format(stdout=r.stdout.strip())
+    raise SourceError('unknown source {!r} (gh-prs, jsonl or command)'.format(kind))
+
+
+def shaped(old, new):
+    """Keep the block's layout: content on its own lines stays on its own lines."""
+    return '\n' + new + '\n' if old.startswith('\n') else new
+
+
+def render(text, config, base, extra=None):
+    """(new text, stale names, errors). Blocks that fail keep their old content."""
+    extra = extra or {}
+    try:
+        spans = blocks(text)
+    except SourceError as exc:
+        return text, [], [str(exc)]
+    out, last, stale, errors = [], 0, [], []
+    for name, start, end in spans:
+        old = text[start:end]
+        spec = (config.get('blocks') or {}).get(name)
+        new = old
+        if spec is None:
+            errors.append('{}: no entry for this block in the config'.format(name))
+        else:
+            try:
+                new = shaped(old, value(spec, base, extra))
+            except (SourceError, KeyError, ValueError, IndexError) as exc:
+                errors.append('{}: {}'.format(name, exc))
+        if new != old:
+            stale.append(name)
+        out += [text[last:start], new]
+        last = end
+    out.append(text[last:])
+    return ''.join(out), stale, errors
+
+
+def parse_with_rows(items):
+    extra = {}
+    for item in items or []:
+        ledger, sep, row = item.partition('=')
+        if not sep:
+            raise SystemExit('readme-blocks: --with-row takes LEDGER=JSON')
+        try:
+            extra.setdefault(os.path.realpath(os.path.expanduser(ledger)), []).append(json.loads(row))
+        except ValueError:
+            raise SystemExit('readme-blocks: --with-row row is not JSON: {}'.format(row[:80]))
+    return extra
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('mode', choices=('check', 'render'))
+    ap.add_argument('readme')
+    ap.add_argument('--config')
+    ap.add_argument('--with-row', action='append', default=[])
+    ap.add_argument('--stdout', action='store_true', help='render: print the result instead of writing it')
+    a = ap.parse_args(argv)
+    readme = Path(a.readme).expanduser()
+    cfg_path = Path(a.config).expanduser() if a.config else readme.parent / 'readme-blocks.json'
+    try:
+        text = readme.read_text()
+    except OSError as exc:
+        print('readme-blocks: cannot read {}: {}'.format(readme, exc), file=sys.stderr)
+        return 2
+    try:
+        config = json.loads(cfg_path.read_text())
+    except (OSError, ValueError) as exc:
+        if not OPEN.search(text):
+            config = {}
+        else:
+            print('readme-blocks: cannot read config {}: {}'.format(cfg_path, exc), file=sys.stderr)
+            return 2
+    new, stale, errors = render(text, config, cfg_path.parent.resolve(), parse_with_rows(a.with_row))
+    for e in errors:
+        print('readme-blocks: ERROR {}: {}'.format(readme, e), file=sys.stderr)
+    if a.mode == 'check':
+        for name in stale:
+            print('readme-blocks: STALE {}: block "{}" differs from a fresh render'.format(readme, name))
+        if errors:
+            return 2
+        if stale:
+            print('readme-blocks: run: readme-blocks render {}{}'.format(
+                shlex.quote(str(readme)), ' --config ' + shlex.quote(str(cfg_path)) if a.config else ''))
+            return 1
+        print('readme-blocks: {} fresh ({} block(s))'.format(readme, len(blocks(text))))
+        return 0
+    if a.stdout:
+        sys.stdout.write(new)
+    elif new != text:
+        tmp = readme.with_name(readme.name + '.readme-blocks.tmp')
+        tmp.write_text(new)
+        os.replace(str(tmp), str(readme))
+        print('readme-blocks: rendered {}: {}'.format(readme, ', '.join(stale)), file=sys.stderr)
+    return 2 if errors else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
