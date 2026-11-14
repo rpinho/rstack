@@ -68,6 +68,9 @@ if [[ -e $landing ]]; then
 else
   git -C "$REPO" worktree add --detach "$landing" "$base"
 fi
+# Include rows landed since this controller checkout, including older dates.
+"$PYTHON" "$HERE/model-roles.py" public --snapshot "$landing/LEADERBOARD.md" --output "$target"
+"$PYTHON" "$REPO/rstack/tools/egress-gate" scan "$target"
 if cmp -s -- "$target" "$landing/LEADERBOARD.md"; then
   print -- 'Leaderboard unchanged; no commit or push'
   exit 0

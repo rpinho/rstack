@@ -26,6 +26,43 @@ A dated routing snapshot from selected local harness outcomes. Scores are held-o
 | ideation | claude-opus-5-5 | 1 | 0.5 | 0.268 | 2026-11-03 |
 | ideation | gpt-6-astra | 2 | 0.933 | 0.702 | 2026-11-03 |
 | ideation | moonshotai/kimi-k3.1-pro | 3 | - | - | 2026-11-03 |
+| taste | claude-opus-5-5 | 1 | - | - | 2026-11-14 |
+| taste | claude-fable-5-1 | 2 | - | - | 2026-11-14 |
+| taste | claude-fable-5-2 | 3 | - | - | 2026-11-14 |
+| review | claude-opus-5-5 | 1 | 1.0 | 0.207 | 2026-11-14 |
+| review | gpt-6-astra | 2 | - | - | 2026-11-14 |
+| review | claude-fable-5-1 | 3 | - | - | 2026-11-14 |
+| review | gpt-6.1-sol | 4 | - | - | 2026-11-14 |
+| review | gpt-5.6-sol | 5 | - | - | 2026-11-14 |
+| review | moonshotai/kimi-k3.1-pro | 6 | - | - | 2026-11-14 |
+| review | google/gemini-4-argon | 7 | - | - | 2026-11-14 |
+| review | claude-fable-5-2 | 8 | - | - | 2026-11-14 |
+| review | claude-sonnet-5-5 | 9 | - | - | 2026-11-14 |
+| mechanical | gpt-6.1-sol | 1 | - | - | 2026-11-14 |
+| mechanical | deepseek/deepseek-v4.1-flash-1017 | 2 | - | - | 2026-11-14 |
+| builder | claude-opus-5-5 | 1 | - | - | 2026-11-14 |
+| builder | gpt-6.1-sol | 2 | - | - | 2026-11-14 |
+| cheap | deepseek/deepseek-v4.1-flash-1017 | 1 | - | - | 2026-11-14 |
+| cheap | z-ai/glm-5.3-flash | 2 | - | - | 2026-11-14 |
+| biology | moonshotai/kimi-k3.1-pro | 1 | - | - | 2026-11-14 |
+| batch | gpt-6.1-sol | 1 | 1.0 | 0.867 | 2026-11-14 |
+| batch | deepseek/deepseek-v4.1-flash-1017 | 2 | - | - | 2026-11-14 |
+| batch | gpt-6-astra | 3 | - | - | 2026-11-14 |
+| writing | claude-opus-5-5 | 1 | - | - | 2026-11-14 |
+| ideation | claude-opus-5-5 | 1 | - | - | 2026-11-14 |
+| ideation | gpt-6-astra | 2 | - | - | 2026-11-14 |
+| ideation | moonshotai/kimi-k3.1-pro | 3 | - | - | 2026-11-14 |
+| ideation | claude-fable-5-2 | 4 | 1.0 | 0.741 | 2026-11-14 |
+| ideation | gpt-6.1-sol | 5 | - | - | 2026-11-14 |
+| design | claude-opus-5-5 | 1 | - | - | 2026-11-14 |
+| design | claude-fable-5-1 | 2 | - | - | 2026-11-14 |
+| design | claude-fable-5-2 | 3 | - | - | 2026-11-14 |
+| design | gpt-6.1-sol | 4 | - | - | 2026-11-14 |
+| judge | claude-opus-5-5 | 1 | - | - | 2026-11-14 |
+| judge | gpt-6-astra | 2 | - | - | 2026-11-14 |
+| judge | claude-fable-5-1 | 3 | - | - | 2026-11-14 |
+| judge | gpt-6.1-sol | 4 | - | - | 2026-11-14 |
+| judge | claude-fable-5-2 | 5 | - | - | 2026-11-14 |
 
 ## Recorded observation scores
 
@@ -57,5 +94,15 @@ Selected local labels on a 0–4 scale, including proxy and operational outcomes
 | taste | deepseek/deepseek-v4.1-flash-1017 | 1 | 2026-10-25 |
 | taste | gpt-6.1-sol | 1 | 2026-10-25 |
 | writing | claude-opus-5-5 | 4, 4, 4, 4 | 2026-11-02 |
+| batch | gpt-6.1-sol | 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 | 2026-11-04 |
+| batch | gpt-6.1-sol | 4, 4 | 2026-11-05 |
+| design | claude-fable-5-2 | 4, 4 | 2026-11-13 |
+| ideation | claude-fable-5-2 | 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 | 2026-11-13 |
+| ideation | claude-fable-5-2 | 4 | 2026-11-14 |
+| judge | claude-fable-5-2 | 0, 0 | 2026-11-13 |
+| review | claude-opus-5-5 | 4 | 2026-11-09 |
+| review | google/gemini-4-argon | 4 | 2026-11-10 |
+| review | gpt-5.6-sol | 0, 4, 4 | 2026-11-10 |
+| review | moonshotai/kimi-k3.1-pro | 4, 4 | 2026-11-10 |
 
 Ranking method and limits: [leaderboard/README.md](leaderboard/README.md).

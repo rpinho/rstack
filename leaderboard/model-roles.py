@@ -220,6 +220,16 @@ def from_rh():
     return out, pending, unattributed
 
 
+def linked_outcomes():
+    spec = importlib.util.spec_from_file_location('outcome_adapters', HERE / 'outcome_adapters.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.collect(
+        os.environ.get('RH_EVIDENCE_ROOT'), os.environ['RH_LAUNCH_RECEIPTS'], canon, obs,
+        os.environ.get('MODEL_OUTCOMES_ROOT'), os.environ.get('MODEL_UPSTREAM_ROOT'),
+        os.environ.get('MODEL_LAUNCH_ROOT'), os.environ.get('MODEL_TRANSCRIPTS_ROOT'))
+
+
 def ingest(write=True):
     existing = {r["id"]: r for r in validate(LEDGER.read_text())} if LEDGER.exists() else {}
     latest = {}                                  # case-key -> newest active auto row
@@ -229,19 +239,18 @@ def ingest(write=True):
     new, stats = [], {}
     adapters = ADAPTERS
     if os.environ.get('RH_LAUNCH_RECEIPTS'):
-        spec = importlib.util.spec_from_file_location('outcome_adapters', HERE / 'outcome_adapters.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        receipt_rows, receipt_stats = module.collect(
-            os.environ.get('RH_EVIDENCE_ROOT'), os.environ['RH_LAUNCH_RECEIPTS'], canon, obs,
-            os.environ.get('MODEL_OUTCOMES_ROOT'), os.environ.get('MODEL_UPSTREAM_ROOT'))
+        receipt_rows, receipt_stats = linked_outcomes()
         adapters = {}  # This mode admits only outcomes joined to launch receipts.
         for kind, counts in receipt_stats.items():
+            if kind.startswith('_'):
+                continue
             matching = [r for r in receipt_rows if r['source_kind'] == kind]
             adapters['receipt-' + kind] = lambda r=matching, c=counts: (r, c['pending'], c['unlinked'])
     for name, fn in adapters.items():
         rows, pending, unattributed = fn()
         stats[name] = {"resolved": len(rows), "pending": pending, "unattributed": unattributed, "unlinked": unattributed}
+        if os.environ.get('RH_LAUNCH_RECEIPTS'):
+            stats[name]['link_kinds'] = dict(collections.Counter(r['link_kind'] for r in rows))
         for r in rows:
             prev = latest.get((r["case"], r["model"], r["pick_role"]))
             if prev and prev["outcome"] == r["outcome"]:
@@ -468,6 +477,11 @@ def write_roles(data, path=ROLES_FILE):
 
 def recompute(write=True):
     ev = evidence()
+    if os.environ.get('RH_LAUNCH_RECEIPTS'):
+        _, source_stats = linked_outcomes()
+        for entry in source_stats.get('_entries', []):
+            if entry['role'] in ROLES:
+                ev[entry['role']][entry['model']]  # Enter an observed role before it is scored.
     out = {'schema': 1, 'updated': now().isoformat(timespec='seconds'), 'roles': {},
            'routes': {native: {'cli': cli, 'canonical': canonical}
                       for canonical, (cli, native) in MODELS.items()}, 'evidence': {},
@@ -497,13 +511,41 @@ def score(value):
     return str(round(value, 3))
 
 
-def public(data, path, observations=()):
+def snapshot_rows(path):
+    """Read only the two public table schemas; never copy arbitrary page prose."""
+    tables = {6: [], 4: []}
+    if not path or not Path(path).is_file():
+        return tables
+    for line in Path(path).read_text().splitlines():
+        cells = [cell.strip() for cell in line.strip('|').split('|')]
+        if not line.startswith('| ') or len(cells) not in tables or cells[0] == 'Role':
+            continue
+        role, model = cells[:2]
+        safe_cell(role); safe_cell(model)
+        if role not in ROLES or not canon(model):
+            raise ValueError('unknown public role or model in snapshot')
+        dt.date.fromisoformat(cells[-1])
+        if len(cells) == 6:
+            if cells[2] != '-' and (not cells[2].isdigit() or int(cells[2]) < 1):
+                raise ValueError('invalid routing position in snapshot')
+            for value in cells[3:5]:
+                if value != '-':
+                    score(float(value))
+        elif not re.fullmatch(r'[0-4](?:, [0-4])*', cells[2]):
+            raise ValueError('invalid observation scores in snapshot')
+        tables[len(cells)].append('| ' + ' | '.join(cells) + ' |')
+    return tables
+
+
+def public(data, path, observations=(), previous=None):
     """Allowlist fields. Unranked observations use '-' in the routing order column."""
     date = dt.datetime.fromisoformat(data['updated'].replace('Z', '+00:00')).date().isoformat()
+    old = snapshot_rows(previous if previous is not None else path)
     lines = ['# Model leaderboard', '',
              'A dated routing snapshot from selected local harness outcomes. Scores are held-outcome rates and 95% Wilson lower bounds. A dash means unscored; starting orders include operator seed choices. This is not a universal benchmark.', '',
              '| Role | Model | Routing order | Held score | Wilson lower score | Date |',
              '|---|---|---:|---:|---:|---|']
+    lines.extend(old[6])
     for role, ranked in data['roles'].items():
         safe_cell(role)
         if role not in ROLES:
@@ -517,7 +559,9 @@ def public(data, path, observations=()):
             if observation.get('scored') is False:
                 observation = {}
             order = str(ranked.index(model) + 1) if model in ranked else '-'
-            lines.append(f"| {role} | {model} | {order} | {score(observation.get('rate'))} | {score(observation.get('low'))} | {date} |")
+            line = f"| {role} | {model} | {order} | {score(observation.get('rate'))} | {score(observation.get('low'))} | {date} |"
+            if line not in lines:
+                lines.append(line)
     groups = collections.defaultdict(list)
     for observation in observations:
         canonical = canon(observation.get('model'))
@@ -529,12 +573,15 @@ def public(data, path, observations=()):
             raise ValueError('invalid observation score')
         day = dt.date.fromisoformat(observation['date'][:10]).isoformat()
         groups[(role, MODELS[canonical][1], day)].append(value)
-    if groups:
+    if groups or old[4]:
         lines += ['', '## Recorded observation scores', '',
                   'Selected local labels on a 0–4 scale, including proxy and operational outcomes. Repeated scores are retained; no task identifiers or text are exported. These labels are not matched benchmark trials.', '',
                   '| Role | Model | Scores | Date |', '|---|---|---|---|']
+        lines.extend(old[4])
         for (role, model, day), values in sorted(groups.items()):
-            lines.append(f"| {role} | {model} | {', '.join(map(str, sorted(values)))} | {day} |")
+            line = f"| {role} | {model} | {', '.join(map(str, sorted(values)))} | {day} |"
+            if line not in lines:
+                lines.append(line)
     lines += ['', 'Ranking method and limits: [leaderboard/README.md](leaderboard/README.md).', '']
     Path(path).write_text('\n'.join(lines))
     return Path(path)
@@ -543,7 +590,7 @@ def public(data, path, observations=()):
 def bootstrap(path):
     """Recover routes from the single public snapshot. No private ledger is shipped."""
     roles = collections.defaultdict(list)
-    dates, seen = [], set()
+    dates, snapshots = [], collections.defaultdict(dict)
     for line in Path(path).read_text().splitlines():
         if not line.startswith('| '):
             continue
@@ -552,15 +599,18 @@ def bootstrap(path):
             continue
         role, model, position, _, _, date = cells
         safe_cell(role); safe_cell(model)
-        if role not in ROLES or (role, model) in seen:
-            raise ValueError('unknown role or repeated model')
-        seen.add((role, model))
+        if role not in ROLES:
+            raise ValueError('unknown role')
         if model.startswith('claude-') or model.startswith('gpt-') or '/' in model:
             canon(model)
         dt.date.fromisoformat(date)
         dates.append(date)
-        if position != '-':
-            roles[role].append((int(position), model))
+        snapshots[(role, date)][model] = position
+    for role in {r for r, _ in snapshots}:
+        latest = max(date for r, date in snapshots if r == role)
+        for model, position in snapshots[(role, latest)].items():
+            if position != '-':
+                roles[role].append((int(position), model))
     if not roles:
         raise ValueError('snapshot has no routing roles')
     routes = {native: {'cli': cli, 'canonical': canonical}
@@ -597,7 +647,7 @@ def main(argv=None):
             for route in data.get('routes', {}).values():
                 canon(route.get('canonical'))
             observations = validate(LEDGER.read_text()) if LEDGER.exists() else []
-            print(public(data, args.output or args.snapshot, observations))
+            print(public(data, args.output or args.snapshot, observations, previous=args.snapshot))
         else:
             print(json.dumps(recompute(write=False), indent=2))
         return 0

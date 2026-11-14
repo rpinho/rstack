@@ -1,6 +1,6 @@
 # Model routing and scoring
 
-[`LEADERBOARD.md`](../LEADERBOARD.md) is the sole committed leaderboard data artifact. It was generated from the current role-routing data using an explicit export allowlist. It contains models, roles, routing order, held-outcome scores, Wilson lower scores and the source snapshot date. A second table retains active 0–4 observation scores grouped only by recognized role, model and date. It includes operational/proxy labels and preserves repeated scores; observations without a recognized public model or role are omitted. Unranked observations have a dash in routing order; unscored models have dashes in score columns. No task text, case identifiers, prompts, costs or personal overrides are exported. `public` includes active scores from the configured local model ledger when that file exists; it validates the ledger before exporting.
+[`LEADERBOARD.md`](../LEADERBOARD.md) is the sole committed leaderboard data artifact. It retains dated routing snapshots using an explicit export allowlist. Export merges the existing public tables with new dated rows; it never replaces historical scored rows. Bootstrap uses the newest routing snapshot for each role. It contains models, roles, routing order, held-outcome scores, Wilson lower scores and the source snapshot date. A second table retains active 0–4 observation scores grouped only by recognized role, model and date. It includes operational/proxy labels and preserves repeated scores; observations without a recognized public model or role are omitted. Unranked observations have a dash in routing order; unscored models have dashes in score columns. No task text, case identifiers, prompts, costs or personal overrides are exported. `public` includes active scores from the configured local model ledger when that file exists; it validates the ledger before exporting.
 
 The snapshot describes one selected set of local outcomes. Its seeded order is a routing preference and may differ from sorting by measured score. Individual source evidence, task distribution and the original outcome judgments are not shipped, so the scores cannot be independently verified from this snapshot. The 0–4 lists expose only selected recorded labels, not their context. Bootstrap recovers routes, not the private evidence ledger. A new deployment starts its own evidence history.
 
@@ -68,12 +68,24 @@ Git authentication and executable paths before installing it yourself.
 With `RH_LAUNCH_RECEIPTS` set, receipt-linked adapters replace the legacy
 self-attributed readers. The older review/draft readers remain available through
 local ingestion without this variable; the daily runner uses receipt-linked sources only. Old receipts use their
-`JOB.log.selection.json` filename; newer receipts can declare `job` explicitly.
-Conflicting receipts and outcomes without a receipt are counted as `unlinked`;
-self-reported model names and exit codes never substitute for receipts. A new
+`JOB.log.selection.json` filename; newer receipts can declare `job`, `job_id` or
+round aliases. Specs can survive as `JOB.log.prompt` after `JOB.md` is removed.
+Directory names, explicit output artifacts and `_codex/JOB.*` stems join native
+outcomes to those jobs. The launcher's injected shared context is excluded from
+artifact links.
+
+Provenance is ranked: a selection `receipt` first, a saved `launch-command`
+second, and a launching session's `transcript-call` third. Every new observation
+records its link kind and evidence paths. Configure `MODEL_LAUNCH_ROOT` for the
+launcher's `JOB/ATTEMPT/run.sh` records, and `MODEL_TRANSCRIPTS_ROOT` for supplied
+Claude or Codex transcript JSONL. Commands must explicitly set a versioned model;
+Agent calls must set `model` and name their work directory. No home-directory or
+account discovery occurs. Conflicts at the best available rank remain unlinked.
+A model named only in REPORT/STATUS prose, or an executor exit code, never links. A new
 versioned native model ID or canonical `provider/model` ID registers its route
 automatically. Bare family names do not identify a model version. New models appear
-in their observed roles immediately, with unscored routing cells until they have
+in their observed roles immediately, including roles entered through explicit
+launch specs and their output artifacts. Their cells remain unscored until they have
 five resolved observations on two days. Promotion still uses the existing Wilson
 rule. `design` starts with taste's order, and `judge` with review's order.
 
@@ -104,7 +116,11 @@ job. The supported fields are:
 
 Markdown verdicts use the same labelled fields, for example `Design job:`,
 `Judge job:`, `Judge outcome:` and `Date:`. A general HOLDS on a result does not
-confirm every earlier judge ruling. Unlabelled verdicts count as unlinked.
+confirm every earlier judge ruling. A native audit explicitly naming the judge
+it independently recomputes can confirm or overturn that ruling. A later explicit
+correction overturns it even when the narrower scientific result still holds.
+Rulings without a later disposition stay pending; interim full-panel verdicts
+also stay pending. Unlabelled verdicts count as unlinked.
 Result artifact paths can identify a design directly, or through a producing
 run's `JOB.md` reference to `DESIGN.md`; a labelled `Working dir:` associates a
 receipt with a work directory. Ambiguous artifact links are skipped.
@@ -113,3 +129,13 @@ receipt with a work directory. Ambiguous artifact links are skipped.
 upstream caches without opening-job metadata remain unlinked; mentioning a PR
 in a job spec does not establish who opened it. When a cached closed PR lacks a
 closure timestamp, its observation day is the cache's `fetched` date.
+
+Nested `*/claims/*/VERDICT.md` files can resolve a production job when its saved
+spec explicitly writes that claim and a separate referee job owns the verdict.
+The producing job keeps its selected role (for example batch); it is not recast
+as a designer. A separate launched execution of an explicitly referenced frozen
+design credits admission to testing for the originating ideation job. Repeated
+native referee reads of one design or ruling retain one active disposition.
+These admission, technical correctness, plant and taste outcomes have different
+meanings and are not matched model trials. When a verdict has no date, its
+issuing launch date is used; no model identity comes from the verdict's prose.
