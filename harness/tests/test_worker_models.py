@@ -98,11 +98,11 @@ def fake_home(tmp_path):
     return home,c,work,env
 
 
-def run_launcher(fake_home,*extra,rc=0):
+def run_launcher(fake_home,*extra,rc=0,job='fixture-job'):
     home,c,work,env=fake_home
     env=dict(env,FAKE_RC=str(rc))
     launcher=Path(__file__).resolve().parents[2] / 'tools/launch.sh'
-    return subprocess.run(['/bin/zsh',str(launcher),'fixture-job',str(work),*extra],
+    return subprocess.run(['/bin/zsh',str(launcher),job,str(work),*extra],
                           env=env,text=True,capture_output=True,timeout=10)
 
 
@@ -281,6 +281,67 @@ def test_review_pin_refusal_names_pick_even_without_maker(tmp_path):
         wm.select('review', 'codex', 'claude-sonnet-5', 'save budget', path)
 
 
+@pytest.mark.parametrize('job', ['math_c38ref_1104', 'math_l1chk_a_1103',
+                                 'math_codetablespkgrev_1106', 'referee', 'review2',
+                                 'lane_ref_1', 'lane_rev_1', 'lane_judge', 'lane_audit',
+                                 'lane_taste', 'lane_design', 'lane_chk', 'lane_check',
+                                 'lane_verify'])
+def test_judgment_batch_names_use_review_rules(tmp_path, job):
+    path = judgment_roles(tmp_path / 'roles.json')
+    with pytest.raises(ValueError, match='job name .*judgment job.*--role review --made-by MODEL'):
+        wm.select('batch', 'codex', path=path, job=job)
+    got = wm.select('batch', 'codex', path=path, job=job, made_by='gpt-6.1-sol')
+    assert (got['role'], got['model'], got['executor']) == ('review', 'claude-opus-5-5', 'claude')
+
+
+@pytest.mark.parametrize('reason', ['ordinary reason', 'different-model-independent-checker'])
+@pytest.mark.parametrize('model', ['gpt-6-astra', 'claude-sonnet-5'])
+def test_inferred_review_pin_refuses_before_executor(fake_home, reason, model):
+    _, artifacts, _, env = fake_home
+    judgment_roles(Path(env['RH_ROLES_FILE']))
+    job = 'math_c38ref_1104'
+    (artifacts / (job + '.md')).write_text('Referee the claim.\n')
+    result = run_launcher(fake_home, '--model', model, '--model-override', reason, job=job)
+    assert result.returncode == 2
+    assert 'job name math_c38ref_1104 makes this a judgment job' in result.stderr
+    assert '--role review --made-by MODEL' in result.stderr
+    assert 'hard-coded model refused' in result.stderr
+    assert not Path(env['FAKE_CALL']).exists()
+    assert not (Path(env['RH_ROLES_FILE']).parent / 'model-overrides.jsonl').exists()
+
+
+def test_inferred_review_owner_pin_still_requires_other_family(tmp_path):
+    path = judgment_roles(tmp_path / 'roles.json')
+    with pytest.raises(ValueError, match='judgment job.*different model family'):
+        wm.select('batch', 'codex', 'gpt-6-astra', 'Ricardo: frozen comparison', path,
+                  made_by='gpt-6.1-sol', job='math_c38ref_1104')
+
+
+@pytest.mark.parametrize('job', ['planets_dosegrid2_1114', 'lane_reference',
+                                 'lane_reviewing', 'lane_checkpoint', 'lane_designate'])
+def test_ordinary_batch_names_are_unaffected(tmp_path, job):
+    path = roles(tmp_path / 'roles.json')
+    got = wm.select('batch', 'codex', path=path, job=job)
+    assert (got['role'], got['model']) == ('batch', 'fixture-fast')
+
+
+def test_explicit_nonbatch_role_is_preserved(tmp_path):
+    path = roles(tmp_path / 'roles.json')
+    got = wm.select('mechanical', 'codex', path=path, job='lane_review')
+    assert got['role'] == 'mechanical'
+
+
+def test_inferred_review_also_refuses_models_in_spec(fake_home):
+    _, artifacts, _, env = fake_home
+    judgment_roles(Path(env['RH_ROLES_FILE']))
+    job = 'math_c38ref_1104'
+    (artifacts / (job + '.md')).write_text('Use Sonnet to referee the claim.\n')
+    result = run_launcher(fake_home, '--made-by', 'gpt-6.1-sol', job=job)
+    assert result.returncode == 2
+    assert 'name the leaderboard role, not a model' in result.stderr
+    assert not Path(env['FAKE_CALL']).exists()
+
+
 @pytest.mark.parametrize('name', ['sonnet', 'OPUS', 'gpt-6-astra', 'claude-fable-5-2', 'deepseek'])
 def test_judgment_spec_names_are_refused_before_executor(fake_home, name):
     _, artifacts, _, env = fake_home
@@ -295,7 +356,10 @@ def test_judgment_spec_names_are_refused_before_executor(fake_home, name):
 
 @pytest.mark.parametrize('made_by,expected', [('gpt-6.1-sol', 'claude-opus-5-5'),
                                            ('claude-opus-5-5', 'gpt-6-astra')])
-def test_review_launch_switches_executor_and_preserves_receipt(fake_home, made_by, expected):
+@pytest.mark.parametrize('job,role_args', [('fixture-job', ['--role', 'review']),
+                                         ('math_c38ref_1104', ['--role', 'review']),
+                                         ('math_c38ref_1104', [])])
+def test_review_launch_switches_executor_and_preserves_receipt(fake_home, made_by, expected, job, role_args):
     _, artifacts, _, env = fake_home
     judgment_roles(Path(env['RH_ROLES_FILE']))
     claude = artifacts / 'fake-claude'
@@ -305,12 +369,13 @@ def test_review_launch_switches_executor_and_preserves_receipt(fake_home, made_b
     claude.chmod(0o755)
     env['LAUNCH_CLAUDE'] = str(claude)
     env['AGENT_BACKEND'] = 'codex' if made_by.startswith('gpt') else 'claude'
-    result = run_launcher(fake_home, '--role', 'review', '--made-by', made_by)
+    (artifacts / (job + '.md')).write_text('Referee the claim.\n')
+    result = run_launcher(fake_home, *role_args, '--made-by', made_by, job=job)
     assert result.returncode == 0, result.stderr
     argv = json.loads(Path(env['FAKE_CALL']).read_text())
     assert expected in argv
     assert argv[1] == ('-p' if made_by.startswith('gpt') else 'exec')
-    receipt = json.loads((artifacts / 'fixture-job.log.selection.json').read_text())
+    receipt = json.loads((artifacts / (job + '.log.selection.json')).read_text())
     assert {k: receipt[k] for k in ('model', 'role', 'lane', 'job', 'made_by')} == dict(
-        model=expected, role='review', lane='fixture', job='fixture-job', made_by=made_by)
+        model=expected, role='review', lane=job.split('_')[0] if '_' in job else 'fixture', job=job, made_by=made_by)
     assert receipt['utc'] and receipt['roles_sha256']

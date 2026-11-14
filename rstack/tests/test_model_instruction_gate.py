@@ -37,6 +37,61 @@ def test_tell_general_only_checks_outgoing_commands():
     allowed(HOOK, bash('python3 score.py --model sonnet --review'))
 
 
+@pytest.mark.parametrize('model', ['sonnet', 'haiku', 'claude-sonnet-5-5'])
+@pytest.mark.parametrize('field', ['description', 'prompt'])
+def test_cheap_agent_judgment_in_any_sentence_is_blocked(model, field):
+    payload = {'model': model, 'description': 'Read the claim', 'prompt': 'Read the files.'}
+    payload[field] = 'Read the files. Then referee the claim.'
+    result = blocked(HOOK, {'tool_name': 'Agent', 'tool_input': payload})
+    assert result['code'] == 2
+    assert 'name the leaderboard role, not a model (LEADERBOARD.md).' in result['stderr']
+    assert 'use launch.sh --role review --made-by MODEL' in result['stderr']
+
+
+@pytest.mark.parametrize('prompt', ['extract the table', 'format the table', 'summarize the text'])
+@pytest.mark.parametrize('model', ['sonnet', 'haiku'])
+def test_cheap_agent_without_judgment_passes(model, prompt):
+    allowed(HOOK, {'tool_name': 'Agent', 'tool_input': {'model': model, 'prompt': prompt}})
+
+
+def test_other_agent_models_are_unaffected():
+    for model in ('opus', ''):
+        allowed(HOOK, {'tool_name': 'Agent', 'tool_input': {'model': model, 'prompt': 'referee the claim'}})
+
+
+@pytest.mark.parametrize('command', [
+    'claude -p --model claude-sonnet-5-5 "review this proof"',
+    'claude -p -m haiku "referee the claim"',
+    'claude -p --model=sonnet "Read first. Then audit the result."',
+    'claude -p -mhaiku "design the next step"',
+    'cd /tmp && env X=1 /opt/bin/claude -p --model sonnet "judge the proof"',
+    'codex exec -m gpt-6-astra "review this proof"',
+    'codex exec --model gpt-6.1-sol "referee the claim"',
+    'codex exec --model=gpt-6-astra "audit the result"',
+    'codex exec -mgpt-6-astra "taste the design"',
+    'echo "review this proof" | codex exec -m gpt-6-astra -',
+])
+def test_direct_judgment_cli_pins_are_blocked(command):
+    result = blocked(HOOK, bash(command))
+    assert result['code'] == 2
+    assert 'use launch.sh --role review --made-by MODEL' in result['stderr']
+
+
+@pytest.mark.parametrize('command', [
+    'claude -p --model sonnet "extract the table"',
+    'claude -p --model haiku "summarize the text"',
+    'codex exec -m gpt-6-astra "format the table"',
+    'claude -p --model opus "review the proof"',
+    'codex exec "review the proof"',
+    'echo \'claude -p --model sonnet "review the proof"\'',
+    'echo \'codex exec -m gpt-6-astra "review the proof"\'',
+    'python3 score.py --model sonnet --review',
+    'claude -p -- "review --model sonnet"',
+])
+def test_unrelated_cli_work_passes(command):
+    allowed(HOOK, bash(command))
+
+
 @pytest.mark.parametrize('tool,key', [('Write', 'content'), ('Edit', 'new_string')])
 def test_lane_briefs(tool, key):
     payload = {'tool_name': tool, 'tool_input': {'file_path': '/work/lane-briefs/round.md',
@@ -54,6 +109,10 @@ def test_guarded_broken_inputs_refuse_and_unrelated_errors_are_loud():
                     {'tool_name': 'SendMessage', 'tool_input': 'use Sonnet referees'},
                     message(['Sonnet review']),
                     {'tool_name': 'Write', 'tool_input': {'file_path': '/lane-briefs/x', 'content': []}},
+                    '{"tool_name":"Agent",',
+                    {'tool_name': 'Agent', 'tool_input': {'model': 'sonnet', 'prompt': []}},
+                    bash('claude -p --model sonnet "unterminated'),
+                    bash('codex exec -m gpt-6-astra "unterminated'),
                     bash('tell-general fyi "unterminated')):
         blocked(HOOK, payload)
     loud(HOOK, 'not json')
