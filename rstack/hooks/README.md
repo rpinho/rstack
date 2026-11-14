@@ -13,6 +13,7 @@ Claude Code PreToolUse guards. Each runs inside `_hookfail.run`, so an internal 
 - `gate-pipe-guard.py`: denies a lint/test/typecheck gate piped into tail/head/grep without `set -o pipefail`. The pipe's exit code is the last command's, so a failing gate read as green and a broken PR merged.
 - `agent-stdin-guard.py`: denies `codex exec` or `claude -p` with stdin left open (add `< /dev/null`, or pipe the prompt in). Both read a non-tty stdin and hang forever on a pipe that never closes.
 - `results-brief-guard.py`: a subagent brief opens "You asked: X. I will: Y." and has a "Done when:" line, the same rule `tools/launch.sh` lints on every job. Drift starts in the brief, when the goal turns into process.
+- `general-relay-check.py` (Stop, conductor only): blocks the stop once while the reply skips a session whose report was injected; aliases in the inbox's aliases.json; the second stop and any internal error pass.
 - `general-inbox-relay.py` (UserPromptSubmit, conductor only): injects the session reports the conductor has not relayed to the owner yet and advances a cursor; never blocks a prompt.
 - `results-report-guard.py` (SubagentStop): the report opens "You asked: X. Shipped: Y" with a count of results, not activity; blocks the stop once, then degrades.
 - `lane-no-questions.py`: only the conductor (cwd ending `CONDUCTOR_CWD_SUFFIX`, or tmux session `claude-$CONDUCTOR_NAME`) may show a question card. Lanes sat for days on one while the owner was away.

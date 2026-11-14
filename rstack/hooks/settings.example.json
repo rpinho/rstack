@@ -109,6 +109,16 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/src/rstack/rstack/hooks/general-relay-check.py"
+          }
+        ]
+      }
     ]
   }
 }
