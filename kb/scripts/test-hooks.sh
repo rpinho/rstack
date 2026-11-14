@@ -21,7 +21,7 @@ git init -q -b main
 git config user.email test@example.invalid; git config user.name test; git config commit.gpgsign false
 mkdir -p .githooks scripts raw/_index raw/sources wiki outbox .claude/hooks
 cp "$SRC/.githooks/pre-commit" .githooks/; cp "$SRC/scripts/prep-lint.py" scripts/
-cp "$SRC/.claude/hooks/guard-main-tree.sh" .claude/hooks/
+for f in guard-main-tree.sh guard-main-tree.py _kbgate.py _hookfail.py; do cp "$SRC/.claude/hooks/$f" .claude/hooks/; done
 printf '# State\n\n- [ ] Pay the tax installment plan, due 2026-12-01\n' > state.md
 echo "a" > raw/sources/one.txt; echo "# p" > wiki/Page.md
 git add -A && git commit -qm init

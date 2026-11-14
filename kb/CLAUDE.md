@@ -11,6 +11,7 @@
 ## Hooks wired in `.claude/settings.json`
 
 - **PreToolUse `guard-main-tree.sh`** (Edit/Write/NotebookEdit): blocks edits to tracked files in the main tree and new files in its tracked areas. Worktrees, gitignored paths and scratch areas pass.
+- **PreToolUse send gates** (browser computer-use and Gmail tools): `friend-reply-gate.py`, `voice-send-gate.py`, `email-voice-gate.py`. A send with no fresh check is refused; so is one the gate cannot read. Config: `~/.config/kb/gates.json` (see `.claude/hooks/gates.example.json`).
 - **SessionStart `inject-title-index.sh`**: injects every wiki page title (via `scripts/kb-title-index.sh`) so "do we have a page on X?" is answerable before any search. Use it before claiming something was never documented.
 - **Permissions deny** `rm -rf`, force-push, `reset --hard`, `branch -D`, `git add -A`.
 

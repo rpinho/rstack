@@ -1,0 +1,27 @@
+{
+  "_comment": "Copy to ~/.config/kb/gates.json (or point KB_GATES_CONFIG at it) and fill in your own values. Keep it out of the repository: paths and phrases here describe you. Top-level scalars apply to every gate; each section overrides them for one gate. Every key is optional.",
+  "window_minutes": 20,
+  "outreach_root": "~/path/to/research-harness/.runtime",
+  "friend_reply": {
+    "reply_lint_stamp": "~/.local/state/reply-lint/pass.json",
+    "reply_lint_command": "rh outreach lint LANE ID",
+    "email_words": ["email", "e-mail", "gmail", "reply in thread", "reply in the thread", "reply to"],
+    "not_email_words": ["tweet", "x post", "on x", "dm", "text message", "sms"],
+    "extra_reason": ""
+  },
+  "voice_send": {
+    "voice_cuts_state": "~/path/to/research-harness/.runtime/voice-cuts",
+    "voice_cuts_command": "rh voice-cuts FILE",
+    "email_words": ["email", "e-mail", "gmail", "reply in thread", "reply in the thread"],
+    "own_loop_words": ["tweet", "x post", "on x", "x reply"],
+    "generation_words": ["prompt", "generate", "generation", "image model", "video model"]
+  },
+  "email": {
+    "voice_command": "voice-lint --slop ~/.config/voice/slop.txt",
+    "outreach_gate": "warn"
+  },
+  "guard_main_tree": {
+    "tracked_areas": ["wiki/", "raw/", "scripts/", "memory/", "templates/", ".agents/", ".claude/skills/"],
+    "tracked_files": ["state.md", "index.md", "log.md", "goals.md", "AGENTS.md", "CLAUDE.md", "CONVENTIONS.md", "README.md"]
+  }
+}

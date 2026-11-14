@@ -61,6 +61,7 @@ What it turned out to be for, a year in: [RETRO.md](RETRO.md).
 | Every ingest reaches the next digest | `scripts/day-ledger.py` + pre-commit check 4 + digest-lint L5 |
 | Printed docs don't contradict open items | `scripts/prep-lint.py` + `scripts/print.sh` + pre-commit check 5 |
 | No `git add -A` accidents | pre-commit check 6 (blast radius) + settings deny rule |
+| Nothing goes out in your name unchecked | `.claude/hooks/friend-reply-gate.py` (email reply clicks need a fresh reply-lint pass or outreach approval), `voice-send-gate.py` (other browser sends need a fresh `rh voice-cuts` pass), `email-voice-gate.py` (API sends pass the voice check and an exact-byte approval); all read their paths and phrase lists from `~/.config/kb/gates.json` (`gates.example.json`) and refuse a send they cannot check |
 | "Check the index before saying we never documented X" | SessionStart hook injecting a title index |
 | Digest length, order, coverage, no permission-slip asks | `scripts/digest-lint.py` + repair pass |
 | The digest is never silently missing | `scripts/nightly/run.sh` (EXIT trap, fallback, failure notice) |
@@ -89,7 +90,8 @@ agent-kb/
 ├── .githooks/pre-commit   the enforced rules (+ README with the table)
 ├── .claude/
 │   ├── settings.json      hook wiring + deny rules
-│   ├── hooks/             guard-main-tree.sh · inject-title-index.sh
+│   ├── hooks/             guard-main-tree · friend-reply-gate · voice-send-gate · email-voice-gate
+│   │                      (each through _hookfail.py, a copy of rstack/hooks/_hookfail.py) · inject-title-index.sh
 │   └── skills/            byte-identical mirror of .agents/skills/
 ├── .codex/hooks.json      same guard hook for Codex
 ├── .agents/skills/        ingest (+ references/) · land · postmortem
