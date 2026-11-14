@@ -27,17 +27,15 @@ A dated routing snapshot from selected local harness outcomes. Scores are held-o
 | ideation | gpt-6-astra | 2 | 0.933 | 0.702 | 2026-11-03 |
 | ideation | moonshotai/kimi-k3.1-pro | 3 | - | - | 2026-11-03 |
 | taste | claude-opus-5-5 | 1 | - | - | 2026-11-14 |
-| taste | claude-fable-5-1 | 2 | - | - | 2026-11-14 |
-| taste | claude-fable-5-2 | 3 | - | - | 2026-11-14 |
+| taste | claude-fable-5-2 | 2 | - | - | 2026-11-14 |
 | review | claude-opus-5-5 | 1 | 1.0 | 0.207 | 2026-11-14 |
 | review | gpt-6-astra | 2 | - | - | 2026-11-14 |
-| review | claude-fable-5-1 | 3 | - | - | 2026-11-14 |
+| review | claude-fable-5-2 | 3 | - | - | 2026-11-14 |
 | review | gpt-6.1-sol | 4 | - | - | 2026-11-14 |
 | review | gpt-5.6-sol | 5 | - | - | 2026-11-14 |
 | review | moonshotai/kimi-k3.1-pro | 6 | - | - | 2026-11-14 |
 | review | google/gemini-4-argon | 7 | - | - | 2026-11-14 |
-| review | claude-fable-5-2 | 8 | - | - | 2026-11-14 |
-| review | claude-sonnet-5-5 | 9 | - | - | 2026-11-14 |
+| review | claude-sonnet-5-5 | 8 | - | - | 2026-11-14 |
 | mechanical | gpt-6.1-sol | 1 | - | - | 2026-11-14 |
 | mechanical | deepseek/deepseek-v4.1-flash-1017 | 2 | - | - | 2026-11-14 |
 | builder | claude-opus-5-5 | 1 | - | - | 2026-11-14 |
@@ -55,14 +53,12 @@ A dated routing snapshot from selected local harness outcomes. Scores are held-o
 | ideation | claude-fable-5-2 | 4 | 1.0 | 0.741 | 2026-11-14 |
 | ideation | gpt-6.1-sol | 5 | - | - | 2026-11-14 |
 | design | claude-opus-5-5 | 1 | - | - | 2026-11-14 |
-| design | claude-fable-5-1 | 2 | - | - | 2026-11-14 |
-| design | claude-fable-5-2 | 3 | - | - | 2026-11-14 |
-| design | gpt-6.1-sol | 4 | - | - | 2026-11-14 |
+| design | claude-fable-5-2 | 2 | 1.0 | 0.342 | 2026-11-14 |
+| design | gpt-6.1-sol | 3 | - | - | 2026-11-14 |
 | judge | claude-opus-5-5 | 1 | - | - | 2026-11-14 |
 | judge | gpt-6-astra | 2 | - | - | 2026-11-14 |
-| judge | claude-fable-5-1 | 3 | - | - | 2026-11-14 |
+| judge | claude-fable-5-2 | 3 | 0.0 | 0.0 | 2026-11-14 |
 | judge | gpt-6.1-sol | 4 | - | - | 2026-11-14 |
-| judge | claude-fable-5-2 | 5 | - | - | 2026-11-14 |
 
 ## Recorded observation scores
 

@@ -67,10 +67,10 @@ ALIASES = [('opus[- ]?5[.-]5', 'anthropic/claude-opus-5.5'),
  ('argon', 'google/gemini-4-argon'),
  ('carbon', 'google/gemini-4-carbon')]
 
-SEED = {'taste': ['anthropic/claude-opus-5.5', 'anthropic/claude-fable-5.1'],
+SEED = {'taste': ['anthropic/claude-opus-5.5', 'anthropic/claude-fable-5.2'],
  'review': ['anthropic/claude-opus-5.5',
             'openai/gpt-6-astra',
-            'anthropic/claude-fable-5.1',
+            'anthropic/claude-fable-5.2',
             'openai/gpt-6.1-sol'],
  'mechanical': ['openai/gpt-6.1-sol', 'deepseek/deepseek-v4.1-flash-1017'],
  'builder': ['anthropic/claude-opus-5.5', 'openai/gpt-6.1-sol'],
@@ -545,7 +545,8 @@ def public(data, path, observations=(), previous=None):
              'A dated routing snapshot from selected local harness outcomes. Scores are held-outcome rates and 95% Wilson lower bounds. A dash means unscored; starting orders include operator seed choices. This is not a universal benchmark.', '',
              '| Role | Model | Routing order | Held score | Wilson lower score | Date |',
              '|---|---|---:|---:|---:|---|']
-    lines.extend(old[6])
+    # A rerun on the same day replaces that day's routing rows; older days are kept (merge, never erase).
+    lines.extend(l for l in old[6] if not l.rstrip().endswith(f'| {date} |'))
     for role, ranked in data['roles'].items():
         safe_cell(role)
         if role not in ROLES:
@@ -577,7 +578,10 @@ def public(data, path, observations=(), previous=None):
         lines += ['', '## Recorded observation scores', '',
                   'Selected local labels on a 0–4 scale, including proxy and operational outcomes. Repeated scores are retained; no task identifiers or text are exported. These labels are not matched benchmark trials.', '',
                   '| Role | Model | Scores | Date |', '|---|---|---|---|']
-        lines.extend(old[4])
+        # Recomputed (role, model, day) cells replace their earlier copy instead of sitting beside it.
+        fresh = {(f'| {r} | {m} |', day) for r, m, day in groups}
+        lines.extend(l for l in old[4] if not any(l.startswith(k) and l.rstrip().endswith(f'| {v} |')
+                                                  for k, v in fresh))
         for (role, model, day), values in sorted(groups.items()):
             line = f"| {role} | {model} | {', '.join(map(str, sorted(values)))} | {day} |"
             if line not in lines:
