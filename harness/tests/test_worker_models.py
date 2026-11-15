@@ -213,6 +213,63 @@ def test_an_openrouter_model_is_selected_only_on_its_own_route(tmp_path):
     assert out.returncode==0 and out.stdout.strip()=='vendor/fixture-third', out.stderr
 
 
+@pytest.mark.parametrize('role', ['batch', 'mechanical', 'review', 'judge', 'ideation', 'design'])
+def test_openrouter_candidate_selection_and_exploration(tmp_path, role):
+    p = roles(tmp_path / 'roles.json')
+    data = json.loads(p.read_text())
+    carbon, hydrogen = 'google/gemini-4-carbon', 'google/gemini-4-hydrogen'
+    data['roles'][role] = [carbon, hydrogen, 'fixture-fast']
+    for m in (carbon, hydrogen):
+        data['routes'][m] = dict(cli='openrouter', canonical=m)
+    p.write_text(json.dumps(data))
+    assert wm.select(role, 'codex', path=p, made_by='claude-fixture')['executor'] == 'openrouter'
+    got = wm.select(role, 'codex', path=p, made_by='claude-fixture', explore=hydrogen)
+    assert (got['model'], got['executor'], got['source'], got['model_override']) == (
+        hydrogen, 'openrouter', 'explore', '')
+    with pytest.raises(ValueError, match='not in.*pool'):
+        wm.select(role, 'codex', path=p, made_by='claude-fixture', explore='unlisted/model')
+    with pytest.raises(ValueError, match='cannot be combined'):
+        wm.select(role, 'codex', path=p, model='fixture-fast', override='fixture comparison',
+                  made_by='claude-fixture', explore=hydrogen)
+    if role in wm.JUDGMENT:
+        assert wm.select(role, 'codex', path=p, made_by=carbon)['model'] == 'fixture-fast'
+        with pytest.raises(ValueError, match='different model family'):
+            wm.select(role, 'codex', path=p, made_by=carbon, explore=hydrogen)
+    data['overrides'] = {role: dict(exclude=[hydrogen])}
+    p.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match='excluded'):
+        wm.select(role, 'codex', path=p, made_by='claude-fixture', explore=hydrogen)
+
+
+@pytest.mark.parametrize('explore', [False, True])
+def test_launcher_runs_openrouter_through_codex_with_private_auth(fake_home, explore):
+    home, artifacts, _, env = fake_home
+    p = Path(env['RH_ROLES_FILE'])
+    data = json.loads(p.read_text())
+    model = 'google/gemini-4-hydrogen'
+    data['routes'][model] = dict(cli='openrouter', canonical=model)
+    data['roles']['batch'] = [model]
+    p.write_text(json.dumps(data))
+    key = home / '.config/openrouter/key'
+    key.parent.mkdir(parents=True)
+    key.write_text('synthetic-secret-never-log')
+    cli = Path(env['LAUNCH_CODEX'])
+    cli.write_text('#!' + sys.executable + '\nimport json,os,sys\nfrom pathlib import Path\n'
+                   'assert os.environ["OPENROUTER_API_KEY"] == "synthetic-secret-never-log"\n'
+                   'assert os.environ["LAUNCH_PROVIDER"] == "openrouter"\n'
+                   'Path(os.environ["FAKE_CALL"]).write_text(json.dumps(sys.argv))\n')
+    result = run_launcher(fake_home, *(['--explore', model] if explore else []))
+    assert result.returncode == 0, result.stderr
+    argv = json.loads(Path(env['FAKE_CALL']).read_text())
+    assert argv[argv.index('-m') + 1] == model
+    assert 'model_provider="openrouter"' in argv
+    assert 'model_providers.openrouter.env_key="OPENROUTER_API_KEY"' in argv
+    receipt = json.loads((artifacts / 'fixture-job.log.selection.json').read_text())
+    assert receipt['executor'] == 'openrouter'
+    assert receipt['source'] == ('explore' if explore else 'leaderboard')
+    assert 'synthetic-secret-never-log' not in (artifacts / 'fixture-job.log').read_text()
+
+
 def judgment_roles(path):
     ranked = ['claude-opus-5-5', 'gpt-6-astra', 'claude-fable-5-2', 'gpt-6.1-sol']
     routes = {m: {'cli': 'claude' if m.startswith('claude') else 'codex',
@@ -342,7 +399,8 @@ def test_inferred_review_also_refuses_models_in_spec(fake_home):
     assert not Path(env['FAKE_CALL']).exists()
 
 
-@pytest.mark.parametrize('name', ['sonnet', 'OPUS', 'gpt-6-astra', 'claude-fable-5-2', 'deepseek'])
+@pytest.mark.parametrize('name', ['sonnet', 'OPUS', 'gpt-6-astra', 'claude-fable-5-2', 'deepseek',
+                                 'Gemini 4 Carbon', 'google/gemini-4-hydrogen'])
 def test_judgment_spec_names_are_refused_before_executor(fake_home, name):
     _, artifacts, _, env = fake_home
     judgment_roles(Path(env['RH_ROLES_FILE']))

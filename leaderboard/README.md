@@ -13,6 +13,8 @@ python3 harness/worker_models.py --role batch --executor codex \
 
 Selection refuses an incompatible executor or excluded model; it never silently skips to a lower-ranked provider. A fixed model needs `--model-override REASON`. Completion receipts retain the actual model and roles-file hash even if routes change mid-job. An exit code stays unscored.
 
+To route any OpenRouter model, register its canonical `provider/model` ID with `cli: openrouter` and include it in the role pool; selection automatically runs Codex with `LAUNCH_PROVIDER=openrouter`. For a matched candidate trial use `tools/launch.sh JOB WORKDIR --role ROLE --explore MODEL` (and `--made-by MODEL` for independent judgment): it requires a listed, eligible candidate and records `source: explore` without an override. The executing shell reads `$HOME/.config/openrouter/key` into `OPENROUTER_API_KEY`; the key never goes into logs, receipts or saved commands. Reasoning models may spend tiny output limits entirely on reasoning and return empty content: use at least 4,000 output tokens for Gemini trials. Carbon and Hydrogen enter review, judge, ideation, design, mechanical and batch after the existing seeds at the default unscored rate of 0.75; the five-outcomes-on-two-days promotion rule applies. The order is LEADERBOARD.md; never name a model for a judgment role in the task prompt.
+
 ## Local scoring
 
 `model-eval.py` validates private observation ledgers: anchored scores 0..4, evidence references, finite optional costs and append-only supersession. It can print a local diagnostic including task and cost fields. That diagnostic is private; it is never used as the public Markdown export.

@@ -49,7 +49,8 @@ MODELS = {'anthropic/claude-opus-5.5': ('claude', 'claude-opus-5-5'),
  'moonshotai/kimi-k3.1-pro': ('openrouter', 'moonshotai/kimi-k3.1-pro'),
  'x-ai/grok-4.6': ('openrouter', 'x-ai/grok-4.6'),
  'google/gemini-4-argon': ('openrouter', 'google/gemini-4-argon'),
- 'google/gemini-4-carbon': ('openrouter', 'google/gemini-4-carbon')}
+ 'google/gemini-4-carbon': ('openrouter', 'google/gemini-4-carbon'),
+ 'google/gemini-4-hydrogen': ('openrouter', 'google/gemini-4-hydrogen')}
 
 ALIASES = [('opus[- ]?5[.-]5', 'anthropic/claude-opus-5.5'),
  ('fable[- ]?5[.-]1|fable-5-1', 'anthropic/claude-fable-5.1'),
@@ -66,7 +67,8 @@ ALIASES = [('opus[- ]?5[.-]5', 'anthropic/claude-opus-5.5'),
  ('kimi', 'moonshotai/kimi-k3.1-pro'),
  ('grok[- ]?4\\.6', 'x-ai/grok-4.6'),
  ('argon', 'google/gemini-4-argon'),
- ('carbon', 'google/gemini-4-carbon')]
+ ('carbon', 'google/gemini-4-carbon'),
+ ('hydrogen', 'google/gemini-4-hydrogen')]
 
 SEED = {'taste': ['anthropic/claude-opus-5.5', 'anthropic/claude-fable-5.2'],
  'review': ['anthropic/claude-opus-5.5',
@@ -94,6 +96,10 @@ FIELD_ROLE = {'scientific-verification': 'mechanical',
 SEED['design'] = list(SEED['taste'])
 SEED['judge'] = list(SEED['review'])
 ROLES = tuple(SEED)
+# Listed challengers enter after the existing seeds at the usual unscored rate.
+# They must earn promotion under the same five-outcomes-on-two-days rule.
+CANDIDATES = {role: ['google/gemini-4-carbon', 'google/gemini-4-hydrogen']
+              for role in ('review', 'judge', 'ideation', 'design', 'mechanical', 'batch')}
 
 
 def close_faults_proposal(row, prose):
@@ -337,7 +343,8 @@ def rank(role, ev):
         return e[m]["k"] / e[m]["n"] if eligible(m) else SEED_RATE
     def low(m):
         return wilson_low(e[m]["k"], e[m]["n"]) if eligible(m) else -1
-    order = list(SEED[role]) + sorted((m for m in e if m not in SEED[role]), key=low, reverse=True)
+    pool = list(SEED[role]) + CANDIDATES.get(role, [])
+    order = pool + sorted((m for m in e if m not in pool), key=low, reverse=True)
     for _ in range(len(order) ** 2):              # stable bubble: pass only on evidence
         swapped = False
         for i in range(len(order) - 1):

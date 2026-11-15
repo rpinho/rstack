@@ -1,5 +1,4 @@
-"""Gemini 4 Carbon (11-10): routable on OpenRouter as a candidate, ranked in no role until our own
-plant-check and yield numbers put it there. Vendor benchmarks count for nothing."""
+"""Gemini challengers use the ordinary candidate ranking and evidence threshold."""
 import importlib.util
 from pathlib import Path
 
@@ -16,3 +15,21 @@ def test_carbon_has_an_openrouter_route_and_its_own_alias():
 
 def test_carbon_is_a_candidate_not_a_seed():
     assert all('google/gemini-4-carbon' not in seeds for seeds in mr.SEED.values())
+
+
+def test_geminis_enter_six_pools_after_seeds_without_scores(tmp_path, monkeypatch):
+    monkeypatch.setattr(mr, 'LEDGER', tmp_path / 'absent.jsonl')
+    monkeypatch.delenv('RH_LAUNCH_RECEIPTS', raising=False)
+    data = mr.recompute(write=False)
+    for role in ('review', 'judge', 'ideation', 'design', 'mechanical', 'batch'):
+        expected = [mr.MODELS[m][1] for m in mr.SEED[role]]
+        assert data['roles'][role] == expected + mr.CANDIDATES[role]
+        for model in mr.CANDIDATES[role]:
+            assert data['routes'][model] == dict(cli='openrouter', canonical=model)
+            assert model not in data['evidence'][role]
+            # One day never qualifies, even with perfect outcomes.
+            ev = {role: {model: dict(n=20, k=20, days={'2026-01-01'})}}
+            assert mr.rank(role, ev)[0][0] == mr.SEED[role][0]
+            ev[role][model]['days'].add('2026-01-02')
+            assert mr.rank(role, ev)[0][0] == model
+    assert mr.canon('hydrogen') == 'google/gemini-4-hydrogen'

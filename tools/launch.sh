@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Synchronous job runner: role selection, exit receipts and bounded capacity retries.
-# usage: launch.sh JOB WORKDIR [--role ROLE] [--made-by MODEL] [--model MODEL --model-override REASON] [--host HOST]
+# usage: launch.sh JOB WORKDIR [--role ROLE] [--made-by MODEL] [--explore MODEL] [--model MODEL --model-override REASON] [--host HOST]
 setopt pipefail
 # 11-09 (planets on the m5): a non-login shell there has only the system PATH, the detached job inherits
 # it, and the executor (codex in /opt/homebrew/bin) was "command not found" (exit 127).
@@ -17,6 +17,7 @@ self=${0:A}
 job=$1; dir=$2; shift 2
 LAUNCH_ROLE=${LAUNCH_ROLE:-batch}; LAUNCH_MODEL=${LAUNCH_MODEL:-}; LAUNCH_MODEL_OVERRIDE=${LAUNCH_MODEL_OVERRIDE:-$MODEL_OVERRIDE_REASON}
 LAUNCH_MADE_BY=${LAUNCH_MADE_BY:-}
+LAUNCH_EXPLORE=${LAUNCH_EXPLORE:-}
 LAUNCH_EFFORT=${LAUNCH_EFFORT:-high}
 # --host runs the executor on another machine (Ricardo, 11-07: "move the science runs to the m5").
 # Only that one step crosses the network. Admission, the spec word cap, the job registry, model
@@ -52,6 +53,7 @@ while (( $# )); do
     --role) (( $# >= 2 )) || exit 2; LAUNCH_ROLE=$2; shift 2;;
     --made-by) (( $# >= 2 )) || exit 2; LAUNCH_MADE_BY=$2; shift 2;;
     --model) (( $# >= 2 )) || exit 2; LAUNCH_MODEL=$2; shift 2;;
+    --explore) (( $# >= 2 )) || exit 2; LAUNCH_EXPLORE=$2; shift 2;;
     --model-override) (( $# >= 2 )) || exit 2; LAUNCH_MODEL_OVERRIDE=$2; shift 2;;
     --host) (( $# >= 2 )) || exit 2; LAUNCH_HOST=$2; shift 2;;
     *) print -u2 -- "launch.sh: unknown argument $1"; exit 2;;
@@ -204,14 +206,21 @@ selector=${LAUNCH_SELECTOR:-${self:h:h}/harness/worker_models.py}
 lessons=$(rh --root "${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-$PWD/.runtime}}" lessons for "$lane" -n "${LAUNCH_LESSONS:-12}" 2>/dev/null)
 start=1; [[ -n $LAUNCH_RESUME ]] && start=2
 for (( i = start; i <= 5; i++ )); do
-  selection=$(python3 "$selector" --role "$LAUNCH_ROLE" --executor "$backend" --model "$LAUNCH_MODEL" --model-override "$LAUNCH_MODEL_OVERRIDE" --made-by "$LAUNCH_MADE_BY" --job "$job" --lane "$lane" --spec "$spec" --print-route --log "$log" --receipt "$log.selection.json") || { print -- "exit 2 model-selection-refused $(date)" >> "$log"; exit 2; }
+  sel_exec=$backend
+  [[ ${LAUNCH_PROVIDER:-} == openrouter && $backend == codex ]] && sel_exec=openrouter
+  selection=$(python3 "$selector" --role "$LAUNCH_ROLE" --executor "$sel_exec" --model "$LAUNCH_MODEL" --explore "$LAUNCH_EXPLORE" --model-override "$LAUNCH_MODEL_OVERRIDE" --made-by "$LAUNCH_MADE_BY" --job "$job" --lane "$lane" --spec "$spec" --print-route --log "$log" --receipt "$log.selection.json") || { print -- "exit 2 model-selection-refused $(date)" >> "$log"; exit 2; }
   selected_route=("${(@f)selection}")
   m=$selected_route[1]; backend=$selected_route[2]
   case $backend in
     codex) cx=${LAUNCH_CODEX:-codex};;
+    openrouter) backend=codex; export LAUNCH_PROVIDER=openrouter; cx=${LAUNCH_CODEX:-codex};;
     claude) cx=${LAUNCH_CLAUDE:-claude};;
     *) print -u2 -- "launch.sh refused $job: unsupported executor route $backend"; exit 2;;
   esac
+  # Authentication is read only by the executing shell, never put in a receipt or command file.
+  if [[ -n ${LAUNCH_PROVIDER:-} && ( $LAUNCH_PROVIDER != openrouter || $backend != codex ) ]]; then
+    print -u2 -- "launch.sh refused $job: unsupported LAUNCH_PROVIDER"; exit 2
+  fi
   # Shared context every job gets, injected here and never counted against the word cap above:
   # the job rules (prior art first), the lane's goal in the owner's words, and the lessons the
   # lane has already paid for. Before 11-06 only `rh ideas promote` enforced prior art and only
@@ -224,6 +233,10 @@ for (( i = start; i <= 5; i++ )); do
   attempt_log="$log.attempt-$i"
   out=${spec:r}.last.md
   if [[ -z $LAUNCH_HOST ]]; then
+    if [[ ${LAUNCH_PROVIDER:-} == openrouter ]]; then
+      export OPENROUTER_API_KEY="$(cat "$HOME/.config/openrouter/key")" || exit 2
+      [[ -n $OPENROUTER_API_KEY ]] || { print -u2 -- 'missing OpenRouter key'; exit 2; }
+    fi
     nice -n 10 python3 "${self:h:h}/harness/agent_executor.py" --backend "$backend" \
       --executable "$cx" --directory "$dir" --model "$m" --effort "$LAUNCH_EFFORT" \
       --output "$out" --budget "${LAUNCH_CLAUDE_BUDGET:-1.00}" \
@@ -281,6 +294,8 @@ for (( i = start; i <= 5; i++ )); do
     # The host's ssh PATH is the system one; ~/.local/bin goes first there too (the osascript shim).
     remote="cd ${(q)dir} 2>/dev/null || { echo ${(q)missing} >&2; exit 2; }
 export PATH=\$HOME/.local/bin:/opt/homebrew/bin:\$PATH
+${LAUNCH_PROVIDER:+export LAUNCH_PROVIDER=${(q)LAUNCH_PROVIDER}
+export OPENROUTER_API_KEY=\$(cat \$HOME/.config/openrouter/key)}
 mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
 mkdir -p $rmarks 2>/dev/null || true
 echo \$\$ > $rmarks/${(q)${job:t}}.pid 2>/dev/null || true

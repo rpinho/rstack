@@ -57,9 +57,18 @@ def command(backend, executable, model, effort, directory, output, budget='1.00'
         # values are --sandbox levels. They are not interchangeable spellings of the same thing.
         guard = (['--dangerously-bypass-approvals-and-sandbox'] if mode == 'bypass'
                  else ['--sandbox', mode])
+        provider = os.environ.get('LAUNCH_PROVIDER', '')
+        if provider not in ('', 'openrouter'):
+            raise ValueError('unsupported LAUNCH_PROVIDER')
+        provider_args = (['-c', 'model_provider="openrouter"',
+                         '-c', 'model_providers.openrouter.name="OpenRouter"',
+                         '-c', 'model_providers.openrouter.base_url="https://openrouter.ai/api/v1"',
+                         '-c', 'model_providers.openrouter.wire_api="responses"',
+                         '-c', 'model_providers.openrouter.env_key="OPENROUTER_API_KEY"']
+                         if provider else [])
         return [executable, 'exec', '--ignore-user-config', '--skip-git-repo-check',
                 '--cd', str(directory), '-m', model, '-c', 'model_reasoning_effort='+effort,
-                *guard, '-o', str(output), '-']
+                *provider_args, *guard, '-o', str(output), '-']
     if backend == 'claude':
         # `tools` widens what a job may do. The default is read/write/edit only: a research job
         # that has to run its own code needs more, and the caller says so explicitly rather than

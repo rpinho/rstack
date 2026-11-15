@@ -20,14 +20,14 @@ ROLES_FILE = settings.path('RH_ROLES_FILE', Path('.runtime/roles.json'))
 JUDGMENT = frozenset(('review', 'judge', 'audit', 'taste', 'design', 'ideation'))
 INDEPENDENT = frozenset(('review', 'judge', 'audit'))
 ROLE_ROWS = {'judge': 'review', 'audit': 'review', 'design': 'taste'}
-MODEL_NAMES = re.compile(r'\b(?:sonnet|haiku|opus|fable|astra|sol|deepseek|kimi|glm)\b|\b(?:gpt-|claude-)', re.I)
+MODEL_NAMES = re.compile(r'\b(?:sonnet|haiku|opus|fable|astra|sol|deepseek|kimi|glm|gemini)\b|\b(?:gpt-|claude-)', re.I)
 # Historical jobs also attach ref/rev/chk to a subject, e.g. c38ref or l1chk.
 JUDGMENT_JOB = re.compile(
     r'(^|_)(?:ref|referee|review|rev|judge|audit|taste|design|chk|check|verify|'
     r'[a-z0-9]+(?:ref|rev|chk))(?=_|\d|$)', re.I)
 
 
-def select(role, executor, model='', override='', path=None, made_by='', job='', lane=''):
+def select(role, executor, model='', override='', path=None, made_by='', job='', lane='', explore=''):
     judgment_hint = ''
     if role == 'batch' and JUDGMENT_JOB.search(job):
         role = 'review'
@@ -36,6 +36,8 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     path = path or ROLES_FILE
     override = (override or os.environ.get('MODEL_OVERRIDE_REASON', '')).strip()
     made_by = (made_by or os.environ.get('LAUNCH_MADE_BY', '')).strip()
+    if explore and (model or override):
+        raise ValueError('--explore cannot be combined with --model or --model-override')
     raw = Path(path).read_bytes()
     data = json.loads(raw)
     if not isinstance(data, dict) or not isinstance(data.get('roles'), dict) or not isinstance(data.get('routes'), dict):
@@ -66,9 +68,11 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         raise ValueError('hard-coded model refused: --model requires --model-override REASON')
     if override and not model:
         raise ValueError('--model-override requires --model')
-    chosen = model or eligible[0]
+    if explore and explore not in ranked:
+        raise ValueError('--explore model is not in the role {} pool: {}'.format(role, explore))
+    chosen = explore or model or eligible[0]
     route = data['routes'].get(chosen)
-    if role in JUDGMENT and isinstance(route, dict):
+    if isinstance(route, dict) and (role in JUDGMENT or (not model and route.get('cli') == 'openrouter')):
         executor = route.get('cli')
         if executor not in ('codex', 'claude', 'openrouter'):
             raise ValueError('role {} selected {}; unsupported executor route'.format(role, chosen))
@@ -83,7 +87,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     receipt = dict(schema=1, selection_id=uuid.uuid4().hex, utc=dt.datetime.now(dt.timezone.utc).isoformat(),
         role=role, model=chosen, canonical=route['canonical'], executor=executor,
         roles_sha256=hashlib.sha256(raw).hexdigest(), roles_updated=data.get('updated'),
-        model_override=override, source='override' if model else 'leaderboard', job=job, lane=lane, made_by=made_by)
+        model_override=override, source='explore' if explore else 'override' if model else 'leaderboard', job=job, lane=lane, made_by=made_by)
     if model:
         override_log = Path(os.environ.get('RH_MODEL_OVERRIDE_LOG') or Path(path).with_name('model-overrides.jsonl'))
         with override_log.open('a') as stream:
@@ -110,6 +114,7 @@ def main(argv=None):
     # third-family referee when the GPT referees fail their plants (11-09: 3 of 12 caught).
     parser.add_argument('--executor', choices=('codex','claude','openrouter'), default='codex')
     parser.add_argument('--model', default='')
+    parser.add_argument('--explore', default='', help='select a candidate from this role pool without an override')
     parser.add_argument('--model-override', default='')
     parser.add_argument('--made-by', default='')
     parser.add_argument('--job', default='')
@@ -130,7 +135,7 @@ def main(argv=None):
             log_record(args.log, 'MODEL_OUTCOME', receipt)
             return 0
         receipt = select(args.role, args.executor, args.model, args.model_override, args.roles_file,
-                         args.made_by, args.job, args.lane)
+                         args.made_by, args.job, args.lane, args.explore)
         if receipt['role'] in JUDGMENT and args.spec and MODEL_NAMES.search(args.spec.read_text()):
             print('launch.sh refused {}: name the leaderboard role, not a model (LEADERBOARD.md); '
                   'the leaderboard picks {}'.format(args.job, receipt['model']), file=sys.stderr)
