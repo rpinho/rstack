@@ -61,8 +61,9 @@ def main(argv=None):
     body = ('---\nfrom: mini\nto: laptop\npurpose: Receipt: the Mini has {status} {stem}; mark it {status} on the laptop '
             'and stop surfacing its paste prompt\nfor: the laptop session that sent {stem}\nreply_to: {stem}\n'
             'ip_clean: n/a\nsanitized_by: inbox-done (Mini), {date} - a status line about the laptop\'s own item, '
-            'no personal data\n---\n\n# Receipt: {stem}\n\nStatus: {status}\n\n{summary}\n{ref}').format(
-        status=a.status, stem=stem, date=now.strftime('%Y-%m-%d'), summary=a.summary.strip(),
+            'no personal data\n---\n\n# Receipt: {stem}\n\nStatus: {status}\n\n{summary}\n{ref}\n'
+            'Paste prompt:\n"Read the receipt {name} in the handoff inbox and mark {stem} {status}."\n').format(
+        name=receipt.name, status=a.status, stem=stem, date=now.strftime('%Y-%m-%d'), summary=a.summary.strip(),
         ref=('\nReference: {}\n'.format(a.ref) if a.ref else ''))
     if a.dry_run:
         print(body)
