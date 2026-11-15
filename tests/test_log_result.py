@@ -95,3 +95,19 @@ def test_an_unimportable_linter_refuses_rather_than_waving_it_through(tmp_path, 
 
     monkeypatch.setattr(builtins, '__import__', no_lint)
     assert lr.new_errors('value', str(claim)), 'fails loudly, not silently open'
+
+
+def test_a_bare_lane_name_means_that_lanes_ledger_and_a_stray_name_is_refused(tmp_path, monkeypatch, capsys):
+    """11-15, virtual-embryo: `--ledger virtual-embryo` wrote ./virtual-embryo, printed success and lost
+    seven results for a week. A lane name now resolves; anything else that is not a ledger is refused."""
+    log_result = lr
+    (tmp_path / 'lanes' / 'demo').mkdir(parents=True)
+    monkeypatch.setenv('RH_ROOT', str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    args = ['--new', 'no', '--kind', 'note', '--what', 'x', '--link', 'https://example.org/x', '--referee', 'NONE']
+    assert log_result.main(['--ledger', 'demo'] + args) == 0
+    assert (tmp_path / 'lanes' / 'demo' / 'RESULTS.jsonl').read_text().count('\n') == 1
+    assert 'logged to ' + str((tmp_path / 'lanes' / 'demo' / 'RESULTS.jsonl').resolve()) in capsys.readouterr().err
+    assert log_result.main(['--ledger', 'nosuchlane'] + args) == 2
+    assert log_result.main(['--ledger', str(tmp_path / 'notes.txt')] + args) == 2
+    assert not (tmp_path / 'nosuchlane').exists()

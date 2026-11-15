@@ -8,7 +8,7 @@ the referee verdict. lane-yield counts new=true lines with a HOLDS verdict.
     log_result.py --ledger ~/.local/share/research-harness/lanes/math/RESULTS.jsonl \\
         --new yes --kind value --what "C38 bound 0.25 -> 0.2524" --link https://github.com/... --referee HOLDS
 """
-import argparse, json, re, sys
+import argparse, json, os, re, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -61,6 +61,26 @@ def new_errors(kind, link):
             'DOI or other https link. Got neither.']
 
 
+def resolve_ledger(value, create=False):
+    """(path, error). 11-15, virtual-embryo: `--ledger virtual-embryo` appended to ./virtual-embryo in the
+    session cwd, printed the row and exited 0; seven results sat in stray files for a week and lane-yield
+    never saw them. A bare lane name now means that lane's RESULTS.jsonl, and a path must be an existing
+    .jsonl ledger (a new one only with --new-ledger)."""
+    raw = str(value)
+    if '/' not in raw and not raw.endswith('.jsonl'):
+        root = Path(os.environ.get('RH_ROOT') or '~/.local/share/research-harness').expanduser()
+        lane_dir = root / 'lanes' / raw
+        if not lane_dir.is_dir():
+            return None, 'no lane named {!r} under {} (pass a lane name or a RESULTS.jsonl path)'.format(raw, root / 'lanes')
+        return lane_dir / 'RESULTS.jsonl', None
+    path = Path(raw).expanduser()
+    if path.suffix != '.jsonl':
+        return None, '--ledger {!r} is not a .jsonl ledger'.format(raw)
+    if not path.is_file() and not create and not (path.name == 'RESULTS.jsonl' and path.parent.is_dir()):
+        return None, '--ledger {} does not exist; pass the lane name, or --new-ledger to start one'.format(path)
+    return path, None
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--ledger', required=True)
@@ -74,7 +94,13 @@ def main(argv=None):
     p.add_argument('--paper-date', help='YYYY-MM-DD of the source paper (read from CLAIM.md "Paper date:" when omitted)')
     p.add_argument('--verdict', help='the referee verdict text, or a file holding it; a passing '
                                      'verdict on a new result must answer the three rubric questions')
+    p.add_argument('--new-ledger', action='store_true', help='allow --ledger to name a ledger that does not exist yet')
     a = p.parse_args(argv)
+    ledger, err = resolve_ledger(a.ledger, a.new_ledger)
+    if err:
+        print('log_result: refused: ' + err, file=sys.stderr)
+        return 2
+    a.ledger = str(ledger)
     novelty, paper_date = a.novelty, a.paper_date
     link_dir = Path(a.link).expanduser()
     if result_gates is not None and link_dir.is_dir():
@@ -123,6 +149,7 @@ def main(argv=None):
     with open(path, 'a') as f:
         f.write(json.dumps(row) + '\n')
     print(json.dumps(row))
+    print('log_result: logged to ' + str(path.resolve()), file=sys.stderr)
     return 0
 
 
