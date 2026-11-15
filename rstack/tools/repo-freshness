@@ -18,9 +18,11 @@ and checks each kind the way it can drift:
   declared   a public repo with no clone on purpose (config `declared`, with a reason).
   unknown    a public repo that is none of these: a FAILURE. Every public repo must have one way in.
 
-Every discovered clone, public or private, is checked for `behind`, `no-upstream`, stale `dirty`
-files and aged `unpushed` commits against its current branch's upstream. Fetch is opt-in; otherwise
-cached tracking refs are used. Detached HEADs must be declared in `detached` to suppress no-upstream.
+Clones with an owned remote (public or private), plus explicit `local_only` paths, are checked for
+`behind`, `no-upstream`, stale `dirty` files and aged `unpushed` commits. Without configured owners,
+any remote qualifies. Dirty counts tracked changes at all depths and top-level untracked files.
+Fetch is opt-in; otherwise cached tracking refs are used. A fetch failure suppresses stale-ref
+comparisons. Detached HEADs must be declared in `detached` to suppress no-upstream.
 Also, on whichever host each entry names: README auto-blocks that differ from a fresh render
 (`readme-blocks check`, in every clone or source whose README has `<!-- auto:` markers), installed files
 whose hash differs from their repo copy (`installed`), a retro older than a lane result that has sat
@@ -186,6 +188,10 @@ root=$1; depth=$2
 find "$root" -maxdepth "$depth" \( -name node_modules -o -name .venv -o -name .Trash \) -prune -o \
      -name .git -print -prune 2>/dev/null | while read -r g; do
   d=$(dirname "$g")
+  top=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)
+  if [ -n "$top" ] && [ "$(cd "$d" && pwd -P)" != "$(cd "$top" && pwd -P)" ]; then
+    continue  # Git fell back to a parent checkout; this is not another clone.
+  fi
   printf '@@clone\t%s\n' "$d"
   git -C "$d" remote -v 2>/dev/null | awk '$3 == "(fetch)" {print "remote\t" $1 "\t" $2}'
 done
@@ -342,18 +348,20 @@ try:
     st['detached'] = git('symbolic-ref', '-q', 'HEAD', required=False).returncode != 0
     upstream = git('rev-parse', '--verify', '@{u}', required=False)
     st['upstream'] = upstream.returncode == 0
-    if st['upstream']:
+    if st['upstream'] and not st.get('fetch_error'):
         st['behind'], st['unpushed'] = map(int, git('rev-list', '--left-right', '--count',
                                                   '@{u}...HEAD').stdout.split())
         times = git('log', '--format=%ct', '@{u}..HEAD').stdout.split()
         st['unpushed_oldest'] = min(map(int, times)) if times else None
     latest = git('log', '-1', '--format=%ct', '--all', 'HEAD', required=False)
     st['latest'] = int(latest.stdout.strip()) if latest.returncode == 0 and latest.stdout.strip() else None
-    fields = git('status', '--porcelain=v1', '-z', '--untracked-files=all', timeout=120).stdout.split(b'\0')
+    fields = git('status', '--porcelain=v1', '-z', '--untracked-files=normal', timeout=120).stdout.split(b'\0')
     mtimes, count, i = [], 0, 0
     while i < len(fields) and fields[i]:
         entry = fields[i]
         i += 1
+        if entry[:2] == b'??' and b'/' in entry[3:]:
+            continue  # Untracked job directories belong to their lanes, not this checkout.
         if b'R' in entry[:2] or b'C' in entry[:2]:
             i += 1  # the original path follows a rename/copy; count the destination once
         count += 1
@@ -734,6 +742,8 @@ def check(cfg, gh='gh', now=None, workers=6):
                 out += readme_problem(h, c[1], 'README.md', rb)
             return job, None, out
         st, err = clone_state(c[0], c[1], remote, branch)
+        if st and fresh_states[(c[0].name, c[1])].get('fetch_error'):
+            st['track'] = []  # Public branch comparisons would also use stale fetched refs.
         out = [('host', c[0].label(c[1]), 'cannot read clone: ' + err)] if err else []
         if st and st['readme']:
             out += readme_problem(c[0], c[1], st['readme'], rb)

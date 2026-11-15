@@ -314,6 +314,21 @@ def test_dirty_old_vs_fresh_tracks_untracked_and_honors_gitignore(clone_pair):
     assert 'dirty files 2 oldest 25.0h' in rf.check(cfg, now=now)[1][0][2]
 
 
+def test_dirty_ignores_untracked_job_trees_but_keeps_nested_tracked_files(clone_pair):
+    checkout, _, _ = clone_pair
+    commit(checkout, 'src/tracked.txt', 'original\n')
+    commit(checkout, '.gitignore', 'ignored/\nignored-root.txt\n')
+    now = time.time()
+    for name in ('src/tracked.txt', 'root.txt', 'ignored-root.txt',
+                 'jobs/old.txt', 'jobs/deep/other.txt', 'src/untracked.txt'):
+        target = checkout / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('changed\n')
+        os.utime(target, (now - 49 * 3600,) * 2)
+    rows = rf.check(clone_config(checkout), now=now)[1]
+    assert rows == [('dirty', 'local:' + str(checkout), 'dirty files 2 oldest 49.0h (limit 24h)')]
+
+
 def test_staged_rename_and_deleted_file_are_counted_once(clone_pair):
     checkout, _, _ = clone_pair
     now = time.time()
@@ -389,9 +404,78 @@ def test_fetch_failure_is_a_finding_and_does_not_hide_other_checks(clone_pair):
     assert 'fetch failed:' in rows[0][2] and 'missing.git' in rows[0][2]
 
 
+def test_failed_fetch_does_not_report_stale_behind_or_unpushed(clone_pair, monkeypatch):
+    checkout, seed, bare = clone_pair
+    now = int(time.time())
+    for key in ('GIT_AUTHOR_DATE', 'GIT_COMMITTER_DATE'):
+        monkeypatch.setitem(ENV, key, '{} +0000'.format(now - 49 * 3600))
+    commit(checkout, 'local.txt', 'local\n')
+    commit(seed, 'remote.txt', 'remote\n')
+    git(seed, 'push', '-q', 'origin', 'main')
+    git(checkout, 'fetch', '-q')
+    assert {k for k, _, _ in rf.check(clone_config(checkout), now=now)[1]} == {'behind', 'unpushed'}
+    dirty = checkout / 'data.txt'
+    dirty.write_text('dirty\n')
+    os.utime(dirty, (now - 49 * 3600,) * 2)
+    git(checkout, 'remote', 'set-url', 'origin', str(bare.parent / 'missing.git'))
+    cfg = clone_config(checkout, fetch=True, backups=[{'repo': str(checkout), 'max_hours': 100}])
+    cfg['roots'].append(dict(cfg['roots'][0]))
+    rows = rf.check(cfg, now=now)[1]
+    assert [k for k, _, _ in rows] == ['fetch', 'dirty']
+
+
+def test_https_auth_failure_keeps_dirty_and_suppresses_stale_refs(clone_pair, monkeypatch, capsys):
+    checkout, _, _ = clone_pair
+    dirty = checkout / 'data.txt'
+    dirty.write_text('dirty\n')
+    now = time.time()
+    os.utime(dirty, (now - 49 * 3600,) * 2)
+    original = subprocess.run
+    def denied(argv, **kwargs):
+        if 'fetch' in argv:
+            assert kwargs['env']['GIT_TERMINAL_PROMPT'] == '0'
+            return subprocess.CompletedProcess(argv, 128, b'', b"fatal: could not read Username for 'https://github.com': terminal prompts disabled")
+        return original(argv, **kwargs)
+    monkeypatch.setattr(subprocess, 'run', denied)
+    monkeypatch.setattr(sys, 'argv', ['collector', str(checkout), 'true'])
+    exec(rf.FRESHNESS, {})
+    st = json.loads(capsys.readouterr().out)
+    assert st['upstream'] and 'behind' not in st and 'unpushed' not in st
+    rows = rf.clone_problems(rf.Host(''), str(checkout), st, {}, now)
+    assert [k for k, _, _ in rows] == ['fetch', 'dirty']
+
+
+def test_failed_fetch_suppresses_public_branch_comparisons(tmp_path, monkeypatch):
+    cfg, gh, paths = world(tmp_path)
+    original = rf.freshness_state
+    def failed(host, path, fetch=False):
+        return dict(original(host, path, False), fetch_error='no credentials')
+    monkeypatch.setattr(rf, 'freshness_state', failed)
+    rows = rf.check(cfg, gh)[1]
+    assert not [r for r in rows if r[0] in ('behind', 'unpushed', 'private-commits')]
+    assert [r[0] for r in rows if r[1] == 'local:' + str(paths['drifted'])] == ['fetch', 'no-upstream']
+
+
+def test_owned_remote_filter_skips_job_and_third_party_clones(clone_pair):
+    checkout, _, _ = clone_pair
+    git(checkout, 'branch', '--unset-upstream')
+    cfg = clone_config(checkout, clone_owners=['example-owner'])
+    assert rf.check(cfg)[1] == []  # local filesystem remote is not owned
+    git(checkout, 'remote', 'set-url', 'origin', 'git@github.com:someone-else/project.git')
+    assert rf.check(cfg)[1] == []
+    cfg['local_only'] = [{'path': str(checkout), 'why': 'explicitly monitored working clone'}]
+    assert [k for k, _, _ in rf.check(cfg)[1]] == ['no-upstream']
+    cfg.pop('local_only')
+    git(checkout, 'remote', 'remove', 'origin')
+    assert rf.check(cfg)[1] == []
+    git(checkout, 'remote', 'add', 'origin', 'git@github.com:example-owner/project.git')
+    assert [k for k, _, _ in rf.check(cfg)[1]] == ['no-upstream']
+
+
 def test_clone_scan_continues_when_public_inventory_fails(clone_pair):
     checkout, _, _ = clone_pair
     git(checkout, 'branch', '--unset-upstream')
+    git(checkout, 'remote', 'set-url', 'origin', 'git@github.com:example-owner/private.git')
     cfg = clone_config(checkout, owners=['example-owner'])
     rows = rf.check(cfg, gh='/bin/false')[1]
     assert {k for k, _, _ in rows} == {'inventory', 'no-upstream'}
@@ -454,12 +538,19 @@ def test_clone_only_scan_does_not_classify_publish_files(clone_pair):
     assert rf.check(clone_config(checkout))[1] == []
 
 
-def test_invalid_nested_git_directory_does_not_check_parent_twice(clone_pair):
+@pytest.mark.parametrize('remote_host', ['', 'other-mac'])
+def test_invalid_nested_git_directory_does_not_check_parent_twice(clone_pair, monkeypatch, remote_host):
     checkout, _, _ = clone_pair
+    original = rf.Host.run
+    def local_transport(self, argv, *args, **kwargs):
+        return original(rf.Host(''), argv, *args, **kwargs)
+    monkeypatch.setattr(rf.Host, 'run', local_transport)
     nested = checkout / 'not-a-checkout'
     (nested / '.git').mkdir(parents=True)
-    rows = rf.check(clone_config(checkout))[1]
-    assert rows == [('host', 'local:' + str(nested), 'cannot read clone: not a checkout root; Git resolves to ' + str(checkout))]
+    cfg = clone_config(checkout)
+    cfg['roots'][0]['host'] = remote_host
+    rows = rf.check(cfg)[1]
+    assert rows == []
 
 
 def test_remote_clone_and_backup_findings_name_the_host(clone_pair, monkeypatch):

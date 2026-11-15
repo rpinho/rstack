@@ -444,7 +444,8 @@ class SweepTests(unittest.TestCase):
         old = self.add(created='2026-10-31T12:00:00+00:00', status='testing', board='none', route='organiser')
         due, errors, legacy = sweep.obligations(self.lane, self.loaded(), rh, clock=dt.datetime(2026, 11, 2, tzinfo=dt.timezone.utc))
         self.assertEqual((due, errors, legacy), ([], [], [old['id']]))
-        out = self.cli('lint', 'test')[1]
+        with patch.object(rh, 'now', return_value='2026-11-02T00:00:00+00:00'):
+            out = self.cli('lint', 'test')[1]
         self.assertIn('GRANDFATHERED test: ' + old['id'], out)
         self.assertNotIn('unread after', out)
 
