@@ -59,6 +59,39 @@ A dated routing snapshot from selected local harness outcomes. Scores are held-o
 | judge | gpt-6-astra | 2 | - | - | 2026-11-14 |
 | judge | claude-fable-5-2 | 3 | 0.0 | 0.0 | 2026-11-14 |
 | judge | gpt-6.1-sol | 4 | - | - | 2026-11-14 |
+| taste | claude-opus-5-5 | 1 | - | - | 2026-11-15 |
+| taste | claude-fable-5-2 | 2 | - | - | 2026-11-15 |
+| review | claude-opus-5-5 | 1 | 1.0 | 0.207 | 2026-11-15 |
+| review | gpt-6-astra | 2 | - | - | 2026-11-15 |
+| review | claude-fable-5-2 | 3 | - | - | 2026-11-15 |
+| review | gpt-6.1-sol | 4 | - | - | 2026-11-15 |
+| review | gpt-5.6-sol | 5 | - | - | 2026-11-15 |
+| review | moonshotai/kimi-k3.1-pro | 6 | - | - | 2026-11-15 |
+| review | google/gemini-4-argon | 7 | - | - | 2026-11-15 |
+| review | claude-sonnet-5-5 | 8 | - | - | 2026-11-15 |
+| mechanical | gpt-6.1-sol | 1 | - | - | 2026-11-15 |
+| mechanical | deepseek/deepseek-v4.1-flash-1017 | 2 | - | - | 2026-11-15 |
+| builder | claude-opus-5-5 | 1 | - | - | 2026-11-15 |
+| builder | gpt-6.1-sol | 2 | - | - | 2026-11-15 |
+| cheap | deepseek/deepseek-v4.1-flash-1017 | 1 | - | - | 2026-11-15 |
+| cheap | z-ai/glm-5.3-flash | 2 | - | - | 2026-11-15 |
+| biology | moonshotai/kimi-k3.1-pro | 1 | - | - | 2026-11-15 |
+| batch | gpt-6.1-sol | 1 | 1.0 | 0.867 | 2026-11-15 |
+| batch | deepseek/deepseek-v4.1-flash-1017 | 2 | - | - | 2026-11-15 |
+| batch | gpt-6-astra | 3 | - | - | 2026-11-15 |
+| writing | claude-opus-5-5 | 1 | - | - | 2026-11-15 |
+| ideation | claude-opus-5-5 | 1 | - | - | 2026-11-15 |
+| ideation | gpt-6-astra | 2 | - | - | 2026-11-15 |
+| ideation | moonshotai/kimi-k3.1-pro | 3 | - | - | 2026-11-15 |
+| ideation | claude-fable-5-2 | 4 | 1.0 | 0.741 | 2026-11-15 |
+| ideation | gpt-6.1-sol | 5 | - | - | 2026-11-15 |
+| design | claude-opus-5-5 | 1 | - | - | 2026-11-15 |
+| design | claude-fable-5-2 | 2 | 1.0 | 0.438 | 2026-11-15 |
+| design | gpt-6.1-sol | 3 | - | - | 2026-11-15 |
+| judge | claude-opus-5-5 | 1 | - | - | 2026-11-15 |
+| judge | gpt-6-astra | 2 | - | - | 2026-11-15 |
+| judge | claude-fable-5-2 | 3 | 0.0 | 0.0 | 2026-11-15 |
+| judge | gpt-6.1-sol | 4 | - | - | 2026-11-15 |
 
 ## Recorded observation scores
 
@@ -93,6 +126,7 @@ Selected local labels on a 0–4 scale, including proxy and operational outcomes
 | batch | gpt-6.1-sol | 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 | 2026-11-04 |
 | batch | gpt-6.1-sol | 4, 4 | 2026-11-05 |
 | design | claude-fable-5-2 | 4, 4 | 2026-11-13 |
+| design | claude-fable-5-2 | 4 | 2026-11-14 |
 | ideation | claude-fable-5-2 | 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 | 2026-11-13 |
 | ideation | claude-fable-5-2 | 4 | 2026-11-14 |
 | judge | claude-fable-5-2 | 0, 0 | 2026-11-13 |
