@@ -128,6 +128,18 @@ def taken(lane, link):
     return bool(re.match(r'https://github\.com/' + repo + r'/commit/[0-9a-f]{7,40}', str(link), re.I))
 
 
+def targets(lane, link):
+    """True when link points into the lane's upstream repo (a PR, commit or file there).
+
+    11-15: math's Erdos #1183 values (refereed HOLDS, published at erdosproblems.com) never counted in
+    lane-yield, because every math result had to be a merged PR in the optimization-table repo. The
+    upstream rule is about results sent THERE; a result published elsewhere counts on its verdict."""
+    cfg = config(lane)
+    if cfg is None or not link:
+        return False
+    return bool(re.match(r'https://github\.com/' + re.escape(cfg['repo']) + r'(/|$)', str(link), re.I))
+
+
 PR_REF = re.compile(r'github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)|(?<![\w/])#(\d+)\b', re.I)
 TABLE = re.compile(r"\bon\s+Tao[\u2019']?s\s+(?:optimization\s+)?table\b", re.I)   # not "on the table"
 FIX = 'say "PR updated, not merged"'

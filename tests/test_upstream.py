@@ -163,3 +163,21 @@ def test_a_new_pr_is_not_capped_by_how_many_are_open(tmp_path, monkeypatch):
     monkeypatch.setenv('RH_ROOT', str(tmp_path))
     errors = publish_lint.publication_errors('/no/body.md', REPO, now=NOW)
     assert not any('open-PR cap' in e for e in errors)          # it goes on to the receipt check
+
+
+def test_a_refereed_result_published_outside_the_upstream_repo_counts(tmp_path):
+    """11-15: math's Erdos #1183 values (HOLDS, linked to the problem site) never counted, because the
+    merged-upstream rule was applied to every row, not only to results sent to the upstream repo."""
+    d = lane(tmp_path, [pr(298)])
+    log = tmp_path / 'math_a.log'
+    log.write_text('=== run 1 model m Tue Nov 10 00:00:00 EST 2026\nwork\nexit 0 Tue Nov 10 23:00:00 EST 2026\n')
+    now = ly.parse_stamp('exit 0 Tue Nov 10 23:30:00 EST 2026')
+    ledger = tmp_path / 'RESULTS.jsonl'
+    utc = ly.datetime.fromtimestamp(now - 3600).astimezone().isoformat()
+    ledger.write_text(json.dumps(dict(utc=utc, new=True, kind='value', referee='HOLDS',
+                                      link='https://www.erdosproblems.com/1183')) + '\n')
+    cfg = {'logs': [str(log)], 'results': [str(ledger)], 'upstream': str(d)}
+    assert ly.check_lane('math', cfg, now)['new_yes'] == 1
+    ledger.write_text(json.dumps(dict(utc=utc, new=True, kind='value', referee='FAILS',
+                                      link='https://www.erdosproblems.com/1183')) + '\n')
+    assert ly.check_lane('math', cfg, now)['new_yes'] == 0, 'still needs a HOLDS verdict'

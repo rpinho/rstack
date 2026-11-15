@@ -284,7 +284,8 @@ def check_lane(name, cfg, now):
                 if (r.get('new') is True and r.get('kind') != 'rerun'
                         and str(r.get('referee', '')).upper().startswith('HOLDS')
                         and (not gates or result_gates.counts(gates, r))
-                        and (up_lane is None or upstream.taken(up_lane, r.get('link')))):
+                        and (up_lane is None or not upstream.targets(up_lane, r.get('link'))
+                             or upstream.taken(up_lane, r.get('link')))):
                     new_yes += 1
     share = passes / verdicts if verdicts else 0.0
     fails = []
