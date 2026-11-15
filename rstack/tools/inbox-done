@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Mark a received handoff item done: move it to inbox/processed/ and send the sender a receipt.
+
+Why (11-15): the laptop pulls Mini->laptop items, but nothing told it when the Mini had finished one of
+its items. Moving the item to inbox/processed/ is only visible on the Mini, so the laptop kept showing
+the owner the same paste prompt and he pasted finished work back in three times. A receipt closes the
+loop with the transport that already exists: it is an ordinary `to: laptop` outbox item, gated like any
+other, that the laptop's pull collects.
+
+    inbox-done ITEM.md --summary "what was done, one or two sentences" [--status done|partial|declined]
+                 [--ref "commit or path"] [--dry-run]
+
+ITEM.md (HANDOFF_ROOT defaults to the handoff folder in your home directory) is a file in HANDOFF_ROOT/inbox/ (or just its name). Its sibling folder, if any, moves with it.
+A partial receipt tells the laptop where it stands and leaves the item in the inbox.
+The receipt is HANDOFF_ROOT/outbox/<now>-receipt-<item stem>.md, then handoff-gate.sh runs on it; a gate
+failure leaves the receipt unsent and exits 1 (the item still counts as processed here).
+"""
+import argparse, datetime as dt, os, re, shutil, subprocess, sys
+from pathlib import Path
+
+ROOT = Path(os.environ.get('HANDOFF_ROOT', Path.home() / 'handoff'))
+
+
+def front(text):
+    m = re.match(r'---\n(.*?)\n---', text, re.S)
+    out = {}
+    for line in (m.group(1).splitlines() if m else []):
+        if ':' in line:
+            k, v = line.split(':', 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('item')
+    ap.add_argument('--summary', required=True)
+    ap.add_argument('--status', default='done', choices=['done', 'partial', 'declined'])
+    ap.add_argument('--ref', default='')
+    ap.add_argument('--dry-run', action='store_true')
+    a = ap.parse_args(argv)
+    inbox = ROOT / 'inbox'
+    item = Path(a.item) if '/' in a.item else inbox / a.item
+    if not item.is_file():
+        done = inbox / 'processed' / item.name
+        if not done.is_file():
+            print('inbox-done: no such item: {}'.format(item), file=sys.stderr)
+            return 1
+        item = done
+    meta = front(item.read_text(errors='replace'))
+    sender = meta.get('from', '')
+    if sender != 'laptop':
+        print('inbox-done: item is from {!r}; receipts go only to the laptop'.format(sender), file=sys.stderr)
+        return 1
+    if len(a.summary.split()) < 4:
+        print('inbox-done: --summary needs a real sentence', file=sys.stderr)
+        return 1
+    stem = item.stem
+    now = dt.datetime.now()
+    receipt = ROOT / 'outbox' / '{}-receipt-{}.md'.format(now.strftime('%Y%m%d-%H%M'), stem)
+    body = ('---\nfrom: mini\nto: laptop\npurpose: Receipt: the Mini has {status} {stem}; mark it {status} on the laptop '
+            'and stop surfacing its paste prompt\nfor: the laptop session that sent {stem}\nreply_to: {stem}\n'
+            'ip_clean: n/a\nsanitized_by: inbox-done (Mini), {date} - a status line about the laptop\'s own item, '
+            'no personal data\n---\n\n# Receipt: {stem}\n\nStatus: {status}\n\n{summary}\n{ref}').format(
+        status=a.status, stem=stem, date=now.strftime('%Y-%m-%d'), summary=a.summary.strip(),
+        ref=('\nReference: {}\n'.format(a.ref) if a.ref else ''))
+    if a.dry_run:
+        print(body)
+        return 0
+    if item.parent == inbox and a.status != 'partial':   # partial: stays in the inbox until finished
+        dest = inbox / 'processed'
+        dest.mkdir(exist_ok=True)
+        sib = item.with_suffix('')
+        shutil.move(str(item), str(dest / item.name))
+        if sib.is_dir():
+            shutil.move(str(sib), str(dest / sib.name))
+    receipt.write_text(body)
+    gate = ROOT / 'handoff-gate.sh'
+    r = subprocess.run([str(gate), receipt.name], cwd=str(ROOT / 'outbox'), capture_output=True, text=True)
+    last = (r.stdout.strip().splitlines() or [''])[-1]
+    print('processed: {}\nreceipt: {}\n{}'.format(item.name, receipt.name, last))
+    return 0 if r.returncode == 0 else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
