@@ -87,6 +87,11 @@ behind it, and the mechanism that refuses a violation, or says plainly there isn
 | [Architecture, not prose](rstack/principles/architecture-not-prose.md) | broken twice means build a mechanism |
 | [Short asks to the human](rstack/principles/short-asks.md) | a question they can answer, where they read |
 | [The goal must not become process](rstack/principles/goal-not-process.md) | gates counted as progress |
+| [Close every loop](rstack/principles/close-every-loop.md) | name the consumer before the producer |
+| [Reports outlive sessions](rstack/principles/reports-outlive-sessions.md) | the file is the report, the message a pointer |
+| [Refresh inputs before acting](rstack/principles/refresh-inputs-before-acting.md) | re-read a snapshot older than its source |
+| [Revert first, then reorder](rstack/principles/revert-first-then-reorder.md) | three forward fixes, then go back |
+| [Autonomous subsystems refill themselves](rstack/principles/autonomous-subsystems-refill-themselves.md) | one alert when every source is empty |
 | [Build a guard only after a real failure](rstack/principles/guards-need-a-real-failure.md) | name the incident, or don't build it |
 | [A guard must refuse, not crash](rstack/principles/a-guard-must-refuse-not-crash.md) | a guard that raises is no guard |
 

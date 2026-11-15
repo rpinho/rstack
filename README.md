@@ -143,6 +143,16 @@ mechanism that enforces it, or an admission that there isn't one.
   result, never nothing. Prose for now.
 - [**Verify before a destructive claim**](rstack/principles/verify-before-destructive-claims.md):
   "unused" cites the check that showed it, or says it is an assumption.
+- [**Close every loop**](rstack/principles/close-every-loop.md): name the consumer before building
+  the producer, and measure a loop by what reached its end. Lane reports now cannot stop at the conductor.
+- [**Reports outlive sessions**](rstack/principles/reports-outlive-sessions.md): a result is a file the
+  sweep reads, not a message a live session was going to send.
+- [**Refresh inputs before acting**](rstack/principles/refresh-inputs-before-acting.md): a snapshot older
+  than a day, or than the last change to what it describes, is re-read from its source first.
+- [**Revert first, then reorder**](rstack/principles/revert-first-then-reorder.md): after three forward
+  fixes on one target, go back to what worked and run the proven path first. Prose for now.
+- [**Autonomous subsystems refill themselves**](rstack/principles/autonomous-subsystems-refill-themselves.md):
+  one alert when every automatic source is empty, never a routine ask. Prose here; the laptop checks it.
 - [**Change direction after a dry streak**](rstack/principles/change-direction-after-a-dry-streak.md):
   three tries with nothing usable, then a different method and the dead end written down.
 - [**Reciprocate**](rstack/principles/reciprocate.md): a reply mirrors the message it answers,

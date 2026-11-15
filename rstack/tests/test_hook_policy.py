@@ -270,6 +270,23 @@ def test_a_closed_guard_on_a_broad_matcher_fails_the_check(tmp_path, hooks):
     assert states(wc.check([str(narrow)], [], {}, lib=None)) == {'closed.py': 'ok'}
 
 
+def test_file_edits_and_clicks_are_broad_too(tmp_path, hooks):
+    """11-15, from the laptop: a closed guard on every file edit or every click refuses the session as surely
+    as one on the shell. A narrow tool stays ok."""
+    (hooks / 'closed.py').write_text('import _hookfail\nsys.exit(_hookfail.run("c", body, fail_closed=True))\n')
+    for matcher in ('Edit|Write', 'MultiEdit', 'mcp__claude-in-chrome__computer', 'mcp__computer-use__left_click',
+                    'mcp__claude-in-chrome__.*', 'Read|Bash', '.*'):
+        s = tmp_path / 's.json'
+        s.write_text(json.dumps({'hooks': {'PreToolUse': [{'matcher': matcher, 'hooks': [
+            {'type': 'command', 'command': 'python3 {}/closed.py'.format(hooks)}]}]}}))
+        assert states(wc.check([str(s)], [], {}, lib=None)) == {'closed.py': 'BROAD_CLOSED'}, matcher
+    for matcher in ('mcp__claude-in-chrome__navigate', 'Read', 'mcp__mail__send', 'BashOutput'):
+        s = tmp_path / 's.json'
+        s.write_text(json.dumps({'hooks': {'PreToolUse': [{'matcher': matcher, 'hooks': [
+            {'type': 'command', 'command': 'python3 {}/closed.py'.format(hooks)}]}]}}))
+        assert states(wc.check([str(s)], [], {}, lib=None)) == {'closed.py': 'ok'}, matcher
+
+
 def test_stale_allowlist_entries_fail(tmp_path, hooks):
     s = settings(tmp_path, 'python3 {}/wrapped.py'.format(hooks))
     allow = {'wrapped.py': {'reason': 'was unwrapped during a migration'},

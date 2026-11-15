@@ -13,6 +13,11 @@ and prose is a note the agent may skip. A rule moves up a rung each time it brea
 **Enforced by** the coverage tool in this directory, which maps every rule to its enforcer or
 marks it prose-only, and ranks the prose-only ones by how often they have actually been broken.
 
+**A miss the owner caught means a layer is missing** (the laptop, 11-15). When the person finds
+what the harness should have, the fix moves the rule up a rung, and the report says which layer
+enforces it now. A memory note, an instruction-file line, or "handed to another session" is still
+prose: it is a record of the miss, not a fix for it.
+
 Read that ranking as a queue of candidates, not a backlog. On the setup it was built for, about
 two thirds of the rules are still prose, and that is fine: see
 [guards need a real failure](guards-need-a-real-failure.md).

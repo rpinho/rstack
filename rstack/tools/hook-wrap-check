@@ -29,8 +29,9 @@ for a project hook that names that path) is not byte-identical to this checkout'
 wrapper lacks the lookup and fail_closed answers, so it is installed from main, not edited.
 
 Two more failures (11-11, from the laptop's use of the same wrapper):
-  BROAD_CLOSED  a guard with fail_closed=True on a matcher that covers every shell command (Bash) or every
-                tool (*): fail_closed ignores triage, so one bug in it refuses the whole session.
+  BROAD_CLOSED  a guard with fail_closed=True on a matcher that covers every shell command (Bash), every
+                file edit (Edit, Write, MultiEdit, NotebookEdit), every browser click (the computer tools) or
+                every tool (*): fail_closed ignores triage, so one bug in it refuses the whole session.
   STALE         an allowlist entry that has expired, names no registered hook, or covers a hook that is now
                 wrapped. A dead exception is how a temporary one becomes permanent unnoticed.
 
@@ -170,7 +171,7 @@ def verdict(row, allow, today, lib=LIB):
     python_hook = script.suffix == '.py' or bool(re.match(r'^#![^\n]*\bpython[0-9.]*\b', text))
     if python_hook and MARK in text:
         if re.search(r'fail_closed\s*=\s*True', text) and broad(row['matcher']):
-            return 'BROAD_CLOSED', ('{} sets fail_closed=True on [{}], which covers every shell command or tool: '
+            return 'BROAD_CLOSED', ('{} sets fail_closed=True on [{}], which covers every shell command, file edit, click or tool: '
                                     'use triage instead'.format(name, row['matcher']))
         why = drift(script, text, lib)
         return ('DRIFTED', '{} {}'.format(name, why)) if why else ('ok', name)
@@ -189,8 +190,17 @@ def verdict(row, allow, today, lib=LIB):
     return 'UNWRAPPED', '{} does not call {}'.format(name, MARK)
 
 
+# Tools whose matcher covers a whole class of everyday calls: every shell command, every file edit,
+# every browser click. A fail_closed guard on one of these refuses the session once it breaks.
+# (11-15, the laptop: its check counts file edits and clicks as broad too, not only the shell.)
+BROAD_TOOLS = ('Bash', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'computer',
+               r'mcp__claude-in-chrome__(computer|browser_batch)', r'mcp__computer-use__\w+', r'mcp__[\w-]+__(\*|\.\*)')
+
+
 def broad(matcher):
-    return matcher in ('', '*') or bool(re.search(r'(^|\|)Bash($|\|)', matcher))
+    if matcher in ('', '*', '.*'):
+        return True
+    return any(re.fullmatch(t, part) for part in matcher.split('|') for t in BROAD_TOOLS)
 
 
 def stale(rows, allow, today):
