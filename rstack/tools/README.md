@@ -204,3 +204,93 @@ are never run automatically.
 Tests: `python3 -m pytest -q rstack/tests/test_skills_vendor.py rstack/tests/test_fleet_lint.py`.
 They use synthetic packs, local Git fixture origins and simulated SSH; no downloaded skill
 is installed or executed, and no external network or notification is needed.
+
+## grok-ask
+
+`grok-ask [--host HOST] [--timeout S] [--schema FILE] [--relaunch] "<query>"`
+asks Grok Bot in a **new chat** and writes only a parsed JSON array of objects to stdout.
+It uses Python 3.9+ standard library and the app's CDP endpoint. Local calls use
+localhost:9333; `--host` uses a temporary SSH tunnel bound to 127.0.0.1, with the
+remote destination also 127.0.0.1:9333. SSH uses your existing host configuration;
+no credentials are copied or shared between hosts. Pick the host with the intended
+app account. The tool never visits sign-in, account, settings or subscription screens.
+
+The endpoint must already be enabled. On the intended host, an operator can quit the
+app and start it with:
+
+```sh
+open -a "Grok Bot" --args --remote-debugging-address=127.0.0.1 --remote-debugging-port=9333
+```
+
+An unavailable endpoint fails with this instruction. The tool never restarts the
+app by default. `--relaunch` explicitly permits quitting, starting with CDP, then
+quitting and starting normally again, including after query failures. Restoration
+has a separate 15-second limit. Do not use that option during fake-only testing.
+
+Copy `grok-ask.json.example` to `~/.config/rstack/grok-ask.json` and adjust selectors
+for the installed UI. `GROK_ASK_CONFIG` can select another file. Missing configuration
+uses the shipped example; **its selectors are assumptions, not live-verified**.
+`target_title` and `target_url` are substring filters; exactly one page must match.
+The tool clicks `new_chat` and waits for an empty composer and zero user/assistant
+messages before inserting text. It clicks `send`, waits for the current prompt to
+appear, the `busy` indicator to disappear, and the answer to stop changing for
+`settle_seconds`. Rendered code selected by `json_code` is reconstructed as a JSON
+fence when the DOM has stripped markdown fences. A UI change is a config edit.
+An incorrect completion selector can misidentify a pause as completion; check it live.
+
+The fixed suffix requests exactly one JSON fence, containing an array of objects
+(or `[]`). `--schema FILE` adds and checks required keys in every row. FILE can be
+a JSON key list (`["post_id", "url"]`), an object JSON Schema with `required`
+(or `properties` when `required` is absent), or an array schema with that under
+`items`. This checks keys only, not JSON Schema types or other constraints.
+Missing/bad JSON, missing keys, connection failures and timeouts exit 3, with the
+raw answer on stderr and no stdout JSON. CLI usage errors exit 2.
+
+When DOM reading raises an error, the fallback copies app-cache `.blob` files to
+scratch and reuses the `grok_fresh.py` decoder: base32 filenames containing
+`.transcript.replicas.`, JSON `value` (possibly JSON-encoded again), then
+`entries[].message.content` and `timestampMs`. It accepts only a transcript containing
+this exact prompt and unique request ID, followed by a newer message. Copies are
+limited to 32 MiB. Cache completion uses `cache_settle_seconds` of unchanged text
+(default 5), a heuristic because the reused format has no completion flag. A cache
+that exceeds the limit, lacks this prompt, or cannot be decoded cannot supply an answer.
+
+A file lock serializes calls to each host alias on this controller; use one alias
+per remote host and one shared state directory. Local, localhost and loopback IP
+spellings share a lock. Different controllers require external serialization.
+`--timeout` (default 120 seconds) includes lock and tunnel wait. Every attempted
+query appends UTC, host, caller, SHA-256 query hash, row count, elapsed seconds and
+exit code to `$RSTACK_STATE_DIR/grok-ask.jsonl` (default
+`$XDG_STATE_HOME/rstack`, otherwise `~/.local/state/rstack`). Raw queries and answers
+are not logged. `RSTACK_CALLER` labels the caller; its default is `grok-ask`.
+
+## grok-x-search
+
+```sh
+grok-x-search LANE --query 'example topic' --since 2026-11-01
+```
+
+This calls the sibling `grok-ask`, requests X post leads, saves its JSON array as
+`lanes/LANE/intake/x-search/<utc>-<query-hash>.json`, and runs:
+
+```sh
+rh --root ROOT intake x-search LANE --query Q --result hits --n N \
+  --hits-file SAVED_JSON --captured-by grok-x-search
+```
+
+Empty arrays use `--result none --n 0`. `--since` adds X's `since:YYYY-MM-DD` to Q.
+`--root` defaults to `$RH_ROOT`, otherwise `.runtime`; `--host` and `--timeout` pass
+through to `grok-ask`. The lane must already exist with `x_local_file` configured in
+`INTAKE.toml`; the adapter does not change its configuration or declarations.
+`rh` records the saved file as `evidence_file` in `X_SEARCHES.jsonl`. Saved evidence
+is local data, and never counts as an external browser read. If `rh` fails, the
+saved leads remain and the adapter reports the failure. `GROK_ASK` and `RH` may name
+alternate executables (used for stub tests).
+
+**Grok rows are leads: exact text must be read in the browser before anything is
+scored.** A zero-row Grok result is not proof that no prior art exists. Grok finds,
+the browser reads exact text, and the X API only pulls bookmarks and posts.
+
+Fake-only coverage: `python3 -m pytest -q rstack/tests/test_grok_ask.py
+rstack/tests/test_grok_x_search.py harness/tests/test_x_searches.py`. No app or
+account is needed; CDP, SSH forwarding and intake commands use local fakes/stubs.

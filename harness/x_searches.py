@@ -10,9 +10,10 @@ def validate(row, clock=None):
     """Reject incomplete, contradictory or undated search claims."""
     clock = clock or dt.datetime.now(UTC)
     required = {'utc', 'query', 'result', 'n_hits', 'captured_by'}
-    if not isinstance(row, dict) or not required <= row.keys() or row.keys() - (required | {'subject'}):
-        raise ValueError('X search row requires utc, query, result, n_hits, captured_by; subject is optional')
-    for key in ('utc', 'query', 'captured_by') + (('subject',) if 'subject' in row else ()):
+    optional = {'subject', 'evidence_file'}
+    if not isinstance(row, dict) or not required <= row.keys() or row.keys() - (required | optional):
+        raise ValueError('X search row requires utc, query, result, n_hits, captured_by; subject and evidence_file are optional')
+    for key in ('utc', 'query', 'captured_by') + tuple(key for key in optional if key in row):
         if not isinstance(row[key], str) or not row[key].strip() or any(c in row[key] for c in '\r\n\0'):
             raise ValueError('X search ' + key + ' must be a nonempty single-line string')
     try:

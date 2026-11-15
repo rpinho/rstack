@@ -209,3 +209,24 @@ def test_recorded_negative_can_back_existing_prior_art_contract(lane):
     assert sweep.check(paths, [], cfg={'evidence_policy': True}) == []
     stable.write_text('tampered\n')
     assert any('capture hash mismatch' in e for e in sweep.check(paths, [], cfg={'evidence_policy': True}))
+
+
+def test_x_search_records_saved_grok_evidence_without_external_read(lane):
+    evidence = lane / 'intake/x-search/fixture.json'
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text('[{"post_id":"123", "text":"lead"}]\n')
+    rc, out, err = cli(lane, 'x-search', 'test', '--query', 'fixture', '--result', 'hits', '--n', '1',
+                       '--hits-file', str(evidence), '--captured-by', 'grok-x-search')
+    assert rc == 0, out + err
+    row = rh.rows(lane / 'X_SEARCHES.jsonl')[-1]
+    assert row['evidence_file'] == str(evidence.resolve())
+    assert row['captured_by'] == 'grok-x-search'
+    assert x_searches.validate(row)
+    assert not (lane / 'INTAKE_RUNS.jsonl').exists()
+
+
+def test_x_search_missing_evidence_is_not_recorded(lane):
+    rc, _, err = cli(lane, 'x-search', 'test', '--query', 'fixture', '--result', 'none', '--n', '0',
+                    '--hits-file', str(lane / 'missing.json'))
+    assert rc == 2 and 'existing evidence file' in err
+    assert not (lane / 'X_SEARCHES.jsonl').exists()

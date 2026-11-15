@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Save Grok X-search leads and record their local evidence with rh."""
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('lane', metavar='LANE')
+    parser.add_argument('--query', required=True)
+    parser.add_argument('--since', type=dt.date.fromisoformat, metavar='YYYY-MM-DD')
+    parser.add_argument('--root', type=Path, default=Path(os.environ.get('RH_ROOT', '.runtime')))
+    parser.add_argument('--host', help='forward to grok-ask; default local')
+    parser.add_argument('--timeout', type=float, default=120)
+    args = parser.parse_args(argv)
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', args.lane):
+        parser.error('LANE must be a lane name, not a path')
+    if not args.query.strip() or any(c in args.query for c in '\r\n\0'):
+        parser.error('query must be a nonempty single line')
+    lane = args.root.expanduser().resolve() / 'lanes' / args.lane
+    if not (lane / 'INTAKE.toml').is_file():
+        parser.error('lane requires INTAKE.toml with x_local_file configured')
+    query = args.query + (' since:' + args.since.isoformat() if args.since else '')
+    prompt = ('Find X posts matching this search query: ' + query + '\n'
+              'For each post return post_id, author, created_at, url, and text. '
+              'Only include posts you can find. These are leads for browser verification.')
+    command = [os.environ.get('GROK_ASK', str(Path(__file__).with_name('grok-ask'))),
+               '--timeout', str(args.timeout)]
+    if args.host:
+        command += ['--host', args.host]
+    command += ['--', prompt]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True,
+                                timeout=args.timeout + 20, env=dict(os.environ, RSTACK_CALLER='grok-x-search'))
+        if result.returncode:
+            print(result.stderr, file=sys.stderr, end='')
+            return result.returncode
+        rows = json.loads(result.stdout)
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            raise ValueError('grok-ask must return an array of objects')
+        stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
+        digest = hashlib.sha256(query.encode()).hexdigest()[:16]
+        directory = lane / 'intake' / 'x-search'
+        directory.mkdir(parents=True, exist_ok=True)
+        evidence = directory / (stamp + '-' + digest + '.json')
+        with evidence.open('x') as stream:
+            json.dump(rows, stream, ensure_ascii=False, allow_nan=False)
+            stream.write('\n')
+        print('Grok rows are leads: exact text must be read in the browser before anything is scored.', flush=True)
+        command = [os.environ.get('RH', 'rh'), '--root', str(args.root.expanduser().resolve()),
+                   'intake', 'x-search', args.lane, '--query', query,
+                   '--result', 'hits' if rows else 'none', '--n', str(len(rows)),
+                   '--hits-file', str(evidence), '--captured-by', 'grok-x-search']
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            print('grok-x-search: rh failed; saved leads remain at ' + str(evidence), file=sys.stderr)
+            print(result.stderr, file=sys.stderr, end='')
+            return result.returncode
+        if result.stdout:
+            print(result.stdout, end='')
+        print(str(evidence))
+        return 0
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        print('grok-x-search: ' + str(exc), file=sys.stderr)
+        return 3
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

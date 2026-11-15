@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Ask Grok Bot through its explicitly enabled, local CDP endpoint."""
+from _grok_ask import main
+
+if __name__ == '__main__':
+    raise SystemExit(main())

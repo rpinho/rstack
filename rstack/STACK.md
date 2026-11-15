@@ -97,6 +97,8 @@ are in [`hooks/`](hooks/), with tests.
 | title index | (injects) the knowledge base's page titles at session start | Sessions said "we never documented that" about pages that existed. |
 | context watch | (reports) context size at 500k, 750k and 900k tokens | So compaction is chosen at a good moment instead of happening mid-task. |
 
+In the X layer, [`grok-ask` and `grok-x-search`](tools/README.md#grok-ask) provide discovery: Grok finds, the browser reads exact text, the API only pulls bookmarks and posts.
+
 Three more hooks still fail open, besides the poll guard. Patches exist and were not applied, because nothing has
 gone wrong through those holes, and I decided on 6 November not to build guards for failures that
 have not happened. That rule is [its own principle](principles/guards-need-a-real-failure.md).

@@ -449,6 +449,11 @@ def intake_x_search(lane, args):
                or os.environ.get('USER') or 'general-session')
     if args.subject is not None:
         row['subject'] = args.subject
+    if getattr(args, 'hits_file', None):
+        evidence = Path(args.hits_file).expanduser().resolve()
+        if not evidence.is_file():
+            raise ValueError('intake x-search --hits-file must name an existing evidence file')
+        row['evidence_file'] = str(evidence)
     x_searches.validate(row)
     with locked(lane):
         path = lane / 'X_SEARCHES.jsonl'
@@ -852,7 +857,7 @@ def parser():
     group = a.add_mutually_exclusive_group()
     group.add_argument('--dry-run', action='store_true', help='default; no network and no writes')
     group.add_argument('--live', action='store_true', help='fetch metadata and append ideas/intake audit')
-    a.add_argument('--hits-file', help='local JSONL fixture; never counts as an external read')
+    a.add_argument('--hits-file', help='local fixture, or saved evidence file for x-search; never counts as an external read')
     a = sub.add_parser('cs-url', help="print a fresh Claude Science login link and the lane's project URL")
     a.add_argument('lane')
     a = sub.add_parser('voice-cuts', help='check a draft is cut from the author\'s own messages (DRAFT.cuts)',
@@ -880,7 +885,7 @@ def main(argv=None):
             if args.lane == 'x-search':
                 if not args.x_search_lane or args.query is None or args.result is None or args.n is None:
                     raise ValueError('intake x-search requires LANE --query Q [--subject S] --result none|hits --n N')
-                if args.live or args.dry_run or args.hits_file:
+                if args.live or args.dry_run:
                     raise ValueError('intake x-search records a local outcome; do not combine with intake fetch flags')
                 args.lane, args.intake_action = args.x_search_lane, 'x-search'
             elif args.x_search_lane or any(value is not None for value in (args.query, args.subject, args.result, args.n)):
