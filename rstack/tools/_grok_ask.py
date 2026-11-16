@@ -83,7 +83,7 @@ class CDP:
             accept = base64.b64encode(hashlib.sha1(
                 (key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
             if (' 101 ' not in lines[0] or fields.get('sec-websocket-accept', '').strip() != accept
-                    or fields.get('upgrade', '').strip() != 'websocket'):
+                    or fields.get('upgrade', '').strip().lower() != 'websocket'):
                 raise AskError('CDP websocket handshake rejected')
         except BaseException:
             self.close()
@@ -325,6 +325,14 @@ def js(config, action, prompt=''):
       const all = key => [...document.querySelectorAll(c[key])];
       const text = el => el.innerText || el.textContent || '';
       const visible = el => !!(el.getClientRects().length);
+      if (data.action === 'new' && c.bot_name) {
+        // 11-15 live: Grok Bot has no "new chat"; each bot is one conversation. grok-ask uses its own bot
+        // so its answers never mix with a routine's output in another bot's conversation.
+        const bot = [...document.querySelectorAll('button,a')].find(b =>
+          (b.getAttribute('aria-label') || '').split(',')[0].trim() === c.bot_name);
+        if (!bot) throw Error('bot ' + c.bot_name + ' not found in the sidebar');
+        bot.click(); return true;
+      }
       if (data.action === 'new') {
         const button = one('new_chat');
         if (!button || !visible(button)) throw Error('new_chat selector not found');
@@ -332,20 +340,31 @@ def js(config, action, prompt=''):
       }
       if (data.action === 'ready') {
         const box = one('composer');
-        return !!box && visible(box) && !box.disabled &&
-          !all('assistant_message').length && !all('user_message').length &&
-          !(box.value || box.textContent || '').trim();
+        const title = document.querySelector('button[aria-label="View conversation details"]');
+        const onBot = !c.bot_name || (!!title && text(title).trim() === c.bot_name);
+        const fresh = c.bot_name || (!all('assistant_message').length && !all('user_message').length);
+        return !!box && visible(box) && !box.disabled && onBot && fresh &&
+          (!!c.bot_name || !(box.value || box.textContent || '').trim());
       }
-      if (data.action === 'focus') { one('composer').focus(); return true; }
+      if (data.action === 'focus') {
+        const box = one('composer'); box.focus();
+        document.execCommand('selectAll'); document.execCommand('delete');   // a failed send leaves text
+        return true;
+      }
       if (data.action === 'send') {
         const box = one('composer'), button = one('send');
-        if ((box.value || box.textContent) !== prompt) throw Error('composer text mismatch');
+        const norm = t => (t || '').replace(/\s+/g, ' ').trim();   // a rich editor drops line breaks
+        if (norm(box.value || box.innerText || box.textContent) !== norm(prompt)) throw Error('composer text mismatch');
         if (!button || button.disabled || !visible(button)) throw Error('send selector not ready');
         button.click(); return true;
       }
       const marker = prompt.slice(prompt.lastIndexOf('Request ID:'));
-      const sent = all('user_message').some(el => text(el).includes(marker));
-      const answers = all('assistant_message'), answer = answers[answers.length - 1];
+      const mine = all('user_message').filter(el => text(el).includes(marker));
+      const sent = mine.length > 0;
+      // Only an answer AFTER our own message counts (a bot's conversation keeps earlier answers).
+      const after = sent ? all('assistant_message').filter(el =>
+        mine[mine.length - 1].compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) : [];
+      const answer = after[after.length - 1];
       if (!answer) return {text:'', busy:all('busy').some(visible), sent};
       let raw = text(answer);
       if (!raw.includes('```')) {
@@ -393,15 +412,39 @@ def query(cdp, config, host, prompt, deadline, state):
         quiet = config['cache_settle_seconds'] if fallback else config['settle_seconds']
         if (sample.get('sent') and sample['text'] and not sample.get('busy')
                 and time.monotonic() - changed >= quiet):
-            return sample['text']
+            # 11-15 live: the app shows "Searching X posts" with no busy control, so a quiet page is not a
+            # finished answer. Done = the answer parses, or nothing has changed for answer_quiet_seconds.
+            try:
+                parse_answer(sample['text'], [])
+                return sample['text']
+            except AskError:
+                if time.monotonic() - changed >= config.get('answer_quiet_seconds', 90):
+                    return sample['text']
         pause(deadline, config['poll_seconds'])
 
 
 def parse_answer(raw, required):
     blocks = re.findall(r'^[ \t]*```json[ \t]*\r?\n(.*?)^[ \t]*```[ \t]*\r?$',
                         raw, flags=re.S | re.M | re.I)
-    if len(blocks) != 1:
+    if len(blocks) > 1:
         raise AskError('expected exactly one json fenced block')
+    if not blocks:
+        # 11-15 live: the app renders the code block, so the page text has the JSON and no fences.
+        # Take the one top-level JSON array that the text holds; anything else is still refused.
+        found, last = [], -1
+        for start in [m.start() for m in re.finditer(r'\[', raw)]:
+            if start < last:
+                continue            # inside an array already taken: nested arrays are part of it
+            try:
+                value, end = json.JSONDecoder().raw_decode(raw[start:])
+            except ValueError:
+                continue
+            if isinstance(value, list):
+                found.append(raw[start:start + end])
+                last = start + end
+        if len(found) != 1:
+            raise AskError('expected exactly one JSON array in the answer (found {})'.format(len(found)))
+        blocks = found
     try:
         rows = json.loads(blocks[0], parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
     except ValueError as exc:

@@ -1,15 +1,17 @@
 {
   "port": 9333,
-  "target_title": "Grok",
+  "target_title": "Grok Bot",
   "target_url": "",
   "new_chat": "button[aria-label='New chat'], a[aria-label='New chat']",
-  "composer": "textarea, [contenteditable='true'][role='textbox']",
-  "send": "button[aria-label='Send'], button[type='submit']",
-  "user_message": "[data-message-author-role='user']",
-  "assistant_message": "[data-message-author-role='assistant']",
+  "composer": "[role=textbox][aria-label='Prompt']",
+  "send": "button[aria-label='Send message']",
+  "user_message": "[data-role='user']",
+  "assistant_message": "[data-role='assistant']",
   "busy": "button[aria-label='Stop response'], button[data-testid='stop-button']",
   "json_code": "pre code",
   "poll_seconds": 0.25,
   "settle_seconds": 2,
-  "cache_settle_seconds": 5
+  "cache_settle_seconds": 5,
+  "bot_name": "Queries",
+  "answer_quiet_seconds": 90
 }

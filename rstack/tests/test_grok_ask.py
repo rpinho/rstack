@@ -164,7 +164,8 @@ def isolated(tmp_path, monkeypatch):
 
 def configure(isolated, port):
     isolated[1].write_text(json.dumps(dict(port=port, poll_seconds=0.02,
-                                         settle_seconds=0.06, cache_settle_seconds=0.06)))
+                                         settle_seconds=0.06, cache_settle_seconds=0.06,
+                                         answer_quiet_seconds=0.2)))
 
 
 def run(isolated, *args, timeout=8):
@@ -474,3 +475,15 @@ def test_malformed_schema_fails_cleanly_and_is_logged(isolated, schema):
     assert result.returncode == 3 and 'schema' in result.stderr
     assert 'Traceback' not in result.stderr
     assert len(ledger(isolated)) == 1
+
+
+def test_a_rendered_answer_without_fences_still_parses_one_array():
+    """11-15 live: the app renders the code block, so the page text holds the JSON but no ``` fences."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('ga_live', str(TOOLS / '_grok_ask.py'))
+    ga = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ga)
+    assert ga.parse_answer('Queries\n[{"a": [1, 2], "b": "x"}, {"a": []}]', ['a']) == [{'a': [1, 2], 'b': 'x'}, {'a': []}]
+    for bad in ('Searching X posts', 'Queries\n[{"a": 1}] and [{"b": 2}]'):
+        with pytest.raises(ga.AskError):
+            ga.parse_answer(bad, [])
