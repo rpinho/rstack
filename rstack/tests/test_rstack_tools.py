@@ -547,3 +547,6 @@ def test_egress_gate_keeps_its_module_api_for_importers(tmp_path, monkeypatch):
     assert [label for label, _ in pats] == ['email']          # file rules only, no built-in shapes
     assert mod.hits_in('write to someone@example.org', pats) == [('email', 'someone@example.org')]
     assert mod.PATTERNS == d / 'patterns.txt'
+    (d / 'agent-files.gitignore').write_text('# x\nCLAUDE.md\n.claude/\n')
+    assert mod.load_agent_files() == ['claude.md', '.claude/']
+    assert mod.is_agent_file('docs/CLAUDE.md', mod.load_agent_files())
