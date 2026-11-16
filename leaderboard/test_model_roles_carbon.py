@@ -7,8 +7,10 @@ mr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mr)
 
 
-def test_carbon_has_an_openrouter_route_and_its_own_alias():
-    assert mr.MODELS['google/gemini-4-carbon'] == ('openrouter', 'google/gemini-4-carbon')
+def test_carbon_has_a_gemini_route_and_its_own_alias():
+    for suffix in ('carbon', 'hydrogen', 'argon'):
+        model = 'google/gemini-4-' + suffix
+        assert mr.MODELS[model] == ('gemini', model)
     assert mr.canon('google/gemini-4-carbon') == 'google/gemini-4-carbon'
     assert mr.canon('google/gemini-4-argon') == 'google/gemini-4-argon'   # the two never collide
 
@@ -25,7 +27,7 @@ def test_geminis_enter_six_pools_after_seeds_without_scores(tmp_path, monkeypatc
         expected = [mr.MODELS[m][1] for m in mr.SEED[role]]
         assert data['roles'][role] == expected + mr.CANDIDATES[role]
         for model in mr.CANDIDATES[role]:
-            assert data['routes'][model] == dict(cli='openrouter', canonical=model)
+            assert data['routes'][model] == dict(cli='gemini', canonical=model)
             assert model not in data['evidence'][role]
             # One day never qualifies, even with perfect outcomes.
             ev = {role: {model: dict(n=20, k=20, days={'2026-01-01'})}}

@@ -72,9 +72,9 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         raise ValueError('--explore model is not in the role {} pool: {}'.format(role, explore))
     chosen = explore or model or eligible[0]
     route = data['routes'].get(chosen)
-    if isinstance(route, dict) and (role in JUDGMENT or (not model and route.get('cli') == 'openrouter')):
+    if isinstance(route, dict) and (role in JUDGMENT or (not model and route.get('cli') in ('openrouter', 'gemini'))):
         executor = route.get('cli')
-        if executor not in ('codex', 'claude', 'openrouter'):
+        if executor not in ('codex', 'claude', 'openrouter', 'gemini'):
             raise ValueError('role {} selected {}; unsupported executor route'.format(role, chosen))
     if not isinstance(route, dict) or not route.get('canonical') or route.get('cli') != executor:
         raise ValueError('role {} selected {}; no compatible {} route (no silent fallback)'.format(role, chosen, executor))
@@ -112,7 +112,7 @@ def main(argv=None):
     parser.add_argument('--role', default='batch')
     # openrouter: a model routed through OpenRouter (run by codex with LAUNCH_PROVIDER=openrouter), e.g. a
     # third-family referee when the GPT referees fail their plants (11-09: 3 of 12 caught).
-    parser.add_argument('--executor', choices=('codex','claude','openrouter'), default='codex')
+    parser.add_argument('--executor', choices=('codex','claude','openrouter','gemini'), default='codex')
     parser.add_argument('--model', default='')
     parser.add_argument('--explore', default='', help='select a candidate from this role pool without an override')
     parser.add_argument('--model-override', default='')

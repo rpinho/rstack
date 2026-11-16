@@ -58,14 +58,24 @@ def command(backend, executable, model, effort, directory, output, budget='1.00'
         guard = (['--dangerously-bypass-approvals-and-sandbox'] if mode == 'bypass'
                  else ['--sandbox', mode])
         provider = os.environ.get('LAUNCH_PROVIDER', '')
-        if provider not in ('', 'openrouter'):
+        if provider not in ('', 'openrouter', 'gemini'):
             raise ValueError('unsupported LAUNCH_PROVIDER')
         provider_args = (['-c', 'model_provider="openrouter"',
                          '-c', 'model_providers.openrouter.name="OpenRouter"',
                          '-c', 'model_providers.openrouter.base_url="https://openrouter.ai/api/v1"',
                          '-c', 'model_providers.openrouter.wire_api="responses"',
                          '-c', 'model_providers.openrouter.env_key="OPENROUTER_API_KEY"']
-                         if provider else [])
+                         if provider == 'openrouter' else [])
+        if provider == 'gemini':
+            provider_args = ['-c', 'model_provider="gemini"',
+                '-c', 'model_providers.gemini.name="Gemini"',
+                '-c', 'model_providers.gemini.base_url="https://generativelanguage.googleapis.com/v1beta/openai/"',
+                '-c', 'model_providers.gemini.wire_api="responses"',
+                '-c', 'model_providers.gemini.env_key="GEMINI_API_KEY"',
+                '-c', 'model_providers.gemini.request_max_retries=0',
+                '-c', 'model_providers.gemini.stream_max_retries=0',
+                '-c', 'features.apps=false', '-c', 'features.multi_agent=false',
+                '-c', 'web_search="disabled"']
         return [executable, 'exec', '--ignore-user-config', '--skip-git-repo-check',
                 '--cd', str(directory), '-m', model, '-c', 'model_reasoning_effort='+effort,
                 *provider_args, *guard, '-o', str(output), '-']
@@ -121,6 +131,15 @@ def main(argv=None):
     cmd = command(a.backend, a.executable, a.model, a.effort, a.directory, a.output, a.budget,
                   a.allowed_tools)
     if a.backend == 'codex':
+        if os.environ.get('LAUNCH_PROVIDER') == 'gemini':
+            from gemini_transport import bridge
+            if not os.environ.get('GEMINI_API_KEY'):
+                print('agent_executor: missing GEMINI_API_KEY', file=sys.stderr)
+                return 2
+            # Current Codex supports only Responses; Google exposes Chat Completions.
+            with bridge() as base_url:
+                cmd[-1:-1] = ['-c', 'model_providers.gemini.base_url=' + json.dumps(base_url)]
+                return subprocess.call(cmd, cwd=a.directory)
         return subprocess.call(cmd, cwd=a.directory)
     # Preserve the provider's JSON result, including usage and budget errors.
     expired = threading.Event()

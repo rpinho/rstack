@@ -207,18 +207,18 @@ lessons=$(rh --root "${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-$PWD/.runtime}}" le
 start=1; [[ -n $LAUNCH_RESUME ]] && start=2
 for (( i = start; i <= 5; i++ )); do
   sel_exec=$backend
-  [[ ${LAUNCH_PROVIDER:-} == openrouter && $backend == codex ]] && sel_exec=openrouter
+  [[ ${LAUNCH_PROVIDER:-} == (openrouter|gemini) && $backend == codex ]] && sel_exec=$LAUNCH_PROVIDER
   selection=$(python3 "$selector" --role "$LAUNCH_ROLE" --executor "$sel_exec" --model "$LAUNCH_MODEL" --explore "$LAUNCH_EXPLORE" --model-override "$LAUNCH_MODEL_OVERRIDE" --made-by "$LAUNCH_MADE_BY" --job "$job" --lane "$lane" --spec "$spec" --print-route --log "$log" --receipt "$log.selection.json") || { print -- "exit 2 model-selection-refused $(date)" >> "$log"; exit 2; }
   selected_route=("${(@f)selection}")
   m=$selected_route[1]; backend=$selected_route[2]
   case $backend in
     codex) cx=${LAUNCH_CODEX:-codex};;
-    openrouter) backend=codex; export LAUNCH_PROVIDER=openrouter; cx=${LAUNCH_CODEX:-codex};;
+    openrouter|gemini) export LAUNCH_PROVIDER=$backend; backend=codex; cx=${LAUNCH_CODEX:-codex};;
     claude) cx=${LAUNCH_CLAUDE:-claude};;
     *) print -u2 -- "launch.sh refused $job: unsupported executor route $backend"; exit 2;;
   esac
   # Authentication is read only by the executing shell, never put in a receipt or command file.
-  if [[ -n ${LAUNCH_PROVIDER:-} && ( $LAUNCH_PROVIDER != openrouter || $backend != codex ) ]]; then
+  if [[ -n ${LAUNCH_PROVIDER:-} && ( $LAUNCH_PROVIDER != (openrouter|gemini) || $backend != codex ) ]]; then
     print -u2 -- "launch.sh refused $job: unsupported LAUNCH_PROVIDER"; exit 2
   fi
   # Shared context every job gets, injected here and never counted against the word cap above:
@@ -236,6 +236,10 @@ for (( i = start; i <= 5; i++ )); do
     if [[ ${LAUNCH_PROVIDER:-} == openrouter ]]; then
       export OPENROUTER_API_KEY="$(cat "$HOME/.config/openrouter/key")" || exit 2
       [[ -n $OPENROUTER_API_KEY ]] || { print -u2 -- 'missing OpenRouter key'; exit 2; }
+    fi
+    if [[ ${LAUNCH_PROVIDER:-} == gemini ]]; then
+      export GEMINI_API_KEY="$(cat "$HOME/.config/gemini/api_key")" || exit 2
+      [[ -n $GEMINI_API_KEY ]] || { print -u2 -- 'missing Gemini key'; exit 2; }
     fi
     nice -n 10 python3 "${self:h:h}/harness/agent_executor.py" --backend "$backend" \
       --executable "$cx" --directory "$dir" --model "$m" --effort "$LAUNCH_EFFORT" \
@@ -292,10 +296,16 @@ for (( i = start; i <= 5; i++ )); do
     else rmarks='$HOME/'${(q)remote_marks}
     fi
     # The host's ssh PATH is the system one; ~/.local/bin goes first there too (the osascript shim).
+    remote_auth=''
+    if [[ ${LAUNCH_PROVIDER:-} == openrouter ]]; then
+      remote_auth='export OPENROUTER_API_KEY=$(cat "$HOME/.config/openrouter/key")'
+    elif [[ ${LAUNCH_PROVIDER:-} == gemini ]]; then
+      remote_auth='export GEMINI_API_KEY=$(cat "$HOME/.config/gemini/api_key")'
+    fi
     remote="cd ${(q)dir} 2>/dev/null || { echo ${(q)missing} >&2; exit 2; }
 export PATH=\$HOME/.local/bin:/opt/homebrew/bin:\$PATH
-${LAUNCH_PROVIDER:+export LAUNCH_PROVIDER=${(q)LAUNCH_PROVIDER}
-export OPENROUTER_API_KEY=\$(cat \$HOME/.config/openrouter/key)}
+${LAUNCH_PROVIDER:+export LAUNCH_PROVIDER=${(q)LAUNCH_PROVIDER}}
+$remote_auth
 mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
 mkdir -p $rmarks 2>/dev/null || true
 echo \$\$ > $rmarks/${(q)${job:t}}.pid 2>/dev/null || true
@@ -368,6 +378,8 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
   python3 "$selector" --log "$log" --receipt "$log.selection.json" --outcome "$rc" || exit 2
   (( rc != 0 && i < 5 )) || break
   [[ $backend == codex ]] || break  # A Claude retry must not reset its spend cap.
+  # A quota response ends this model's attempt even if it also says 'at capacity'.
+  if [[ ${LAUNCH_PROVIDER:-} == gemini ]] && grep -Eqi '429|RESOURCE_EXHAUSTED|quota' "$attempt_log"; then break; fi
   tail -40 "$attempt_log" | grep -q 'at capacity' || break
   sleep $(( ${LAUNCH_RETRY_SECONDS:-300} * i ))
 done
