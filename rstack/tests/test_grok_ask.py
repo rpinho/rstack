@@ -1,6 +1,7 @@
 """Grok Bot contract tests: fake HTTP/CDP only, isolated HOME and state."""
 import base64
 import contextlib
+import datetime as dt
 import fcntl
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -45,6 +46,11 @@ class FakeCDP:
         self.fragment = False
         self.wrong_target = False
         self.duplicate_target = False
+        self.missing_bot = False
+        self.sent_prompts = []
+        self.syndication = None
+        self.http_requests = []
+        self.events = []
 
     def __enter__(self):
         fake = self
@@ -62,6 +68,15 @@ class FakeCDP:
                 self.wfile.flush()
 
             def do_GET(self):
+                if self.path.startswith('/tweet-result?'):
+                    fake.http_requests.append(self.path)
+                    fake.events.append('syndication')
+                    data = json.dumps(fake.syndication).encode()
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 if self.path == '/json/list':
                     page = dict(type='page', title='Unrelated' if fake.wrong_target else 'Grok Bot',
                                 url='app://grok', webSocketDebuggerUrl='ws://127.0.0.1:{}/devtools/page/test'.format(fake.port))
@@ -107,12 +122,17 @@ class FakeCDP:
                             value = True
                             if action == 'ready':
                                 value = fake.ready
+                            if action == 'new' and fake.missing_bot:
+                                reply['result'] = dict(exceptionDetails=dict(text='bot not found in the sidebar'))
+                            if action == 'snapshot':
+                                value = dict(users=len(fake.sent_prompts), assistants=len(fake.sent_prompts))
                             if action == 'send':
                                 data = json.loads(re.search(r'const data = (.*?);\n', expression)[1])
                                 assert data['prompt'] == fake.prompt
+                                fake.sent_prompts.append(fake.prompt)
                                 if fake.on_send:
                                     fake.on_send(fake.prompt)
-                            if action == 'read':
+                            if action in ('read', 'post_read'):
                                 if fake.dom_error:
                                     reply['result'] = dict(exceptionDetails=dict(text='fixture DOM failure'))
                                 else:
@@ -495,3 +515,306 @@ def test_progress_text_counts_as_busy():
     src = (TOOLS / '_grok_ask.py').read_text()
     assert 'is typing|Typing…' in src
     assert _re.search(r'is typing|Typing…|Typing\.\.\.|Searching X posts|Searching the web', 'Queries is typing\nTyping…')
+
+# grok-post uses the same fake CDP transport, with an additional HTTP syndication stub.
+@pytest.fixture
+def posting(isolated, monkeypatch):
+    folder, config = isolated
+    root = folder / 'rh-root'
+    lane = root / 'lanes/fixture'
+    lane.mkdir(parents=True)
+    monkeypatch.setenv('RH_ENV_FILE', str(folder / 'no-env-file'))
+    monkeypatch.setenv('RH_DRAFT_ARCHIVE', str(folder / 'draft-archive'))
+    monkeypatch.setenv('RH_X_REPLIED', str(folder / 'replied.json'))
+    (folder / 'replied.json').write_text('[]')
+    text = 'A fixed sample has three distinct periods.\nThe approved text stays exact.\n'
+    draft = folder / 'draft.txt'
+    draft.write_bytes(text.encode())
+    digest = hashlib.sha256(draft.read_bytes()).hexdigest()
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    row = dict(id='o1', lane='fixture', status='approved', channel='x_post',
+               to_key='@fixture_account', purpose='Share measured periods',
+               draft_path=str(draft), draft_sha256=digest,
+               approval=dict(utc=now, by='owner', quote='Send these exact words', sha256=digest),
+               lint=dict(ok=True, sha256=digest))
+    ledger_path = lane / 'OUTREACH.jsonl'
+    sent_log, page_log = folder / 'rh-calls.json', folder / 'pages.json'
+    rh_stub, notify_stub = folder / 'rh-stub.py', folder / 'notify-stub.py'
+    rh_stub.write_text('''import json,sys
+from pathlib import Path
+root = Path(sys.argv[sys.argv.index('--root')+1])
+assert sys.argv[sys.argv.index('outreach')+1] == 'sent'
+lane, ident = sys.argv[sys.argv.index('sent')+1:sys.argv.index('sent')+3]
+p = root/'lanes'/lane/'OUTREACH.jsonl'
+row = [json.loads(s) for s in p.read_text().splitlines()][-1]
+assert row['id'] == ident and row['status'] == 'approved' and row['gate_attempt']['path'] == 'grok-post'
+row.update(status='sent',sent={'message_id':sys.argv[sys.argv.index('--message-id')+1],'via':'grok'})
+with p.open('a') as f: f.write(json.dumps(row)+'\\n')
+Path(sys.argv[1]).write_text(json.dumps(sys.argv[2:]))
+''')
+    notify_stub.write_text('import json,sys\nfrom pathlib import Path\nPath(sys.argv[1]).write_text(json.dumps(sys.argv[2:]))\n')
+    post_config = folder / 'grok-post.json'
+    monkeypatch.setenv('GROK_POST_CONFIG', str(post_config))
+    options = dict(post_account='fixture_account', post_host='local', rh_root=str(root),
+                   rh_command=[sys.executable, str(rh_stub), str(sent_log)],
+                   notify_command=[sys.executable, str(notify_stub), str(page_log)],
+                   ledger_path=str(folder / 'post-ledger.jsonl'))
+
+    class Posting:
+        def setup(self, fake):
+            configure(isolated, fake.port)
+            options['syndication_url'] = 'http://127.0.0.1:{}/tweet-result'.format(fake.port)
+            self.save()
+            fake.syndication = dict(id_str='9001', text=text,
+                                    user=dict(screen_name='fixture_account'))
+            def answer(prompt):
+                fake.events.append(prompt if prompt in ('send', 'cancel, do not send') else 'draft')
+                if prompt == 'send':
+                    fake.answer = json.dumps([dict(status='sent', id='9001',
+                        posted_url='https://x.com/fixture_account/status/9001',
+                        account='fixture_account', recipient=row['to_key'])])
+                elif prompt == 'cancel, do not send':
+                    fake.answer = '[{"status":"cancelled"}]'
+                else:
+                    fake.answer = json.dumps([dict(draft=self.returned_draft)])
+            fake.on_send = answer
+        def save(self):
+            post_config.write_text(json.dumps(options))
+            ledger_path.write_text(json.dumps(row) + '\n')
+        def run(self, *args):
+            return subprocess.run([sys.executable, str(TOOLS / 'grok-post'), '--rh', 'fixture/o1',
+                '--text-file', str(draft), '--timeout', '3', *args], capture_output=True, text=True, timeout=8)
+        def records(self):
+            return [json.loads(s) for s in (folder / 'post-ledger.jsonl').read_text().splitlines()]
+    p = Posting()
+    p.row, p.text, p.draft, p.options = row, text, draft, options
+    p.sent_log, p.page_log, p.ledger_path = sent_log, page_log, ledger_path
+    p.returned_draft = text
+    return p
+
+
+def test_post_exact_draft_send_verify_and_rh_receipt(posting, isolated):
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        result = posting.run('--post')
+    assert result.returncode == 0, result.stderr
+    assert fake.events == ['draft', 'send', 'syndication']
+    assert fake.http_requests == ['/tweet-result?id=9001&token=x']
+    assert 'Do not compose' in fake.sent_prompts[0] and posting.text in fake.sent_prompts[0]
+    assert fake.sent_prompts[1] == 'send'
+    args = json.loads(posting.sent_log.read_text())
+    assert args[-8:] == ['outreach', 'sent', 'fixture', 'o1', '--message-id', '9001', '--via', 'grok']
+    record = posting.records()[-1]
+    assert record['rh_id'] == 'fixture/o1' and record['posted_id'] == '9001'
+    assert record['verified_fields']['author_screen_name'] == 'fixture_account'
+    assert 'Verified:' in result.stdout and not posting.page_log.exists()
+
+
+@pytest.mark.parametrize('draft', ['changed character', 'trailing space', 'unicode', 'invalid json'])
+def test_post_changed_draft_cancels_exit_four(posting, draft):
+    posting.returned_draft = {'changed character': posting.text.replace('fixed', 'mixed'),
+                             'trailing space': posting.text + ' ',
+                             'unicode': posting.text.replace('periods', 'périods')}.get(draft)
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        result = posting.run('--post')
+    assert result.returncode == 4, result.stderr
+    assert fake.events == ['draft', 'cancel, do not send']
+    assert not posting.sent_log.exists() and not fake.http_requests
+    record = posting.records()[-1]
+    assert record['cancelled'] and record['diff'] and record['draft_response']
+
+
+@pytest.mark.parametrize('change', ['unapproved', 'sent', 'hash', 'text', 'expired', 'future',
+                                    'recipient', 'channel', 'attempt', 'target'])
+def test_post_refuses_bad_rh_before_cdp(posting, change):
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        args = ['--post']
+        if change == 'unapproved': posting.row['status'] = 'linted'
+        if change == 'sent': posting.row['sent'] = dict(message_id='old')
+        if change == 'hash': posting.row['approval']['sha256'] = '0' * 64
+        if change == 'text': posting.row['text'] = 'different row text'
+        if change in ('expired', 'future'):
+            delta = dt.timedelta(hours=-49 if change == 'expired' else 1)
+            posting.row['approval']['utc'] = (dt.datetime.now(
+                dt.timezone.utc) + delta).isoformat()
+        if change == 'recipient':
+            posting.row.update(channel='x_dm', to_key='@different')
+            args = ['--dm', 'fixture_recipient']
+        if change == 'channel': posting.row['channel'] = 'email'
+        if change == 'attempt': posting.row['gate_attempt'] = dict(path='previous')
+        if change == 'target':
+            posting.row.update(channel='x_reply', in_reply_to='https://x.com/fixture_target/status/12')
+            args = ['--reply-to', 'https://x.com/fixture_target/status/13']
+        posting.save()
+        result = posting.run(*args)
+    assert result.returncode == 2, result.stderr
+    assert not fake.methods and not posting.sent_log.exists()
+
+
+@pytest.mark.parametrize('change', ['author', 'reply', 'text', 'id', 'endpoint', 'malformed'])
+def test_post_bad_public_verification_exit_five_and_pages(posting, change):
+    posting.row.update(channel='x_reply', in_reply_to='https://x.com/fixture_target/status/12')
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        fake.syndication['in_reply_to_status_id_str'] = '12'
+        if change == 'author': fake.syndication['user']['screen_name'] = 'wrong_account'
+        if change == 'reply': fake.syndication['in_reply_to_status_id_str'] = '13'
+        if change == 'text': fake.syndication['text'] += 'changed'
+        if change == 'id': fake.syndication['id_str'] = '9002'
+        if change == 'endpoint': fake.syndication = {}
+        if change == 'malformed': fake.syndication = None
+        result = posting.run('--reply-to', posting.row['in_reply_to'])
+    assert result.returncode == 5, result.stderr
+    assert fake.events == ['draft', 'send', 'syndication']
+    assert not posting.sent_log.exists()
+    assert 'verification failed' in posting.page_log.read_text()
+    assert posting.records()[-1]['exit_code'] == 5
+    row = json.loads(posting.ledger_path.read_text().splitlines()[-1])
+    assert row['status'] == 'approved' and row['gate_attempt']['path'] == 'grok-post'
+    # An ambiguous outcome remains single use.
+    with FakeCDP() as retry:
+        configure((None, Path(os.environ['GROK_ASK_CONFIG'])), retry.port)
+        again = posting.run('--reply-to', posting.row['in_reply_to'])
+    assert again.returncode == 2 and not retry.sent_prompts
+
+
+def test_post_reply_verified(posting):
+    posting.row.update(channel='x_reply', in_reply_to='https://x.com/fixture_target/status/12')
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        fake.syndication['in_reply_to_status_id_str'] = '12'
+        result = posting.run('--reply-to', posting.row['in_reply_to'])
+    assert result.returncode == 0, result.stderr
+    assert posting.records()[-1]['verified_fields']['in_reply_to_status_id_str'] == '12'
+
+
+def test_post_dry_run_cancels_without_send_or_receipt(posting):
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        result = posting.run('--post', '--dry-run')
+    assert result.returncode == 0, result.stderr
+    assert fake.events == ['draft', 'cancel, do not send']
+    assert not posting.sent_log.exists() and not fake.http_requests
+    assert not json.loads(posting.ledger_path.read_text().splitlines()[-1]).get('gate_attempt')
+    assert 'Nothing posted' in result.stdout
+
+
+def test_post_missing_bot_never_types(posting):
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        fake.missing_bot = True
+        result = posting.run('--post')
+    assert result.returncode == 2, result.stderr
+    assert 'create the configured post_bot_name' in result.stderr
+    assert not fake.sent_prompts and 'Input.insertText' not in fake.methods
+
+
+def test_post_line_endings_only_normalized(posting):
+    posting.returned_draft = posting.text.replace('\n', '\r\n')
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        fake.syndication['text'] = posting.returned_draft
+        result = posting.run('--post')
+    assert result.returncode == 0, result.stderr
+
+
+def test_dm_confirmation_and_rh_only(posting):
+    posting.row.update(channel='x_dm', to_key='@fixture_person')
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        result = posting.run('--dm', 'fixture_person')
+    assert result.returncode == 0, result.stderr
+    assert fake.events == ['draft', 'send'] and not fake.http_requests
+    assert 'no public endpoint' in result.stdout and posting.sent_log.exists()
+    assert posting.records()[-1]['verified_fields']['confirmation'] == 'Grok only; no public endpoint'
+
+
+def test_post_host_cannot_switch_fixed_account(posting):
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        result = posting.run('--host', 'other_host', '--post')
+    assert result.returncode == 2 and not fake.methods
+
+
+def test_post_rh_failure_after_verified_send_pages_and_retains_attempt(posting):
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        posting.options['rh_command'] = [sys.executable, '-c', 'raise SystemExit(2)']
+        posting.save()
+        result = posting.run('--post')
+    assert result.returncode == 5 and 'rh outreach sent failed' in result.stderr
+    assert fake.events == ['draft', 'send', 'syndication']
+    assert posting.page_log.exists() and not posting.sent_log.exists()
+    assert posting.records()[-1]['verified_fields']['id'] == '9001'
+
+
+@pytest.mark.parametrize('change', ['status', 'recipient', 'account', 'id'])
+def test_dm_requires_explicit_matching_confirmation(posting, change):
+    posting.row.update(channel='x_dm', to_key='@fixture_person')
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        original = fake.on_send
+        def answer(prompt):
+            original(prompt)
+            if prompt == 'send':
+                response = json.loads(fake.answer)[0]
+                response[change] = 'wrong'
+                fake.answer = json.dumps([response])
+        fake.on_send = answer
+        result = posting.run('--dm', 'fixture_person')
+    assert result.returncode == 5 and posting.page_log.exists()
+    assert not posting.sent_log.exists() and not fake.http_requests
+
+
+def test_approval_changed_while_drafting_cancels_before_send(posting):
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        original = fake.on_send
+        def answer(prompt):
+            original(prompt)
+            if prompt not in ('send', 'cancel, do not send'):
+                posting.row['status'] = 'dropped'
+                posting.save()
+        fake.on_send = answer
+        result = posting.run('--post')
+    assert result.returncode == 2, result.stderr
+    assert fake.events == ['draft', 'cancel, do not send']
+    assert not posting.sent_log.exists() and not fake.http_requests
+
+
+def test_post_draft_transport_timeout_cancels_without_send(posting):
+    with FakeCDP(busy=True) as fake:
+        posting.setup(fake)
+        result = posting.run('--post', '--timeout', '0.4')
+    assert result.returncode == 3 and 'timeout' in result.stderr
+    assert fake.events == ['draft', 'cancel, do not send']
+    assert posting.records()[-1]['cancelled'] and not posting.sent_log.exists()
+
+
+def test_post_send_timeout_is_uncertain_and_pages(posting):
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        original = fake.on_send
+        def answer(prompt):
+            original(prompt)
+            if prompt == 'send':
+                fake.busy = True
+        fake.on_send = answer
+        result = posting.run('--post', '--timeout', '0.6')
+    assert result.returncode == 5 and 'timeout' in result.stderr
+    assert fake.events == ['draft', 'send']
+    assert posting.page_log.exists() and not posting.sent_log.exists()
+
+
+def test_post_uses_real_rh_sent_implementation(posting):
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        posting.options['rh_command'] = [sys.executable, str(TOOLS.parents[1] / 'harness/rh.py')]
+        posting.save()
+        result = posting.run('--post')
+    assert result.returncode == 0, result.stderr
+    row = json.loads(posting.ledger_path.read_text().splitlines()[-1])
+    assert row['sent']['via'] == 'grok' and row['sent']['message_id'] == '9001'
+    assert row['status'] == 'sent'

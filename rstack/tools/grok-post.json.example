@@ -1,0 +1,10 @@
+{
+  "post_bot_name": "Posts",
+  "post_host": "project-host",
+  "post_account": "",
+  "rh_root": "~/.local/share/research-harness",
+  "rh_command": ["rh"],
+  "ledger_path": "~/.local/state/rstack/grok-post.jsonl",
+  "notify_command": ["tell-general"],
+  "syndication_url": "https://cdn.syndication.twimg.com/tweet-result"
+}

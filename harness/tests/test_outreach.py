@@ -69,7 +69,8 @@ def approve(env):
     return ident, path
 
 
-def test_lifecycle_all_commands(env):
+@pytest.mark.parametrize('via', ['api', 'grok'])
+def test_lifecycle_all_commands(env, via):
     root, lane = env
     ident, path = approve(env)
     before = rh.rows(lane / 'OUTREACH.jsonl')
@@ -77,10 +78,11 @@ def test_lifecycle_all_commands(env):
     assert row['to_key'] == 'Contact Alpha'
     assert row['approval']['quote'] == 'Send this one'
     assert row['approval']['sha256'] == hashlib.sha256(path.read_bytes()).hexdigest()
-    assert cli(root, 'sent', 'test', ident, '--message-id', 'm1', '--thread-id', 't1', '--via', 'api')[0] == 0
+    assert cli(root, 'sent', 'test', ident, '--message-id', 'm1', '--thread-id', 't1', '--via', via)[0] == 0
     row = outreach.current(lane, rh)[ident]
     assert outreach.time_of(row['follow_up_due']) - outreach.time_of(row['sent']['utc']) == dt.timedelta(days=7)
     assert row['sent']['thread_id'] == 't1'
+    assert row['sent']['via'] == via
     assert ident in cli(root, 'due', '--all')[1]
     assert ident not in cli(root, 'due')[1]
     assert cli(root, 'reply', 'test', ident, '--summary', 'A staging control exists')[0] == 0

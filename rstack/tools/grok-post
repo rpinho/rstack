@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Send exact approved outreach through the configured fixed Grok account."""
+from _grok_post import main
+
+if __name__ == '__main__':
+    raise SystemExit(main())

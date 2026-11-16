@@ -1051,7 +1051,7 @@ def arguments(sub):
             if action in ('sent', 'record-sent'):
                 p.add_argument('--message-id', required=True)
                 p.add_argument('--thread-id')
-                p.add_argument('--via', required=True, choices=('api', 'browser'))
+                p.add_argument('--via', required=True, choices=('api', 'browser', 'grok'))
                 if action == 'sent':
                     p.add_argument('--utc', help='when it actually went out, when that was before now')
                 else:

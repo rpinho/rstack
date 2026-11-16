@@ -60,7 +60,7 @@ Each call keeps its policy decision row (`utc`, `host`, `decision`, `method`, `p
 
 The standard-library policy can be called alone: `xurl-policy /2/usage/tweets` prints `ALLOW` or `BLOCK`, logs the decision, and exits 0 or 86. It never executes an API request itself. Configuration is shared with `xurl` above.
 
-Allowed classes match the original gate: owner bookmarks GET; POST `/2/tweets` (the posting gate still applies); DELETE `/2/tweets/<numeric-id>`; approved POSTs under `/2/dm_conversations/`; `media`; GET `/2/usage` and its children; and local `auth`, `version` and help commands. Everything else, including tweet/user lookups, search, mentions, likes and follows, refuses. Grok Bot finds posts; the browser reads exact text and handles likes, follows and replies. A nonempty `XURL_ALLOW_REASON` permits a one-off exception and records the reason in `why`. Configuration errors cannot be overridden. Body/file arguments require an explicit non-GET method, preventing an implicit POST from being admitted as a bookmark GET. These checks do not independently verify post ownership or DM approval; existing posting/approval boundaries and the API remain responsible for those.
+Allowed classes match the original gate: owner bookmarks GET; POST `/2/tweets` (the posting gate still applies); DELETE `/2/tweets/<numeric-id>`; approved POSTs under `/2/dm_conversations/`; `media`; GET `/2/usage` and its children; and local `auth`, `version` and help commands. Everything else, including tweet/user lookups, search, mentions, likes and follows, refuses. Grok Bot finds posts; the browser reads exact text and handles likes and follows, checking its logged-in handle before each action. Approved posts, replies and DMs default to `grok-post`. A nonempty `XURL_ALLOW_REASON` permits a one-off exception and records the reason in `why`. Configuration errors cannot be overridden. Body/file arguments require an explicit non-GET method, preventing an implicit POST from being admitted as a bookmark GET. These checks do not independently verify post ownership or DM approval; existing posting/approval boundaries and the API remain responsible for those.
 
 ## x-api-bypass-guard
 
@@ -289,7 +289,7 @@ alternate executables (used for stub tests).
 
 **Grok rows are leads: exact text must be read in the browser before anything is
 scored.** A zero-row Grok result is not proof that no prior art exists. Grok finds,
-the browser reads exact text, and the X API only pulls bookmarks and posts.
+the browser reads exact text, and approved posts, replies and DMs default to `grok-post`.
 
 Fake-only coverage: `python3 -m pytest -q rstack/tests/test_grok_ask.py
 rstack/tests/test_grok_x_search.py harness/tests/test_x_searches.py`. No app or
@@ -324,3 +324,86 @@ HTTPS spellings of the same destination match. Missing scan inputs fail with exi
 Fleet help (`-h` or `--help`) prints documentation without inspecting sessions. Dry mode retains the
 save/compact decision output and changes no session state. A completed reset writes an empty state
 object rather than deleting the previous state file.
+
+## grok-post
+
+Posts go through the fixed Grok account; the browser is only for likes and follows,
+with its logged-in handle checked before each action. Grok transports the approved
+words and must never compose them.
+
+```sh
+grok-post --rh LANE/ID --reply-to https://x.com/example/status/123 --text-file DRAFT --dry-run
+grok-post --rh LANE/ID --post --text-file DRAFT
+grok-post --rh LANE/ID --dm RECIPIENT --text-file DRAFT
+```
+
+Use exactly one of `--reply-to`, `--post`, or `--dm`. The row must already be linted,
+approved, unsent, and approved within the last 48 hours (the outreach health window).
+The file, ledger draft, lint hash and approval hash must match byte for byte,
+including trailing newlines. Replies must match the approved target; DMs must match
+the approved recipient. Existing public outreach reach checks still apply.
+Media-bearing rows are refused by this text-only tool.
+
+Copy [`grok-post.json.example`](grok-post.json.example) to
+`~/.config/rstack/grok-post.json`, or select it with `GROK_POST_CONFIG`. Set the fixed
+host and account explicitly; `--host` may only repeat that configured host. Configure
+the project host independently of any other account's app. The named posting bot
+must already exist in the sidebar; create it manually if missing. No bot creation,
+account switching, app launch, restart, installation or API posting is performed.
+
+| Config key | Default and meaning |
+| --- | --- |
+| `post_bot_name` | `Posts`; dedicated existing bot, distinct from the query `bot_name`. |
+| `post_host` | `m5`; fixed SSH alias, or `local` for a local endpoint. |
+| `post_account` | Empty, refuses until configured; exact expected X screen_name without `@`. |
+| `rh_root` | `RH_OUTREACH_ROOT`, then `RH_ROOT`, then `~/.local/share/research-harness`; contains `lanes/`. |
+| `rh_command` | `["rh"]`, or `["$RH"]` when that environment variable is set; argv prefix for sent bookkeeping. |
+| `ledger_path` | `$RSTACK_STATE_DIR/grok-post.jsonl`, otherwise `$XDG_STATE_HOME/rstack/grok-post.jsonl`, otherwise `~/.local/state/rstack/grok-post.jsonl`. |
+| `notify_command` | `["tell-general"]`; argv prefix, called with a single failure message argument. |
+| `syndication_url` | `https://cdn.syndication.twimg.com/tweet-result`; HTTP loopback override is for fake tests only. |
+
+CDP settings come from `GROK_ASK_CONFIG` / `~/.config/rstack/grok-ask.json` and may
+also be overridden in the posting config: `port`, `target_title`, `target_url`,
+`composer`, `send`, `user_message`, `assistant_message`, `busy`, `busy_text`,
+`poll_seconds`, `settle_seconds`, and `answer_quiet_seconds`. The sidebar button or
+link must have an aria-label whose first comma-separated part equals `post_bot_name`;
+`button[aria-label="View conversation details"]` must show that bot's name.
+Posting uses DOM answers following the current user message, with a snapshot of
+message counts before each turn. It never falls back to cached transcripts.
+
+The draft instruction contains unique delimiters and an authoritative JSON string
+of the exact approved text. Grok must return one JSON array with one object whose
+`draft` field contains the prepared text. Only CRLF/CR versus LF is normalized for
+the draft and public verification comparisons; spaces, punctuation, Unicode and
+trailing newlines remain exact. A mismatch sends `cancel, do not send`, exits **4**,
+and logs the diff and draft response. Keep this ledger private: a mismatch may
+contain approved text or DM content. `--dry-run` also cancels after a matching draft,
+without sending `send`, claiming the row or recording it sent.
+
+After a match, approval and reach are rechecked, the existing outreach posting
+attempt is recorded, and the next command is exactly `send`. The bot is asked for
+`[{"status":"sent","id":"...","posted_url":"...","account":"...","recipient":"..."}]`.
+For public posts, a unique posted URL or numeric ID is also accepted. The tool reads
+`tweet-result?id=ID&token=x` and requires the same ID, exact text, exact account and
+reply target (and no reply target for originals). After verification it runs
+`rh --root ROOT outreach sent LANE ID --message-id ID --via grok` and appends UTC,
+rh ID, target, posted URL/ID and verified fields to the JSONL ledger.
+
+DMs require Grok's explicit `status: sent`, numeric message ID, matching account and
+recipient, plus successful `rh outreach sent`. Their output and ledger explicitly
+say **Grok confirmation plus rh row only; no public endpoint**. They do not receive
+independent public verification.
+
+Usage/approval refusals exit **2**; transport/configuration failures before sending
+exit **3**; draft differences exit **4**. Any uncertain send, failed verification or
+failed sent bookkeeping exits **5** and invokes `notify_command`. A posting attempt
+remains reserved after an uncertain send: reconcile its actual outcome before any
+manual retry. Notification failure is reported on stderr. `--timeout` defaults to
+180 seconds, including host lock and tunnel wait; cancellation after a failed draft
+has a separate bounded five-second window. The host lock is shared with `grok-ask`.
+
+Fake-only tests (CDP, syndication and rh stubs; no live app or X actions):
+
+```sh
+python3 -m pytest -q rstack/tests/test_grok_ask.py harness/tests/test_outreach.py
+```
