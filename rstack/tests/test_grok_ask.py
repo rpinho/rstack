@@ -487,3 +487,11 @@ def test_a_rendered_answer_without_fences_still_parses_one_array():
     for bad in ('Searching X posts', 'Queries\n[{"a": 1}] and [{"b": 2}]'):
         with pytest.raises(ga.AskError):
             ga.parse_answer(bad, [])
+
+
+def test_progress_text_counts_as_busy():
+    """11-15 digest: 'Queries is typing / Typing…' was returned as the answer (exit 3, no JSON)."""
+    import re as _re
+    src = (TOOLS / '_grok_ask.py').read_text()
+    assert 'is typing|Typing…' in src
+    assert _re.search(r'is typing|Typing…|Typing\.\.\.|Searching X posts|Searching the web', 'Queries is typing\nTyping…')
