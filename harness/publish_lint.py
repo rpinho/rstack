@@ -1139,6 +1139,15 @@ class Linter:
                 'xlint_sha256': sha(XLINT.read_bytes()) if XLINT.is_file() else None}
 
 
+def _log_no_packet(body, target):
+    """One line per packet-less PR let through, next to the body (the skip is visible, not silent)."""
+    log = Path(str(Path(body).expanduser().resolve()) + '.no-packet.log')
+    with log.open('a') as stream:
+        stream.write(json.dumps({'utc': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
+                                 'target': target, 'body_sha256': sha(Path(body).expanduser().read_bytes()),
+                                 'decision': 'no-packet PR allowed: science-publish receipt matched'}) + '\n')
+
+
 def receipt_path(packet, body=None):
     return Path(str(Path(body).expanduser().resolve()) + '.publish-lint.json') if body else Path(packet).expanduser().resolve() / '.publish-lint.json'
 
@@ -1178,9 +1187,52 @@ def validate_checkout(snapshot, pinned_files):
             raise ValueError('publish-lint untracked packet file: ' + name)
 
 
-def publication_errors(body, target, now=None):
-    """Read-only gate validation. No networking, packet execution or receipt issuing."""
+NO_PACKET_KINDS = ('corollary', 'record')
+
+
+def no_packet_errors(body, target):
+    """[] when BODY.no-packet.json declares a packet-less corollary or record-only PR, else the reasons.
+
+    11-16 (math C8, a three-line deduction from published results, like merged teorth #205; the owner checked it):
+    publish-lint only runs on a certificate packet, so such a PR could never get a receipt. The declaration says
+    what it is and what it rests on: {"kind": "corollary"|"record", "why": "...", "references": ["url", ...],
+    "target": "<the PR target>"}. Only used when no publish-lint receipt exists for the body, and only by a
+    caller that has already matched a fresh science-publish receipt for these exact bytes.
+    """
+    decl_path = Path(str(Path(body).expanduser().resolve()) + '.no-packet.json')
+    try:
+        decl = json_object(decl_path.read_bytes(), str(decl_path))
+    except OSError:
+        return ['no publish-lint receipt and no {} (a PR with a packet needs rh publish-lint; a packet-less '
+                'corollary or record needs that declaration)'.format(decl_path.name)]
+    errors = []
+    if decl.get('kind') not in NO_PACKET_KINDS:
+        errors.append('{}: kind must be one of {}'.format(decl_path.name, ', '.join(NO_PACKET_KINDS)))
+    if not str(decl.get('why', '')).strip():
+        errors.append('{}: say why there is no packet'.format(decl_path.name))
+    refs = decl.get('references')
+    if not isinstance(refs, list) or not refs or not all(str(r).startswith('https://') for r in refs):
+        errors.append('{}: list the published results it rests on (https URLs)'.format(decl_path.name))
+    if decl.get('target') != target:
+        errors.append('{}: target {!r} is not this PR ({!r})'.format(decl_path.name, decl.get('target'), target))
+    return errors
+
+
+def publication_errors(body, target, now=None, science_receipt_matched=False):
+    """Read-only gate validation. No networking, packet execution or receipt issuing.
+
+    science_receipt_matched: the caller (the PR hook) already matched a fresh science-publish receipt for these
+    exact body bytes. Only then may a packet-less corollary or record-only PR pass without a publish-lint
+    receipt, through its declaration (no_packet_errors); the skip is logged. A body that has a publish-lint
+    receipt is always checked in full, so a PR that carries a packet is never let through this way.
+    """
     # 11-14: the open-PR cap (11-10) is removed. Ricardo: "Why do we have that rule? Just remove it."
+    if science_receipt_matched and not receipt_path('.', body).exists():
+        errors = no_packet_errors(body, target)
+        if errors:
+            return ['publish-lint: ' + e for e in errors]
+        _log_no_packet(body, target)
+        return []
     try:
         path = receipt_path('.', body)
         receipt = json_object(path.read_bytes(), str(path))
