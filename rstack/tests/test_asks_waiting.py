@@ -4,6 +4,9 @@ import importlib.util
 import json
 import os
 import time
+from datetime import date, timedelta
+
+import pytest
 
 from rstack_hookcall import TOOLS
 
@@ -17,6 +20,43 @@ def load():
 
 
 aw = load()
+
+
+@pytest.mark.parametrize('state', ['retired', 'ended'])
+def test_retired_alias_ask_stays_visible_under_retired(tmp_path, monkeypatch, state):
+    monkeypatch.setenv('TMUX_BIN', str(tmp_path / 'no-tmux'))
+    registry = tmp_path / 'registry.json'
+    row = {'status': 'retired' if state == 'retired' else 'active', 'sessions': ['closedb'],
+           'why': 'owner closed challenge'}
+    if state == 'ended':
+        row['end'] = str(date.today() - timedelta(days=1))
+    registry.write_text(json.dumps({'lanes': {'closed': row}}))
+    monkeypatch.setenv('RH_LANE_REGISTRY', str(registry))
+    p = tmp_path / 'projects'
+    transcript(p, 'closedb', [say('Should I submit?', 3600, cwd='/src/closedb')])
+    rows = aw.scan_sessions(p, time.time())
+    assert len(rows) == 1
+    assert 'retired: closed: ' + state in rows[0] and 'Should I submit?' in rows[0]
+    assert 'owner closed challenge' in rows[0]
+
+
+def test_hook_reclassifies_old_host_lists_and_keeps_active_asks(tmp_path, monkeypatch, capsys):
+    import io
+    registry = tmp_path / 'registry.json'
+    registry.write_text(json.dumps({'lanes': {'closed': {'status': 'retired', 'sessions': ['closedb'],
+                                                       'why': 'finished'}}}))
+    monkeypatch.setenv('RH_LANE_REGISTRY', str(registry))
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
+    monkeypatch.setenv('CONDUCTOR_CWD_SUFFIX', '/conductor')
+    d = tmp_path / 'asks-waiting'
+    d.mkdir()
+    (d / 'host.tsv').write_text('2h\tclosedb\tquestion\tShould I submit?\n'
+                               '2h\tworking\tquestion\tMay I proceed?\n')
+    monkeypatch.setattr(aw.sys, 'stdin', io.StringIO('{"cwd":"/src/conductor"}'))
+    assert aw.hook() == 0
+    active, retired = capsys.readouterr().out.split('[asks-waiting] retired')
+    assert 'working' in active and 'closedb' not in active
+    assert 'closedb' in retired and 'finished' in retired and 'Should I submit?' in retired
 
 
 def stamp(ago):

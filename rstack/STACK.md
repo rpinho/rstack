@@ -74,6 +74,8 @@ life and stay private, along with their playbooks.
 
 The family layer is the largest, at 108 items.
 
+Lane lifecycle: [`harness/lane_registry.py`](../harness/lane_registry.py) reads `RH_LANE_REGISTRY` so nudges and launches stop retired/ended lanes and the conductor keeps their asks/reports visible under `retired` without requiring a relay ([configuration](../docs/lane-nudge.md)).
+
 ## The hooks
 
 The main ones. Each exists because something went wrong first. Generic versions of the ones marked **here**

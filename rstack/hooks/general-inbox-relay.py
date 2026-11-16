@@ -18,9 +18,14 @@ conductor would be worse than one missed relay.
 import json
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _hookfail  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'harness'))
+sys.path.append(str(Path(os.environ.get('RH_ROOT') or '~/.local/share/research-harness').expanduser()))
+import lane_registry
 
 INBOX_DIR = os.path.expanduser(os.environ.get('RSTACK_CONDUCTOR_INBOX', '~/.local/state/general-inbox'))
 NOISE = ('ended without the hard-rule lines',)
@@ -38,7 +43,8 @@ def body(event):
         start = int(open(cursor).read().strip())
     except (FileNotFoundError, ValueError):
         start = len(lines)       # first run: start from now, not from the whole history
-    new = []
+    registry = lane_registry.load()
+    new, retired = [], []
     for line in lines[start:]:
         try:
             m = json.loads(line)
@@ -47,13 +53,21 @@ def body(event):
         text = m.get('text') or m.get('msg') or m.get('message') or ''
         if any(n in text for n in NOISE):
             continue
-        new.append('- {}Z [{}] {}'.format(str(m.get('utc', ''))[:16], m.get('from', m.get('lane', '?')), text[:1500]))
+        session = str(m.get('from', m.get('lane', '?')))
+        reason = registry.retired_reason(session, m.get('lane'))
+        line = '- {}Z [{}] {}'.format(str(m.get('utc', ''))[:16], session, text[:1500])
+        if reason:
+            retired.append(line + ' (' + reason + ')')
+        else:
+            new.append(line)
     with open(cursor, 'w') as stream:
         stream.write(str(len(lines)))
-    if new:
+    if new or retired:
         ctx = ('SESSION REPORTS NOT YET RELAYED TO THE OWNER ({}). Relay the substance of each in this reply: '
                'results, decisions he must make, anything blocked. Plain words, grouped by session, no jargon.\n'
-               .format(len(new)) + '\n'.join(new))
+               .format(len(new)) + '\n'.join(new)) if new else ''
+        if retired:
+            ctx += '\nretired (visible history; no relay required):\n' + '\n'.join(retired)
         print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': ctx}}))
     return 0
 

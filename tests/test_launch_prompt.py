@@ -9,12 +9,46 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from datetime import date, timedelta
 
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 LAUNCH = REPO / 'tools/launch.sh'
 ASK = 'Find a better bound for C44 than the printed one, or say plainly that you did not.'
+
+
+@pytest.mark.parametrize('state', ['retired', 'ended', 'held'])
+@pytest.mark.parametrize('job_lane,explicit', [('closedb', ''), ('long-lane', ''), ('other', 'closedb')])
+def test_inactive_registry_refuses_before_host_checks_registration_or_executor(tmp_path, state, job_lane, explicit):
+    row = {'status': 'active' if state == 'ended' else state, 'why': 'challenge finished',
+           'sessions': ['closedb']}
+    if state == 'ended':
+        row['end'] = str(date.today() - timedelta(days=1))
+    path = tmp_path / 'registry.json'
+    path.write_text(json.dumps({'lanes': {'long-lane': row}}))
+    proc, prompt = run(tmp_path, ASK, lane=job_lane,
+                       env={'RH_LANE_REGISTRY': str(path), 'LAUNCH_LANE': explicit,
+                            'LAUNCH_HOST': 'unreachable', 'LAUNCH_RESUME': '1'})
+    assert proc.returncode == 78, proc.stderr
+    assert 'long-lane: ' + state in proc.stderr and 'challenge finished' in proc.stderr
+    assert not prompt and not (tmp_path / 'registry').exists()
+
+
+def test_active_registry_runs_and_default_registry_uses_lanes_root(tmp_path):
+    jobs, env = harness(tmp_path, ASK)
+    (Path(env['LAUNCH_LANE_ROOT']) / 'lanes/REGISTRY.json').write_text(
+        json.dumps({'lanes': {'fixture': {'status': 'active', 'end': str(date.today())}}}))
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path)],
+                          env=env, capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_invalid_registry_refuses_launch(tmp_path):
+    path = tmp_path / 'registry.json'
+    path.write_text('{')
+    proc, prompt = run(tmp_path, ASK, env={'RH_LANE_REGISTRY': str(path)})
+    assert proc.returncode == 78 and 'lane registry' in proc.stderr and not prompt
 
 
 def harness(tmp_path, spec_text, lane='fixture', goal=None, lessons=None):

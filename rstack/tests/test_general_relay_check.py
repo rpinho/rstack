@@ -1,5 +1,9 @@
 """general-relay-check: the conductor cannot end a turn that skipped an injected report (11-14)."""
 import json
+from datetime import date, timedelta
+from pathlib import Path
+
+import pytest
 
 from rstack_hookcall import HOOKS, call as _call
 
@@ -12,6 +16,32 @@ def call(hook, event, env):
     return r
 
 HOOK = HOOKS / 'general-relay-check.py'
+
+
+@pytest.mark.parametrize('state', ['retired', 'ended'])
+def test_retired_reports_are_visible_but_never_demanded_as_relays(tmp_path, state):
+    rows = [dict(**{'from': 'closedb'}, text='old submission question'),
+            dict(**{'from': 'worker', 'lane': 'closed'}, text='old lane result'),
+            dict(**{'from': 'working'}, text='new result')]
+    inbox, event, env = setup(tmp_path, rows, 'working: new result')
+    registry = tmp_path / 'registry.json'
+    entry = {'status': 'retired' if state == 'retired' else 'active', 'sessions': ['closedb'],
+             'why': 'challenge complete'}
+    if state == 'ended':
+        entry['end'] = str(date.today() - timedelta(days=1))
+    registry.write_text(json.dumps({'lanes': {'closed': entry}}))
+    env['RH_LANE_REGISTRY'] = str(registry)
+    result = call(HOOK, event, env)
+    assert not result['blocked'], result
+    assert 'retired: [closedb] closed: ' + state in result['stderr']
+    assert 'challenge complete' in result['stderr'] and 'old lane result' in result['stderr']
+    assert (inbox / 'relay-check.cursor').read_text() == '3'
+    # Retirement must not suppress the outstanding active report.
+    (inbox / 'relay-check.cursor').write_text('0')
+    Path(event['transcript_path']).write_text(json.dumps({'type': 'assistant', 'message': {
+        'content': [{'type': 'text', 'text': 'nothing'}]}}))
+    result = call(HOOK, event, env)
+    assert result['blocked'] and 'working' in result['stdout'] and 'closedb' not in result['stdout']
 
 
 def setup(tmp_path, rows, reply, aliases=None):

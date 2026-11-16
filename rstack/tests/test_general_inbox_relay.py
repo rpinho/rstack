@@ -1,9 +1,31 @@
 """general-inbox-relay: the conductor sees each unrelayed report once; nobody else sees anything (11-14)."""
 import json
+from datetime import date, timedelta
+
+import pytest
 
 from rstack_hookcall import HOOKS, allowed, call
 
 HOOK = HOOKS / 'general-inbox-relay.py'
+
+
+@pytest.mark.parametrize('state', ['retired', 'ended'])
+def test_retired_reports_are_injected_separately_without_a_relay_demand(tmp_path, state):
+    inbox, conductor, env = setup(tmp_path, [
+        dict(**{'from': 'closedb'}, text='old question'),
+        dict(**{'from': 'working'}, text='active result')])
+    entry = {'status': 'retired' if state == 'retired' else 'active', 'sessions': ['closedb'],
+             'why': 'finished'}
+    if state == 'ended':
+        entry['end'] = str(date.today() - timedelta(days=1))
+    registry = tmp_path / 'registry.json'
+    registry.write_text(json.dumps({'lanes': {'closed': entry}}))
+    env['RH_LANE_REGISTRY'] = str(registry)
+    result = call(HOOK, {'cwd': str(conductor)}, env=env)
+    active, retired = result['context'].split('retired (visible history; no relay required):')
+    assert '(1)' in active and 'active result' in active and 'closedb' not in active
+    assert 'closedb' in retired and 'old question' in retired and 'closed: ' + state in retired
+    assert (inbox / 'relayed.cursor').read_text() == '2'
 
 
 def setup(tmp_path, rows):

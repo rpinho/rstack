@@ -12,9 +12,14 @@ never loop, and a failure inside the hook allows the stop and says so on stderr.
 import json
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _hookfail  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'harness'))
+sys.path.append(str(Path(os.environ.get('RH_ROOT') or '~/.local/share/research-harness').expanduser()))
+import lane_registry
 
 INBOX_DIR = os.path.expanduser(os.environ.get('RSTACK_CONDUCTOR_INBOX', '~/.local/state/general-inbox'))
 NOISE = ('ended without the hard-rule lines',)
@@ -52,6 +57,7 @@ def body(event):
     check = os.path.join(INBOX_DIR, 'relay-check.cursor')
     lo = cursor(check, hi)
     sessions = []
+    registry = lane_registry.load()
     for line in lines[lo:hi]:
         try:
             m = json.loads(line)
@@ -60,6 +66,10 @@ def body(event):
         if any(n in (m.get('text') or '') for n in NOISE):
             continue
         s = str(m.get('from', m.get('lane', '?')))
+        retired = registry.retired_reason(s, m.get('lane'))
+        if retired:
+            print('retired: [{}] {}; {}'.format(s, retired, (m.get('text') or '')[:1500]), file=sys.stderr)
+            continue
         if s not in sessions:
             sessions.append(s)
     try:

@@ -27,6 +27,10 @@ import sys
 import time
 from datetime import datetime
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'harness'))
+sys.path.append(str(Path(os.environ.get('RH_ROOT') or '~/.local/share/research-harness').expanduser()))
+import lane_registry
+
 ASK = re.compile(r"\?\s*(\)|\*\*)?\s*$|\b(want me to|should I|shall I|do you want|would you like|your call|"
                  r"your decision|up to you|needs? (you|your)|waiting on (you|your)|over to you|say (send|go))\b", re.I)
 # "Nothing needs you" is a report, not an ask (planets, 11-12, flagged as a question). A negated hand-off
@@ -112,6 +116,7 @@ def live_dirs(projects):
 
 def scan_sessions(projects, now, conductor=''):
     rows = []
+    registry = lane_registry.load()
     newest = {}
     live = live_dirs(projects)
     for f in projects.glob('*/*.jsonl'):
@@ -135,6 +140,9 @@ def scan_sessions(projects, now, conductor=''):
             continue
         label = name or Path(cwd or f.parent.name).name
         what = 'question' if kind == 'ask' else 'tool call with no result (permission prompt?)'
+        retired = registry.retired_reason(name, Path(cwd or f.parent.name).name)
+        if retired:
+            what = 'retired: {}; {}'.format(retired, what)
         rows.append('{:.1f}h\t{}\t{}\t{}'.format(idle / 3600, label, what, ' '.join(text.split())[-160:]))
     return rows
 
@@ -188,17 +196,38 @@ def hook():
     suffix = os.environ.get('CONDUCTOR_CWD_SUFFIX', '').rstrip('/')
     if not suffix or not str(event.get('cwd') or '').rstrip('/').endswith(suffix):
         return 0
-    lines = []
+    registry = lane_registry.load()
+    lines, retired = [], []
     for f in sorted(state_dir().glob('*.tsv')):
         age = (time.time() - f.stat().st_mtime) / 60
         body = [l for l in f.read_text().splitlines() if l.strip()]
         if age > 30:
             lines.append('{}: list is {:.0f} min old; its scan may have stopped'.format(f.stem, age))
-        lines += ['{}: {}'.format(f.stem, l.replace('\t', ' | ')) for l in body]
+        for row in body:
+            row = classify(row, registry)
+            target = retired if is_retired(row) else lines
+            target.append('{}: {}'.format(f.stem, row.replace('\t', ' | ')))
     if lines:
         print('[asks-waiting] sessions stopped on a person, and stale PRs (hours idle | session | what):')
         print('\n'.join(lines))
+    if retired:
+        print('[asks-waiting] retired (visible history; no action or relay required):')
+        print('\n'.join(retired))
     return 0
+
+
+def is_retired(row):
+    return len(row.split('\t')) >= 3 and row.split('\t')[2].startswith('retired: ')
+
+
+def classify(row, registry):
+    """Reclassify cached host rows too, so retirement takes effect before the next scan."""
+    fields = row.split('\t')
+    if len(fields) >= 3 and not is_retired(row):
+        reason = registry.retired_reason(fields[1])
+        if reason:
+            fields[2] = 'retired: {}; {}'.format(reason, fields[2])
+    return '\t'.join(fields)
 
 
 def main(argv=None):
@@ -224,7 +253,11 @@ def main(argv=None):
         subprocess.run(['ssh', '-o', 'BatchMode=yes', a.push, 'mkdir -p ' + str(out.parent)],
                        capture_output=True, timeout=60)
         subprocess.run(['scp', '-q', str(out), '{}:{}'.format(a.push, out)], capture_output=True, timeout=60)
-    print('\n'.join(rows))
+    print('\n'.join(r for r in rows if not is_retired(r)))
+    retired = [r for r in rows if is_retired(r)]
+    if retired:
+        print('[asks-waiting] retired (visible history; no action or relay required):')
+        print('\n'.join(retired))
     return 0
 
 

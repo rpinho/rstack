@@ -85,6 +85,11 @@ sys.exit(0 if ok else 1)
 fi
 [[ $dir = /* ]] || dir=${LAUNCH_WORK_ROOT:-$PWD}/$dir
 cd "$dir" || exit 1
+# Resolve aliases and hyphenated lane names before host checks or any job writes.
+lane=$(python3 "${self:h:h}/harness/lane_registry.py" \
+  --lanes-root "${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-${RH_ROOT:-$PWD/.runtime}}}/lanes" \
+  --job "$job" --lane "${LAUNCH_LANE:-}") || exit 78
+lane_dir=${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-${RH_ROOT:-$PWD/.runtime}}}/lanes/$lane
 # The load is read on the machine that will do the work. 11-08, math and planets within the hour:
 # this read the CONTROLLER's loadavg even for a --host job, refused two math rounds at "load 77"
 # while the host sat at 1.5, and both lanes got past it with FORCE_LAUNCH=1, which also turns off
@@ -156,11 +161,7 @@ if [[ -z $LAUNCH_RESUME ]] && (( words > cap )); then
   fi
   print -- "spec over cap allowed ($words words): $SPEC_OVER_CAP $(date)" >> "$log"
 fi
-# The lane a job belongs to is its name up to the first separator (friends_new_x -> friends),
-# overridable with LAUNCH_LANE. Derived here rather than further down because the round gate needs
-# it, and the gate has to refuse before the registry write, the log and any spend.
-lane=${LAUNCH_LANE:-${${job:t}%%[-_]*}}
-lane_dir=${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-$PWD/.runtime}}/lanes/$lane
+# The registry resolves lane and lane_dir above, before host checks and logs.
 # 11-10: a lane-yield HOLD stops the lane's jobs here. Until now only friends' own loops read one,
 # so a hold on any other lane was a file nobody checked. Only general removes it.
 if [[ -f $lane_dir/HOLD ]]; then
@@ -203,7 +204,7 @@ selector=${LAUNCH_SELECTOR:-${self:h:h}/harness/worker_models.py}
 # lane and lane_dir are derived above, with the round gate that needs them. A missing GOAL.md or
 # an unavailable `rh` is not fatal: a job that cannot read its goal still runs, and the gap shows
 # up in the prompt's absence rather than as a dead lane.
-lessons=$(rh --root "${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-$PWD/.runtime}}" lessons for "$lane" -n "${LAUNCH_LESSONS:-12}" 2>/dev/null)
+lessons=$(rh --root "${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-${RH_ROOT:-$PWD/.runtime}}}" lessons for "$lane" -n "${LAUNCH_LESSONS:-12}" 2>/dev/null)
 start=1; [[ -n $LAUNCH_RESUME ]] && start=2
 for (( i = start; i <= 5; i++ )); do
   sel_exec=$backend

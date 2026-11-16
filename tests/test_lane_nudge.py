@@ -1,10 +1,48 @@
 """lane-nudge decides from idle time, running state, cadence status and its own rate limit."""
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+import json
+from datetime import date, timedelta
+
+import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 nudge = SourceFileLoader('lane_nudge', str(REPO / 'harness/tools/lane-nudge/lane-nudge')).load_module()
 NOW = 1_000_000.0
+
+
+@pytest.mark.parametrize('state', ['retired', 'ended', 'held'])
+def test_registry_skips_alias_without_a_skip_list_or_cadence_help(tmp_path, monkeypatch, capsys, state):
+    lanes = tmp_path / 'lanes'
+    lanes.mkdir()
+    row = {'status': 'active' if state == 'ended' else state, 'why': 'finished challenge',
+           'sessions': ['closedb']}
+    if state == 'ended':
+        row['end'] = str(date.today() - timedelta(days=1))
+    (lanes / 'REGISTRY.json').write_text(json.dumps({'lanes': {'closed': row}}))
+    monkeypatch.setattr(nudge.sys, 'argv', ['lane-nudge', '--lanes', str(lanes), '--skip', '',
+                                         '--state', str(tmp_path / 'state'), '--log', str(tmp_path / 'log')])
+    monkeypatch.setattr(nudge, 'cadence', lambda _: ({'closedb': {'status': 'OK'}}, None))
+    monkeypatch.setattr(nudge, 'panes', lambda *_: [('closedb', '%1', '/work')])
+    def unexpected(*args, **kwargs):
+        pytest.fail('inactive session reached transcript scan or tmux')
+    monkeypatch.setattr(nudge, 'idle_minutes', unexpected)
+    monkeypatch.setattr(nudge.subprocess, 'run', unexpected)
+    nudge.main()
+    assert 'closedb: skipped (closed: ' + state in capsys.readouterr().out
+    assert 'finished challenge' in (tmp_path / 'log').read_text()
+
+
+def test_retired_session_is_skipped_even_when_cadence_is_unavailable(tmp_path, monkeypatch, capsys):
+    path = tmp_path / 'registry.json'
+    path.write_text(json.dumps({'lanes': {'closed': {'status': 'retired', 'sessions': ['closedb']}}}))
+    monkeypatch.setenv('RH_LANE_REGISTRY', str(path))
+    monkeypatch.setattr(nudge.sys, 'argv', ['lane-nudge', '--state', str(tmp_path), '--skip', '', '--dry'])
+    monkeypatch.setattr(nudge, 'cadence', lambda _: (None, 'offline'))
+    monkeypatch.setattr(nudge, 'panes', lambda *_: [('closedb', '%1', '/work')])
+    monkeypatch.setattr(nudge, 'idle_minutes', lambda *_: pytest.fail('retired lane scanned'))
+    nudge.main()
+    assert 'retired' in capsys.readouterr().out
 
 
 def test_quiet_lane_with_nothing_running_is_nudged():
