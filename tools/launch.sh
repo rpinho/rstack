@@ -246,7 +246,10 @@ for (( i = start; i <= 5; i++ )); do
       mine=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("commit",""))' "$hr" 2>/dev/null)
       theirs=$(${=${LAUNCH_SSH:-ssh}} -o BatchMode=yes "$LAUNCH_HOST" "cat ${(q)hr}" 2>/dev/null \
                | python3 -c 'import json,sys; print(json.load(sys.stdin).get("commit",""))' 2>/dev/null)
-      if [[ -n $mine && $mine != $theirs ]]; then
+      # 11-15: stamps can differ while the files are identical (a main commit that installs nothing moves one
+      # Mac's stamp, not the other's), and every m5 job was refused. Different stamps only refuse when the
+      # installed files differ too: both installs matching main (harness-sync --check) means the same code.
+      if [[ -n $mine && $mine != $theirs ]] && ! { harness-sync --check >/dev/null 2>&1 && harness-sync --check --host "$LAUNCH_HOST" >/dev/null 2>&1; }; then
         print -u2 -- "launch.sh --host $LAUNCH_HOST: it runs harness ${theirs:-unreadable} and this machine runs ${mine[1,12]}. The executor runs THERE, so this job would run code this machine has already changed. Fix with: harness-sync --host $LAUNCH_HOST"
         print -- "exit 2 harness-drift $LAUNCH_HOST ${theirs:-unreadable} vs ${mine[1,12]} $(date)" >> "$log"
         exit 2
