@@ -529,3 +529,21 @@ def test_event_watch_private_config_preserves_rules_state_and_env_override(tmp_p
     assert py('event-watch', 'scan', 'j', env=env).stdout == ''
     assert 'deadline' in py('event-watch', 'scan', 'j',
                             env=dict(env, EVENT_WATCH_STATE=str(tmp_path / 'fresh'))).stdout
+
+
+def test_egress_gate_keeps_its_module_api_for_importers(tmp_path, monkeypatch):
+    """11-16: a private backup imports the gate and calls load_patterns() and hits_in(); the port lacked
+    load_patterns and the backup died with AttributeError after a 3 h run."""
+    import importlib.machinery, importlib.util
+    d = tmp_path / 'egress'
+    d.mkdir()
+    (d / 'patterns.txt').write_text('# comment\nemail\tsomeone@example\\.org\n')
+    monkeypatch.setenv('RSTACK_EGRESS_DIR', str(d))
+    loader = importlib.machinery.SourceFileLoader('gate_under_import', str(TOOLS / 'egress-gate'))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    pats = mod.load_patterns()
+    assert [label for label, _ in pats] == ['email']          # file rules only, no built-in shapes
+    assert mod.hits_in('write to someone@example.org', pats) == [('email', 'someone@example.org')]
+    assert mod.PATTERNS == d / 'patterns.txt'

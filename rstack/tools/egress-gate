@@ -70,6 +70,28 @@ def conf_dir():
     return Path(os.environ.get('RSTACK_EGRESS_DIR') or '~/.config/rstack/egress').expanduser()
 
 
+# 11-16: an importer (a private backup tool) loads this file as a module and calls load_patterns() and
+# hits_in(), the standalone gate's API. The port dropped load_patterns, the backup failed with AttributeError
+# after a 3 h run. Same contract as before: the pattern file's rules only (built-in shapes are not added, so an
+# importer that classifies every label still sees only its own), and a missing or bad file refuses.
+PATTERNS = conf_dir() / 'patterns.txt'
+
+
+def load_patterns():
+    if not PATTERNS.exists():
+        sys.exit('egress-gate: pattern file missing: {} (refusing to pass blind)'.format(PATTERNS))
+    pats = []
+    for n, line in enumerate(PATTERNS.read_text().splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        label, _, rx = line.partition('\t')
+        try:
+            pats.append((label.strip(), re.compile(rx.strip())))
+        except re.error as e:
+            sys.exit('egress-gate: bad regex on {}:{}: {}'.format(PATTERNS, n, e))
+    return pats
+
+
 def luhn(digits):
     s, alt = 0, False
     for d in reversed(digits):
