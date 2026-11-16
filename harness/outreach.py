@@ -382,19 +382,22 @@ def voice(text, channel):
         return ['xlint could not complete']
 
 
-def science_checks(text, attachments, language=None, claims=(), kinds=()):
+def science_checks(text, attachments, language=None, claims=(), kinds=(), incoming='', to=''):
     """Optional lane check: stdin JSON, stdout FAIL: lines, nonzero means refusal.
 
     `language` carries the recipient's contact language so an installation's own checker can
     apply the mixed-language rule as well, and `claims` the claim directories this message
     reports, so the checker can apply the re-check gates to them. A checker that ignores
-    either field is unaffected.
+    either field is unaffected. `incoming` (the message being answered) and `to` (the recipient's name)
+    let a checker skip a question the recipient already answered (11-16: a friend asked on 11-05 and who
+    answered was asked again, which blocked two approved emails).
     """
     try:
         run = subprocess.run(SCIENCE_COMMAND, input=json.dumps({'text': text, 'language': language,
                                                                 'attachments': [str(p) for p in attachments],
                                                                 'claims': [str(c) for c in claims],
-                                                                'kinds': list(kinds)}),
+                                                                'kinds': list(kinds), 'incoming': incoming,
+                                                                'to': to}),
                              text=True, capture_output=True, timeout=30)
         errors = [line for line in run.stdout.splitlines() if line.startswith('FAIL:')]
         return errors or (['science checker could not complete'] if run.returncode else [])
@@ -752,8 +755,14 @@ def lint_rows(lane, selected, rh, allow_collision=None):
                 attachments = [a for a in attachments if a not in covered]
                 science_warnings = ['{} is the verified speedup patch (VERIFY.json PASS); the result-claim '
                                     'checks do not apply to it'.format(Path(a).name) for a in covered]
+            incoming_text = ''
+            if row.get('incoming'):
+                try:
+                    incoming_text = Path(row['incoming']).read_text()
+                except OSError:
+                    incoming_text = ''
             checks['science'] = science_checks(text, attachments, language, row.get('claims', []),
-                                               bughunt.kinds_of(row))
+                                               bughunt.kinds_of(row), incoming_text, row.get('to_name', ''))
         # The two postmortem gates (Ricardo, 11-05): a result is sendable only once a separate
         # model has rebuilt it from the public inputs, and pod-touched evidence only once it has
         # been re-run after the host incident. Both read the lane's own re-check ledger.

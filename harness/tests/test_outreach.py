@@ -40,7 +40,7 @@ def cli(root, *args):
     return rc, out.getvalue(), err.getvalue()
 
 
-def draft(env, text=None, to='Contact Alpha', channel='email', batch=None, lane_name='test', attach=None, claim=None, asked_about=()):
+def draft(env, text=None, to='Contact Alpha', channel='email', batch=None, lane_name='test', attach=None, claim=None, asked_about=(), incoming=None):
     root, _ = env
     path = root / ('body-' + str(len(list(root.glob('body-*')))) + '.txt')
     path.write_text(text or VARIED[0])
@@ -55,6 +55,8 @@ def draft(env, text=None, to='Contact Alpha', channel='email', batch=None, lane_
         args += ['--claim', claim]
     for term in asked_about:
         args += ['--asked-about', term]
+    if incoming:
+        args += ['--incoming', incoming]
     rc, out, err = cli(root, *args)
     assert rc == 0, err
     return out.strip(), path
@@ -711,3 +713,25 @@ def test_an_approval_with_no_quote_is_not_a_command_at_all(env):
     assert cli(env[0], 'lint', 'test', ident)[0] == 0
     with pytest.raises(SystemExit):
         cli(env[0], 'approve', 'test', ident)
+
+
+def test_the_incoming_text_and_recipient_reach_the_science_checker(env, tmp_path):
+    """11-16: friends asked 'useful or slop?' on 11-05 who had answered were asked again, because the checker
+    never saw the message being answered or who it was for; two approved emails were blocked."""
+    root, _ = env
+    (root / 'lanes/team').mkdir()
+    (root / 'lanes/team/OUTREACH.toml').write_text('question_limit = 2\nscience_checks = true\n')
+    their = tmp_path / 'their.txt'
+    their.write_text('Thanks, this is useful, not slop at all.')
+    ident, _ = draft(env, 'Here is the second version.', to='Contact Beta', lane_name='team', incoming=their)
+    with patch.object(outreach, 'science_checks', return_value=[]) as check:
+        cli(root, 'lint', 'team', ident)
+    assert check.call_args.args[5] == 'Thanks, this is useful, not slop at all.'
+    assert check.call_args.args[6] == 'Contact Beta'
+    payload = {}
+    def fake_run(cmd, input, **kw):
+        payload.update(json.loads(input))
+        return type('R', (), dict(stdout='', returncode=0))()
+    with patch.object(outreach.subprocess, 'run', fake_run):
+        outreach.science_checks('t', [], 'en', (), (), 'their words', 'Contact Beta')
+    assert payload['incoming'] == 'their words' and payload['to'] == 'Contact Beta'
