@@ -120,7 +120,7 @@ A dated routing snapshot from selected local harness outcomes. Scores are held-o
 | batch | google/gemini-4-hydrogen | 4 | - | - | 2026-11-16 |
 | batch | gpt-6-astra | 5 | - | - | 2026-11-16 |
 | writing | claude-opus-5-5 | 1 | - | - | 2026-11-16 |
-| ideation | claude-opus-5-5 | 1 | 1.0 | 0.207 | 2026-11-16 |
+| ideation | claude-opus-5-5 | 1 | 1.0 | 0.342 | 2026-11-16 |
 | ideation | gpt-6-astra | 2 | - | - | 2026-11-16 |
 | ideation | moonshotai/kimi-k3.1-pro | 3 | - | - | 2026-11-16 |
 | ideation | google/gemini-4-carbon | 4 | - | - | 2026-11-16 |
@@ -175,10 +175,11 @@ Selected local labels on a 0–4 scale, including proxy and operational outcomes
 | design | claude-fable-5-2 | 4 | 2026-11-14 |
 | ideation | claude-fable-5-2 | 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 | 2026-11-13 |
 | ideation | claude-fable-5-2 | 4 | 2026-11-14 |
-| ideation | claude-opus-5-5 | 4 | 2026-11-16 |
+| ideation | claude-opus-5-5 | 4, 4 | 2026-11-16 |
 | judge | claude-fable-5-2 | 0, 0 | 2026-11-13 |
 | review | claude-opus-5-5 | 4 | 2026-11-09 |
 | review | google/gemini-4-argon | 4 | 2026-11-10 |
+| review | google/gemini-4-hydrogen | 0, 4 | 2026-11-16 |
 | review | gpt-5.6-sol | 0, 4, 4 | 2026-11-10 |
 | review | moonshotai/kimi-k3.1-pro | 4, 4 | 2026-11-10 |
 
