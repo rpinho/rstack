@@ -16,7 +16,9 @@ def main(argv=None):
     parser.add_argument('lane', metavar='LANE')
     parser.add_argument('--query', required=True)
     parser.add_argument('--since', type=dt.date.fromisoformat, metavar='YYYY-MM-DD')
-    parser.add_argument('--root', type=Path, default=Path(os.environ.get('RH_ROOT', '.runtime')))
+    # 11-15 planets: a '.runtime' default resolved against the session's cwd, so a real lane was 'missing'.
+    parser.add_argument('--root', type=Path,
+                        default=Path(os.environ.get('RH_ROOT') or '~/.local/share/research-harness'))
     parser.add_argument('--host', help='forward to grok-ask; default local')
     parser.add_argument('--timeout', type=float, default=120)
     args = parser.parse_args(argv)
@@ -26,7 +28,7 @@ def main(argv=None):
         parser.error('query must be a nonempty single line')
     lane = args.root.expanduser().resolve() / 'lanes' / args.lane
     if not (lane / 'INTAKE.toml').is_file():
-        parser.error('lane requires INTAKE.toml with x_local_file configured')
+        parser.error('no INTAKE.toml at {} (the lane needs one with x_local_file; --root sets the harness root)'.format(lane / 'INTAKE.toml'))
     query = args.query + (' since:' + args.since.isoformat() if args.since else '')
     prompt = ('Find X posts matching this search query: ' + query + '\n'
               'For each post return post_id, author, created_at, url, and text. '
