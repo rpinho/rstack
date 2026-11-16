@@ -550,3 +550,9 @@ def test_egress_gate_keeps_its_module_api_for_importers(tmp_path, monkeypatch):
     (d / 'agent-files.gitignore').write_text('# x\nCLAUDE.md\n.claude/\n')
     assert mod.load_agent_files() == ['claude.md', '.claude/']
     assert mod.is_agent_file('docs/CLAUDE.md', mod.load_agent_files())
+    (d / 'allow.txt').write_text('# scope\tlabel\tglob\n/srv/backups/*\temail\t*\nother/*\tphone\t*\n')
+    assert mod.load_allow('/srv/backups/x') == [('email', '*')]
+    # Every name the known importers call must exist (results-backup: load_patterns, PATTERNS, hits_in,
+    # load_allow; publish-public: load_agent_files, is_agent_file, repo_id).
+    for name in ('load_patterns', 'PATTERNS', 'hits_in', 'load_allow', 'load_agent_files', 'is_agent_file', 'repo_id'):
+        assert hasattr(mod, name), name
