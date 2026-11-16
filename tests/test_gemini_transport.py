@@ -76,6 +76,14 @@ def _http_fixture(status):
     secret = 'fixture-provider-key-never-log'
     os.environ['GEMINI_API_KEY'] = secret
     seen = []
+    timeouts = []
+    real_urlopen = urllib.request.urlopen
+    os.environ['GEMINI_REQUEST_TIMEOUT_SECONDS'] = '1200'
+    def recording_urlopen(request, *args, **kwargs):
+        if request.full_url.endswith('/chat/completions'):
+            timeouts.append(kwargs.get('timeout'))
+        return real_urlopen(request, *args, **kwargs)
+    urllib.request.urlopen = recording_urlopen
     class Upstream(BaseHTTPRequestHandler):
         def log_message(self, *_):
             pass
@@ -111,6 +119,7 @@ def _http_fixture(status):
         server.server_close()
         thread.join()
     assert len(seen) == 1
+    assert timeouts == [1200]
     assert seen[0][0] == '/chat/completions' and seen[0][1] == 'Bearer ' + secret
     assert secret not in seen[0][0] and secret.encode() not in seen[0][2]
 

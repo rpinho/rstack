@@ -168,7 +168,7 @@ def bridge(base_url=BASE_URL):
                 upstream = urllib.request.Request(base_url.rstrip('/') + '/chat/completions',
                     data=json.dumps(request).encode(), headers={
                         'Authorization': expected, 'Content-Type': 'application/json'})
-                with urllib.request.urlopen(upstream, timeout=180) as reply:
+                with urllib.request.urlopen(upstream, timeout=float(os.environ.get('GEMINI_REQUEST_TIMEOUT_SECONDS', '180'))) as reply:
                     chat = json.load(reply)
                 for call in chat['choices'][0]['message'].get('tool_calls', []):
                     # Codex drops provider-specific fields; keep Google's opaque thought
