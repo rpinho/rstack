@@ -294,3 +294,33 @@ the browser reads exact text, and the X API only pulls bookmarks and posts.
 Fake-only coverage: `python3 -m pytest -q rstack/tests/test_grok_ask.py
 rstack/tests/test_grok_x_search.py harness/tests/test_x_searches.py`. No app or
 account is needed; CDP, SSH forwarding and intake commands use local fakes/stubs.
+
+## Standalone tool migration settings
+
+Private configuration stays outside the repository. Environment values override file defaults for
+`event-watch` and `fleet-context-watch`:
+
+| Tool | Default private configuration | Contents |
+|---|---|---|
+| `egress-gate` | `~/.config/rstack/egress/` or `RSTACK_EGRESS_DIR` | Patterns, exceptions, samples and the settings below. |
+| `clean-room` | `~/.config/rstack/clean-room.env` or `CLEAN_ROOM_CONFIG` | Trusted shell defaults, for example `: "${CLEAN_ROOM_CODEX_BIN:=/path/to/codex}"`. Use this assignment form to retain explicit environment overrides. `CLEAN_ROOM_PATH` sets the room's PATH unless `--keep-path` is given. |
+| `event-watch` | `~/.config/rstack/event-watch.json` or `EVENT_WATCH_CONFIG` | JSON object with `EVENT_WATCH_CONF`, `EVENT_WATCH_STATE`, `EVENT_WATCH_NOTIFY`. Keep the previous state path to retain cursors and avoid replaying events. Its config directory follows `XDG_CONFIG_HOME` when set. |
+| `fleet-context-watch` | `~/.config/rstack/fleet-context-watch.json` or `FLEET_CONFIG` | JSON object with the documented `FLEET_*` values, including `FLEET_SKIP`, the existing state/log paths and optional `FLEET_SAVE_MSG` (a template using `{k}` for thousands of tokens). |
+
+Egress defaults still include the public secret shapes. An existing installation with its own complete
+pattern policy can set `builtin_shapes = false` in `settings.ini`, section `[egress]`, to use precisely
+its `patterns.txt` and optional `terms.txt`. `skip_dirs` and `skip_suffixes` are whitespace-separated
+replacement lists; omit them to retain the port defaults. For a deployment that requires private
+files, `require_patterns`, `require_agent_files` and `require_self_test` can be set to `true` (default
+`false`). Missing required files exit 1, like malformed regex configuration. The agent-file requirement
+applies to pre-push and self-test. `agent-test.txt` optionally adds `true|false<TAB>path` self-test rows;
+`self-test.txt` retains its `label<TAB>text` format. Built-in self-test rows run only when built-in
+shapes are enabled.
+
+Pre-push also respects a worktree's `PUBLISH` manifest: when its first `remote` line identifies the
+push destination, it blocks direct pushing and directs the operator to `publish-public`. SSH and
+HTTPS spellings of the same destination match. Missing scan inputs fail with exit 1.
+
+Fleet help (`-h` or `--help`) prints documentation without inspecting sessions. Dry mode retains the
+save/compact decision output and changes no session state. A completed reset writes an empty state
+object rather than deleting the previous state file.

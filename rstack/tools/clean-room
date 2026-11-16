@@ -28,6 +28,8 @@
 # egress-gate is the check that must pass before anything is uploaded.
 #
 # Configuration (all optional):
+#   CLEAN_ROOM_CONFIG            shell defaults file (~/.config/rstack/clean-room.env)
+#   CLEAN_ROOM_PATH              PATH inside the room (unless --keep-path)
 #   CLEAN_ROOM_BASE              where rooms are created            (~/.agent-cleanroom)
 #   CLEAN_ROOM_CODEX_BIN         codex binary                       (codex on the caller's PATH)
 #   CLEAN_ROOM_CODEX_AUTH        codex login to link into the room  (~/.codex/auth.json)
@@ -38,6 +40,10 @@
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
+# Trusted, owner-maintained shell defaults; explicit environment values should be retained by
+# using : "${NAME:=value}" assignments in this file.
+config=${CLEAN_ROOM_CONFIG:-$HOME/.config/rstack/clean-room.env}
+[ ! -f "$config" ] || . "$config"
 
 if [ "${1:-}" = --collect ]; then
   root=${2:?usage: clean-room --collect ROOT OUTDIR}; out=${3:?usage: clean-room --collect ROOT OUTDIR}
@@ -74,7 +80,7 @@ mkdir -p "$root/home" "$root/codex" "$root/claude" "$root/tmp"
 chmod 700 "$root"
 echo "clean-room: root=$root" >&2
 
-path="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
+path="${CLEAN_ROOM_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin}"
 [ "$keep_path" = 1 ] && path="$PATH"
 base=(env -i HOME="$root/home" USER="${USER:-agent}" LOGNAME="${USER:-agent}" PATH="$path"
       LANG=en_US.UTF-8 TERM="${TERM:-dumb}" TMPDIR="$root/tmp" XDG_CONFIG_HOME="$root/home/.config"

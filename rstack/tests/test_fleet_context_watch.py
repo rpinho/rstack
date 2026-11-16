@@ -111,3 +111,44 @@ def test_dry_run_types_nothing(fleet):
     os.utime(f, (T0 - 600, T0 - 600))
     fcw.main(['--dry'], cfg, now=T0)
     assert not keys.exists() and not (cfg['state'] / 'claude-a.json').exists()
+
+
+def test_private_config_preserves_exclusions_paths_and_save_prompt(tmp_path):
+    config = tmp_path / 'fleet.json'
+    config.write_text(json.dumps(dict(FLEET_SKIP='claude-private,claude-archive',
+                                      FLEET_ASK=600000, FLEET_SAVE_MSG='Please save at {k}k.',
+                                      FLEET_LOG=str(tmp_path / 'old.log'))))
+    cfg = fcw.settings({'FLEET_CONFIG': str(config), 'FLEET_ASK': '550000'})
+    assert cfg['skip'] == {'claude-private', 'claude-archive'}
+    assert cfg['ask'] == 550000 and cfg['save_msg'].format(k=550) == 'Please save at 550k.'
+    assert cfg['log'] == tmp_path / 'old.log'
+
+
+def test_help_does_not_enumerate_or_type_into_sessions(monkeypatch, capsys):
+    monkeypatch.setattr(fcw, 'panes', lambda cfg: pytest.fail('help enumerated sessions'))
+    assert fcw.main(['--help']) == 0
+    assert 'fleet-context-watch' in capsys.readouterr().out
+
+
+def test_configured_save_request_and_dry_output_match_actions(fleet, monkeypatch, capsys):
+    folder, keys, cfg = fleet
+    cfg['save_msg'] = 'Save state now at {k}k. Reply SAVED <path>.'
+    monkeypatch.setattr(fcw.time, 'sleep', lambda s: None)
+    transcript(folder, turn(T0 - 600, 'working'))
+    fcw.main(['--dry'], cfg, now=T0)
+    output = capsys.readouterr().out
+    assert 'asked to save state' in output and "520k -> {'stage': 'asked'" in output
+    assert not keys.exists()
+    fcw.main([], cfg, now=T0)
+    assert 'Save state now at 520k. Reply SAVED <path>.' in keys.read_text()
+
+
+def test_context_reset_keeps_an_empty_state_file(fleet):
+    folder, keys, cfg = fleet
+    transcript(folder, turn(T0 - 600, 'working', tokens=120_000))
+    cfg['state'].mkdir()
+    sf = cfg['state'] / 'claude-a.json'
+    sf.write_text(json.dumps({'stage': 'compacted', 'at': T0 - 900}))
+    fcw.main([], cfg, now=T0)
+    assert sf.exists() and json.loads(sf.read_text()) == {}
+    assert not keys.exists()

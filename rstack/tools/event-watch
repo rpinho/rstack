@@ -23,6 +23,8 @@ Usage:
       every couple of minutes with --orphans 30: if a job's events sit unread for 30 minutes, the
       waiting session is probably gone, and the notifier is called once.
   event-watch list         jobs, rules, pending events
+Private defaults: $EVENT_WATCH_CONFIG (default ~/.config/rstack/event-watch.json), a JSON object
+with EVENT_WATCH_CONF, EVENT_WATCH_STATE and EVENT_WATCH_NOTIFY keys. Environment takes precedence.
 Events: $EVENT_WATCH_STATE/<job>.events.jsonl (default $RSTACK_STATE_DIR/event-watch), cursor in
 <job>.cursor. Notifications carry only the job name, event kinds and file basenames, never log
 content. One waiter per job (scans are locked; the read cursor is not).
@@ -39,10 +41,23 @@ def _state_root():
     return os.path.expanduser(base)
 
 
-CONF = os.path.expanduser(os.environ.get("EVENT_WATCH_CONF") or os.path.join(
+# A private file keeps scheduled and interactive invocations on the same rules and cursors.
+_config_path = os.path.expanduser(os.environ.get('EVENT_WATCH_CONFIG') or os.path.join(
+    os.environ.get('XDG_CONFIG_HOME') or os.path.expanduser('~/.config'), 'rstack/event-watch.json'))
+_config = {}
+if os.path.exists(_config_path):
+    with open(_config_path) as _f:
+        _config = json.load(_f)
+
+
+def setting(name, default):
+    return os.path.expanduser(os.environ.get(name) or _config.get(name) or default)
+
+
+CONF = setting("EVENT_WATCH_CONF", os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "event-watch"))
-STATE = os.path.expanduser(os.environ.get("EVENT_WATCH_STATE") or os.path.join(_state_root(), "event-watch"))
-NOTIFY = os.path.expanduser(os.environ.get("EVENT_WATCH_NOTIFY") or "")
+STATE = setting("EVENT_WATCH_STATE", os.path.join(_state_root(), "event-watch"))
+NOTIFY = setting("EVENT_WATCH_NOTIFY", "")
 
 
 def now():

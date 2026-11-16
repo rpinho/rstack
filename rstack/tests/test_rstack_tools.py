@@ -448,3 +448,84 @@ def test_event_watch_match_regex_is_the_rest_of_the_line(watch, tmp_path):
     woke = py('event-watch', 'wait', 'j', '--max-hours', '0', env=env)
     lines = sorted(json.loads(l)['line'] for l in woke.stdout.splitlines())
     assert lines == ['job done', 'worker exit 3'], woke.stdout + woke.stderr
+
+
+def test_egress_configured_policy_uses_exact_patterns_and_scan_exclusions(tmp_path):
+    conf = tmp_path / 'conf'
+    conf.mkdir()
+    (conf / 'patterns.txt').write_text('private\tprivate-marker\n')
+    (conf / 'settings.ini').write_text('[egress]\nbuiltin_shapes=false\n'
+                                     'skip_dirs=cache\nskip_suffixes=.pdb\n')
+    env = {'RSTACK_EGRESS_DIR': str(conf)}
+    # An existing deployment can retain its detectors without adding new verdicts.
+    assert egress('check-text', env=env, input=fake_aws_key()).returncode == 0
+    assert egress('check-text', env=env, input='private-marker').returncode == 2
+    out = tmp_path / 'out'
+    (out / 'cache').mkdir(parents=True)
+    (out / 'cache/a.txt').write_text('private-marker')
+    (out / 'structure.pdb').write_text('private-marker')
+    assert egress('scan', str(out), env=env).returncode == 0
+    (out / 'visible.txt').write_text('private-marker')
+    assert egress('scan', str(out), env=env).returncode == 2
+
+
+def test_egress_required_private_files_and_agent_samples(tmp_path):
+    conf = tmp_path / 'conf'
+    conf.mkdir()
+    (conf / 'settings.ini').write_text('[egress]\nbuiltin_shapes=false\nrequire_patterns=true\n'
+                                     'require_agent_files=true\nrequire_self_test=true\n')
+    env = {'RSTACK_EGRESS_DIR': str(conf)}
+    assert egress('check-text', input='clean', env=env).returncode == 1
+    (conf / 'patterns.txt').write_text('marker\tprivate-marker\n')
+    assert egress('self-test', env=env).returncode == 1
+    (conf / 'self-test.txt').write_text('marker\tprivate-marker\nnone\tclean\n')
+    assert egress('pre-push', 'origin', env=env, input='').returncode == 1
+    (conf / 'agent-files.gitignore').write_text('NOTES*\n')
+    (conf / 'agent-test.txt').write_text('true\tdocs/NOTES.md\nfalse\tsrc/app.py\n')
+    assert egress('self-test', env=env).returncode == 0
+    (conf / 'agent-test.txt').write_text('true\tsrc/app.py\n')
+    assert egress('self-test', env=env).returncode == 2
+
+
+@pytest.mark.parametrize('url,blocked', [
+    ('https://example.invalid/org/export', True),
+    ('git@example.invalid:org/export.git', True),
+    ('ssh://git@example.invalid/org/export.git', True),
+    ('https://example.invalid/org/other.git', False),
+])
+def test_egress_pre_push_protects_publish_whitelist(tmp_path, url, blocked):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    git('init', '-q', cwd=repo)
+    (repo / 'PUBLISH').write_text('remote https://example.invalid/org/export.git\n')
+    r = egress('pre-push', 'origin', url, cwd=repo, input='', env={'HOME': str(tmp_path)})
+    assert r.returncode == (2 if blocked else 0), r.stdout + r.stderr
+    if blocked:
+        assert 'whitelist (PUBLISH)' in r.stdout and 'publish-public' in r.stdout
+
+
+def test_clean_room_loads_private_defaults_and_retains_env_overrides(tmp_path):
+    binary = fake_agent(tmp_path, 'codex')
+    fallback = fake_agent(tmp_path, 'fallback')
+    config = tmp_path / 'clean-room.env'
+    config.write_text(': "${CLEAN_ROOM_CODEX_BIN:=' + str(fallback) + '}"\n'
+                      ': "${CLEAN_ROOM_PATH:=/usr/bin:/bin}"\n')
+    root = tmp_path / 'room'
+    r = run(['/bin/bash', str(TOOLS / 'clean-room'), '--root', str(root), '--', 'codex', 'exec'],
+            env={'CLEAN_ROOM_CONFIG': str(config), 'CLEAN_ROOM_CODEX_BIN': str(binary)})
+    assert r.returncode == 0, r.stderr
+    assert room_env(r.stdout)['PATH'] == '/usr/bin:/bin'
+    assert room_env(r.stdout)['ARGS'] == 'exec'
+
+
+def test_event_watch_private_config_preserves_rules_state_and_env_override(tmp_path):
+    conf, state = tmp_path / 'conf', tmp_path / 'state'
+    conf.mkdir()
+    (conf / 'j.conf').write_text('deadline 2000-01-01T00:00\n')
+    config = tmp_path / 'event-watch.json'
+    config.write_text(json.dumps(dict(EVENT_WATCH_CONF=str(conf), EVENT_WATCH_STATE=str(state))))
+    env = {'EVENT_WATCH_CONFIG': str(config)}
+    assert 'deadline' in py('event-watch', 'scan', 'j', env=env).stdout
+    assert py('event-watch', 'scan', 'j', env=env).stdout == ''
+    assert 'deadline' in py('event-watch', 'scan', 'j',
+                            env=dict(env, EVENT_WATCH_STATE=str(tmp_path / 'fresh'))).stdout

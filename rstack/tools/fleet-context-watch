@@ -21,7 +21,9 @@ request counts. The log line that caught it: "asked" twice for one session, no "
 Settings (environment): FLEET_PREFIX (claude-), FLEET_SKIP (comma-separated session names never
 touched), FLEET_ASK (500000), FLEET_CLEAR (300000), FLEET_QUIET (120), FLEET_REASK (7200),
 FLEET_TMUX (tmux), FLEET_PROJECTS (~/.claude/projects), FLEET_STATE (~/.local/state/fleet-context),
-FLEET_LOG (FLEET_STATE/watch.log).
+FLEET_LOG (FLEET_STATE/watch.log), FLEET_SAVE_MSG (save request template, with {k}).
+Private defaults: FLEET_CONFIG (~/.config/rstack/fleet-context-watch.json), a JSON object of
+FLEET_* values. Environment takes precedence.
 
     fleet-context-watch [--dry]      --dry prints what it would do and types nothing
 """
@@ -41,6 +43,9 @@ SAVE_MSG = ('Context check: you are at {k}k tokens. Start nothing new. Save ever
 
 def settings(env=None):
     env = os.environ if env is None else env
+    config = Path(os.path.expanduser(env.get('FLEET_CONFIG', '~/.config/rstack/fleet-context-watch.json')))
+    defaults = json.loads(config.read_text()) if config.exists() else {}
+    env = dict(defaults, **env)
     state = Path(os.path.expanduser(env.get('FLEET_STATE', '~/.local/state/fleet-context')))
     return dict(
         prefix=env.get('FLEET_PREFIX', 'claude-'),
@@ -49,6 +54,7 @@ def settings(env=None):
         quiet=float(env.get('FLEET_QUIET', 120)), reask=float(env.get('FLEET_REASK', 2 * 3600)),
         tmux=env.get('FLEET_TMUX', 'tmux'),
         projects=Path(os.path.expanduser(env.get('FLEET_PROJECTS', '~/.claude/projects'))),
+        save_msg=env.get('FLEET_SAVE_MSG', SAVE_MSG),
         state=state, log=Path(os.path.expanduser(env.get('FLEET_LOG', str(state / 'watch.log')))))
 
 
@@ -138,6 +144,9 @@ def type_into(cfg, pane, text):
 
 
 def main(argv, cfg=None, now=None):
+    if '-h' in argv or '--help' in argv:
+        print(__doc__)
+        return 0
     cfg = cfg or settings()
     dry = '--dry' in argv
     cfg['state'].mkdir(parents=True, exist_ok=True)
@@ -153,21 +162,26 @@ def main(argv, cfg=None, now=None):
         state = json.loads(sf.read_text()) if sf.exists() else {}
         action, new = decide(state, size, saved, now - f.stat().st_mtime, now, cfg)
         if action == 'ask' and not dry:
-            type_into(cfg, pane, SAVE_MSG.format(k=size // 1000))
+            type_into(cfg, pane, cfg['save_msg'].format(k=size // 1000))
         elif action == 'compact' and not dry:
             type_into(cfg, pane, '/compact Full saved state is in ' + (new['path'] or 'your state file'))
-        if action:
-            line = '{} {} {}k: {}'.format(time.strftime('%Y-%m-%d %H:%M'), name, size // 1000, action)
+        if action in ('ask', 'compact'):
+            detail = 'asked to save state' if action == 'ask' else 'SAVED seen, sent /compact'
+            line = '{} {} {}k: {}'.format(time.strftime('%Y-%m-%d %H:%M'), name, size // 1000, detail)
             print(line)
             if not dry:
                 with open(cfg['log'], 'a') as log:
                     log.write(line + '\n')
+        # Match the live dry output, including an outstanding request with no new action.
         if dry:
+            if action != 'reset' and (size >= cfg['ask'] or state.get('stage') == 'asked'):
+                if not (state.get('stage') == 'compacted' and action is None):
+                    print('{} {}k -> {}'.format(name, size // 1000, {k: v for k, v in new.items() if k != 'path'}))
             continue
         if new:
-            sf.write_text(json.dumps(new))
+            sf.write_text(json.dumps({k: v for k, v in new.items() if k != 'path'}))
         elif sf.exists():
-            sf.unlink()   # its own small state file, rewritten every run; nothing to keep
+            sf.write_text('{}')  # reset without deleting the existing state file
     return 0
 
 
