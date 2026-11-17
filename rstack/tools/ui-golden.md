@@ -44,3 +44,8 @@ python3 -m pytest -q rstack/tests/test_ui_golden.py
 
 The browser test skips when the Python Playwright package is absent. Run it in
 the configured browser environment to verify rendering as well as comparisons.
+
+For a routed game's first screen, pass `--expect-hash '#game'`. A redirect to
+home or another activity refuses capture, even if a home selector is visible.
+The renderer waits for embedded frames as well as the top document, including
+fonts and decoded images, and refuses HTTP errors or uncaught page exceptions.

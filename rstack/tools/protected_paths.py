@@ -1,0 +1,1 @@
+../../harness/protected_paths.py

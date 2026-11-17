@@ -37,16 +37,26 @@ def render(args):
                 reduced_motion="reduce", service_workers="block",
                 **({"storage_state": args.storage_state} if args.storage_state else {}))
             page = context.new_page()
+            failures = []
+            page.on("response", lambda response: failures.append(f"HTTP {response.status}: {response.url}")
+                    if response.status >= 400 else None)
+            page.on("pageerror", lambda error: failures.append(str(error)))
             page.set_default_timeout(args.timeout_ms)
             response = page.goto(args.url, wait_until="networkidle")
             if response and response.status >= 400:
                 raise ValueError(f"page returned HTTP {response.status}")
             if args.wait_selector:
                 page.locator(args.wait_selector).wait_for(state="visible")
-            page.evaluate("""async () => {
+            if args.expect_hash and page.evaluate("location.hash") != args.expect_hash:
+                raise ValueError("first-screen route changed; refused a redirected home or unavailable activity")
+            for frame in page.frames:
+                frame.wait_for_load_state("networkidle")
+                frame.evaluate("""async () => {
                 await document.fonts.ready;
                 await Promise.all(Array.from(document.images, image => image.decode()));
             }""")
+            if failures:
+                raise ValueError("render failed: " + "; ".join(failures[:10]))
             out = Path(args.out)
             out.parent.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(out), type="png", animations="disabled", caret="hide")
@@ -138,6 +148,7 @@ def main():
     command.add_argument("--storage-state")
     command.add_argument("--out", required=True)
     command.add_argument("--wait-selector")
+    command.add_argument("--expect-hash", help="refuse a redirect away from the requested activity route")
     command.add_argument("--timeout-ms", type=int, default=30000)
     command = commands.add_parser("compare")
     command.add_argument("--golden", required=True)

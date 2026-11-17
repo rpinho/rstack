@@ -22,13 +22,21 @@ REASON = 'Use /usr/bin/trash PATH instead: same Trash and Put Back, no sound.'
 
 
 def triage(raw, event):
-    return 'Finder' in raw and re.search(r'\bdelete\b', raw, re.I) is not None
+    return re.search(r'\b(?:trash|rm|rmdir|unlink|delete)\b', raw, re.I) is not None
 
 
 def body(event):
     if event.get('tool_name') not in (None, 'Bash'):
         return 0
     cmd = (event.get('tool_input') or {}).get('command', '')
+    if re.search(r'\b(?:trash|rm|rmdir|unlink)\b', str(cmd)):
+        source=os.path.dirname(os.path.realpath(__file__))
+        sys.path[:0]=[os.path.join(source,'..','tools'),os.path.expanduser('~/.local/bin')]
+        from protected_paths import assert_shell_disposable
+        try:
+            assert_shell_disposable(str(cmd))
+        except Exception:
+            _hookfail.decide('deny', 'Cleanup refused: protected release overlap or unreadable protection metadata.')
     if FINDER_DELETE.search(str(cmd)):
         _hookfail.decide('deny', REASON)
     return 0

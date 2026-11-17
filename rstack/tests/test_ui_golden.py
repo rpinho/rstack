@@ -118,3 +118,16 @@ def test_playwright_renders_viewport_and_storage_state(page, tmp_path):
     result = run("render", "--url", page + "/missing", "--viewport", "40x20", "--out", tmp_path / "bad.png")
     assert result.returncode != 0
     assert not (tmp_path / "bad.png").exists()
+
+
+def test_first_screen_refuses_redirected_home(page, tmp_path):
+    pytest.importorskip("playwright")
+    actual = tmp_path / 'first.png'
+    ok = run('render', '--url', page + '/#game', '--viewport', '40x20',
+             '--expect-hash', '#game', '--out', actual)
+    assert ok.returncode == 0, ok.stderr
+    refused = run('render', '--url', page, '--viewport', '40x20',
+                  '--expect-hash', '#game', '--out', tmp_path / 'home.png')
+    assert refused.returncode == 2
+    assert 'route changed' in refused.stderr
+    assert not (tmp_path / 'home.png').exists()

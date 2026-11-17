@@ -36,6 +36,16 @@ paths = [p for p in paths if os.path.lexists(p)]
 if not paths:
     os.execv(REAL, [REAL] + args)
 
+# Check before both Trash and Finder fallbacks. This is also the cleanup path
+# used by agent Finder deletes; malformed/missing registered sources refuse.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+try:
+    from protected_paths import assert_disposable
+    assert_disposable(paths)
+except Exception as error:
+    print('Trash refused: ' + str(error), file=sys.stderr)
+    sys.exit(1)
+
 # iCloud Drive files must go through Finder, so they land in iCloud's Recently Deleted; /usr/bin/trash cannot
 # move them (11-14: the KB backup's prune of old iCloud bundles failed every day after this shim went in).
 # A trash that fails for any other reason also falls back to the real osascript: a sound beats a skipped delete.
