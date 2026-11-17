@@ -31,6 +31,30 @@ Selected synthetic calibration tasks, not a general ranking. Source: `laptop-pub
 
 Review reaches the ceiling for GPT-6.2 Astra, Opus, Fable and Argon. Judge separates them: GPT-6.2 Astra leads Opus by 5 points on 13 paired judge tasks (two repetitions averaged per task), with the entire margin on two tasks. These are descriptive calibration sums; no general-role superiority follows. No trivial or simple baseline on these hard tasks was supplied; the score-only export cannot provide them, so hard-task SBS is unavailable.
 
+## v3.1 calibration (laptop, 11-17)
+
+Selected synthetic calibration tasks, not a general ranking. Source: `laptop-public-plants-v3.1`, 2026-11-17. Eleven entries share 48 public synthetic tasks: 29 review and 19 judge. Scores are floored at 0 on a 0–4 scale. Companion event counts cover 96 replies per entry; replies are not 96 independent tasks. v3.1 replaces the unused v3 (20261117-1539); no v3 scores are included. The earlier hard-plants cohort is retained separately.
+
+| Entry | Total /192 | Review /116 | Judge /76 | False alarms | No-answers | Empty finals | Truncated finals | Provider errors |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| anthropic/claude-fable-5.2 | 192 | 116 | 76 | 0 | 0 | 0 | 0 | 0 |
+| google/gemini-4-argon | 192 | 116 | 76 | 0 | 0 | 0 | 0 | 0 |
+| google/gemini-4-hydrogen | 192 | 116 | 76 | 0 | 0 | 0 | 0 | 0 |
+| openai/gpt-6.1-sol | 192 | 116 | 76 | 0 | 0 | 0 | 0 | 0 |
+| openai/gpt-6.2-astra | 192 | 116 | 76 | 0 | 0 | 0 | 0 | 0 |
+| anthropic/claude-opus-5.5 | 191 | 116 | 75 | 0 | 0 | 0 | 0 | 0 |
+| anthropic/claude-haiku-5.5 | 187 | 112 | 75 | 2 | 0 | 0 | 0 | 0 |
+| moonshotai/kimi-k3.1-pro | 186 | 113 | 73 | 1 | 0 | 0 | 0 | 0 |
+| anthropic/claude-sonnet-5.5 | 184 | 109 | 75 | 3 | 0 | 0 | 0 | 0 |
+| google/gemini-4-carbon | 176 | 104 | 72 | 0 | 8 | 8 | 6 | 2 |
+| z-ai/glm-5.3-flash | 173 | 109 | 64 | 2 | 3 | 3 | 2 | 1 |
+
+Five entries tie at the 192 ceiling: Fable, Argon, Hydrogen, Sol and GPT-6.2 Astra; all five report zero false alarms and no-answers. Opus is one point behind overall, tied at the review ceiling and one point behind on judge (hard-s04). Six entries tie at 116 on review. For review selection, count false alarms against Kimi (1), Sonnet (3), Haiku (2) and GLM (2); Opus and every ceiling entry report 0. These event counts cover both roles; a per-role event breakdown is unavailable. They are not added to the supplied score as a new metric.
+
+The supplied false_alarm_replies equal false_alarms for every entry. Wrong_answers is 1 for GLM and 0 for the other entries. Empty/truncated/provider-error/no-answer categories may overlap and must not be summed as disjoint failures. Counts are laptop-reported event labels, not inferred from zero scores. Raw replies, prompts, keys and per-reply outcomes are absent, so answer grading and the event labels cannot be independently checked or reconciled reply by reply here.
+
+File checks found no mismatches: 528 seven-field score rows, 11 eleven-field count rows, identical unique task/role sets per entry, all scores within 0–4, and maxima 48×4=192, 29×4=116, 19×4=76. Each total equals its review plus judge sum. The count file contains no independent per-entry score totals to cross-check. No same-task trivial or simple baseline results were supplied; this score/count export cannot provide them, so v3.1 SBS is unavailable. These are descriptive calibration sums, with no predictive-baseline gain or general-role superiority claim.
+
 ## Dated routing snapshots
 
 | Role | Model | Routing order | Held score | Wilson lower score | Date |
