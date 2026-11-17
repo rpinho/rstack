@@ -44,6 +44,25 @@ PR_IDLE_H = 6
 PR_EVERY_S = 30 * 60      # 11-12: a PR search every 5 min ran the shared GitHub token into its rate limit
 
 
+
+def host_label():
+    """A stable short host label. 11-17: the m5's HostName was unset, so the network named it mac.lan and
+    every per-host file switched from m5-* to mac-*; the conductor saw a 15-hour-old m5 list and thought the
+    scan was dead. RSTACK_HOST wins; on macOS the LocalHostName (set by the owner, not the network); else
+    the short hostname."""
+    import os, socket, subprocess, sys
+    value = os.environ.get('RSTACK_HOST', '').strip()
+    if value:
+        return value
+    if sys.platform == 'darwin':
+        try:
+            r = subprocess.run(['scutil', '--get', 'LocalHostName'], capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return socket.gethostname().split('.')[0]
+
 def state_dir():
     base = os.environ.get('RSTACK_STATE_DIR') or os.path.join(
         os.environ.get('XDG_STATE_HOME') or os.path.expanduser('~/.local/state'), 'rstack')
@@ -244,7 +263,7 @@ def main(argv=None):
     rows = scan_sessions(projects, now, os.environ.get('CONDUCTOR_CWD_SUFFIX', '').rstrip('/'))
     if a.prs:
         rows += cached_prs(now)
-    out = state_dir() / (socket.gethostname().split('.')[0] + '.tsv')
+    out = state_dir() / (host_label() + '.tsv')
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix('.tmp')
     tmp.write_text(''.join(r + '\n' for r in rows))

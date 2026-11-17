@@ -24,6 +24,25 @@ REASON = ('X API is bookmarks-only. Find posts with Grok Bot; read exact text, l
           'reply in the browser. One-off override: XURL_ALLOW_REASON=<why>')
 
 
+
+def host_label():
+    """A stable short host label. 11-17: the m5's HostName was unset, so the network named it mac.lan and
+    every per-host file switched from m5-* to mac-*; the conductor saw a 15-hour-old m5 list and thought the
+    scan was dead. RSTACK_HOST wins; on macOS the LocalHostName (set by the owner, not the network); else
+    the short hostname."""
+    import os, socket, subprocess, sys
+    value = os.environ.get('RSTACK_HOST', '').strip()
+    if value:
+        return value
+    if sys.platform == 'darwin':
+        try:
+            r = subprocess.run(['scutil', '--get', 'LocalHostName'], capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return socket.gethostname().split('.')[0]
+
 def state_dir():
     return Path(os.environ.get('RSTACK_STATE_DIR') or
                 Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'rstack').expanduser()
@@ -150,7 +169,7 @@ def decide(args, cfg, config_error):
     except ValueError:
         why = 'invalid request arguments'
     return {'utc': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
-            'host': socket.gethostname().split('.')[0], 'decision': 'ALLOW' if allow else 'BLOCK',
+            'host': host_label(), 'decision': 'ALLOW' if allow else 'BLOCK',
             'method': method, 'path': (path or first)[:300], 'why': why, 'caller': caller(),
             'cwd': os.getcwd()[:200], 'call_id': uuid.uuid4().hex}
 

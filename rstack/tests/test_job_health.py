@@ -110,3 +110,16 @@ def test_a_disk_under_its_floor_is_a_problem_before_jobs_refuse():
     entry = dict(path='/', min_free_gib=25, why='deploys refuse under 15 GiB')
     assert jh.disk_problems([entry], usage=lambda p: U(500 * gib, 485 * gib, 15 * gib))[0][2].startswith('15.0 GiB free')
     assert jh.disk_problems([entry], usage=lambda p: U(500 * gib, 400 * gib, 100 * gib)) == []
+
+
+def test_the_host_label_is_stable_not_the_network_name(monkeypatch):
+    """11-17: an unset HostName made the m5 report as 'mac' (network name mac.lan); RSTACK_HOST wins."""
+    import importlib.machinery, importlib.util
+    loader = importlib.machinery.SourceFileLoader('jh_host', str(TOOLS / 'job-health'))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    monkeypatch.setenv('RSTACK_HOST', 'm5')
+    assert mod.host_label() == 'm5'
+    monkeypatch.delenv('RSTACK_HOST')
+    assert mod.host_label() and '.' not in mod.host_label()
