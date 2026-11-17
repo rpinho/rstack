@@ -1550,6 +1550,18 @@ def main(root, args, rh):
             # half-set-up lane still refuses.
             print('SKIP {}: an outreach-only lane (no SWEEP.toml or INTAKE.toml)'.format(lane.name))
             continue
+        if args.all and not (lane / 'SWEEP.toml').exists():
+            # 11-17: open-source (PRs, not sweeps) gained INTAKE.toml and CADENCE.toml after the bio rename, and
+            # `sweep --all` then REFUSED it every run for its missing SWEEP.toml. A lane that is not a sweep lane
+            # says so in the registry ("sweep": false); a lane with no SWEEP.toml and no such declaration still refuses.
+            try:
+                import lane_registry
+                entry = lane_registry.load(root / 'lanes').lanes.get(lane.name, {})
+            except Exception:
+                entry = {}
+            if entry.get('sweep') is False:
+                print('SKIP {}: declared not a sweep lane in the lane registry ("sweep": false)'.format(lane.name))
+                continue
         try:
             pause = held(lane)
             if pause and args.all:

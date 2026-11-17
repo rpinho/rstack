@@ -391,6 +391,24 @@ class SweepTests(unittest.TestCase):
         rc, _, err = self.cli('sweep', 'x-history')
         self.assertNotEqual(rc, 0)            # named directly, a missing config is still a refusal
 
+    def test_all_skips_a_lane_declared_not_a_sweep_lane(self):
+        """11-17: open-source (PRs, not sweeps) has INTAKE.toml and CADENCE.toml but no SWEEP.toml; --all refused it.
+        A registry "sweep": false skips it; the same lane without the declaration still refuses."""
+        import json
+        lane = self.root / 'lanes/open-source'
+        lane.mkdir()
+        (lane / 'INTAKE.toml').write_text('')
+        (lane / 'CADENCE.toml').write_text('')
+        with patch.object(sweep, 'run_lane', side_effect=lambda lane, *_: 0), patch.object(sweep, 'guard'):
+            rc, out, err = self.cli('sweep', '--all')
+        self.assertNotEqual(rc, 0)            # undeclared: a half-set-up lane still refuses
+        (self.root / 'lanes/REGISTRY.json').write_text(json.dumps(
+            {'lanes': {'open-source': {'status': 'active', 'sweep': False}}}))
+        with patch.object(sweep, 'run_lane', side_effect=lambda lane, *_: 0), patch.object(sweep, 'guard'):
+            rc, out, err = self.cli('sweep', '--all')
+        self.assertEqual(rc, 0, err)
+        self.assertIn('SKIP open-source: declared not a sweep lane', out)
+
     def test_a_lane_before_its_close_still_sweeps(self):
         self.close(self.lane, (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=3))
                    .strftime('%Y-%m-%dT%H:%M:%SZ'))
