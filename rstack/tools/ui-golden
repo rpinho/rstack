@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Render, compare and explicitly approve viewport screenshots. Requires Playwright and Pillow."""
+import argparse
+import json
+import math
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import sys
+
+
+def viewport(value):
+    match = re.fullmatch(r"([1-9][0-9]*)x([1-9][0-9]*)", value)
+    if not match:
+        raise ValueError("viewport must be WxH")
+    width, height = map(int, match.groups())
+    if width * height > 16_000_000:
+        raise ValueError("viewport exceeds 16 million pixels")
+    return {"width": width, "height": height}
+
+
+def render(args):
+    from playwright.sync_api import sync_playwright
+
+    size = viewport(args.viewport)
+    launch = {"headless": True}
+    if os.environ.get("UI_GOLDEN_BROWSER_EXECUTABLE"):
+        launch["executable_path"] = os.environ["UI_GOLDEN_BROWSER_EXECUTABLE"]
+    elif os.environ.get("UI_GOLDEN_BROWSER_CHANNEL"):
+        launch["channel"] = os.environ["UI_GOLDEN_BROWSER_CHANNEL"]
+    with sync_playwright() as pw:
+        with pw.chromium.launch(**launch) as browser:
+            context = browser.new_context(
+                viewport=size, device_scale_factor=1, locale="en-US",
+                reduced_motion="reduce", service_workers="block",
+                **({"storage_state": args.storage_state} if args.storage_state else {}))
+            page = context.new_page()
+            page.set_default_timeout(args.timeout_ms)
+            response = page.goto(args.url, wait_until="networkidle")
+            if response and response.status >= 400:
+                raise ValueError(f"page returned HTTP {response.status}")
+            if args.wait_selector:
+                page.locator(args.wait_selector).wait_for(state="visible")
+            page.evaluate("""async () => {
+                await document.fonts.ready;
+                await Promise.all(Array.from(document.images, image => image.decode()));
+            }""")
+            out = Path(args.out)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(out), type="png", animations="disabled", caret="hide")
+    print(json.dumps({"out": str(out), "viewport": size}))
+    return 0
+
+
+def compare(args):
+    from PIL import Image, ImageChops, ImageDraw
+
+    golden, actual = Path(args.golden), Path(args.actual)
+    if not golden.is_file():
+        command = shlex.join(["ui-golden", "approve", "--actual", str(actual), "--golden", str(golden)])
+        raise ValueError(f"missing golden; approve a golden first: {command}")
+    if not math.isfinite(args.threshold) or not 0 <= args.threshold <= 1:
+        raise ValueError("threshold must be between 0 and 1")
+    with Image.open(golden) as source, Image.open(actual) as current:
+        size = (max(source.width, current.width), max(source.height, current.height))
+        if size[0] * size[1] > 16_000_000:
+            raise ValueError("image comparison canvas exceeds 16 million pixels")
+        expected = source.convert("RGBA")
+        observed = current.convert("RGBA")
+    same_size = expected.size == observed.size
+    if not same_size:
+        padded = []
+        for picture in (expected, observed):
+            canvas = Image.new("RGBA", size)
+            canvas.paste(picture, (0, 0))
+            padded.append(canvas)
+        expected, observed = padded
+    channels = ImageChops.difference(expected, observed).split()
+    changed = channels[0]
+    for channel in channels[1:]:
+        changed = ImageChops.lighter(changed, channel)
+    changed = changed.point(lambda pixel: 255 if pixel else 0)
+    visible = Image.new("L", size, 255)
+    if args.mask:
+        rectangles = json.loads(Path(args.mask).read_text())
+        if not isinstance(rectangles, list):
+            raise ValueError("mask must be an array of {x,y,width,height} rectangles")
+        draw = ImageDraw.Draw(visible)
+        for rectangle in rectangles:
+            x, y, width, height = (rectangle[key] for key in ("x", "y", "width", "height"))
+            if any(type(n) is not int for n in (x, y, width, height)) or min(x, y) < 0 or min(width, height) < 1:
+                raise ValueError("mask coordinates must be nonnegative integers with positive dimensions")
+            if x + width > size[0] or y + height > size[1]:
+                raise ValueError("mask rectangle exceeds image bounds")
+            draw.rectangle((x, y, x + width - 1, y + height - 1), fill=0)
+    pixels = visible.histogram()[255]
+    if not pixels:
+        raise ValueError("mask hides the whole image")
+    changed = ImageChops.darker(changed, visible)
+    count = changed.histogram()[255]
+    fraction = count / pixels
+    diff = Path(args.diff) if args.diff else actual.with_name(actual.stem + ".diff.png")
+    if diff.resolve() in (actual.resolve(), golden.resolve()):
+        raise ValueError("diff path must differ from actual and golden")
+    diff.parent.mkdir(parents=True, exist_ok=True)
+    overlay = observed.convert("RGB").point(lambda pixel: pixel // 3)
+    overlay.paste((255, 0, 100), mask=changed)
+    overlay.save(diff, format="PNG")
+    print(json.dumps({"changed_pixel_fraction": fraction, "changed_pixels": count,
+                      "compared_pixels": pixels, "threshold": args.threshold,
+                      "same_size": same_size, "diff": str(diff)}))
+    return int(not same_size or fraction > args.threshold)
+
+
+def approve(args):
+    actual, golden = Path(args.actual), Path(args.golden)
+    from PIL import Image
+    with Image.open(actual) as source:
+        if source.format != "PNG":
+            raise ValueError("actual must be a PNG")
+        source.verify()
+    golden.parent.mkdir(parents=True, exist_ok=True)
+    if actual.resolve() == golden.resolve():
+        raise ValueError("actual and golden must differ")
+    shutil.copyfile(actual, golden)
+    print(json.dumps({"approved": str(golden), "from": str(actual)}))
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    command = commands.add_parser("render")
+    command.add_argument("--url", required=True)
+    command.add_argument("--viewport", required=True)
+    command.add_argument("--storage-state")
+    command.add_argument("--out", required=True)
+    command.add_argument("--wait-selector")
+    command.add_argument("--timeout-ms", type=int, default=30000)
+    command = commands.add_parser("compare")
+    command.add_argument("--golden", required=True)
+    command.add_argument("--actual", required=True)
+    command.add_argument("--threshold", type=float, default=0.01)
+    command.add_argument("--mask")
+    command.add_argument("--diff")
+    command = commands.add_parser("approve")
+    command.add_argument("--golden", required=True)
+    command.add_argument("--actual", required=True)
+    args = parser.parse_args()
+    try:
+        return {"render": render, "compare": compare, "approve": approve}[args.command](args)
+    except Exception as error:
+        print(f"ui-golden: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

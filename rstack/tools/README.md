@@ -1,6 +1,8 @@
 # rstack tools
 
-Standalone scripts (Python 3.9+ standard library, plus bash for `clean-room`). Tests live under `../tests/`. Private-content filters take your own term files; the model instruction guard uses public model spellings.
+Standalone scripts (Python 3.9+ standard library, plus bash for `clean-room`; `ui-golden` uses Playwright and Pillow). Tests live under `../tests/`. Private-content filters take your own term files; the model instruction guard uses public model spellings.
+
+- [`ui-golden`](ui-golden.md): render a viewport with Playwright, compare exact pixels with an optional rectangular mask, and explicitly approve a new golden. Comparison never approves; missing goldens and differences refuse. Profiles and screenshots belong outside public source trees.
 
 - `event-watch`: wakes a session only when a configured event happens (new file, stale output, dead pid, log match, deadline). One overnight watcher loop spent about 3,300 turns and 19 compactions confirming nothing had changed.
 - `fleet-context-watch`: on a schedule, asks each tmux-hosted Claude Code session over a context threshold to save its state and reply `SAVED <path>`, then types `/compact` once that reply is in and the session is quiet. Its first version read only the latest reply, so a SAVED buried under a later reply left two sessions at 530k and 680k for hours; the test pins that.
