@@ -325,6 +325,12 @@ def js(config, action, prompt=''):
       const all = key => [...document.querySelectorAll(c[key])];
       const text = el => el.innerText || el.textContent || '';
       const visible = el => !!(el.getClientRects().length);
+      if (data.action === 'new' && /Restart to update/.test(document.body.innerText || '')) {
+        // 11-17: the app's own update screen hides the sidebar; restart it to finish the update.
+        const r = [...document.querySelectorAll('button')].find(x => /Restart to update/.test(x.innerText || ''));
+        if (r) r.click();
+        throw Error('Grok Bot was showing its update screen; restarted it to finish the update. Retry in a few minutes (grokbot-keep-port restores the debug port)');
+      }
       if (data.action === 'new' && c.bot_name) {
         // 11-15 live: Grok Bot has no "new chat"; each bot is one conversation. grok-ask uses its own bot
         // so its answers never mix with a routine's output in another bot's conversation.
