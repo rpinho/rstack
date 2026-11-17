@@ -18,6 +18,7 @@ __pycache__/
 !rstack/tests/fixtures/x-api/usage.json
 *.jsonl
 !rstack/example/*.jsonl
+!rstack/tests/fixtures/x-engage/*.jsonl
 *.lock
 *.bak-*
 *.bak

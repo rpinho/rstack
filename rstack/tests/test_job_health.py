@@ -6,6 +6,10 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
 
 from rstack_hookcall import TOOLS
 
@@ -123,3 +127,137 @@ def test_the_host_label_is_stable_not_the_network_name(monkeypatch):
     assert mod.host_label() == 'm5'
     monkeypatch.delenv('RSTACK_HOST')
     assert mod.host_label() and '.' not in mod.host_label()
+
+
+X_FIXTURE = Path(__file__).parent / 'fixtures' / 'x-engage' / '2026-11-17.jsonl'
+X_NOW = datetime(2026, 11, 17, 21, tzinfo=timezone.utc).timestamp()
+
+
+def x_row(action, hours_ago=1, **extra):
+    utc = datetime.fromtimestamp(X_NOW - hours_ago * 3600, timezone.utc).isoformat()
+    return dict(action=action, utc=utc, **extra)
+
+
+def x_check(tmp_path, rows):
+    log = tmp_path / 'x.jsonl'
+    log.write_text(''.join(json.dumps(r) + '\n' for r in rows))
+    return jh.x_engage_problems(dict(path=str(log)), X_NOW)
+
+
+def test_real_1117_rounds_and_pendings_without_execution_trip(tmp_path):
+    """M4 sample: only utc/action and refusal reason survive; no tweet text or personal fields."""
+    rows = [json.loads(line) for line in X_FIXTURE.read_text().splitlines()]
+    assert all(set(r) <= {'utc', 'action', 'reason'} for r in rows)
+    assert any(r['action'] == 'round_summary' for r in rows)
+    assert not any(r['action'] in jh.X_EXECUTED for r in rows)
+    # Remove refusals so this specifically catches the silent output failure.
+    problems = x_check(tmp_path, [r for r in rows if r['action'] != 'post_refused'])
+    assert [(k, w) for k, w, _ in problems] == [('x-engage', 'X engagement stalled')]
+    detail = problems[0][2]
+    assert 'no like/follow executed in 12h' in detail
+    assert 'draft_reply=7' in detail and 'like_pending=28' in detail and 'follow_pending=17' in detail
+    assert 'like=never' in detail and 'reply=never' in detail
+
+
+def test_healthy_engagement_does_not_trip(tmp_path):
+    assert x_check(tmp_path, [x_row('like_pending'), x_row('follow_pending'), x_row('draft_reply'),
+                              x_row('like', 0.5), x_row('follow', 0.5), x_row('reply', 0.5)]) == []
+
+
+def test_three_same_reason_refusals_trip_without_pending_work(tmp_path):
+    problems = x_check(tmp_path, [x_row('post_refused', h, text='media upload failed') for h in (1, 2, 3)])
+    assert len(problems) == 1
+    assert '3 same-reason refusals in 24h' in problems[0][2]
+    assert 'media upload failed (3x)' in problems[0][2]
+
+
+def test_distinct_or_old_refusals_do_not_trip(tmp_path):
+    rows = [x_row('post_refused', 1, reason=r) for r in ('media upload failed', 'lint', 'approval')]
+    rows += [x_row('post_refused', h, reason='media upload failed') for h in (25, 26)]
+    assert x_check(tmp_path, rows) == []
+
+
+@pytest.mark.parametrize('success', jh.X_REPLIES)
+def test_reply_success_variants_clear_the_48h_draft_rule(tmp_path, success):
+    rows = [x_row('draft_reply', 20), x_row('like', 1), x_row(success, 47)]
+    assert x_check(tmp_path, rows) == []
+
+
+def test_old_unposted_drafts_still_trip_after_48h(tmp_path):
+    problems = x_check(tmp_path, [x_row('draft_reply', 72), x_row('like', 1), x_row('reply', 49)])
+    assert len(problems) == 1
+    assert 'no reply/reply_posted/self_reply executed in 48h' in problems[0][2]
+    assert 'no like/follow' not in problems[0][2]
+    assert 'pending/all: draft_reply=1' in problems[0][2]
+
+
+def test_any_pending_kind_and_either_like_or_follow_count(tmp_path):
+    assert x_check(tmp_path, [x_row('owner_pending'), x_row('follow', 11)]) == []
+    problems = x_check(tmp_path, [x_row('owner_pending'), x_row('like', 13),
+                                 x_row('round_summary', 0), x_row('like_error', 0)])
+    assert 'owner_pending=1' in problems[0][2]
+    # Future-dated successes cannot hide a stall.
+    assert x_check(tmp_path, [x_row('like_pending'), x_row('like', -1)])
+    assert x_check(tmp_path, [x_row('like_pending', 13)]) == []
+    assert x_check(tmp_path, [x_row('like_pending'), x_row('like', 12)]) == []
+
+
+def test_missing_log_or_unconfigured_source_is_skipped(tmp_path, capsys, monkeypatch):
+    def unexpected_ssh(*args, **kwargs):
+        pytest.fail('an unconfigured source must never SSH')
+    monkeypatch.setattr(jh.subprocess, 'run', unexpected_ssh)
+    assert jh.x_engage_problems(None, X_NOW) == []
+    assert 'skipped: no log configured' in capsys.readouterr().err
+    assert jh.x_engage_problems(dict(path=str(tmp_path / 'missing')), X_NOW) == []
+    assert 'skipped:' in capsys.readouterr().err
+
+
+def test_ssh_source_is_explicit_read_only_and_bounded(monkeypatch, capsys):
+    calls = []
+    def ssh(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, json.dumps(x_row('like_pending')), '')
+    monkeypatch.setattr(jh.subprocess, 'run', ssh)
+    assert jh.x_engage_problems(dict(host='m4', path='~/.local/share/x-engage/log.jsonl'), X_NOW)
+    argv, kwargs = calls[0]
+    assert argv == ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'm4',
+                    'cat -- "$HOME"/.local/share/x-engage/log.jsonl']
+    assert kwargs['timeout'] == 30
+    def failed(*args, **kwargs):
+        raise subprocess.TimeoutExpired('ssh', 30)
+    monkeypatch.setattr(jh.subprocess, 'run', failed)
+    assert jh.x_engage_problems(dict(host='m4', path='log.jsonl'), X_NOW) == []
+    assert 'skipped:' in capsys.readouterr().err
+
+
+def test_generic_heartbeat_can_read_a_pr_followup_ledger():
+    rows = [dict(kind='followup_queued', utc=x_row('', 2)['utc'])]
+    reasons, detail = jh.output_heartbeat(rows, ('followup_queued',), ('followup_sent',),
+        [dict(hours=6, queued=('followup_queued',), executed=('followup_sent',))], X_NOW)
+    assert reasons == ['no followup_sent executed in 6h']
+    assert 'followup_queued=1' in detail
+
+
+def test_x_stall_uses_existing_alert_dedup_and_push(tmp_path, monkeypatch):
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setenv('RSTACK_HOST', 'test')
+    monkeypatch.setattr(jh, 'launchd_jobs', lambda prefix: {})
+    monkeypatch.setattr(jh.time, 'time', lambda: X_NOW)
+    calls = []
+    monkeypatch.setattr(jh.subprocess, 'run', lambda argv, **kw: calls.append(argv))
+    reg = tmp_path / 'reg.json'
+    reg.write_text(json.dumps({'x_engage': {'path': str(X_FIXTURE)}}))
+    args = ['--prefix', 'com.example.', '--registry', str(reg), '--alert', 'notify', '--push', 'conductor']
+    assert jh.main(args) == 0 and jh.main(args) == 0
+    assert len([c for c in calls if c[0] == 'notify']) == 1
+    assert 'X engagement stalled' in next(c[-1] for c in calls if c[0] == 'notify')
+    assert len([c for c in calls if c[0] == 'scp']) == 2
+    assert 'X engagement stalled' in (tmp_path / 'state/asks-waiting/test-jobs.tsv').read_text()
+    healthy = tmp_path / 'healthy.jsonl'
+    healthy.write_text(json.dumps(x_row('reply')) + '\n')
+    # An explicit local CLI path overrides even a registry SSH source.
+    reg.write_text(json.dumps({'x_engage': {'path': 'remote-log', 'host': 'm4'}}))
+    assert jh.main(args + ['--x-engage-log', str(healthy)]) == 0
+    assert (tmp_path / 'state/asks-waiting/test-jobs.tsv').read_text() == ''
+    assert 'RECOVERED x-engage' in (tmp_path / 'state/job-health/log').read_text()
+    assert not any('cat --' in c[-1] for c in calls)

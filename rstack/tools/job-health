@@ -4,12 +4,13 @@
 Why (11-12, twice in one day): a step crashed on every X round for two days and only runs.log knew,
 so each round worked from a 72-hour-old list and engagement fell from 77 likes a day to 5; the round
 agents even wrote "needs a look" into that log, which nobody reads. Hours earlier a lane sat idle with
-its result in. Same class: a failure that only reaches a log. Two checks need no change to any job:
+its result in. Same class: a failure that only reaches a log. These checks need no change to any job:
 
   exit     every launchd job under --prefix whose last run exited with a code that job does not
            declare as fine (`exit_ok`), and that is not running now
   fresh    every required output in the registry (`fresh`) that is missing or older than its limit:
            a job that loses its input and keeps running empty rounds still stops refreshing what it makes
+  x-engage queued engagement without executed actions, or repeated same-reason post refusals
 
 The problems are written to $RSTACK_STATE_DIR/asks-waiting/<host>-jobs.tsv, so the conductor's
 asks-waiting hook shows them on every turn while they last, and each NEW problem runs --alert once
@@ -18,11 +19,18 @@ asks-waiting hook shows them on every turn while they last, and each NEW problem
 Registry (default ~/.config/rstack/job-health.json):
     {"fresh": [{"path": "~/x/BOOKMARKS_FRESH.md", "max_hours": 6, "check_hours": [9, 22], "why": "X rounds read it"}],
      "exit_ok": {"com.example.lane-yield": {"codes": [1], "why": "exit 1 is its FAIL verdict, alerted on its own"}},
-     "disk": [{"path": "/", "min_free_gib": 25, "why": "deploys refuse under 15 GiB"}]}
+     "disk": [{"path": "/", "min_free_gib": 25, "why": "deploys refuse under 15 GiB"}],
+     "x_engage": {"path": "~/.local/share/x-engage/log.jsonl", "host": "m4"}}
+
+    x_engage is opt-in: omit host for a local path; SSH is used only with a configured host.
+    --x-engage-log FILE overrides the registry source with a local file. Skips are logged to stderr.
 
     job-health [--prefix com.example.] [--registry FILE] [--alert CMD] [--push HOST] [--dry]
 """
 import argparse
+from collections import Counter
+from datetime import datetime, timezone
+from fnmatch import fnmatchcase
 import glob
 import json
 import os
@@ -160,6 +168,112 @@ def disk_problems(entries, usage=None):
     return rows
 
 
+def output_heartbeat(rows, queued_kinds, executed_kinds, windows, now):
+    """Return (stall reasons, detail) from output events, independent of their producer.
+
+    Rows have kind, ISO-8601 utc and optional reason. Queued-kind patterns accept shell wildcards.
+    Each window has hours and either queued/executed kind lists, or refused/count.
+    queued_hours defaults to hours; None includes all queued rows, even older drafts.
+    To add PR follow-ups or outreach, normalize their ledger rows to this shape, supply
+    queue/success kinds and windows, then pass a stalled result to report(), as x-engage does.
+    Only explicit success kinds count: rounds, drafts and attempts are never output.
+    """
+    events, last = [], dict.fromkeys(executed_kinds)
+    for row in rows:
+        try:
+            stamp = datetime.fromisoformat(row['utc'].replace('Z', '+00:00'))
+            if stamp.tzinfo is None:
+                continue
+            at = stamp.timestamp()
+        except (KeyError, ValueError, TypeError, AttributeError):
+            continue
+        if at > now:
+            continue
+        kind = row.get('kind', '')
+        events.append((at, kind, row.get('reason') or 'unspecified'))
+        if kind in last and (last[kind] is None or at > last[kind]):
+            last[kind] = at
+
+    def matches(kind, patterns):
+        return any(fnmatchcase(kind, pattern) for pattern in patterns)
+
+    reasons, details = [], []
+    for window in windows:
+        hours = window['hours']
+        recent = [event for event in events if event[0] >= now - hours * 3600]
+        if 'refused' in window:
+            counts = Counter(reason for _, kind, reason in recent if kind == window['refused'])
+            top = counts.most_common(1)
+            details.append('top refusal/{:g}h: {}'.format(
+                hours, '{} ({}x)'.format(*top[0]) if top else 'none'))
+            if top and top[0][1] >= window['count']:
+                reasons.append('{} same-reason refusals in {:g}h'.format(top[0][1], hours))
+            continue
+        queue_hours = window.get('queued_hours', hours)
+        queued = events if queue_hours is None else [
+            event for event in events if event[0] >= now - queue_hours * 3600]
+        counts = Counter(kind for _, kind, _ in queued
+                         if matches(kind, queued_kinds) and matches(kind, window['queued']))
+        details.append('pending/{}: {}'.format(
+            'all' if queue_hours is None else '{:g}h'.format(queue_hours),
+            ', '.join('{}={}'.format(k, n) for k, n in sorted(counts.items())) or 'none'))
+        success = [last[k] for k in window['executed'] if last.get(k) is not None]
+        if counts and (not success or max(success) < now - hours * 3600):
+            reasons.append('no {} executed in {:g}h'.format('/'.join(window['executed']), hours))
+    details.append('last executed: ' + ', '.join('{}={}'.format(
+        kind, datetime.fromtimestamp(at, timezone.utc).isoformat().replace('+00:00', 'Z')
+        if at is not None else 'never') for kind, at in last.items()))
+    return reasons, '; '.join(reasons + details)
+
+
+X_QUEUED = ('*_pending', 'draft_reply')
+X_REPLIES = ('reply', 'reply_posted', 'self_reply')
+X_EXECUTED = ('like', 'follow') + X_REPLIES
+X_WINDOWS = (
+    dict(hours=12, queued=X_QUEUED, executed=('like', 'follow')),
+    dict(hours=48, queued=('draft_reply',), executed=X_REPLIES, queued_hours=None),
+    dict(hours=24, refused='post_refused', count=3),
+)
+
+
+def x_engage_problems(source, now):
+    """Read only the explicitly configured local log or SSH source; skip loudly if unavailable."""
+    try:
+        if not source or not source.get('path'):
+            raise ValueError('no log configured (set x_engage.path or --x-engage-log)')
+        path = source['path']
+        if source.get('host'):
+            # Expand ~ on the producer, not on this machine; quote all configured path bytes.
+            remote = '"$HOME"/' + shlex.quote(path[2:]) if path.startswith('~/') else shlex.quote(path)
+            result = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
+                                     source['host'], 'cat -- ' + remote],
+                                    capture_output=True, text=True, timeout=30)
+            if result.returncode:
+                raise OSError('SSH log read failed (exit {})'.format(result.returncode))
+            lines = result.stdout.splitlines()
+        else:
+            lines = Path(path).expanduser().read_text().splitlines()
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        print('job-health: x-engage skipped: {}'.format(exc), file=sys.stderr)
+        return []
+    rows, invalid = [], 0
+    for line in lines:
+        try:
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                raise ValueError('not an object')
+        except ValueError:
+            invalid += 1
+            continue
+        rows.append(dict(kind=row.get('action', row.get('type', '')),
+                         utc=row.get('utc', row.get('ts')),
+                         reason=row.get('reason') or (row.get('text') if row.get('action') == 'post_refused' else None)))
+    if invalid:
+        print('job-health: x-engage ignored {} malformed log rows'.format(invalid), file=sys.stderr)
+    reasons, detail = output_heartbeat(rows, X_QUEUED, X_EXECUTED, X_WINDOWS, now)
+    return [('x-engage', 'X engagement stalled', detail)] if reasons else []
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--prefix', default=os.environ.get('JOB_HEALTH_PREFIX', ''),
@@ -170,6 +284,7 @@ def main(argv=None):
     ap.add_argument('--alert', default=os.environ.get('JOB_HEALTH_ALERT', ''),
                     help='command run once per new problem, with a one-line summary as its last argument')
     ap.add_argument('--push', help='copy this host\'s list to the same path on HOST (the conductor\'s Mac)')
+    ap.add_argument('--x-engage-log', help='local x-engage JSONL log (overrides the registry source)')
     ap.add_argument('--dry', action='store_true')
     a = ap.parse_args(argv)
     bad = []
@@ -180,8 +295,10 @@ def main(argv=None):
     except ValueError as exc:   # a registry that does not parse is a problem of its own, not an all-clear
         reg, bad = {}, [('registry', a.registry, 'unreadable: {}'.format(exc))]
     now = time.time()
+    x_source = dict(path=a.x_engage_log) if a.x_engage_log is not None else reg.get('x_engage')
     rows = (bad + exit_problems(launchd_jobs(a.prefix), reg.get('exit_ok') or {})
-            + fresh_problems(reg.get('fresh') or [], now) + disk_problems(reg.get('disk') or []))
+            + fresh_problems(reg.get('fresh') or [], now) + disk_problems(reg.get('disk') or [])
+            + x_engage_problems(x_source, now))
     lines = ['{}\t{}\t{}'.format(kind, what, detail) for kind, what, detail in rows]
     for l in lines:
         print(l)
