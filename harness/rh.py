@@ -13,6 +13,7 @@ import hashlib
 import html
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 import re
@@ -254,7 +255,9 @@ def github_token():
     token = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN') or ''
     if not token:
         try:
-            r = subprocess.run(['gh', 'auth', 'token'], capture_output=True, text=True, timeout=10)
+            # launchd's PATH has no /opt/homebrew/bin, where gh lives on these Macs.
+            gh = shutil.which('gh') or shutil.which('gh', path='/opt/homebrew/bin:/usr/local/bin') or 'gh'
+            r = subprocess.run([gh, 'auth', 'token'], capture_output=True, text=True, timeout=10)
             token = r.stdout.strip() if r.returncode == 0 else ''
         except (OSError, subprocess.SubprocessError):
             token = ''
