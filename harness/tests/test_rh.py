@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -859,3 +860,53 @@ class PodTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class IntakeExitTests(unittest.TestCase):
+    """11-17: one transient source error failed the whole intake job twice a day."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.lane = Path(self.tmp.name) / 'lanes/test'
+        self.lane.mkdir(parents=True)
+        (self.lane / 'INTAKE.toml').write_text('keywords = []\n')
+
+    def run_intake(self, sources):
+        args = types.SimpleNamespace(live=True, hits_file=None)
+        with patch.object(rh, 'fetch_sources', lambda cfg: iter(sources)), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+            return rh.intake(self.lane, args), err.getvalue()
+
+    def test_one_transient_error_is_a_warning(self):
+        rc, err = self.run_intake([('arxiv:a', [], ''), ('github-prs:o/r', [], 'HTTP Error 403: rate limit exceeded')])
+        self.assertEqual(rc, 0)
+        self.assertIn('intake warning: github-prs:o/r', err)
+
+    def test_reading_nothing_fails(self):
+        rc, _ = self.run_intake([('github-prs:o/r', [], 'HTTP Error 403')])
+        self.assertEqual(rc, 1)
+
+    def test_the_same_source_failing_three_runs_in_a_row_fails(self):
+        bad = [('arxiv:a', [], ''), ('github-prs:o/r', [], 'HTTP Error 403')]
+        self.assertEqual(self.run_intake(bad)[0], 0)
+        self.assertEqual(self.run_intake(bad)[0], 0)
+        rc, err = self.run_intake(bad)
+        self.assertEqual(rc, 1)
+        self.assertIn('intake error: github-prs:o/r', err)
+
+    def test_github_requests_carry_the_token_in_a_header_only(self):
+        seen = {}
+
+        class Opener:
+            def open(self, request, timeout=None):
+                seen['url'], seen['auth'] = request.full_url, request.get_header('Authorization')
+                return io.BytesIO(b'[]')
+        with patch.dict('os.environ', {'GITHUB_TOKEN': 'tok123'}), \
+                patch.object(rh.urllib.request, 'build_opener', lambda *a: Opener()):
+            try:
+                rh.get_url('https://api.github.com/repos/o/r/pulls')
+            except Exception:
+                pass
+        self.assertEqual(seen.get('auth'), 'Bearer tok123')
+        self.assertNotIn('tok123', seen.get('url', ''))

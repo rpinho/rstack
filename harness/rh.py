@@ -250,9 +250,27 @@ def ingest(lane, hits, cfg, dry_run=False, session='intake'):
     return count
 
 
+def github_token():
+    token = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN') or ''
+    if not token:
+        try:
+            r = subprocess.run(['gh', 'auth', 'token'], capture_output=True, text=True, timeout=10)
+            token = r.stdout.strip() if r.returncode == 0 else ''
+        except (OSError, subprocess.SubprocessError):
+            token = ''
+    return token
+
+
 def get_url(url):
     # This is the only network boundary, reached only by intake --live.
-    request = urllib.request.Request(url, headers={'User-Agent': 'research-harness/1.0 (metadata intake)'})
+    headers = {'User-Agent': 'research-harness/1.0 (metadata intake)'}
+    if url.startswith('https://api.github.com/'):
+        # 11-17: unauthenticated GitHub is 60 requests/hour and math's PR fetch hit a 403. The token goes in a
+        # header only, never in the URL or a log.
+        token = github_token()
+        if token:
+            headers['Authorization'] = 'Bearer ' + token
+    request = urllib.request.Request(url, headers=headers)
     # Apple's Python 3.9 redirect handler predates HTTP 308 support.
     # Keep urllib's normal redirect limits and URL-scheme validation.
     class Redirects(urllib.request.HTTPRedirectHandler):
@@ -398,6 +416,24 @@ def fetch_sources(cfg):
             yield 'github-prs:' + repo, [], str(e)
 
 
+def persistent_failures(path, errors, n=3):
+    """Sources in this run's errors that also failed in each of the n-1 runs before it."""
+    sources = {e.split(': ')[0] for e in errors}
+    if not sources or not path.exists():
+        return []
+    runs = []
+    for line in path.read_text().splitlines():
+        try:
+            runs.append(json.loads(line))
+        except ValueError:
+            pass
+    last = runs[-n:]  # this run is already appended
+    if len(last) < n:
+        return []
+    return sorted(src for src in sources
+                  if all(any(e.split(': ')[0] == src for e in r.get('errors', [])) for r in last))
+
+
 def intake(lane, args):
     cfg = config(lane / 'INTAKE.toml')
     validate_config(cfg)
@@ -431,9 +467,13 @@ def intake(lane, args):
                     added += ingest(lane, hits, cfg)
             append(lane / 'INTAKE_RUNS.jsonl', dict(created=now(), sources_read=reads, errors=errors, added=added))
         print('{}: {} ideas; {} external reads{}'.format(lane.name, added, len(reads), ' (dry-run)' if dry else ''))
+        # 11-17: one transient source error (a GitHub 403, an arXiv timeout) failed the whole job twice a day
+        # while the lane still read 9 of 10 sources. Fail when nothing was read, or when the same source
+        # failed on each of its last 3 runs; otherwise it is a warning.
+        failing = [] if dry else persistent_failures(lane / 'INTAKE_RUNS.jsonl', errors)
         for error in errors:
-            print('intake error: ' + error, file=sys.stderr)
-        return 1 if errors else 0
+            print('intake {}: {}'.format('error' if error.split(': ')[0] in failing else 'warning', error), file=sys.stderr)
+        return 1 if errors and (not reads or failing) else 0
 
 
 def intake_x_search(lane, args):
