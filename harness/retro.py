@@ -4,6 +4,7 @@ import math
 from pathlib import Path
 import re
 import lessons
+from lane_paths import resolve_lane
 
 SECTIONS = (
     'What we tried',
@@ -45,7 +46,8 @@ def collect(lane, rh):
     ideas = list(rh.latest(history).values())
     outreach = list(rh.latest(rh.rows(lane / 'OUTREACH.jsonl')).values())
     selected = lessons.for_lane(lane, rh)
-    own = [r for r in lessons.current(lane.parent.parent, rh).values() if r['lane'] == lane.name]
+    own = [r for r in lessons.current(lane.parent.parent, rh).values()
+           if resolve_lane(lane.parent.parent, r['lane'], must_exist=False) == lane.name]
     lesson_rows = list({r['id']: r for r in selected + own}.values())
     artifacts = {}
     for row in ideas:

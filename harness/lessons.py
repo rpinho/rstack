@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import uuid
+from lane_paths import lane_dirs, resolve_lane
 
 SOURCES = ('retro', 'close', 'referee', 'correction', 'backfill')
 STATUSES = ('active', 'superseded', 'promoted')
@@ -31,12 +32,7 @@ def terms(values):
 
 
 def lane_at(root, name):
-    if not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', name):
-        raise ValueError('invalid lane name')
-    lane = Path(root).expanduser().resolve() / 'lanes' / name
-    if not lane.is_dir():
-        raise ValueError('lane directory missing: ' + name)
-    return lane
+    return Path(root).expanduser().resolve() / 'lanes' / resolve_lane(root, name)
 
 
 def timestamp(value):
@@ -108,6 +104,7 @@ def _replacement(old, new, rh):
 
 def add(root, rh, *, lane, lesson, evidence, applies_when, values=(), source='retro', supersedes=(), promoted_to=''):
     root = Path(root).expanduser().resolve()
+    lane = resolve_lane(root, lane, must_exist=False)
     row = make(lane, lesson, evidence, applies_when, values, source, rh)
     if not re.match(r'https?://\S+$', row['evidence']):
         target_file(root, row['evidence'].split('#', 1)[0], 'evidence')
@@ -171,14 +168,15 @@ def for_lane(lane, rh, idea=None, values=(), n=12):
         context += tags(row.get('data_tags', [])) + tags(row.get('tags', []))
     context = terms(context)
     candidates = [r for r in current(lane.parent.parent, rh).values() if r['status'] != 'superseded']
+    canonical = {r['lane']: resolve_lane(lane.parent.parent, r['lane'], must_exist=False) for r in candidates}
     # Cross-lane transfer first; within each group, relevance then recency.
-    ranked = sorted(candidates, key=lambda r: (r['lane'] != lane.name,
+    ranked = sorted(candidates, key=lambda r: (canonical[r['lane']] != lane.name,
                     sum(bool(context.intersection(terms([tag]))) for tag in r['tags']), timestamp(r['utc']), r['id']), reverse=True)
     # 11-11, friends: with more than n cross-lane lessons in the store, the lane's own never made the cut,
     # so a lesson friends had just paid for never reached its next jobs. Each group gets half the slots,
     # and either fills what the other leaves.
-    cross = [r for r in ranked if r['lane'] != lane.name]
-    own = [r for r in ranked if r['lane'] == lane.name]
+    cross = [r for r in ranked if canonical[r['lane']] != lane.name]
+    own = [r for r in ranked if canonical[r['lane']] == lane.name]
     take_cross = min(len(cross), max(n - len(own), n - n // 2))
     take_own = min(len(own), n - take_cross)
     return cross[:take_cross] + own[:take_own]
@@ -245,9 +243,7 @@ def warnings(lane, rh):
     old = [r for r in active if timestamp(rh.now()) - timestamp(r['utc']) > dt.timedelta(days=90)]
     if not old:
         return result
-    for other in sorted((root / 'lanes').iterdir()):
-        if not other.is_dir():
-            continue
+    for other in lane_dirs(root):
         read = other / 'LESSONS_READ.json'
         if read.is_file():
             referenced.update(json.loads(read.read_text()).get('lesson_ids', []))
@@ -303,7 +299,8 @@ def main(root, args, rh):
             selected = for_lane(lane_at(root, args.lane), rh, args.idea, args.tags, args.n)
         else:
             selected = sorted(current(root, rh).values(), key=lambda r: (timestamp(r['utc']), r['id']), reverse=True)
-            selected = [r for r in selected if (not args.lane or r['lane'] == args.lane)
+            name = resolve_lane(root, args.lane, must_exist=False) if args.lane else None
+            selected = [r for r in selected if (not name or resolve_lane(root, r['lane'], must_exist=False) == name)
                         and (not args.status or r['status'] == args.status)
                         and (not args.tags or set(tags(args.tags)).intersection(r['tags']))]
             if args.n is not None:

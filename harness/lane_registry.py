@@ -40,7 +40,10 @@ class LaneRegistry:
             sessions = row.get('sessions', [])
             if not isinstance(sessions, list) or any(not isinstance(s, str) or not s for s in sessions):
                 raise ValueError('sessions must be a list of names for lane ' + lane)
-            for session in [lane] + sessions:
+            aliases = row.get('aliases', [])
+            if not isinstance(aliases, list) or any(not isinstance(a, str) or not a for a in aliases):
+                raise ValueError('aliases must be a list of names for lane ' + lane)
+            for session in [lane] + sessions + aliases:
                 if session in self.sessions and self.sessions[session] != lane:
                     raise ValueError('ambiguous session ' + session)
                 self.sessions[session] = lane

@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 import urllib.error
 import urllib.request
 import uuid
+from lane_paths import lane_dirs, resolve_lane
 
 CONTACTS = settings.path('RH_CONTACTS', Path('.runtime/contacts.json'))
 VOICE_COMMAND = settings.command('RH_VOICE_COMMAND', 'voice-check')
@@ -165,9 +166,8 @@ def current(lane, rh):
 
 
 def all_rows(root, rh):
-    for lane in sorted((root / 'lanes').glob('*')):
-        if lane.is_dir():
-            yield from current(lane, rh).values()
+    for lane in lane_dirs(root):
+        yield from current(lane, rh).values()
 
 
 def record(lane, row, rh):
@@ -694,7 +694,7 @@ def lint_rows(lane, selected, rh, allow_collision=None):
     cfg = settings(lane, rh)
     clock = time_of(rh.now())
     everyone = list(all_rows(lane.parent.parent, rh))
-    peers = {r['id']: r for r in everyone if r['lane'] == lane.name and
+    peers = {r['id']: r for r in everyone if resolve_lane(lane.parent.parent, r['lane'], must_exist=False) == lane.name and
              (recent_sent(r, 14, clock) or any(s.get('batch') and r.get('batch') == s['batch'] for s in selected))}
     peers.update({r['id']: r for r in selected})
     results = {}
@@ -1074,11 +1074,9 @@ def arguments(sub):
 def main(root, args, rh):
     root = root.expanduser().resolve()
     lane_name = getattr(args, 'lane', None)
-    if lane_name and not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', lane_name):
-        raise ValueError('invalid lane name')
+    if lane_name:
+        args.lane = lane_name = resolve_lane(root, lane_name)
     lane = root / 'lanes' / lane_name if lane_name else None
-    if lane and not lane.is_dir():
-        raise ValueError('lane directory missing')
     if args.action == 'contact':
         return contact_main(root, args)
     if args.action == 'stats':

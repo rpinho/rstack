@@ -12,6 +12,8 @@ exits 2 when any lane is out of date, so a scheduled job can notice instead of a
 """
 import argparse, difflib, os, re, sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lane_paths import lane_dirs
 
 START = '<!-- lane-rules-common:'
 END = '<!-- /lane-rules-common -->'
@@ -40,8 +42,7 @@ def main(argv=None):
     common = source(a.repo)
     root = Path(os.path.expanduser(a.root))
     stale = 0
-    lanes = sorted(d for d in root.glob('lanes/*') if d.is_dir())
-    for lane in lanes:
+    for lane in lane_dirs(root):
         rules = lane / 'RULES.md'
         existed = rules.is_file()
         # A lane with no rules file gets no rules at all, which is the drift this tool exists to stop.

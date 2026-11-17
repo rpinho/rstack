@@ -242,15 +242,10 @@ def evaluate(lane, rh, now=None):
 
 
 def lanes(root, name=None):
-    base = root.expanduser() / 'lanes'
+    from lane_paths import lane_dirs, resolve_lane
     if name is not None:
-        if not NAME.fullmatch(name):
-            raise ValueError('invalid lane name')
-        lane = base / name
-        if not lane.is_dir():
-            raise ValueError('lane directory missing: ' + name)
-        return [lane]
-    return sorted(p for p in base.iterdir() if p.is_dir()) if base.is_dir() else []
+        return [root.expanduser() / 'lanes' / resolve_lane(root, name)]
+    return list(lane_dirs(root))
 
 
 def report(root, rh, name=None, now=None):

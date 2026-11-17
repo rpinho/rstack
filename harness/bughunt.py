@@ -597,11 +597,9 @@ def verdict_commands(lane, args, rh):
 def main(root, args, rh, get=None):
     import outreach
     root = Path(root).expanduser().resolve()
-    if not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', args.lane):
-        raise ValueError('invalid lane name')
+    from lane_paths import resolve_lane
+    args.lane = resolve_lane(root, args.lane)
     lane = root / 'lanes' / args.lane
-    if not lane.is_dir():
-        raise ValueError('lane directory missing')
     cfg = outreach.settings(lane, rh)
     if args.action in ('claims-check', 'referee-prompt', 'verdicts', 'referees', 'coverage'):
         return verdict_commands(lane, args, rh)

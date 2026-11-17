@@ -2,6 +2,7 @@
 """Append-only research inputs. Python 3.9+, standard library only."""
 import settings
 import lane_setup
+from lane_paths import lane_dirs, resolve_lane
 import argparse
 import ast
 import collections
@@ -727,8 +728,8 @@ def show_idea(root, key):
     if not key.strip():
         raise ValueError('idea id must be nonempty')
     matches = []
-    for lane in sorted((root.expanduser() / 'lanes').iterdir()):
-        if lane.is_dir() and idea_policy.enabled(lane):
+    for lane in lane_dirs(root):
+        if idea_policy.enabled(lane):
             for row in latest(rows(lane / 'IDEAS.jsonl')).values():
                 if row.get('id', '').startswith(key):
                     matches.append(dict(row, lane=lane.name))
@@ -877,10 +878,6 @@ def main(argv=None):
         if args.command == 'voice-cuts':
             import voice_cuts
             return voice_cuts.main(args.rest)
-        if args.command == 'lessons':
-            return lessons.main(args.root, args, sys.modules[__name__])
-        if args.command == 'retro':
-            return retro.main(args.root, args, sys.modules[__name__])
         if args.command == 'intake':
             if args.lane == 'x-search':
                 if not args.x_search_lane or args.query is None or args.result is None or args.n is None:
@@ -890,6 +887,14 @@ def main(argv=None):
                 args.lane, args.intake_action = args.x_search_lane, 'x-search'
             elif args.x_search_lane or any(value is not None for value in (args.query, args.subject, args.result, args.n)):
                 raise ValueError('X search flags require intake x-search LANE')
+        # Some commands accept historical labels without a directory (lessons,
+        # pod planning). Preserve that behavior, resolving any filesystem alias.
+        if getattr(args, 'lane', None) and (args.root.expanduser() / 'lanes' / args.lane).is_symlink():
+            args.lane = resolve_lane(args.root, args.lane)
+        if args.command == 'lessons':
+            return lessons.main(args.root, args, sys.modules[__name__])
+        if args.command == 'retro':
+            return retro.main(args.root, args, sys.modules[__name__])
         if args.command == 'publish-lint':
             return publish_lint.main(args)
         if args.command == 'lane':
@@ -913,10 +918,6 @@ def main(argv=None):
         if args.command == 'sweep':
             if args.all == bool(args.lane):
                 raise ValueError('sweep requires either LANE or --all')
-            if args.lane and not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', args.lane):
-                raise ValueError('invalid lane name')
-            if args.lane and not (args.root.expanduser() / 'lanes' / args.lane).is_dir():
-                raise ValueError('lane directory missing: ' + args.lane)
             return sweep.main(args.root, args, sys.modules[__name__])
         if args.command == 'lint':
             if args.all == bool(args.lane):
@@ -929,11 +930,8 @@ def main(argv=None):
                 for result in results:
                     print_lint(result)
             return int(any(result['failure_count'] for result in results))
-        if not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', args.lane):
-            raise ValueError('invalid lane name')
+        args.lane = resolve_lane(args.root, args.lane)
         lane = args.root.expanduser() / 'lanes' / args.lane
-        if not lane.is_dir():
-            raise ValueError('lane directory missing: ' + str(lane))
         if args.command == 'intake':
             if getattr(args, 'intake_action', '') == 'x-search':
                 return intake_x_search(lane, args)

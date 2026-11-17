@@ -52,12 +52,31 @@ def test_status_dates_precedence_and_job_prefixes():
     assert registry.retired_reason('closedb').startswith('closed: ended')
 
 
+def test_renamed_lane_alias_resolves_sessions_jobs_and_retired_reason():
+    registry = lr.LaneRegistry({'lanes': {
+        'open-source': {'status': 'retired', 'aliases': ['bio'], 'sessions': ['bio-nightly'],
+                        'why': 'fixture retirement'},
+    }})
+    for name in ('bio', 'open-source', 'codex-bio', 'claude-bio', 'bio-nightly'):
+        assert registry.lane_of_session(name) == 'open-source'
+        assert registry.status(name) == 'retired'
+        assert registry.retired_reason(name) == 'open-source: retired: fixture retirement'
+    assert registry.lane_of_job('bio_round1') == 'open-source'
+    assert registry.lane_of_job('open-source_round1') == 'open-source'
+
+
 @pytest.mark.parametrize('data', [
     [], {}, {'lanes': []}, {'lanes': {'x': {'status': 'ended'}}},
     {'lanes': {'x': {'status': 'active', 'end': '2026-02-30'}}},
     {'lanes': {'x': {'status': 'active', 'end': '20260101'}}},
     {'lanes': {'x': {'status': 'active', 'sessions': 'xb'}}},
     {'lanes': {'x': {'status': 'active', 'sessions': ['y']}, 'y': {'status': 'active'}}},
+    {'lanes': {'x': {'status': 'active', 'aliases': 'old'}}},
+    {'lanes': {'x': {'status': 'active', 'aliases': ['']}}},
+    {'lanes': {'x': {'status': 'active', 'aliases': [1]}}},
+    {'lanes': {'x': {'status': 'active', 'aliases': ['y']}, 'y': {'status': 'active'}}},
+    {'lanes': {'x': {'status': 'active', 'aliases': ['old']},
+               'y': {'status': 'active', 'sessions': ['old']}}},
 ])
 def test_invalid_registry_never_becomes_an_active_lane(tmp_path, monkeypatch, data):
     path = tmp_path / 'registry.json'

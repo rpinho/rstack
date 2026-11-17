@@ -23,6 +23,7 @@ sys.path.insert(0, str(LINT))
 
 KINDS = ('rerun', 'value', 'question', 'conjecture', 'note', 'other')
 sys.path.insert(0, str(HERE.parents[2]))
+from lane_paths import resolve_lane
 try:
     import verdict_rubric
 except ImportError:                  # installed layouts that do not ship the harness package
@@ -69,9 +70,10 @@ def resolve_ledger(value, create=False):
     raw = str(value)
     if '/' not in raw and not raw.endswith('.jsonl'):
         root = Path(os.environ.get('RH_ROOT') or '~/.local/share/research-harness').expanduser()
-        lane_dir = root / 'lanes' / raw
-        if not lane_dir.is_dir():
-            return None, 'no lane named {!r} under {} (pass a lane name or a RESULTS.jsonl path)'.format(raw, root / 'lanes')
+        try:
+            lane_dir = root / 'lanes' / resolve_lane(root, raw)
+        except ValueError as exc:
+            return None, str(exc)
         return lane_dir / 'RESULTS.jsonl', None
     path = Path(raw).expanduser()
     if path.suffix != '.jsonl':

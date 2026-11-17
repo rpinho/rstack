@@ -188,7 +188,10 @@ def model_for(project, opts):
         model = rh.session_model()
     if not model or (model in rh.CS_BANNED_MODELS and not opts.get('model')):
         model = rh.CS_DEFAULT_MODEL
-        for path in sorted((rh.ROOT / 'lanes').glob('*/INTAKE.toml')):
+        for lane in rh.lane_dirs(rh.ROOT):
+            path = lane / 'INTAKE.toml'
+            if not path.is_file():
+                continue
             cfg = rh.config(path)
             if project and cfg.get('claude_science_project', '').rstrip('/').endswith(project):
                 model = cfg.get('claude_science_model', rh.CS_DEFAULT_MODEL)

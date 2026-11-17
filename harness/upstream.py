@@ -21,6 +21,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+from lane_paths import lane_dirs
 
 CONFIG = 'UPSTREAM.json'
 CACHE = '.upstream-prs.json'
@@ -50,8 +51,7 @@ def config(lane):
 
 
 def lanes_with_upstream(root):
-    base = Path(root).expanduser() / 'lanes'
-    return [p for p in sorted(base.iterdir()) if p.is_dir() and (p / CONFIG).is_file()] if base.is_dir() else []
+    return [p for p in lane_dirs(root) if (p / CONFIG).is_file()]
 
 
 def gh_pulls(repo):

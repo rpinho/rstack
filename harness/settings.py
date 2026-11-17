@@ -103,9 +103,10 @@ def lane_dir(value, root=None):
     if os.sep in text or text.startswith('~') or candidate.is_absolute():
         lane = candidate
     else:
-        lane = base / 'lanes' / text
+        from lane_paths import resolve_lane
+        lane = base / 'lanes' / resolve_lane(base, text)
     lane = lane.expanduser()
     if not lane.is_dir():
         raise ValueError('no lane directory at {} (a bare name resolves under {})'
                          .format(lane, base / 'lanes'))
-    return lane
+    return lane.resolve()

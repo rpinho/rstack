@@ -1534,8 +1534,9 @@ def held(lane):
 
 
 def main(root, args, rh):
+    from lane_paths import lane_dirs, resolve_lane
     root = root.expanduser().resolve()
-    lanes = sorted((root / 'lanes').iterdir()) if args.all else [root / 'lanes' / args.lane]
+    lanes = lane_dirs(root) if args.all else [root / 'lanes' / resolve_lane(root, args.lane)]
     selected, failed = [], False
     # Preflight all policy before starting anything; a missing file is a refusal.
     for lane in lanes:
