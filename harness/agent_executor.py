@@ -57,6 +57,11 @@ def command(backend, executable, model, effort, directory, output, budget='1.00'
         # values are --sandbox levels. They are not interchangeable spellings of the same thing.
         guard = (['--dangerously-bypass-approvals-and-sandbox'] if mode == 'bypass'
                  else ['--sandbox', mode])
+        # 11-16 (bio): builders on a --host stalled at git clone in workspace-write, which has no network.
+        # LAUNCH_CODEX_NETWORK=1 keeps the workspace sandbox and opens its network, instead of turning the
+        # sandbox off. launch.sh forwards both settings to remote runs.
+        if mode == 'workspace-write' and os.environ.get('LAUNCH_CODEX_NETWORK') == '1':
+            guard += ['-c', 'sandbox_workspace_write.network_access=true']
         provider = os.environ.get('LAUNCH_PROVIDER', '')
         if provider not in ('', 'openrouter', 'gemini'):
             raise ValueError('unsupported LAUNCH_PROVIDER')

@@ -564,3 +564,26 @@ def test_the_osascript_shim_is_first_even_when_local_bin_was_already_on_path(tmp
     r = subprocess.run(['zsh', '-f', '-c', block + '\nwhence -p osascript'], env=env, capture_output=True,
                        text=True, timeout=30)
     assert r.returncode == 0 and r.stdout.strip() == str(shim), r.stdout + r.stderr
+
+
+def test_the_codex_sandbox_and_network_settings_cross_to_the_host(tmp_path):
+    """11-16 (bio): remote builders ran in workspace-write with no network and stalled at git clone,
+    because LAUNCH_CODEX_SANDBOX never reached the host. Both settings must be in the remote program."""
+    proc, log, _ = run(tmp_path, '--host', 'm5',
+                       env_extra={'LAUNCH_CODEX_SANDBOX': 'workspace-write', 'LAUNCH_CODEX_NETWORK': '1'})
+    assert proc.returncode == 0, proc.stderr + log
+    program, _ = staged(tmp_path)
+    assert 'export LAUNCH_CODEX_SANDBOX=workspace-write' in program
+    assert 'export LAUNCH_CODEX_NETWORK=1' in program
+
+
+def test_network_opens_the_workspace_sandbox_without_turning_it_off(monkeypatch):
+    sys.path.insert(0, str(REPO / 'harness'))
+    import agent_executor
+    monkeypatch.setenv('LAUNCH_CODEX_NETWORK', '1')
+    cmd = agent_executor.command('codex', 'codex', 'm', 'high', '/w', '/o', sandbox='workspace-write')
+    assert '--sandbox' in cmd and 'sandbox_workspace_write.network_access=true' in cmd
+    assert '--dangerously-bypass-approvals-and-sandbox' not in cmd
+    monkeypatch.delenv('LAUNCH_CODEX_NETWORK')
+    assert 'sandbox_workspace_write.network_access=true' not in agent_executor.command(
+        'codex', 'codex', 'm', 'high', '/w', '/o', sandbox='workspace-write')
