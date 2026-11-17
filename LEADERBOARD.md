@@ -2,6 +2,37 @@
 
 A dated routing snapshot from selected local harness outcomes. Scores are held-outcome rates and 95% Wilson lower bounds. A dash means unscored; starting orders include operator seed choices. This is not a universal benchmark.
 
+## Matched replay and easy plants (11-17)
+
+Selected local replay cases and selected synthetic calibration tasks, not a general ranking. All three OpenAI models reran the same nine historical tasks; judge uses the shared PDF-extraction repair cohort. Operational failures are not quality zeros. The easy plants are a separate six-task cohort, not additional replay cases.
+
+| Entry | Completed replay /9 | Review batch catches /2 | Judge historical agreement /3 | Ideation CLI completions /3 | Easy plants /24 |
+|---|---:|---:|---:|---:|---:|
+| openai/gpt-6.2-astra | 6 | 2 | 3 | 0 | 24 |
+| openai/gpt-6.1-sol | 9 | 1 | 2 | 3 | 24 |
+| openai/gpt-6-astra | 8 | 0 | 3 | 3 | 24 |
+
+The inherited review label rule is maximized by always returning BLOCKED; all three historical judge references conditionally forward. Neither measure establishes general correctness. One review case is excluded for an inherited key mismatch. Ideation quality is unresolved for every model; CLI completion measures bounded delivery only. All three models tie on the six easy plants (three review, three judge), so that cohort cannot separate them. Easy-plant mean score /4: trivial 0.3333, simple linear baseline 0.6667, each model 4.0000; SBS 0.090909. Historical review means /4: trivial 4, simple 0, GPT-6.2 Astra 4 / Sol 2 / GPT-6 Astra 0. Historical judge means /4: trivial 4, simple 0, respective model means 4 / 2.6667 / 4; SBS is undefined because no method beats the trivial controls. These baseline scores apply only to their original cohorts.
+
+## Harder planted errors (laptop, 11-17)
+
+Selected synthetic calibration tasks, not a general ranking. Source: `laptop-public-plants-hard`, 2026-11-17. Six entries ran the same 32 tasks (19 review, 13 judge); each row is the mean of two repetitions, not two independent tasks. The laptop reports the same API defaults, a 4,000-token output ceiling, and empty answers scored 0.
+
+| Entry | Total /128 | Review /76 | Judge /52 | Empty-answer count |
+|---|---:|---:|---:|---|
+| openai/gpt-6.2-astra | 128 | 76 | 52 | unavailable |
+| anthropic/claude-opus-5.5 | 123 | 76 | 47 | unavailable |
+| anthropic/claude-fable-5.2 | 120 | 76 | 44 | unavailable |
+| google/gemini-4-argon | 115 | 76 | 39 | unavailable |
+| google/gemini-4-carbon | 98 | 62 | 36 | unavailable |
+| google/gemini-4-hydrogen † | 96 | 60 | 36 | unavailable |
+
+† Hydrogen includes a supplied review score of −2, outside the 0–4 rubric. Its sums are shown exactly as supplied, without clamping, dropping or repairing the row. Empty-answer counts are unavailable: the seven-field export has neither answer text nor an empty-answer flag, and zero scores do not distinguish empty from incorrect answers. The prompts, keys, individual repetitions and raw answers were not supplied, so scoring, API settings and emptiness cannot be independently checked here.
+
+Review reaches the ceiling for GPT-6.2 Astra, Opus, Fable and Argon. Judge separates them: GPT-6.2 Astra leads Opus by 5 points on 13 paired judge tasks (two repetitions averaged per task), with the entire margin on two tasks. These are descriptive calibration sums; no general-role superiority follows. No trivial or simple baseline on these hard tasks was supplied; the score-only export cannot provide them, so hard-task SBS is unavailable.
+
+## Dated routing snapshots
+
 | Role | Model | Routing order | Held score | Wilson lower score | Date |
 |---|---|---:|---:|---:|---|
 | taste | claude-opus-5-5 | 1 | 0.333 | 0.097 | 2026-11-03 |
