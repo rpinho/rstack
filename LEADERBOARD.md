@@ -142,15 +142,16 @@ A dated routing snapshot from selected local harness outcomes. Scores are held-o
 | taste | claude-fable-5-2 | 2 | - | - | 2026-11-17 |
 | taste | gpt-6-astra | 3 | - | - | 2026-11-17 |
 | review | claude-opus-5-5 | 1 | 1.0 | 0.207 | 2026-11-17 |
-| review | gpt-6-astra | 2 | - | - | 2026-11-17 |
+| review | gpt-6-astra | 2 | 0.6 | 0.231 | 2026-11-17 |
 | review | claude-fable-5-2 | 3 | - | - | 2026-11-17 |
-| review | gpt-6.1-sol | 4 | - | - | 2026-11-17 |
+| review | gpt-6.1-sol | 4 | 0.8 | 0.376 | 2026-11-17 |
 | review | google/gemini-4-carbon | 5 | - | - | 2026-11-17 |
 | review | google/gemini-4-hydrogen | 6 | - | - | 2026-11-17 |
 | review | gpt-5.6-sol | 7 | - | - | 2026-11-17 |
 | review | moonshotai/kimi-k3.1-pro | 8 | - | - | 2026-11-17 |
 | review | google/gemini-4-argon | 9 | - | - | 2026-11-17 |
-| review | claude-sonnet-5-5 | 10 | - | - | 2026-11-17 |
+| review | gpt-6.2-astra | 10 | - | - | 2026-11-17 |
+| review | claude-sonnet-5-5 | 11 | - | - | 2026-11-17 |
 | mechanical | gpt-6.1-sol | 1 | - | - | 2026-11-17 |
 | mechanical | deepseek/deepseek-v4.1-flash-1017 | 2 | - | - | 2026-11-17 |
 | mechanical | google/gemini-4-carbon | 3 | - | - | 2026-11-17 |
@@ -179,11 +180,12 @@ A dated routing snapshot from selected local harness outcomes. Scores are held-o
 | design | google/gemini-4-hydrogen | 4 | - | - | 2026-11-17 |
 | design | gpt-6.1-sol | 5 | - | - | 2026-11-17 |
 | judge | claude-opus-5-5 | 1 | - | - | 2026-11-17 |
-| judge | gpt-6-astra | 2 | - | - | 2026-11-17 |
+| judge | gpt-6-astra | 2 | 1.0 | 0.61 | 2026-11-17 |
 | judge | claude-fable-5-2 | 3 | 0.0 | 0.0 | 2026-11-17 |
-| judge | gpt-6.1-sol | 4 | - | - | 2026-11-17 |
+| judge | gpt-6.1-sol | 4 | 0.833 | 0.436 | 2026-11-17 |
 | judge | google/gemini-4-carbon | 5 | - | - | 2026-11-17 |
 | judge | google/gemini-4-hydrogen | 6 | - | - | 2026-11-17 |
+| judge | gpt-6.2-astra | 7 | - | - | 2026-11-17 |
 
 ## Recorded observation scores
 
@@ -223,10 +225,16 @@ Selected local labels on a 0–4 scale, including proxy and operational outcomes
 | ideation | claude-fable-5-2 | 4 | 2026-11-14 |
 | ideation | claude-opus-5-5 | 4, 4 | 2026-11-16 |
 | judge | claude-fable-5-2 | 0, 0 | 2026-11-13 |
+| judge | gpt-6-astra | 4, 4, 4, 4, 4, 4 | 2026-11-17 |
+| judge | gpt-6.1-sol | 0, 4, 4, 4, 4, 4 | 2026-11-17 |
+| judge | gpt-6.2-astra | 4, 4, 4, 4, 4, 4 | 2026-11-17 |
 | review | claude-opus-5-5 | 4 | 2026-11-09 |
 | review | google/gemini-4-argon | 4 | 2026-11-10 |
 | review | google/gemini-4-hydrogen | 0, 4 | 2026-11-16 |
 | review | gpt-5.6-sol | 0, 4, 4 | 2026-11-10 |
+| review | gpt-6-astra | 0, 0, 4, 4, 4 | 2026-11-17 |
+| review | gpt-6.1-sol | 0, 4, 4, 4, 4 | 2026-11-17 |
+| review | gpt-6.2-astra | 4, 4, 4, 4, 4 | 2026-11-17 |
 | review | moonshotai/kimi-k3.1-pro | 4, 4 | 2026-11-10 |
 
 Ranking method and limits: [leaderboard/README.md](leaderboard/README.md).
