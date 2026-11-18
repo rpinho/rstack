@@ -14,10 +14,13 @@ The wrapper reuses the local allowance reader. The launcher applies only its tmu
 
 ## Policy
 
-- Lane: `RSTACK_LANE`, then `RH_JOB` (the launcher exports this), `LAUNCH_JOB`,
-  `LAUNCH_JOB_NAME`, `JOB_NAME`, then cwd patterns `open-science/<lane>_*`,
-  `<anchor>/<lane>` for each host `lane_anchors` entry, `lanes/<lane>`, finally cwd basename. Jobs can set `RSTACK_LANE`
-  when several job names belong to the same lane.
+- Lane: `RSTACK_LANE` (aliases resolved), then the job name (`RH_JOB`, which the launcher exports,
+  `LAUNCH_JOB`, `LAUNCH_JOB_NAME`, `JOB_NAME`) matched against the lane registry's lane names,
+  sessions, aliases and `job_prefixes` (e.g. `"digest": {"job_prefixes": ["nightly"]}`), then cwd
+  patterns `open-science/<lane>_*`, `<anchor>/<lane>` for each host `lane_anchors` entry,
+  `lanes/<lane>`, finally cwd basename, each resolved through the registry the same way. A name no
+  lane claims gets the default limits and one warning line naming the job (11-18: the nightly and
+  bio's `hunt_*`/`ref_*` jobs were each billed as a lane of their own at 3%/day).
 - Privacy routing: batch runs whose working directory is under a host `personal_roots` entry
   use `~/.codex`; all other batch runs use `~/.codex-clean`. Both lists live only in the host
   config, so private paths never enter this repo.

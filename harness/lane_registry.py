@@ -49,6 +49,18 @@ class LaneRegistry:
                 if session in self.sessions and self.sessions[session] != lane:
                     raise ValueError('ambiguous session ' + session)
                 self.sessions[session] = lane
+        # Job-name prefixes that are not sessions (11-18: nightly-<date> is the digest lane's job,
+        # bio's hunt_* and ref_* are open-source's). Checked after every lane's sessions are known.
+        self.job_prefixes = {}
+        for lane, row in self.lanes.items():
+            prefixes = row.get('job_prefixes', [])
+            if not isinstance(prefixes, list) or any(not isinstance(p, str) or not p for p in prefixes):
+                raise ValueError('job_prefixes must be a list of names for lane ' + lane)
+            for prefix in prefixes:
+                owner = self.job_prefixes.get(prefix, self.sessions.get(prefix, lane))
+                if owner != lane:
+                    raise ValueError('ambiguous job prefix ' + prefix)
+                self.job_prefixes[prefix] = lane
 
     def lane_of_session(self, name):
         if name in self.sessions:
@@ -58,12 +70,21 @@ class LaneRegistry:
                 return self.sessions[name[len(prefix):]]
         return name
 
-    def lane_of_job(self, name):
-        """Longest registered lane/session prefix; retain the launcher's legacy fallback."""
+    def registered_lane_of_job(self, name):
+        """Longest registered lane, session, alias or job prefix; None when the registry has no match."""
         name = Path(name).name
-        for session in sorted(self.sessions, key=len, reverse=True):
-            if name == session or name.startswith((session + '_', session + '-')):
-                return self.sessions[session]
+        names = dict(self.job_prefixes, **self.sessions)
+        for prefix in sorted(names, key=len, reverse=True):
+            if name == prefix or name.startswith((prefix + '_', prefix + '-')):
+                return names[prefix]
+        return None
+
+    def lane_of_job(self, name):
+        """Longest registered lane/session/job prefix; retain the launcher's legacy fallback."""
+        name = Path(name).name
+        lane = self.registered_lane_of_job(name)
+        if lane:
+            return lane
         # This hyphen is part of the lane name, even without a local registry.
         if name == 'open-source' or name.startswith(('open-source_', 'open-source-')):
             return 'open-source'

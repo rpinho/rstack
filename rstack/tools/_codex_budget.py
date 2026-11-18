@@ -85,11 +85,56 @@ def host_list(key, default=()):
     return [str(v) for v in value] if isinstance(value, list) else list(default)
 
 
-def lane_for(cwd):
-    for key in ('RSTACK_LANE', 'RH_JOB', 'LAUNCH_JOB', 'LAUNCH_JOB_NAME', 'JOB_NAME'):
-        if os.environ.get(key):
-            value = Path(os.environ[key]).stem if key != 'RSTACK_LANE' else os.environ[key]
-            return safe_lane(value)
+def registry():
+    """The harness lane registry (repo: ../../harness; installed: the research-harness root).
+
+    None, with a warning, when it cannot be read: spend accounting then falls back to the cwd.
+    """
+    root = TOOLS.parent.parent
+    # Loaded by path: putting the installed root on sys.path would shadow modules for the rest of the run.
+    path = next((p for p in (root / 'harness/lane_registry.py', root / 'lane_registry.py') if p.exists()), None)
+    try:
+        if path is None:
+            raise ImportError('lane_registry.py not found')
+        loader = importlib.machinery.SourceFileLoader('rstack_lane_registry', str(path))
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(module)
+        return module.load()
+    except (ImportError, OSError, ValueError, SyntaxError) as exc:
+        print('codex: WARNING lane registry unavailable ({}); lane from cwd'.format(type(exc).__name__),
+              file=sys.stderr)
+        return None
+
+
+def job_name():
+    for key in ('RH_JOB', 'LAUNCH_JOB', 'LAUNCH_JOB_NAME', 'JOB_NAME'):
+        if os.environ.get(key, '').strip():
+            return Path(os.environ[key].strip()).stem
+    return ''
+
+
+def lane_for(cwd, cfg=None, warn=True):
+    """RSTACK_LANE, then the lane registry (names, aliases, job_prefixes) for the job name, then the cwd
+    (whose lane name is resolved through the registry the same way).
+
+    11-18: the nightly (worktree nightly-<date>) and bio's hunt_*/ref_* jobs were each charged as a lane
+    of their own, under the 3%/day default. A job no lane claims still gets the default limits, with one
+    warning line naming it.
+    """
+    reg = registry()
+    explicit = os.environ.get('RSTACK_LANE', '').strip()
+    if explicit:
+        return safe_lane(reg.lane_of_session(explicit) if reg else explicit)
+    job = job_name()
+    budget_lanes = set((cfg or {}).get('lanes', LANES))
+    if job:
+        lane = reg.registered_lane_of_job(job) if reg else None
+        if not lane:
+            lane = next((name for name in sorted(budget_lanes, key=len, reverse=True)
+                         if job == name or job.startswith((name + '_', name + '-'))), None)
+        if lane:
+            return safe_lane(lane)
+    lane = None
     parts = Path(cwd).parts
     # Extra anchors (for example a private notes tree whose subfolders are lanes) come from the host config.
     for anchor in ['open-science', *host_list('lane_anchors'), 'lanes']:
@@ -97,8 +142,16 @@ def lane_for(cwd):
             value = parts[parts.index(anchor) + 1]
             if anchor == 'open-science':
                 value = value.split('_', 1)[0]
-            return safe_lane(value)
-    return safe_lane(Path(cwd).name or 'unknown')
+            lane = value
+            break
+    lane = safe_lane(lane or Path(cwd).name or 'unknown')
+    if reg:
+        # 11-18: the nightly ran in a worktree named nightly-20261118 under a lane anchor, so the cwd named the job.
+        lane = safe_lane(reg.registered_lane_of_job(lane) or reg.lane_of_session(lane))
+    if warn and lane not in budget_lanes and not (reg and lane in reg.lanes):
+        print('codex: WARNING {} maps to no registered lane; lane {!r} gets the default limits'.format(
+            'job {!r}'.format(job) if job else 'cwd {}'.format(cwd), lane), file=sys.stderr)
+    return lane
 
 
 def command_position(args):
@@ -644,7 +697,7 @@ def wrapper_main(argv=None):
         # boot-time session recovery calls it from launchd and must not need a weekly snapshot (11-18).
         if help_only or any(a in ('--version', '-V') for a in option_args) or cmd in ('login', 'logout', 'completion', 'features', 'mcp', 'help', 'doctor', 'plugin', 'update', 'remote-control'):
             os.execv(str(native), [str(native)] + args)
-        return supervise(native, args, cfg, lane_for(cwd), cwd, interactive, batch)
+        return supervise(native, args, cfg, lane_for(cwd, cfg, warn=not interactive), cwd, interactive, batch)
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as exc:
         print('codex: {} accounting/config unavailable ({})'.format('WARNING' if interactive else 'REFUSED',
                                                                  type(exc).__name__), file=sys.stderr)

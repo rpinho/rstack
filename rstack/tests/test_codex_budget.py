@@ -41,7 +41,8 @@ def rollout(path, marker='', cwd='/test', tokens=27000, cached=0, used=10.1, sta
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
     for key in list(os.environ):
-        if key.startswith(('CODEX_', 'RSTACK_', 'LAUNCH_')) or key in ('RH_JOB', 'JOB_NAME', 'TMUX'):
+        if key.startswith(('CODEX_', 'RSTACK_', 'LAUNCH_')) or key in ('RH_JOB', 'JOB_NAME', 'TMUX', 'RH_ROOT',
+                                                                          'RH_LANE_REGISTRY'):
             monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv('HOME', str(tmp_path))
     monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
@@ -317,10 +318,75 @@ def test_lane_precedence_and_path_inference(isolated, monkeypatch):
                            ('/Users/x/.worktrees/notes/games', 'games'),
                            ('/root/runtime/lanes/planets/work', 'planets')]:
         assert cb.lane_for(path) == expected
+    # A job name no lane claims no longer becomes a lane of its own (11-18); the cwd decides.
     monkeypatch.setenv('RH_JOB', 'launch-job')
-    assert cb.lane_for('/tmp/other') == 'launch-job'
+    assert cb.lane_for('/tmp/other') == 'other'
     monkeypatch.setenv('RSTACK_LANE', 'explicit')
     assert cb.lane_for('/tmp/other') == 'explicit'
+
+
+def lane_registry_file(tmp_path, monkeypatch):
+    path = tmp_path / 'REGISTRY.json'
+    path.write_text(json.dumps({'lanes': {
+        'digest': {'status': 'active', 'sessions': ['digest'], 'job_prefixes': ['nightly']},
+        'open-source': {'status': 'active', 'sessions': ['open-source', 'bio'], 'aliases': ['bio'],
+                        'job_prefixes': ['hunt', 'ref', 'bio']},
+        'math': {'status': 'active', 'sessions': ['math']}}}))
+    monkeypatch.setenv('RH_LANE_REGISTRY', str(path))
+    return path
+
+
+def test_registry_job_prefixes_map_nightly_to_digest_and_bio_jobs_to_open_source(isolated, monkeypatch, capsys):
+    """11-18: nightly-20261118 and bio's hunt_/ref_ jobs were refused under the 3%/day default."""
+    lane_registry_file(isolated[0], monkeypatch)
+    monkeypatch.delenv('RSTACK_LANE')
+    for key, job, expected in [('JOB_NAME', 'nightly-20261118', 'digest'),
+                               ('RH_JOB', 'hunt_scrna_round3', 'open-source'),
+                               ('RH_JOB', 'ref_pmc_1118', 'open-source'),
+                               ('LAUNCH_JOB', 'bio_fix', 'open-source'),
+                               ('RH_JOB', 'math-r12', 'math')]:
+        monkeypatch.setenv(key, job)
+        assert cb.lane_for('/Users/x/notes') == expected, job
+        monkeypatch.delenv(key)
+    assert capsys.readouterr().err == ''
+    # This morning's case: no job variable, the lane came from the nightly worktree under a lane anchor.
+    cfg = json.loads(isolated[3].read_text())
+    cfg['lane_anchors'] = ['notes']
+    isolated[3].write_text(json.dumps(cfg))
+    assert cb.lane_for('/Users/x/.worktrees/notes/nightly-20261118') == 'digest'
+    assert cb.lane_for('/Users/x/dev/open-science/hunt_scrna') == 'open-source'
+    assert capsys.readouterr().err == ''
+    # RSTACK_LANE still wins, through the registry's aliases.
+    monkeypatch.setenv('RH_JOB', 'nightly-20261118')
+    monkeypatch.setenv('RSTACK_LANE', 'bio')
+    assert cb.lane_for('/tmp/other') == 'open-source'
+    # An unknown job falls to the cwd, keeps default limits and gets one line naming it.
+    monkeypatch.delenv('RSTACK_LANE')
+    monkeypatch.setenv('RH_JOB', 'mystery_1118')
+    assert cb.lane_for('/tmp/other') == 'other'
+    err = capsys.readouterr().err.strip().splitlines()
+    assert len(err) == 1 and "job 'mystery_1118'" in err[0] and 'default limits' in err[0]
+    # A broken registry warns and still resolves by cwd rather than refusing.
+    monkeypatch.setenv('RH_LANE_REGISTRY', str(isolated[0] / 'missing.json'))
+    monkeypatch.setenv('RH_JOB', 'nightly-20261118')
+    assert cb.lane_for('/tmp/lanes/planets/w') == 'planets'
+
+
+def test_nightly_job_is_charged_to_the_digest_ledger_and_limits(isolated, monkeypatch):
+    lane_registry_file(isolated[0], monkeypatch)
+    _, _, cfg, config, _ = isolated
+    cfg['lanes']['digest'] = dict(calls_run=8, calls_hour=8, weekly_percent_day=1)
+    config.write_text(json.dumps(cfg))
+    fake_native(isolated)
+    monkeypatch.delenv('RSTACK_LANE')
+    monkeypatch.setenv('JOB_NAME', 'nightly-20261118')
+    monkeypatch.setenv('RSTACK_RUN_ID', 'nightly-20261118')
+    r = run_wrapper('exec', 'hello')
+    assert r.returncode == 0, r.stderr
+    assert 'nightly-20261118' not in r.stderr
+    rows = cb.read_rows(cb.state_dir() / 'codex-ledger/digest.jsonl')
+    assert rows[-1]['event'] == 'finish'
+    assert not (cb.state_dir() / 'codex-ledger/nightly-20261118.jsonl').exists()
 
 
 def test_backstop_flags_unledgered_and_ignores_inflight_marked_session(isolated):

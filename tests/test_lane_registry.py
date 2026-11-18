@@ -65,6 +65,23 @@ def test_renamed_lane_alias_resolves_sessions_jobs_and_retired_reason():
     assert registry.lane_of_job('open-source_round1') == 'open-source'
 
 
+def test_declared_job_prefixes_resolve_jobs_and_conflicts_are_errors():
+    registry = lr.LaneRegistry({'lanes': {
+        'digest': {'status': 'active', 'job_prefixes': ['nightly']},
+        'open-source': {'status': 'active', 'aliases': ['bio'], 'job_prefixes': ['hunt', 'ref', 'bio']},
+    }})
+    assert registry.lane_of_job('nightly-20261118') == 'digest'
+    assert registry.lane_of_job('hunt_scrna') == registry.lane_of_job('ref_1118') == 'open-source'
+    assert registry.registered_lane_of_job('refurbish_1') is None
+    assert registry.lane_of_job('refurbish_1') == 'refurbish'
+    assert registry.lane_of_session('nightly') == 'nightly'
+    for bad in ({'a': {'status': 'active', 'job_prefixes': ['x']}, 'b': {'status': 'active', 'job_prefixes': ['x']}},
+                {'a': {'status': 'active', 'job_prefixes': ['b']}, 'b': {'status': 'active'}},
+                {'a': {'status': 'active', 'job_prefixes': 'x'}}):
+        with pytest.raises(ValueError):
+            lr.LaneRegistry({'lanes': bad})
+
+
 def test_open_source_job_fallback_retains_the_lane_hyphen():
     registry = lr.LaneRegistry({'lanes': {}})
     assert registry.lane_of_job('open-source_fix') == 'open-source'
