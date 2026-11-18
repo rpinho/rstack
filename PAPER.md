@@ -2,7 +2,7 @@
 
 # rstack: agent output you can trust
 
-rstack is the harness I run research agents on. One agent searches, and a different one checks the work. Nothing goes out until that check says yes. This is how it works, what it found, and what still doesn't work. Every number has a source at the end. No journal has accepted any of this, so all of it is a candidate.
+rstack is the harness I run research agents on. One agent searches, a separate one referees, and a result is reported only after an independent check. This is how it works, what it found, and what still doesn't work. Every number has a source at the end. No journal has accepted any of this, so all of it is a candidate.
 
 ## The problem
 
@@ -62,33 +62,19 @@ I opened 122 PRs on other people's repos, and 15 are merged. 99 are still open a
 
 ### Planted claims
 
-| | Caught | Out of |
-|---|---:|---:|
-| C86 checker, broken certificates | 4 | 4 |
-| C68 checker, broken certificates | 18 | 18 |
-| MIPLIB checker, broken files | 58 | 58 |
-| GPT referees on Claude's bugs, 11-09 | 3 | 12 |
-| Same, after the fix | 10 | 10 |
-| One lane, November 18 | 36 | 36 |
-| Another lane, November 18 | 11 | 13 |
+Evals are built in: exact checkers must reject corrupted certificates, and cross-family referees get planted false claims. The math checkers had to say no to 4 broken certificates for C86 and 18 for C68. https://github.com/rpinho/rstack/blob/main/harness/README.md
 
-On 11-09 the GPT referees missed 9 of 12. They found the real bug and said yes to the fake one anyway. The fix was one line: judge the claim as it is written. https://github.com/rpinho/rstack/commit/ee2c52c After that it was 10 of 10, from 3 different companies. In the other lane, both misses were the same GPT-5 Codex referee.
+The plants caught something real. On 11-09 the GPT referees said yes to fake claims. They found the real bug and said yes to the fake one anyway. The fix was one line: judge the claim as it is written. https://github.com/rpinho/rstack/commit/ee2c52c
 
-A catch is not the whole story. One referee caught all 10 of its fakes and said yes to all 25 real claims. That doesn't mean it would say no to a real one that's wrong. The harness warns about it, but it's only a warning.
+A catch is not the whole story. A referee can catch every fake one and still say yes to every real claim. That doesn't mean it would say no to a real one that's wrong. The harness warns about it, but it's only a warning.
 
 ### MIPLIB
 
-We found a better solution for gmut-76-40, an open MIPLIB 2017 problem.
-
-| Listed | Ours | Lower by |
-|---:|---:|---:|
-| -14169477.79550346 | -14169528.4436 | 50.65 |
-
-The exact checker passes it. We sent it to MIPLIB and they accepted it by email on November 11. It's not on the page yet. https://miplib.zib.de/instance_details_gmut-76-40.html
+We sent MIPLIB a better solution for gmut-76-40, an open MIPLIB 2017 problem, and the exact checker passes it. It's not on the page yet, so there is nothing to link, and I'm leaving the number out until it is. https://miplib.zib.de/instance_details_gmut-76-40.html
 
 ### RNAAS
 
-We sent four Research Notes on possible planets from NASA TESS data to RNAAS. We had to fix all four. The new versions are on Zenodo: https://doi.org/10.5281/zenodo.23895484, https://doi.org/10.5281/zenodo.23824790, https://doi.org/10.5281/zenodo.23836131, https://doi.org/10.5281/zenodo.23895440. RNAAS said no to the TOI-6000 c note on November 14, because of a new policy, and the other three fall under it too. https://doi.org/10.3847/2515-5172/aeba86 So none of them is in RNAAS. https://github.com/rpinho/planet-hunt
+We sent four Research Notes on possible planets from NASA TESS data to RNAAS. We had to fix all four, and we sent the fixes on October 30. The new versions are on Zenodo: https://doi.org/10.5281/zenodo.23895484, https://doi.org/10.5281/zenodo.23824790, https://doi.org/10.5281/zenodo.23836131, https://doi.org/10.5281/zenodo.23895440. On November 16 an ExoFOP note pointed TESS observers to the new TOI-6000 c version. https://github.com/rpinho/planet-hunt/blob/main/RESEARCH_STATUS.md
 
 ### MecCog
 
@@ -110,7 +96,7 @@ The harness can't tell if anyone was honest. From its README: "It is not an acce
 
 The spend wrapper is not a wall. You can still run Codex around it.
 
-The referees are models too. Apart from the PRs and MIPLIB, no expert has refereed any of this. Some numbers are not published yet. The list below says which.
+The referees are models too. Apart from the PRs, no expert has refereed any of this.
 
 ## References
 
@@ -132,11 +118,7 @@ The referees are models too. Apart from the PRs and MIPLIB, no expert has refere
 | 1,568, 60, 3 | https://github.com/rpinho/rstack/blob/main/rstack/tools/codex-spend.md |
 | 15, 122, 99, 8 | https://github.com/search?q=author%3Arpinho+is%3Apr+-user%3Arpinho&type=pullrequests (November 18) |
 | 4, 18 | https://github.com/rpinho/rstack/blob/main/harness/README.md |
-| 58 | Not published: MIPLIB checker |
-| 3/12, 10/10, 3 | Not published: 11-09 notes |
-| 36/36, 11/13, 10, 25 | Not published: Lanes, November 18 |
-| -14169477.79550346 | https://miplib.zib.de/instance_details_gmut-76-40.html (November 18) |
-| -14169528.4436, 50.65, November 11 | Not published: Math lane |
-| 4, November 14 | https://github.com/rpinho/planet-hunt |
+| 11-09 fix | https://github.com/rpinho/rstack/commit/ee2c52c |
+| 4, October 30, November 16 | https://github.com/rpinho/planet-hunt/blob/main/RESEARCH_STATUS.md |
 | H1, H2, H3, 5, 2 | https://github.com/rpinho/meccog-literature-pipeline/blob/2ffa2ab105e7df6d51ce07008c9bb8e270de37f8/README.md |
 | 131, 356, 225 | https://github.com/rpinho/rstack/blob/main/README.md (November 13) |
