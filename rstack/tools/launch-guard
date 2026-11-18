@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Launcher-only tmux concurrency cap; spend policy belongs to the Codex wrapper."""
+import argparse
+import os
+import re
+import subprocess
+import sys
+
+
+def exempt(lane):
+    return lane in ('games', 'open-source', 'bio') or lane.startswith('games_')
+
+
+def running_jobs(backend, provider, lane):
+    tmux = os.environ.get('LAUNCH_TMUX') or 'tmux'
+
+    def run(args):
+        return subprocess.run([tmux] + args, capture_output=True, text=True, timeout=10)
+
+    current = ''
+    if os.environ.get('TMUX'):
+        target = ['-t', os.environ['TMUX_PANE']] if os.environ.get('TMUX_PANE') else []
+        result = run(['display-message', '-p'] + target + ['#{session_name}'])
+        if result.returncode:
+            raise ValueError('cannot identify current tmux session')
+        current = result.stdout.strip()
+        if current.startswith('job-'):
+            for key, value in (('@launch_backend', backend), ('@launch_provider', provider), ('@launch_lane', lane)):
+                if run(['set-option', '-t', '=' + current, key, value]).returncode:
+                    raise ValueError('cannot mark selected tmux route')
+    fmt = '#{session_name}\t#{pane_dead}\t#{@launch_backend}\t#{@launch_provider}\t#{@launch_lane}\t#{pane_start_command}'
+    result = run(['list-panes', '-a', '-F', fmt])
+    if result.returncode:
+        if any(s in result.stderr.lower() for s in ('no server running', 'no sessions', 'no such file or directory')):
+            return 0
+        raise ValueError('cannot list live tmux jobs')
+    jobs = set()
+    for row in result.stdout.splitlines():
+        fields = row.split('\t', 5)
+        if len(fields) != 6:
+            raise ValueError('unreadable tmux job row')
+        name, dead, selected, route, tagged_lane, command = fields
+        if not name.startswith('job-') or name == current or dead == '1':
+            continue
+        if not selected:
+            match = re.search(r'\bLAUNCH_BACKEND=[\'\"]?(codex|claude)\b', command)
+            selected = match.group(1) if match else ''
+        if not route:
+            match = re.search(r'\bLAUNCH_PROVIDER=[\'\"]?(openrouter|gemini)\b', command)
+            route = match.group(1) if match else ''
+        if not tagged_lane:
+            match = re.search(r'\b(?:RSTACK_LANE|LAUNCH_LANE)=[\'\"]?([\w.-]+)', command)
+            tagged_lane = match.group(1) if match else ''
+        legacy_exempt = re.match(r'^job-(games|open-source|bio)(?:[_-]|$)', name)
+        if selected == 'claude' or route in ('openrouter', 'gemini') or exempt(tagged_lane) or legacy_exempt:
+            continue
+        jobs.add(name)
+    return len(jobs)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ('job', 'lane', 'backend', 'provider', 'log'):
+        parser.add_argument('--' + name, default='')
+    args = parser.parse_args(argv)
+
+    def message(text):
+        print('launch-guard: ' + text, file=sys.stderr)
+        if args.log:
+            with open(args.log, 'a') as stream:
+                stream.write('launch-guard: ' + text + '\n')
+
+    capped = args.backend == 'codex' and not args.provider and not exempt(args.lane) and not re.match(r'^(games|open-source|bio)(?:[_-]|$)', args.job)
+    cap = os.environ.get('LAUNCH_MAX_CONCURRENT') or '4'
+    if not cap.isdecimal() or int(cap) < 1:
+        message('REFUSED: LAUNCH_MAX_CONCURRENT must be a positive integer')
+        return 2
+    try:
+        count = running_jobs(args.backend, args.provider, args.lane)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        message(('REFUSED' if capped else 'WARNING') + ': cannot count tmux jobs ({})'.format(exc))
+        return 75 if capped else 0
+    if capped and count >= int(cap):
+        message('REFUSED: {} other Codex job-* sessions; LAUNCH_MAX_CONCURRENT={}'.format(count, cap))
+        return 75
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

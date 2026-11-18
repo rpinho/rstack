@@ -96,6 +96,63 @@ def test_games_and_open_source_have_finite_higher_limits(isolated):
         assert '200 calls/hour' in cb.admit(cfg, base, 'games', NOW, 'new', 100, weekly())
 
 
+def test_bio_alias_shares_open_source_budget_and_ledger(isolated, monkeypatch):
+    monkeypatch.setenv('RSTACK_LANE', 'bio')
+    assert cb.lane_for('/tmp/test') == 'open-source'
+    monkeypatch.delenv('RSTACK_LANE')
+    assert cb.lane_for('/tmp/open-science/bio_fix') == 'open-source'
+    assert cb.lane_for('/tmp/lanes/bio') == 'open-source'
+    with cb.locked() as base:
+        seed(base, 'bio', 120)
+        seed(base, 'open-source', 80, start=NOW - 200)
+        assert '200 calls/hour' in cb.admit(isolated[2], base, 'open-source', NOW, 'new', 100, weekly())
+
+
+def test_digest_run_cap_counts_pending_calls_across_hour_boundaries(isolated, monkeypatch):
+    _, _, cfg, _, _ = isolated
+    cfg['lanes']['digest'] = dict(calls_run=2, calls_hour=8, weekly_percent_day=1)
+    with cb.locked() as base:
+        assert 'RSTACK_RUN_ID required' in cb.admit(cfg, base, 'digest', NOW, 'x', 1, weekly())
+        monkeypatch.setenv('RSTACK_RUN_ID', 'nightly-1')
+        assert cb.admit(cfg, base, 'digest', NOW, 'x', 1, weekly()) is None
+        for i in range(2):
+            cb.append(base, 'digest', dict(event='start', call_id=str(i), run_id='nightly-1', ts=NOW - 7200 + i))
+        assert '2 calls/run' in cb.admit(cfg, base, 'digest', NOW, 'x', 1, weekly())
+        monkeypatch.setenv('RSTACK_RUN_ID', 'nightly-2')
+        assert cb.admit(cfg, base, 'digest', NOW, 'x', 1, weekly()) is None
+
+
+def test_health_caches_discovery_but_checks_new_homes_and_resumes_every_pass(isolated, monkeypatch):
+    root, home, cfg, _, _ = isolated
+    discoveries = []
+    def discover():
+        discoveries.append(True)
+        return [home]
+    monkeypatch.setattr(cb.allowance, 'homes', discover)
+    now = time.time()
+    settings = dict(enabled_since=now - 60)
+    assert cb.health_problems(settings, now=now, repair=True) == []
+    assert len(discoveries) == 1
+    # Every known-home rollout is still checked, even a resume of an old session.
+    path = home / 'sessions/rollout-resumed.jsonl'
+    rollout(path)
+    assert cb.health_problems(settings, now=now + 1, repair=True)[0][0] == 'codex-bypass'
+    assert len(discoveries) == 1
+    outside = root / 'new-explicit-home'
+    rollout(outside / 'sessions/rollout-new.jsonl')
+    monkeypatch.setenv('CODEX_HOMES', str(outside))
+    rows = cb.health_problems(settings, now=now + 2, repair=True)
+    assert len(rows) == 2 and len(discoveries) == 1
+    assert cb.health_homes(cfg, now + 6 * 3600 + 1, write=True)
+    assert len(discoveries) == 2
+
+
+def test_dry_health_never_writes_discovery_cache(isolated, monkeypatch):
+    monkeypatch.setattr(cb.allowance, 'homes', lambda: [])
+    cb.health_problems(dict(enabled_since=time.time()), repair=False)
+    assert not (cb.state_dir() / 'codex-home-discovery.json').exists()
+
+
 @pytest.mark.parametrize('spacing', [20, 60])
 def test_incident_replay_refused_on_call_20(isolated, spacing):
     """Literal 10-minute fan-out and incident's ~1/min calls both stop at 20."""

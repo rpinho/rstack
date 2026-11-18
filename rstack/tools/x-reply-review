@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Filter ready X drafts by lane policy before the browser reviewer selects them.
+
+No model or network calls. Default is read-only; --apply drops barred ready drafts
+in the producer's REPLY_DRAFTS.md and logs the refusal before it is synced for review.
+"""
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import re
+import sys
+
+# Both the checkout and harness-sync's installed layout.
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'harness' if (ROOT / 'harness/lane_registry.py').exists() else ROOT))
+from lane_registry import load
+
+TAG = re.compile(r'\b(?:lane|project|owner)\s*:\s*`?([A-Za-z0-9][A-Za-z0-9_.-]*)', re.I)
+STATUS = re.compile(r'(?im)^([-*]\s*)?Status:\s*ready[^\n]*')
+POST_ID = re.compile(r'(?:/status/|drafts/)(\d+)|(?<!\d)(\d{15,22})(?!\d)')
+
+
+def post_ids(text):
+    return {a or b for a, b in POST_ID.findall(text)}
+
+
+def log_tags(path):
+    """Union tags for the source post; later owner/general rows cannot erase a bar."""
+    tags = {}
+    if not path.exists():
+        return tags
+    with path.open() as stream:
+        for line in stream:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            lanes = {row[k] for k in ('lane', 'project', 'owner') if isinstance(row.get(k), str) and row[k]}
+            ids = set()
+            for key in ('target_url', 'in_reply_to', 'post_id', 'target_id', 'draft', 'file'):
+                ids.update(post_ids(str(row.get(key, ''))))
+            for pid in ids:
+                tags.setdefault(pid, set()).update(lanes)
+    return tags
+
+
+def filter_drafts(text, tags, registry, lanes_root, stamp):
+    refusals = []
+    # Keep heading boundaries so a tag on one draft never contaminates its neighbour.
+    blocks = re.split(r'(?m)(?=^#{1,6}\s)', text)
+    sections = {}
+    for i, block in enumerate(blocks):
+        heading = re.match(r'^(#{1,6})\s+([^\n]*)', block)
+        if heading:
+            depth = len(heading.group(1))
+            sections = {level: tags for level, tags in sections.items() if level < depth}
+            sections[depth] = set(TAG.findall(heading.group(2)))
+        if not STATUS.search(block):
+            continue
+        ids = post_ids(block)
+        lanes = set(TAG.findall(block))
+        for section_tags in sections.values():
+            lanes.update(section_tags)
+        for pid in ids:
+            lanes.update(tags.get(pid, ()))
+        reasons = [reason for lane in sorted(lanes)
+                   if (reason := registry.x_refusal(lane, lanes_root))]
+        if reasons:
+            reason = '; '.join(reasons)
+            blocks[i] = STATUS.sub(lambda m: (m.group(1) or '') + 'Status: dropped ' + stamp
+                                   + ' (lane bars X: ' + reason.replace('\n', ' ') + ')', block)
+            refusals.append(dict(utc=stamp, action='drop_draft', reason=reason,
+                                 post_ids=sorted(ids), lanes=sorted(lanes), session='x-reply-review'))
+    return ''.join(blocks), refusals
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--drafts', type=Path, default=Path('REPLY_DRAFTS.md'))
+    parser.add_argument('--log', type=Path, default=Path('log.jsonl'))
+    parser.add_argument('--lanes-root', type=Path, default=Path(os.environ.get('RH_ROOT') or
+                        '~/.local/share/research-harness').expanduser() / 'lanes')
+    parser.add_argument('--apply', action='store_true')
+    args = parser.parse_args(argv)
+    try:
+        registry = load(args.lanes_root)
+        text = args.drafts.read_text()
+        filtered, refusals = filter_drafts(text, log_tags(args.log), registry, args.lanes_root,
+                                          datetime.now(timezone.utc).isoformat())
+        if args.apply and refusals:
+            args.drafts.write_text(filtered)
+            with args.log.open('a') as stream:
+                for row in refusals:
+                    stream.write(json.dumps(row) + '\n')
+        for row in refusals:
+            print('REFUSED ' + ','.join(row['post_ids']) + ': ' + row['reason'])
+        return 0 if args.apply or not refusals else 1
+    except (OSError, ValueError, TypeError) as exc:
+        print('x-reply-review: cannot read lane policy: ' + str(exc), file=sys.stderr)
+        return 78
+
+
+if __name__ == '__main__':
+    sys.exit(main())

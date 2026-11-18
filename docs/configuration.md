@@ -33,6 +33,8 @@ Use an isolated writable root with `python3 harness/rh.py --root PATH ...`. It c
 | `MODEL_STATE`, `MODEL_LEDGER`, `MODEL_OVERRIDES` | Private scoring state directory (default `.runtime/leaderboard`), optional ledger path and exclusions config. |
 | `LAUNCH_ARTIFACT_DIR` | Standalone job specs/logs; default `$PWD/.runtime/jobs` after entering WORKDIR. A sweep passes its own spec path. |
 | `LAUNCH_STATE`, `LAUNCH_SELECTOR`, `LAUNCH_CODEX` | Job registry (default `$PWD/.runtime/job-registry`), optional selector override and Codex executable. |
+| `LAUNCH_MAX_CONCURRENT`, `LAUNCH_TMUX`, `LAUNCH_GUARD` | Default four other live Codex `job-*` tmux sessions; games/open-source/bio are exempt. The guard counts sessions, excludes dead/known non-Codex routes, and refuses an unreadable count. Allowance limits are enforced by the wrapper. |
+| `LAUNCH_URGENT` | Nonblank reason logged by the launcher; Codex receives `-c service_tier=priority`. Forwarded to remote executors with canonical `RSTACK_LANE`; concurrency still applies. |
 | `LAUNCH_ROLE`, `LAUNCH_EFFORT` | Role and effort; fixed model overrides also require a reason. |
 | `LAUNCH_YIELD_LEDGER`, `LAUNCH_NOTIFY_COMMAND` | After every job the launcher checks the two hard-rule lines (`You asked: ...` first in `STATUS.md`, `Shipped: ...` first in `REPORT.md`), writes `lint restate-ask=N shipped-line=N` to the job log, and appends one row per job to the yield ledger (default `$PWD/.runtime/job-yield.jsonl`). A job missing either line is reported through `LAUNCH_NOTIFY_COMMAND`, called with one message argument, if one is set. The lint reports and never changes the job's exit status, and a missing or broken notifier is not an error: a finished job must not be turned into a failed one by its own bookkeeping. |
 | `LAUNCH_IDEA`, `LAUNCH_IDEA_ROOT` | Optional promoted-idea admission check before execution. Requires an `rh` command on PATH. |
@@ -134,3 +136,10 @@ allowlist, not discovery of local files. `MODEL_MINE_OUT` defaults to
 without probing a made-up absolute sentinel file.
 
 New lanes created with `rh lane new` also contain `LANE.json` (frozen problem, metric, deadline, test/bar, submission rules and access declarations) and `SELECTION.json` (v2 policy). Lint checks their hashes and lane limits. A 24-hour setup grace applies only while workers are disabled and no idea, intake, sweep or sealed-scoring history exists. Afterwards the ordinary reading, queue and delivery checks apply. `workers_enabled=false` refuses real sweeps while preserving previews. These local hashes detect accidental edits; they are not an authenticated audit service.
+
+
+Lane registry entries (`RH_LANE_REGISTRY` or `lanes/REGISTRY.json`) may declare
+`"x": false` to bar that lane's drafts from X review. The optional field must be a
+boolean and is independent of lifecycle status. Aliases resolve to the same policy;
+`x:true` cannot override an explicit no-X rule in the canonical or alias RULES.md.
+Encode prose restrictions with `x:false` so consumers need no natural-language inference.

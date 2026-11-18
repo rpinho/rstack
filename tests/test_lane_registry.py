@@ -65,6 +65,14 @@ def test_renamed_lane_alias_resolves_sessions_jobs_and_retired_reason():
     assert registry.lane_of_job('open-source_round1') == 'open-source'
 
 
+def test_open_source_job_fallback_retains_the_lane_hyphen():
+    registry = lr.LaneRegistry({'lanes': {}})
+    assert registry.lane_of_job('open-source_fix') == 'open-source'
+    assert registry.lane_of_job('open-source-fix') == 'open-source'
+    assert registry.lane_of_job('open-source') == 'open-source'
+    assert registry.lane_of_job('open-sourcebook_fix') == 'open'
+
+
 @pytest.mark.parametrize('data', [
     [], {}, {'lanes': []}, {'lanes': {'x': {'status': 'ended'}}},
     {'lanes': {'x': {'status': 'active', 'end': '2026-02-30'}}},

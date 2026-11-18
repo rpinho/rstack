@@ -102,7 +102,10 @@ args=sys.argv[1:]
 with open(os.environ['TMUX_CALLS'], 'a') as f: f.write(json.dumps(args)+'\\n')
 if args[0]=='display-message': print(os.environ.get('CURRENT_SESSION','job-this'))
 elif args[0]=='list-panes':
-    print(os.environ.get('PANES',''),end='')
+    rows=os.environ.get('PANES','')
+    if '#{@launch_lane}' in args[-1]:
+        rows=''.join('\\t'.join(row.split('\\t')[:4]+['']+row.split('\\t')[4:])+'\\n' for row in rows.splitlines())
+    print(rows,end='')
     if os.environ.get('TMUX_FAIL'):
         print(os.environ['TMUX_FAIL'], file=sys.stderr);sys.exit(1)
 ''')
@@ -239,7 +242,11 @@ import os,sys
 from pathlib import Path
 with open(os.environ['PAID_CALLS'],'a') as f:f.write('called\\n')
 if '-o' in sys.argv:Path(sys.argv[sys.argv.index('-o')+1]).write_text('done')
-print('{"is_error":false,"subtype":"success","result":"done"}')
+import json
+Path(os.environ['PAID_CALLS']+'.argv').write_text(json.dumps(sys.argv))
+Path(os.environ['PAID_CALLS']+'.lane').write_text(os.environ.get('RSTACK_LANE',''))
+print(os.environ.get('FAKE_OUTPUT','{"is_error":false,"subtype":"success","result":"done"}'))
+sys.exit(int(os.environ.get('FAKE_EXIT','0')))
 ''')
     fake.chmod(0o755)
     env = dict(env, AGENT_BACKEND=requested, LAUNCH_SELECTOR=str(selector), LAUNCH_CODEX=str(fake),
@@ -251,21 +258,22 @@ print('{"is_error":false,"subtype":"success","result":"done"}')
     return result, (tmp_path / 'paid-calls'), (jobs / (job + '.log'))
 
 
-@pytest.mark.parametrize('job,role,urgent,admit', [('lane-audit', 'batch', '', False),
-    ('lane-deliver', 'audit', '', False), ('lane-deliver', 'batch', '', True),
+@pytest.mark.parametrize('job,role,urgent,admit', [('lane-audit', 'batch', '', True),
+    ('lane-deliver', 'audit', '', True), ('lane-deliver', 'batch', '', True),
     ('lane-audit', 'batch', 'deadline today', True)])
-def test_real_launcher_checks_before_executor(env, tmp_path, job, role, urgent, admit):
+def test_real_launcher_leaves_allowance_admission_to_wrapper(env, tmp_path, job, role, urgent, admit):
     rollout(Path(env['CODEX_HOME']), [event(86)])
     result, calls, log = launcher(dict(env, LAUNCH_URGENT=urgent), tmp_path, job, role)
     assert (result.returncode == 0) == admit, result.stderr + log.read_text()
     assert calls.exists() == admit
     if urgent:
         assert urgent in log.read_text()
-    assert len(alert_rows(env)) == 2
+    assert not alert_rows(env)
 
 
-def test_route_switch_to_codex_is_guarded_and_switch_to_claude_is_exempt(env, tmp_path):
+def test_route_switch_to_codex_checks_concurrency_and_claude_is_exempt(env, tmp_path):
     rollout(Path(env['CODEX_HOME']), [event(86)])
+    env['PANES'] = ''.join(pane('job-' + str(i)) for i in range(4))
     result, calls, _ = launcher(env, tmp_path, 'lane-audit', selected='codex', requested='claude')
     assert result.returncode == 75 and not calls.exists()
     result, calls, _ = launcher(env, tmp_path, 'lane-audit', selected='claude')
@@ -279,7 +287,7 @@ def test_real_launcher_concurrency_refusal_happens_before_executor(env, tmp_path
     assert result.returncode == 75 and not calls.exists() and 'LAUNCH_MAX_CONCURRENT=4' in log.read_text()
 
 
-def test_real_launcher_reads_again_before_capacity_retry(env, tmp_path):
+def test_real_launcher_capacity_retries_do_not_read_allowance(env, tmp_path):
     root = Path(env['CODEX_HOME'])
     path = rollout(root, [event(72)])
     jobs = tmp_path / 'jobs'
@@ -303,9 +311,9 @@ sys.exit(1)
                ROLLOUT=str(path), NEXT_EVENT=json.dumps(event(86)), PAID_CALLS=str(tmp_path / 'paid-calls'))
     result = subprocess.run(['zsh', str(REPO / 'tools/launch.sh'), 'lane-audit', str(tmp_path)],
                             env=env, capture_output=True, text=True, timeout=15)
-    assert result.returncode == 75 and 'above 85%' in result.stderr
-    assert (tmp_path / 'paid-calls').read_text().splitlines() == ['called']
-    assert len(alert_rows(env)) == 2
+    assert result.returncode == 1, result.stderr
+    assert (tmp_path / 'paid-calls').read_text().splitlines() == ['called'] * 5
+    assert not alert_rows(env)
 
 
 def test_selected_claude_route_updates_tmux_metadata_without_codex_refusal(env, tmp_path):
@@ -349,3 +357,51 @@ def test_files_last_written_before_the_newest_snapshot_are_not_read(tmp_path, mo
     monkeypatch.setattr(allowance, 'reverse_lines', lambda path: opened.append(path) or real(path))
     assert allowance.read_allowance([tmp_path / '.codex'], NOW)['codex']['weekly_used_percent'] == 11
     assert opened == [fresh]
+
+
+@pytest.mark.parametrize('job', ['games_build', 'open-source_fix', 'bio_fix'])
+def test_real_launcher_exempts_games_and_open_source(env, tmp_path, job):
+    env['PANES'] = ''.join(pane('job-' + str(i)) for i in range(4))
+    result, calls, _ = launcher(env, tmp_path, job)
+    assert result.returncode == 0 and calls.exists(), result.stderr
+
+
+def test_urgent_selects_priority_and_passes_canonical_lane(env, tmp_path):
+    result, calls, log = launcher(dict(env, LAUNCH_URGENT='deadline today'), tmp_path, 'bio_fix')
+    assert result.returncode == 0, result.stderr
+    assert 'service_tier=priority' in json.loads(Path(str(calls)+'.argv').read_text())
+    assert Path(str(calls)+'.lane').read_text() in ('bio', 'open-source')
+    assert 'deadline today' in log.read_text()
+
+
+def test_launcher_cap_excludes_exempt_sessions_and_counts_unknown_routes_once(env, tmp_path):
+    env['PANES'] = (''.join(pane('job-' + str(i), '') for i in range(3))
+                    + pane('job-1', '') + pane('job-games_build') + pane('job-open-source_fix')
+                    + pane('job-bio_fix') + pane('job-claude', 'claude')
+                    + pane('job-provider', provider='gemini') + pane('job-dead', dead=1))
+    result, calls, _ = launcher(env, tmp_path, 'lane-deliver')
+    assert result.returncode == 0 and calls.exists(), result.stderr
+
+
+def test_urgency_does_not_override_concurrency(env, tmp_path):
+    env['PANES'] = ''.join(pane('job-' + str(i)) for i in range(4))
+    result, calls, _ = launcher(dict(env, LAUNCH_URGENT='deadline'), tmp_path, 'lane-deliver')
+    assert result.returncode == 75 and not calls.exists()
+
+
+def test_no_urgent_reason_leaves_service_tier_unset(env, tmp_path):
+    result, calls, _ = launcher(dict(env, LAUNCH_URGENT='  '), tmp_path, 'lane-deliver')
+    assert result.returncode == 0, result.stderr
+    assert 'service_tier=priority' not in json.loads(Path(str(calls) + '.argv').read_text())
+
+
+@pytest.mark.parametrize('rc', [0, 1, 42])
+def test_cybersecurity_policy_flag_keeps_exit_prefix_and_stops_retry(env, tmp_path, rc):
+    output = 'This content was flagged for possible cybersecurity risk\n' + 'noise\n' * 70 + 'at capacity'
+    result, calls, log = launcher(dict(env, FAKE_OUTPUT=output, FAKE_EXIT=str(rc)), tmp_path, 'lane-deliver')
+    assert result.returncode == rc, result.stderr
+    assert calls.read_text().splitlines() == ['called']
+    exits = [line for line in log.read_text().splitlines() if line.startswith('exit ')]
+    assert len(exits) == 1 and exits[0].startswith('exit {} codex-policy-flag '.format(rc))
+    status = (tmp_path / 'STATUS.md').read_text().splitlines()
+    assert len(status) == 1 and 'Codex policy flag' in status[0]

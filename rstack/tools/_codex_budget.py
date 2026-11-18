@@ -57,7 +57,7 @@ def config():
     cfg['lanes'] = dict(LANES, **cfg.get('lanes', {}))
     for limits in [cfg['defaults'], *cfg['lanes'].values()]:
         for key, value in limits.items():
-            if key in DEFAULTS and (not allowance.finite(value) or value <= 0):
+            if key in (*DEFAULTS, 'calls_run') and (not allowance.finite(value) or value <= 0):
                 raise ValueError('limits must be positive and finite')
     cfg.setdefault('notify_command', [str(Path.home() / '.local/bin/tell-general')])
     cfg.setdefault('owner_command', [str(Path.home() / '.local/bin/notify-ricardo')])
@@ -71,7 +71,7 @@ def safe_lane(value):
     value = str(value).strip()
     if not value or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,159}', value):
         raise ValueError('invalid lane name')
-    return value
+    return 'open-source' if value == 'bio' else value
 
 
 def host_list(key, default=()):
@@ -225,6 +225,30 @@ def codex_homes(cfg, discover=False):
     return sorted({p.resolve() for p in roots if p.is_dir()})
 
 
+def health_homes(cfg, now, write=False):
+    """Scan known homes every pass; cache the expensive whole-home discovery for six hours.
+
+    Wrappers register explicit homes immediately in codex-homes.json. Conventional
+    homes and environment/config paths are also always read, independently of this cache.
+    Unknown native-only homes are rediscovered at most six hours later.
+    """
+    path = state_dir() / 'codex-home-discovery.json'
+    try:
+        cache = json.loads(path.read_text())
+        valid = (0 <= now - cache['at'] < 6 * 3600 and isinstance(cache['homes'], list)
+                 and all(isinstance(p, str) for p in cache['homes']))
+    except (OSError, ValueError, TypeError, KeyError):
+        valid = False
+    if not valid:
+        cache = dict(at=now, homes=list(map(str, allowance.homes())))
+        if write:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix('.{}.tmp'.format(os.getpid()))
+            temporary.write_text(json.dumps(cache) + '\n')
+            temporary.replace(path)
+    return sorted(set(codex_homes(cfg)) | {Path(p) for p in cache['homes'] if Path(p).is_dir()})
+
+
 def weekly_snapshot(cfg, now):
     data = allowance.read_allowance(codex_homes(cfg), now=now)['codex']
     if data == 'unavailable' or data['resets_at'] <= now:
@@ -303,6 +327,9 @@ def account_alerts(cfg, base, lane, weekly, now):
 
 def admit(cfg, base, lane, now, prefix, prompt_tokens, weekly, interactive=False, urgent=''):
     rows = read_rows(base / (lane + '.jsonl'))
+    if lane == 'open-source':
+        # Preserve spend recorded before bio became an alias; renaming must not reset limits.
+        rows = sorted(rows + read_rows(base / 'bio.jsonl'), key=lambda row: row.get('ts', 0))
     history = calls(rows)
     limits = dict(cfg['defaults'], **cfg['lanes'].get(lane, {}))
     if weekly:
@@ -319,6 +346,13 @@ def admit(cfg, base, lane, now, prefix, prompt_tokens, weekly, interactive=False
         print('codex: WARNING weekly allowance unavailable; interactive session remains available', file=sys.stderr)
     if interactive:
         return None
+    if 'calls_run' in limits:
+        run_id = os.environ.get('RSTACK_RUN_ID', '').strip()
+        if not run_id:
+            return 'RSTACK_RUN_ID required for per-run limit in ' + lane
+        # Count reservations as well as finished calls, under the admission lock.
+        if sum(r.get('event') == 'start' and r.get('run_id') == run_id for r in rows) >= limits['calls_run']:
+            return '{} calls/run limit for {}'.format(limits['calls_run'], lane)
     if len([r for r in history if now - 3600 < r['started_at'] <= now]) >= limits['calls_hour']:
         return '{} calls/hour limit for {}'.format(limits['calls_hour'], lane)
     daily = [r for r in history if now - 86400 < r['ts'] <= now]
@@ -538,6 +572,7 @@ def supervise(native, args, cfg, lane, cwd, interactive, batch):
             known = codex_homes(cfg) + [home]
             (state_dir() / 'codex-homes.json').write_text(json.dumps(sorted(set(map(str, known)))) + '\n')
             append(base, lane, dict(event='start', ts=started, call_id=call_id, marker=marker, cwd=cwd,
+                                   run_id=os.environ.get('RSTACK_RUN_ID', '').strip(),
                                    pid=os.getpid(), codex_home=str(home), prefix=prefix,
                                    prompt_tokens=prompt_tokens, interactive=interactive, urgent=urgent, weekly_before=weekly,
                                    resume_rollouts=list(before)))
@@ -645,8 +680,8 @@ def repair_entrypoint(path, wrapper, base):
 def health_problems(settings=None, now=None, repair=False):
     """Backstop invoked by job-health. Explicit activation avoids flagging legacy history.
 
-    Every run discovers homes (including clean rooms) and inspects all new/updated
-    rollouts since deployment. In-flight start rows count, so long runs are not bypasses.
+    Every run inspects all new/updated rollouts in known homes since deployment;
+    full home discovery is cached for six hours. In-flight starts cover long runs.
     """
     now = time.time() if now is None else now
     if settings is None:
@@ -692,7 +727,7 @@ def health_problems(settings=None, now=None, repair=False):
                 rows.append(('codex-install', str(link), detail))
         except (OSError, ValueError) as exc:
             rows.append(('codex-install', str(link), 'native unavailable: ' + str(exc)))
-    roots = codex_homes(cfg, discover=True)
+    roots = health_homes(cfg, now, write=repair)
     if repair:
         state_dir().mkdir(parents=True, exist_ok=True)
         (state_dir() / 'codex-homes.json').write_text(json.dumps(list(map(str, roots))) + '\n')

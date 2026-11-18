@@ -218,14 +218,17 @@ for (( i = start; i <= 5; i++ )); do
     claude) cx=${LAUNCH_CLAUDE:-claude};;
     *) print -u2 -- "launch.sh refused $job: unsupported executor route $backend"; exit 2;;
   esac
-  # Read local allowance after route selection and before each paid attempt (including retries).
-  # The selected executor can differ from the requested one. Provider routes spend elsewhere.
-  python3 "${LAUNCH_ALLOWANCE:-${self:h:h}/rstack/tools/allowance}" --guard "$job" \
-    --role "$LAUNCH_ROLE" --backend "$backend" --provider "${LAUNCH_PROVIDER:-}" --log "$log"
-  allowance_rc=$?
-  if (( allowance_rc != 0 )); then
-    print -- "exit $allowance_rc allowance-refused $(date)" >> "$log"
-    exit "$allowance_rc"
+  # Allowance/call limits belong to the Codex wrapper. Only tmux concurrency is local here.
+  python3 "${LAUNCH_GUARD:-${self:h:h}/rstack/tools/launch-guard}" \
+    --job "$job" --lane "$lane" --backend "$backend" --provider "${LAUNCH_PROVIDER:-}" --log "$log"
+  guard_rc=$?
+  if (( guard_rc != 0 )); then
+    print -- "exit $guard_rc concurrency-refused $(date)" >> "$log"
+    exit "$guard_rc"
+  fi
+  export RSTACK_LANE="$lane" LAUNCH_URGENT
+  if [[ -n ${LAUNCH_URGENT//[[:space:]]/} && $backend == codex ]]; then
+    print -r -- "LAUNCH_URGENT $job: $LAUNCH_URGENT $(date)" >> "$log"
   fi
   # Authentication is read only by the executing shell, never put in a receipt or command file.
   if [[ -n ${LAUNCH_PROVIDER:-} && ( $LAUNCH_PROVIDER != (openrouter|gemini) || $backend != codex ) ]]; then
@@ -317,6 +320,7 @@ export PATH=\$HOME/.local/bin:/opt/homebrew/bin:\$PATH
 ${LAUNCH_PROVIDER:+export LAUNCH_PROVIDER=${(q)LAUNCH_PROVIDER}}
 ${LAUNCH_CODEX_SANDBOX:+export LAUNCH_CODEX_SANDBOX=${(q)LAUNCH_CODEX_SANDBOX}}
 ${LAUNCH_CODEX_NETWORK:+export LAUNCH_CODEX_NETWORK=${(q)LAUNCH_CODEX_NETWORK}}
+export RSTACK_LANE=${(q)lane} LAUNCH_URGENT=${(q)LAUNCH_URGENT}
 $remote_auth
 mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
 mkdir -p $rmarks 2>/dev/null || true
@@ -386,9 +390,16 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
     fi
   fi
   cat "$attempt_log" >> "$log"
-  print -- "exit $rc $(date)" >> "$log"
+  policy_flag=0
+  if [[ $backend == codex ]] && grep -Fq 'This content was flagged for possible cybersecurity risk' "$attempt_log"; then
+    policy_flag=1
+    print -- "exit $rc codex-policy-flag $(date)" >> "$log"
+    print -- "Codex policy flag (exit $rc): This content was flagged for possible cybersecurity risk. $(date)" >> "$dir/STATUS.md"
+  else
+    print -- "exit $rc $(date)" >> "$log"
+  fi
   python3 "$selector" --log "$log" --receipt "$log.selection.json" --outcome "$rc" || exit 2
-  (( rc != 0 && i < 5 )) || break
+  (( policy_flag == 0 && rc != 0 && i < 5 )) || break
   [[ $backend == codex ]] || break  # A Claude retry must not reset its spend cap.
   # A quota response ends this model's attempt even if it also says 'at capacity'.
   if [[ ${LAUNCH_PROVIDER:-} == gemini ]] && grep -Eqi '429|RESOURCE_EXHAUSTED|quota' "$attempt_log"; then break; fi

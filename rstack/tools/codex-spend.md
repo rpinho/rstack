@@ -6,7 +6,7 @@ privacy routing, stdin, stdout/stderr and the native exit status, reserves a cal
 lock before spawning, then appends that run's tokens and cache share from its rollout.
 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` identifies concurrent new sessions; resumed sessions use
 saved offsets and subtract their previous cumulative token totals. Prompt bodies are never logged.
-The allowance parser is the unchanged reader from the companion spend-guard change.
+The wrapper reuses the local allowance reader. The launcher applies only its tmux concurrency cap.
 
 `harness-sync` ships the executable and its dependencies from committed source into
 `<installed-root>/rstack/tools/`. Keep those files together. Runtime state stays in
@@ -35,7 +35,7 @@ The allowance parser is the unchanged reader from the companion spend-guard chan
   **per call**, so this records 2,700,000 planned input tokens. The estimate has finite call
   and token totals and does not override any limit.
 - Account alerts: 50%, 70%, 85%, once per reset window. The wrapper and companion launch
-  guard share `RSTACK_STATE_DIR/allowance/alerts.json` and its lock. Above 85%, batch calls
+  legacy guard share `RSTACK_STATE_DIR/allowance/alerts.json` and its lock. The launcher does not call that guard. Above 85%, batch calls
   require nonblank `LAUNCH_URGENT`. Every admitted urgent attempt there is logged and sent
   directly to `owner_command` (default `~/.local/bin/notify-ricardo`); failed delivery refuses.
 - Priority requires `LAUNCH_URGENT`, regardless of the account percentage. Without it,
@@ -144,3 +144,18 @@ authenticated provider or real notifier:
 python3 -m pytest -q rstack/tests
 python3 -m pytest -q tests/test_harness_sync.py
 ```
+
+
+`bio` is a compatibility alias for `open-source`, sharing its ledger and finite higher
+limits. A lane may additionally configure `calls_run` (positive and finite). Unattended
+calls in that lane require `RSTACK_RUN_ID`; admission counts all start reservations for
+that ID, including unfinished calls and calls older than one hour. Set one run ID in
+the parent scheduler before probes, phases, repairs and child calls. It caps wrapper
+invocations, not the model's internal turns or the tokens of a single admitted run.
+
+The health backstop caches whole-home discovery in
+`RSTACK_STATE_DIR/codex-home-discovery.json` for six hours. Cold/expired caches still run
+full discovery. Every pass scans all rollouts in all known homes, with no newest-N
+truncation: configured, environment, conventional and wrapper-registered homes are read
+immediately. Unknown native-only project homes may take up to six hours to discover.
+`--dry` reads but never populates the cache or repairs entrypoints.

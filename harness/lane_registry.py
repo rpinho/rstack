@@ -37,6 +37,8 @@ class LaneRegistry:
                     _date(row[field])
             if not isinstance(row.get('why', ''), str):
                 raise ValueError('why must be text for lane ' + lane)
+            if 'x' in row and not isinstance(row['x'], bool):
+                raise ValueError('x must be boolean for lane ' + lane)
             sessions = row.get('sessions', [])
             if not isinstance(sessions, list) or any(not isinstance(s, str) or not s for s in sessions):
                 raise ValueError('sessions must be a list of names for lane ' + lane)
@@ -62,6 +64,9 @@ class LaneRegistry:
         for session in sorted(self.sessions, key=len, reverse=True):
             if name == session or name.startswith((session + '_', session + '-')):
                 return self.sessions[session]
+        # This hyphen is part of the lane name, even without a local registry.
+        if name == 'open-source' or name.startswith(('open-source_', 'open-source-')):
+            return 'open-source'
         return re.split('[-_]', name, maxsplit=1)[0]
 
     def status(self, lane, today=None):
@@ -83,6 +88,45 @@ class LaneRegistry:
         for name in names:
             if name and self.status(name) in ('retired', 'ended'):
                 return self.reason(name)
+        return None
+
+    def x_refusal(self, lane, lanes_root):
+        """An explicit X prohibition wins, including over x:true and owner:general.
+
+        Prefer the registry's boolean x field. Also honor plain no-X rules in
+        legacy RULES.md files until their policy has been encoded in the registry.
+        """
+        canonical = self.lane_of_session(lane)
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', canonical):
+            raise ValueError('invalid X lane tag')
+        if self.lanes.get(canonical, {}).get('x') is False:
+            return canonical + ': registry x=false'
+        aliases = [name for name, target in self.sessions.items() if target == canonical]
+        for name in sorted(set([canonical, lane] + aliases)):
+            # Registry session names are not filesystem paths.
+            if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', name):
+                continue
+            path = Path(lanes_root) / name / 'RULES.md'
+            try:
+                rules = path.read_text()
+            except FileNotFoundError:
+                continue
+            text = re.sub(r'[*_`]', '', rules)
+            text = re.sub(r'\n(?!\s*(?:\n|[-#]))', ' ', text)
+            # Operative clauses, not incidental mentions of X in a long rule file.
+            clauses = re.split(r'[.!?;\n]+', text)
+            for clause in clauses:
+                denied = (
+                    re.search(r'\bx\s*[:=]\s*false\b', clause, re.I)
+                    or re.search(r'\b(?:no|never|do not|don.t|must not|cannot|may not)\b.{0,120}'
+                                 r'\b(?:post|publish|share|disclose|tweet)\w*\b.{0,100}'
+                                 r'\b(?:X|Twitter)\b', clause, re.I)
+                    or re.search(r'\b(?:results?|lane|work)\b.{0,100}'
+                                 r'\b(?:stay|stays|keep|kept|remain|remains)\b.{0,40}'
+                                 r'\boff\s+(?:X|Twitter)\b', clause, re.I)
+                    or re.search(r'\bno\s+(?:X|Twitter)\s+(?:posts?|posting|results?)\b', clause, re.I))
+                if denied:
+                    return canonical + ': ' + str(path) + ': ' + clause.strip()
         return None
 
 
