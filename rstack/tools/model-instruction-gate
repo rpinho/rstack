@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 """PreToolUse: judgment instructions name leaderboard roles instead of models."""
 from pathlib import Path
-import re
-import shlex
+import os
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hooks'))
 import _hookfail
 
-MODEL = re.compile(r'\b(?:sonnet|haiku|opus|fable|astra|sol|deepseek|kimi|glm)\b|\b(?:gpt-|claude-)', re.I)
-CHEAP_MODEL = re.compile(r'\b(?:sonnet|haiku)\b', re.I)
-JUDGMENT = re.compile(r'\b(?:referees?|reviews?|judges?|audits?|taste|design)\b', re.I)
 REASON = ('name the leaderboard role, not a model (LEADERBOARD.md). '
           'Budget limits are job counts or caps, never a model swap. '
           'use launch.sh --role review --made-by MODEL.')
@@ -21,48 +17,13 @@ def triage(raw, event):
                                        'Agent', 'claude', 'codex'))
 
 
-RAW_CLAUDE_PIN = re.compile(r'(?m)(?:^|[;&|(]\s*)\s*(?:\S*/)?claude\b(?:(?!\s--\s)[^\n;&|])*?\s(?:--model[= ]|-m\s*)\S*(?:sonnet|haiku)', re.I)
-RAW_CODEX_PIN = re.compile(r'(?m)(?:^|[;&|(]\s*)\s*(?:\S*/)?codex\s+exec\b(?:(?!\s--\s)[^\n;&|])*?\s(?:--model[= ]|-m\s*)\S+')
-
-
-def commands(command):
-    """Shell command segments, including pipelines and env prefixes."""
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|()\n')
-    lexer.whitespace = ' \t\r'
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        # 11-14: heredocs and quotes inside them leave shlex with an unclosed quote, and the hook then
-        # failed closed on ordinary Bash calls. Fall back to a plain split, which still sees the words.
-        tokens = re.findall(r'[;&|()\n]+|[^\s;&|()]+', command)
-    segment = []
-    for token in tokens + [';']:
-        if token and all(c in ';&|()\n' for c in token):
-            i = 0
-            while i < len(segment) and (segment[i] in ('env', 'command', 'exec', 'sudo')
-                                       or re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', segment[i])):
-                i += 1
-            if i < len(segment):
-                yield segment[i:]
-            segment = []
-        else:
-            segment.append(token)
-
-
-def pinned_models(args):
-    for i, arg in enumerate(args):
-        if arg == '--':
-            break
-        if arg in ('--model', '-m') and i + 1 < len(args):
-            yield args[i + 1]
-        elif arg.startswith('--model='):
-            yield arg.split('=', 1)[1]
-        elif arg.startswith('-m') and len(arg) > 2:
-            yield arg[2:]
-
-
 def body(event):
+    # Import inside the guarded body so a missing installation is a visible refusal.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'harness'))
+    sys.path.append(str(Path(os.environ.get('RH_ROOT') or '~/.local/share/research-harness').expanduser()))
+    from worker_models import (assigns_judgment_model, judgment_task, shell_commands,
+                               command_argv, judgment_command)
+
     tool = event.get('tool_name')
     if tool not in ('SendMessage', 'Bash', 'Write', 'Edit', 'Agent'):
         return 0
@@ -75,28 +36,21 @@ def body(event):
         instructions = [payload.get(key, '') for key in ('description', 'prompt')]
         if not isinstance(model, str) or any(not isinstance(t, str) for t in instructions):
             raise ValueError('Agent model and instructions must be text')
-        if CHEAP_MODEL.search(model) and any(JUDGMENT.search(t) for t in instructions):
+        if model and any(judgment_task(t) or assigns_judgment_model(t) for t in instructions):
             print(REASON, file=sys.stderr)
             return 2
     elif tool == 'SendMessage':
         texts = [payload['message']]
     elif tool == 'Bash':
         command = payload['command']
-        for args in commands(command):
-            name = Path(args[0]).name
-            if name == 'tell-general':
-                texts.append(' '.join(args[1:]))
-            if JUDGMENT.search(command):
-                if ((name == 'claude' and any(CHEAP_MODEL.search(m) for m in pinned_models(args[1:])))
-                        or (name == 'codex' and args[1:2] == ['exec']
-                            and any(pinned_models(args[2:])))):
-                    print(REASON, file=sys.stderr)
-                    return 2
-        # Quotes that balance by accident across a heredoc merge commands into one token, so the
-        # segments above can miss a pinned launch. A line-level pass sees it regardless of quoting.
-        if JUDGMENT.search(command) and (RAW_CLAUDE_PIN.search(command) or RAW_CODEX_PIN.search(command)):
-            print(REASON, file=sys.stderr)
-            return 2
+        for args, piped in shell_commands(command):
+            argv = command_argv(args)
+            if argv and Path(argv[0]).name == 'tell-general':
+                texts.extend(argv[1:])
+                texts.append(' '.join(argv[2:]).lstrip('\"\x27'))
+            if judgment_command(args, piped):
+                print(REASON, file=sys.stderr)
+                return 2
     else:
         path = payload['file_path']
         if not isinstance(path, str):
@@ -106,11 +60,9 @@ def body(event):
     for text in texts:
         if not isinstance(text, str):
             raise ValueError('outgoing text must be text')
-        # A wrapped line is still the same sentence; dots between digits are versions.
-        for sentence in re.split(r'[!?]+|(?<!\d)\.|\.(?!\d)', text):
-            if MODEL.search(sentence) and JUDGMENT.search(sentence):
-                print(REASON, file=sys.stderr)
-                return 2
+        if assigns_judgment_model(text):
+            print(REASON, file=sys.stderr)
+            return 2
     return 0
 
 

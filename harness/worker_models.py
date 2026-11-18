@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 import uuid
 from bug_verdicts import maker
@@ -20,11 +21,135 @@ ROLES_FILE = settings.path('RH_ROLES_FILE', Path('.runtime/roles.json'))
 JUDGMENT = frozenset(('review', 'judge', 'audit', 'taste', 'design', 'ideation'))
 INDEPENDENT = frozenset(('review', 'judge', 'audit'))
 ROLE_ROWS = {'judge': 'review', 'audit': 'review', 'design': 'taste'}
-MODEL_NAMES = re.compile(r'\b(?:sonnet|haiku|opus|fable|astra|sol|deepseek|kimi|glm|gemini)\b|\b(?:gpt-|claude-)', re.I)
 # Historical jobs also attach ref/rev/chk to a subject, e.g. c38ref or l1chk.
 JUDGMENT_JOB = re.compile(
     r'(^|_)(?:ref|referee|review|rev|judge|audit|taste|design|chk|check|verify|'
     r'[a-z0-9]+(?:ref|rev|chk))(?=_|\d|$)', re.I)
+
+
+# Keep instruction detection shared by launch specs and the interactive hook. Model
+# mentions in reports, questions and historical examples are not assignments.
+_MODEL = (r'(?:[\w.-]+/)?(?:gpt-[\w.-]+|claude-[\w.-]+|'
+          r'gemini(?:[- ][\w.-]+){0,2}|sonnet|haiku|opus|fable|astra|sol|deepseek|kimi|glm)')
+_ACTION = r'(?:review|judge|referee|audit|taste|design)'
+_ROLE = r'(?:reviews?|judges?|referees?|audits?|taste|design)'
+_ASSIGNMENT = re.compile(
+    r'^(?:please\s+)?(?:then\s+|now\s+)?(?:'
+    r'(?:use|have|let|ask|assign)\s+[\"\x27`]?' + _MODEL + r'[\"\x27`]?\s+'
+    r'(?:(?:to|for|as)\s+)?(?:(?:the|a|an|next)\s+){0,2}' + _ROLE + r'\b|'
+    + _MODEL + r'\s+(?:should|must)\s+' + _ACTION + r'\b)', re.I)
+_SHORT_ASSIGNMENT = re.compile(r'^' + _MODEL + r'\s+for\s+(?:the\s+)?' + _ROLE + r'\s*$', re.I)
+_SELF_ASSIGNMENT = re.compile(
+    r'^' + _MODEL + r'\s*\(you\)\s+for\s+[^.!?]*\b' + _ROLE + r'\b', re.I)
+_REQUIRED_REVIEW = re.compile(
+    r'^(?:same bar|require|obtain|ensure)\b[^.!?]*\b' + _MODEL + r'-confirmed\s+' + _ROLE + r'\b', re.I)
+_JUDGMENT_TASK = re.compile(r'^(?:please\s+)?(?:then\s+|now\s+)?' + _ACTION + r'\b', re.I)
+_REPORT = re.compile(r'\b(?:caught|completed|passed|scores?|results?)\s*:|\b\d+\s*/\s*\d+|'
+                     r'\b(?:has been|have been|was|were)\b', re.I)
+
+
+def instruction_clauses(text):
+    """Keep wrapped instructions together and skip questions, including their lead-in."""
+    for sentence in re.split(r'(?<=[.!?])\s+|;', text):
+        if sentence.rstrip().endswith('?'):
+            continue
+        for clause in re.split(r'\n\s*(?:[-*]|\d+[.)])\s+', sentence):
+            yield ' '.join(clause.replace('**', '').strip(' \t\r\n-*').split())
+
+
+def model_assignment(text):
+    """An imperative naming a judgment model, rather than a nearby model mention."""
+    return any(_ASSIGNMENT.search(c) or _REQUIRED_REVIEW.search(c)
+               or _SHORT_ASSIGNMENT.fullmatch(c.rstrip('.')) or _SELF_ASSIGNMENT.search(c)
+               for c in instruction_clauses(text))
+
+
+def judgment_task(text):
+    """A direct judgment instruction to an already pinned executor/Agent."""
+    return any(_JUDGMENT_TASK.search(c) and not _REPORT.search(c)
+               for c in instruction_clauses(text))
+
+
+def shell_commands(command):
+    """Command argv plus input from its immediate pipeline, without heredoc bodies."""
+    lines, delimiter = [], None
+    for line in command.splitlines():
+        if delimiter is not None:
+            if line.strip() == delimiter:
+                delimiter = None
+            continue
+        lines.append(line)
+        here = re.search(r'<<-?\s*[\"\x27]?(\w+)[\"\x27]?', line)
+        if here:
+            delimiter = here.group(1)
+    lexer = shlex.shlex('\n'.join(lines), posix=True, punctuation_chars=';&|()\n')
+    lexer.whitespace = ' \t\r'
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        # An unfinished quote must still expose a pinned launch, not brick Bash.
+        tokens = re.findall(r'[;&|()\n]+|[^\s;&|()]+', '\n'.join(lines))
+    segment, piped = [], ''
+    for token in tokens + [';']:
+        if token and all(c in ';&|()\n' for c in token):
+            if segment:
+                yield segment, piped
+            piped = ' '.join(segment[1:]) if token == '|' else ''
+            segment = []
+        else:
+            segment.append(token)
+
+
+def command_argv(args):
+    i = 0
+    while i < len(args) and (args[i] in ('env', 'command', 'exec', 'sudo')
+                            or re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', args[i])):
+        i += 1
+    return args[i:]
+
+
+def pinned_models(args):
+    for i, arg in enumerate(args):
+        if arg == '--':
+            break
+        if arg in ('--model', '-m') and i + 1 < len(args):
+            yield args[i + 1]
+        elif arg.startswith(('--model=', 'model=')):
+            yield arg.split('=', 1)[1]
+        elif arg.startswith('-m') and len(arg) > 2:
+            yield arg[2:]
+
+
+def judgment_command(args, piped=''):
+    """Only executable launch/exec/run commands can pin a judgment worker."""
+    argv = command_argv(args)
+    if not argv:
+        return False
+    name = Path(argv[0]).name
+    launch = (name in ('claude', 'launch.sh', 'launch', 'exec', 'run')
+              or name.startswith(('launch-', 'run-'))
+              or (name == 'codex' and argv[1:2] == ['exec'])
+              or (len(argv) > 1 and argv[1] in ('launch', 'exec', 'run')))
+    if not launch or not any(pinned_models(args)):
+        return False
+    for i, arg in enumerate(argv[1:], 1):
+        if arg.startswith('--job=') and JUDGMENT_JOB.search(arg.split('=', 1)[1]):
+            return True
+        if arg.startswith('--role=') and arg.split('=', 1)[1] in JUDGMENT | {'referee'}:
+            return True
+        if arg == '--role' and i + 1 < len(argv) and argv[i + 1] in JUDGMENT | {'referee'}:
+            return True
+        if JUDGMENT_JOB.search(arg) and not arg.startswith('-') and not any(c.isspace() for c in arg):
+            return True
+        if judgment_task(arg.strip('\"\x27')) or model_assignment(arg):
+            return True
+    return '-' in argv and judgment_task(piped)
+
+
+def assigns_judgment_model(text):
+    return model_assignment(text) or any(judgment_command(args, piped)
+                                         for args, piped in shell_commands(text))
 
 
 def select(role, executor, model='', override='', path=None, made_by='', job='', lane='', explore=''):
@@ -136,7 +261,7 @@ def main(argv=None):
             return 0
         receipt = select(args.role, args.executor, args.model, args.model_override, args.roles_file,
                          args.made_by, args.job, args.lane, args.explore)
-        if receipt['role'] in JUDGMENT and args.spec and MODEL_NAMES.search(args.spec.read_text()):
+        if receipt['role'] in JUDGMENT and args.spec and assigns_judgment_model(args.spec.read_text()):
             print('launch.sh refused {}: name the leaderboard role, not a model (LEADERBOARD.md); '
                   'the leaderboard picks {}'.format(args.job, receipt['model']), file=sys.stderr)
             return 2

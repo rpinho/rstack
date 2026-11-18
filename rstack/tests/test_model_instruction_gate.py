@@ -54,13 +54,14 @@ def test_cheap_agent_without_judgment_passes(model, prompt):
     allowed(HOOK, {'tool_name': 'Agent', 'tool_input': {'model': model, 'prompt': prompt}})
 
 
-def test_other_agent_models_are_unaffected():
-    for model in ('opus', ''):
-        allowed(HOOK, {'tool_name': 'Agent', 'tool_input': {'model': model, 'prompt': 'referee the claim'}})
+def test_named_agent_assignment_uses_the_same_rule():
+    blocked(HOOK, {'tool_name': 'Agent', 'tool_input': {'model': 'opus', 'prompt': 'referee the claim'}})
+    allowed(HOOK, {'tool_name': 'Agent', 'tool_input': {'model': '', 'prompt': 'referee the claim'}})
 
 
 @pytest.mark.parametrize('command', [
     'claude -p --model claude-sonnet-5-5 "review this proof"',
+    'claude -p --model opus "review the proof"',
     'claude -p -m haiku "referee the claim"',
     'claude -p --model=sonnet "Read first. Then audit the result."',
     'claude -p -mhaiku "design the next step"',
@@ -81,7 +82,6 @@ def test_direct_judgment_cli_pins_are_blocked(command):
     'claude -p --model sonnet "extract the table"',
     'claude -p --model haiku "summarize the text"',
     'codex exec -m gpt-6-astra "format the table"',
-    'claude -p --model opus "review the proof"',
     'codex exec "review the proof"',
     'echo \'claude -p --model sonnet "review the proof"\'',
     'echo \'codex exec -m gpt-6-astra "review the proof"\'',
@@ -126,3 +126,80 @@ def test_a_heredoc_with_an_open_quote_is_checked_not_refused():
     allowed(HOOK, bash("python3 - <<'EOF'\ns = '''it's fine'''\nEOF\nls ~/.claude/hooks"))
     blocked(HOOK, bash("cat <<EOF\nit's late\nEOF\nclaude -p --model claude-sonnet-5-5 'review this proof"))
     allowed(HOOK, bash('claude -p --model sonnet "extract the table unterminated'))
+
+
+@pytest.mark.parametrize('text', [
+    'Did the scoring jobs on gpt-6.2-astra, including the audits, exhaust our weekly allowance?',
+    'The opus test report has been passed on to general; the review scores are in the handoff.',
+    'Review plant batches caught: 2/2 for gpt-6.2-astra, 1/2 for opus. No role change proposed.',
+    'gpt-6.2-astra audits used 403 calls yesterday; all scoring jobs have stopped.',
+    'opus for review costs 120 credits per batch; gpt-6.2-astra used 30.',
+    'Astra: audit report sent to general yesterday.',
+    'opus: review 2/2, judge 3/3.\ngpt-6.2-astra: review 2/2, judge 2/3.',
+    'Could we ask opus to judge the proof?',
+    'Should gpt-6.2-astra review the claim?',
+    'Do not use opus for review.',
+    'Yesterday we asked opus to judge the claim.',
+    'The report says "Use opus to review the claim" was the old instruction.',
+    'Model | review plants | judge agreement\ngpt-6.2-astra | 2/2 | 3/3\nopus | 1/2 | 2/3',
+])
+@pytest.mark.parametrize('surface', ['message', 'tell-general', 'Write', 'Edit'])
+def test_reports_questions_and_scores_pass(text, surface):
+    import shlex
+    if surface == 'message':
+        event = message(text)
+    elif surface == 'tell-general':
+        event = bash('tell-general fyi ' + shlex.quote(text))
+    else:
+        event = {'tool_name': surface, 'tool_input': {
+            'file_path': '/work/lane-briefs/status.md',
+            'content' if surface == 'Write' else 'new_string': text}}
+    allowed(HOOK, event)
+
+
+@pytest.mark.parametrize('text', [
+    'Have gpt-6.2-astra to review the patch.',
+    'Let opus judge the claim.',
+    'Use gpt-6.2-astra to referee the result.',
+    'Ask opus to judge the proof.',
+    'gpt-6.2-astra should review the change.',
+    'Please use opus for the next audit.',
+    'Models and budget:\n- **Opus** (you) for purpose analysis and review.\n- **Astra:** adversarial review of each proposal.',
+    'Same bar as today: an Opus-confirmed referee pass before submission.',
+])
+def test_imperative_assignments_block(text):
+    blocked(HOOK, message(text))
+
+
+@pytest.mark.parametrize('command', [
+    'tools/launch.sh lane_review_1117 /work --model gpt-6.2-astra',
+    'tools/launch.sh lane /work --role review --model=opus',
+    'runner run --model opus --role judge',
+    'model=opus runner exec --role audit',
+    'run --model opus "Review the results"',
+    'runner exec --model=opus --job=lane_review_1117',
+    'claude -p --model opus "Review the completed patch"',
+    'echo "review unrelated"; codex exec -m gpt-6.2-astra "format the table"',
+])
+def test_command_assignment_scope(command):
+    if command.startswith('echo'):
+        allowed(HOOK, bash(command))
+    else:
+        blocked(HOOK, bash(command))
+
+
+@pytest.mark.parametrize('prompt', [
+    'Extract the table from this systematic review.',
+    'Summarize the opus review scores and report the accounting.',
+    'Did the gpt-6.2-astra audits exhaust the allowance?',
+])
+def test_agent_mentions_are_not_judgment_assignments(prompt):
+    allowed(HOOK, {'tool_name': 'Agent', 'tool_input': {'model': 'sonnet', 'prompt': prompt}})
+
+
+@pytest.mark.parametrize('command', [
+    'tell-general --from harness fyi "Use opus to review the patch"',
+    'tell-general fyi --from harness "Use opus to review the patch"',
+])
+def test_tell_general_flags_preserve_assignments(command):
+    blocked(HOOK, bash(command))

@@ -437,3 +437,21 @@ def test_review_launch_switches_executor_and_preserves_receipt(fake_home, made_b
     assert {k: receipt[k] for k in ('model', 'role', 'lane', 'job', 'made_by')} == dict(
         model=expected, role='review', lane=job.split('_')[0] if '_' in job else 'fixture', job=job, made_by=made_by)
     assert receipt['utc'] and receipt['roles_sha256']
+
+
+@pytest.mark.parametrize('text', [
+    'Did the scoring jobs on gpt-6.2-astra, including audits, use the weekly allowance?',
+    'The opus test report has been passed to general; the review scores are attached.',
+    'Review plant batches caught: 2/2 for gpt-6.2-astra, 1/2 for opus.',
+    'Do not use opus for review.',
+    'Referee the claim. The previous gpt-6.2-astra audit caught 2/2 plants.',
+])
+def test_judgment_spec_reports_and_questions_pass(tmp_path, text):
+    path = judgment_roles(tmp_path / 'roles.json')
+    spec = tmp_path / 'job.md'
+    spec.write_text(text)
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert wm.main(['--role', 'review', '--made-by', 'gpt-6.1-sol',
+                        '--roles-file', str(path), '--spec', str(spec),
+                        '--log', str(tmp_path / 'launch.log'),
+                        '--receipt', str(tmp_path / 'receipt.json')]) == 0
