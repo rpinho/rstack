@@ -605,7 +605,9 @@ def wrapper_main(argv=None):
         pos = command_position(args)
         cmd = args[pos] if pos < len(args) else ''
         option_args = args[:args.index('--')] if '--' in args else args
-        if help_only or any(a in ('--version', '-V') for a in option_args) or cmd in ('login', 'logout', 'completion', 'features', 'mcp', 'help', 'doctor', 'plugin', 'update'):
+        # remote-control only starts/stops/pairs the phone daemon, which runs its own native binary; the
+        # boot-time session recovery calls it from launchd and must not need a weekly snapshot (11-18).
+        if help_only or any(a in ('--version', '-V') for a in option_args) or cmd in ('login', 'logout', 'completion', 'features', 'mcp', 'help', 'doctor', 'plugin', 'update', 'remote-control'):
             os.execv(str(native), [str(native)] + args)
         return supervise(native, args, cfg, lane_for(cwd), cwd, interactive, batch)
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as exc:

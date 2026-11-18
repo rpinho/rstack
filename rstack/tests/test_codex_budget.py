@@ -620,3 +620,14 @@ def test_activation_installs_wrapper_codex_real_and_npx_shim(isolated):
     rows = cb.health_problems(settings, repair=True)
     assert any(r[1] == str(bindir / 'npx') and 'shim restored' in r[2] for r in rows)
     assert (bindir / 'npx').resolve() == (TOOLS / 'npx').resolve()
+
+
+def test_phone_daemon_management_needs_no_snapshot_or_ledger_row(isolated):
+    """Boot recovery runs `codex remote-control start --json` from launchd, with no TTY."""
+    fake_native(isolated, with_weekly=False)
+    home = isolated[1]
+    (home / 'sessions/rollout-before.jsonl').rename(home / 'old-snapshot')  # no weekly snapshot
+    r = run_wrapper('remote-control', 'start', '--json')
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)['args'] == ['remote-control', 'start', '--json']
+    assert not list((cb.state_dir() / 'codex-ledger').glob('*.jsonl'))
