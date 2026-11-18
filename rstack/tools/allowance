@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""Read local Codex allowance snapshots; --guard admits one launcher attempt without API calls.
+
+Default discovery covers Codex homes below the login home, plus CODEX_HOME and the
+path-separated CODEX_HOMES (for homes outside it). Dependency/system/Trash trees are
+skipped. --codex-home may be repeated to inspect explicit roots instead. No credentials
+or prompt bodies are returned. Guard state uses RSTACK_STATE_DIR/allowance.
+"""
+import argparse
+from datetime import datetime, timezone
+import fcntl
+import json
+import math
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+WEEK = 7 * 24 * 60
+SKIP = {'.git', '.Trash', 'Library', 'node_modules', '.venv', 'venv', 'site-packages',
+        '.npm', '.cache', '.cargo', '.rustup', 'conda', 'pkgs', '__pycache__'}
+
+
+def homes():
+    roots = {Path.home() / '.codex', *Path.home().glob('.codex*')}
+    for name in ('CODEX_HOME', 'CODEX_HOMES'):
+        roots.update(Path(p).expanduser() for p in os.environ.get(name, '').split(os.pathsep) if p)
+    for folder, dirs, _ in os.walk(Path.home()):
+        dirs[:] = [d for d in dirs if d not in SKIP]
+        if 'sessions' in dirs:
+            # Session directories are cheap to inspect; never descend into transcripts.
+            roots.add(Path(folder))
+            dirs.remove('sessions')
+            if any((Path(folder) / 'sessions').glob('????/??/??/rollout-*.jsonl')):
+                dirs[:] = []
+    return sorted({p.resolve() for p in roots if (p / 'sessions').is_dir()})
+
+
+def reverse_lines(path):
+    """Read from the end in 64 KiB blocks, bounding memory even for enormous prompt lines."""
+    with path.open('rb') as stream:
+        pos = stream.seek(0, 2)
+        tail = b''
+        oversized = False
+        while pos:
+            size = min(pos, 65536)
+            pos -= size
+            stream.seek(pos)
+            parts = (stream.read(size) + tail).split(b'\n')
+            tail = parts[0]
+            for line in reversed(parts[1:]):
+                if oversized:
+                    oversized = False
+                    continue
+                yield line
+            if len(tail) > 8 * 1024 * 1024:
+                tail = b''
+                oversized = True
+        if tail and not oversized:
+            yield tail
+
+
+def finite(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def snapshot(row, path, root, now):
+    if row.get('type') != 'event_msg' or not isinstance(row.get('payload'), dict):
+        return None
+    payload = row['payload']
+    limits = payload.get('rate_limits')
+    if payload.get('type') != 'token_count' or not isinstance(limits, dict):
+        return None
+    # Other model/provider limits can coexist in a Codex rollout.
+    if limits.get('limit_id') not in (None, 'codex'):
+        return None
+    try:
+        stamp = datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00'))
+        if stamp.tzinfo is None:
+            return None
+        for key in ('primary', 'secondary'):
+            window = limits.get(key)
+            if not isinstance(window, dict) or window.get('window_minutes') != WEEK:
+                continue
+            used, reset = window.get('used_percent'), window.get('resets_at')
+            if not finite(used) or not 0 <= used <= 100 or not finite(reset) or reset <= 0:
+                continue
+            return dict(weekly_used_percent=used, resets_at=reset,
+                        reset_time=datetime.fromtimestamp(reset, timezone.utc).isoformat(),
+                        snapshot_at=stamp.astimezone(timezone.utc).isoformat(), snapshot_age_seconds=max(0, now - stamp.timestamp()),
+                        window=key, window_minutes=WEEK, codex_home=str(root), source=str(path))
+    except (KeyError, ValueError, TypeError, OverflowError, OSError):
+        pass
+    return None
+
+
+def read_allowance(roots, now=None):
+    read_started = time.time() if now is None else now
+    newest = None
+    for root in roots:
+        for path in (root / 'sessions').rglob('rollout-*.jsonl'):
+            try:
+                for line in reverse_lines(path):
+                    if b'"rate_limits"' not in line or b'"token_count"' not in line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except (ValueError, UnicodeError):
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    found = snapshot(row, path, root, read_started)
+                    if found:
+                        # Rollouts append events in time order. Compare event times, never file mtimes.
+                        if newest is None or found['snapshot_at'] > newest['snapshot_at']:
+                            newest = found
+                        break
+            except OSError:
+                continue  # A rotated/unreadable file must not hide another home's snapshot.
+    if newest:
+        # Discovery/reading can be slow; age must describe the returned snapshot at completion.
+        read_finished = time.time() if now is None else now
+        stamp = datetime.fromisoformat(newest['snapshot_at']).timestamp()
+        newest['snapshot_age_seconds'] = max(0, read_finished - stamp)
+    return dict(codex=newest or 'unavailable', claude='unavailable',
+                claude_note='No local allowance snapshot found; a fresh authenticated Claude usage '
+                            'read (CLI usage screen or usage endpoint) would be needed. Token totals '
+                            'and policy-limits.json are not allowance percentages.')
+
+
+def message(text, log=None):
+    line = 'allowance: ' + text
+    print(line, file=sys.stderr)
+    if log:
+        with open(log, 'a') as stream:
+            stream.write(line + '\n')
+
+
+def alerts(weekly, log):
+    """One successful tell-general decision per threshold/reset, serialized across launches."""
+    base = Path(os.environ.get('RSTACK_STATE_DIR') or
+                str(Path(os.environ.get('XDG_STATE_HOME') or str(Path.home() / '.local/state')) / 'rstack'))
+    state = base.expanduser() / 'allowance'
+    state.mkdir(parents=True, exist_ok=True)
+    with (state / 'lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        path = state / 'alerts.json'
+        try:
+            seen = json.loads(path.read_text())
+            if not isinstance(seen, dict):
+                seen = {}
+        except (OSError, ValueError):
+            seen = {}
+        for threshold in (70, 85):
+            key = '{}:{}'.format(weekly['resets_at'], threshold)
+            if weekly['weekly_used_percent'] < threshold or key in seen:
+                continue
+            text = 'Codex weekly allowance {}% used (threshold {}%, resets {}).'.format(
+                weekly['weekly_used_percent'], threshold, weekly['reset_time'])
+            message('WARNING ' + text, log)
+            notifier = os.environ.get('LAUNCH_ALLOWANCE_ALERT') or shutil.which('tell-general') or str(
+                Path.home() / '.claude/skills/orchestrator/scripts/tell-general')
+            try:
+                result = subprocess.run([notifier, 'decision', text], capture_output=True, timeout=20)
+                delivered = result.returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                delivered = False
+            if delivered:
+                seen[key] = time.time()
+                path.write_text(json.dumps(seen, sort_keys=True) + '\n')
+            else:
+                message('WARNING tell-general decision failed; will retry on the next launch', log)
+
+
+def tmux_run(tmux, args):
+    return subprocess.run([tmux] + args, capture_output=True, text=True, timeout=10)
+
+
+def running_jobs(backend, provider):
+    """Count live job-* sessions, excluding this attempt and known Claude/provider jobs.
+
+    New launchers mark the selected route; old ones expose LAUNCH_BACKEND in their
+    pane start command. Unknown job-* routes count conservatively as Codex.
+    """
+    tmux = os.environ.get('LAUNCH_TMUX') or 'tmux'
+    current = ''
+    if os.environ.get('TMUX'):
+        target = ['-t', os.environ['TMUX_PANE']] if os.environ.get('TMUX_PANE') else []
+        result = tmux_run(tmux, ['display-message', '-p'] + target + ['#{session_name}'])
+        if result.returncode:
+            raise ValueError('cannot identify current tmux session')
+        current = result.stdout.strip()
+        if current.startswith('job-'):
+            for key, value in (('@launch_backend', backend), ('@launch_provider', provider)):
+                result = tmux_run(tmux, ['set-option', '-t', '=' + current, key, value])
+                if result.returncode:
+                    raise ValueError('cannot mark selected tmux route')
+    fmt = '#{session_name}\t#{pane_dead}\t#{@launch_backend}\t#{@launch_provider}\t#{pane_start_command}'
+    result = tmux_run(tmux, ['list-panes', '-a', '-F', fmt])
+    if result.returncode:
+        if any(s in result.stderr.lower() for s in ('no server running', 'no sessions', 'no such file or directory')):
+            return 0
+        raise ValueError('cannot list live tmux jobs')
+    jobs = set()
+    for row in result.stdout.splitlines():
+        fields = row.split('\t', 4)
+        if len(fields) != 5:
+            raise ValueError('unreadable tmux job row')
+        name, dead, selected, route, command = fields
+        if not name.startswith('job-') or name == current or dead == '1':
+            continue
+        if not selected:
+            match = re.search(r'\bLAUNCH_BACKEND=[\'\"]?(codex|claude)\b', command)
+            selected = match.group(1) if match else ''
+            match = re.search(r'\bLAUNCH_PROVIDER=[\'\"]?(openrouter|gemini)\b', command)
+            route = match.group(1) if match else ''
+        if selected == 'claude' or route in ('openrouter', 'gemini'):
+            continue
+        jobs.add(name)
+    return len(jobs)
+
+
+def guard(data, job, role, backend, provider, log):
+    weekly = data['codex']
+    now = time.time()
+    if log:
+        with open(log, 'a') as stream:
+            stream.write('allowance snapshot: ' + json.dumps(data, sort_keys=True) + '\n')
+    # Read before every attempt, including non-Codex routes, without applying Codex policy to them.
+    if backend != 'codex' or provider in ('openrouter', 'gemini'):
+        # A requested Codex role can resolve to Claude; keep peers' session counts accurate.
+        try:
+            running_jobs(backend, provider)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            message('WARNING cannot mark non-Codex tmux route', log)
+        return 0
+    if weekly == 'unavailable':
+        message('WARNING Codex snapshot unavailable; local usage cannot be determined', log)
+    else:
+        if weekly['snapshot_age_seconds'] > 6 * 3600:
+            message('WARNING stale snapshot ({:.1f} hours old); no freshness refusal'.format(
+                weekly['snapshot_age_seconds'] / 3600), log)
+        if weekly['resets_at'] <= now:
+            message('WARNING snapshot window has reset; old percentage is not current usage', log)
+        else:
+            alerts(weekly, log)
+            if weekly['weekly_used_percent'] > 85 and re.search(
+                    r'audit|rescore|review-sweep|calibration|leaderboard', job + ' ' + role, re.I):
+                urgent = os.environ.get('LAUNCH_URGENT', '').strip()
+                if not urgent:
+                    message('REFUSED {}: above 85% weekly; non-urgent job needs LAUNCH_URGENT=<reason>'.format(job), log)
+                    return 75
+                message('LAUNCH_URGENT {}: {}'.format(job, urgent), log)
+    cap = os.environ.get('LAUNCH_MAX_CONCURRENT') or '4'
+    if not cap.isdecimal() or int(cap) < 1:
+        message('REFUSED: LAUNCH_MAX_CONCURRENT must be a positive integer', log)
+        return 2
+    try:
+        count = running_jobs(backend, provider)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        message('REFUSED: cannot count Codex tmux jobs ({})'.format(exc), log)
+        return 75
+    if count >= int(cap):
+        message('REFUSED {}: {} other Codex job-* sessions running; LAUNCH_MAX_CONCURRENT={}'.format(job, count, cap), log)
+        return 75
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--codex-home', action='append', type=Path)
+    parser.add_argument('--guard', metavar='JOB')
+    parser.add_argument('--role', default='batch')
+    parser.add_argument('--backend', default='codex')
+    parser.add_argument('--provider', default='')
+    parser.add_argument('--log')
+    args = parser.parse_args()
+    roots = [p.expanduser().resolve() for p in args.codex_home] if args.codex_home else homes()
+    data = read_allowance(roots)
+    if args.guard is None:
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return 0
+    return guard(data, args.guard, args.role, args.backend, args.provider, args.log)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
