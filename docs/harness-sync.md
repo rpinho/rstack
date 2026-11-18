@@ -18,6 +18,12 @@ Host-specific values (paths, lane sets, notifier commands) never go in the repo.
 
 Tests: `tests/test_harness_sync.py`, `tests/test_host_settings.py`.
 
+The owner-ask lint also ships as `rstack/tools/ask_lint.py`; private review and
+notification wrappers load it from the installed root. See
+[ask lint](../rstack/tools/ask-lint.md). The private wrappers and the copy of
+`lane-no-questions.py` in `~/.claude/hooks` require their own backed-up patches;
+sync does not modify those private entrypoints or Claude settings.
+
 ## The second machine
 
 A `--host` job runs the executor on the other machine, so it runs THAT machine's installed harness,
