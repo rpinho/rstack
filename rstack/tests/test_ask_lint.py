@@ -27,6 +27,7 @@ from rstack_hookcall import HOOKS, allowed, blocked
     'submit at the AAS link',
     'enter the code',
     'follow the link to the form',
+    'use the magic link',
 ])
 def test_mechanical_patterns(text):
     assert lint(text)[0] == 'do it yourself: ' + text
@@ -39,15 +40,21 @@ def test_mechanical_patterns(text):
 ])
 def test_owner_address(prefix):
     assert lint(prefix + 'upload the PDF') == ['do it yourself: upload the PDF']
+    assert lint(prefix + 'open the login link', 'auth') == [
+        'do it yourself: open the login link']
 
 
 @pytest.mark.parametrize('text', [
     'read and OK the reply', 'sign in to GitLab', 'log in to the portal',
+    'sign in with your password to GitLab',
     'approve the $20 purchase', 'decide whether to publish', 'pay the invoice',
     'Please approve the reply', 'I will upload the PDF', 'I uploaded the PDF',
     'The upload failed', 'Do not click the link', "Don't paste your password",
     'Uploaded the revised PDF', 'The run finished', 'The type is optional',
     'I will read and upload the PDF', 'We will open the form, then paste the text',
+    'I upload everything myself', 'upload everything myself', "I'll paste it",
+    'The agent will open the form and upload everything',
+    'Agent will read, then paste the text',
 ])
 def test_his_only_verbs_and_non_requests(text):
     assert lint(text) == []
@@ -69,12 +76,24 @@ def test_auth_tag_and_sign_in():
     'click the magic link to log in', 'follow the login link',
     'open the sign-in link', 'click the link to sign in to GitLab',
     'click the authentication link', 'follow the magic-link',
+    'use the magic link', 'use your login link',
+    'click the sign-in link in your email', 'open the login link',
 ])
-def test_login_links_need_auth(text):
-    assert lint(text)
-    assert lint(text, 'judgment')
-    assert lint(text, 'auth') == []
-    assert lint(text + ' [his-only: auth]') == []
+def test_password_free_login_links_are_agent_work(text):
+    assert lint(text) == ['do it yourself: ' + text]
+    for tag in ('auth', 'judgment', 'money', 'delete', 'attest', 'first-email', 'terms'):
+        assert lint(text, tag) == ['do it yourself: ' + text]
+        assert lint(text + ' [his-only: ' + tag + ']') == ['do it yourself: ' + text]
+
+
+@pytest.mark.parametrize('tag', ['password', '2fa', 'oauth', 'sso'])
+@pytest.mark.parametrize('text', [
+    'enter the 2FA code', 'type your password', 'approve the OAuth consent',
+    'open the login link and enter your password',
+])
+def test_password_and_consent_stay_with_owner(text, tag):
+    assert lint(text, tag) == []
+    assert lint(text + ' [his-only: ' + tag + ']') == []
 
 
 def test_his_only_verb_does_not_excuse_later_mechanics():
@@ -83,6 +102,7 @@ def test_his_only_verb_does_not_excuse_later_mechanics():
     assert lint('read and OK the reply. Paste this into the form') == [
         'do it yourself: Paste this into the form']
     assert lint('I will read, then you upload the PDF') == ['do it yourself: upload the PDF']
+    assert lint('The agent will read, then you upload the PDF') == ['do it yourself: upload the PDF']
 
 
 def test_multiple_mechanical_steps():
@@ -117,6 +137,9 @@ def test_cli_stdin_flag_and_exit_code():
     assert run('--his-only', 'attest').returncode == 0
     assert run('--his-only', 'routine').returncode == 2
     assert run('--', 'sign in to GitLab').returncode == 0
+    for tag in ('password', '2fa', 'oauth', 'sso'):
+        assert run('--his-only', tag, 'enter the 2FA code').returncode == 0
+    assert run('--his-only', 'auth', 'click the magic link to log in').returncode == 2
 
 
 CONDUCTOR = {'CONDUCTOR_CWD_SUFFIX': '/src/conductor', 'TMUX': ''}
@@ -132,27 +155,42 @@ def test_conductor_cannot_delegate_mechanical_steps():
     assert 'do it yourself: upload the PDF' in result['stdout']
     allowed(HOOKS / 'lane-no-questions.py', question_event('read and OK the reply'), env=CONDUCTOR)
     allowed(HOOKS / 'lane-no-questions.py', question_event('sign in to GitLab'), env=CONDUCTOR)
-    allowed(HOOKS / 'lane-no-questions.py', question_event(
+    blocked(HOOKS / 'lane-no-questions.py', question_event(
         'click the magic link to log in [his-only: auth]'), env=CONDUCTOR)
+    allowed(HOOKS / 'lane-no-questions.py', question_event(
+        'enter the 2FA code [his-only: password]'), env=CONDUCTOR)
+    allowed(HOOKS / 'lane-no-questions.py', question_event(
+        'sign in with your password to GitLab'), env=CONDUCTOR)
 
 
-def test_question_options_are_also_owner_text():
+def test_question_option_labels_are_also_owner_text():
     event = question_event('Choose the next action', options=[
-        dict(label='Continue', description='paste this into the form')])
+        dict(label='paste this into the form', description='I will continue')])
     result = blocked(HOOKS / 'lane-no-questions.py', event, env=CONDUCTOR)
     assert 'do it yourself: paste this into the form' in result['stdout']
 
 
+@pytest.mark.parametrize('description', [
+    'upload everything myself', 'I upload everything myself', "I'll paste it",
+    'The agent will upload everything', 'paste this into the form',
+])
+def test_question_choice_ignores_work_descriptions(description):
+    event = question_event('Which submission approach do you prefer?', options=[
+        dict(label='Agent handles submission', description=description),
+        dict(label='Keep as a draft', description='I will save the draft')])
+    allowed(HOOKS / 'lane-no-questions.py', event, env=CONDUCTOR)
+
+
 def test_question_tag_covers_options_but_not_other_questions():
-    event = question_event('Authenticate [his-only: auth]', options=[
-        dict(label='Continue', description='click the magic link to log in')])
+    event = question_event('Authenticate [his-only: password]', options=[
+        dict(label='enter the 2FA code', description='I will continue afterward')])
     allowed(HOOKS / 'lane-no-questions.py', event, env=CONDUCTOR)
     event['tool_input']['questions'].append(dict(question='upload the PDF'))
     blocked(HOOKS / 'lane-no-questions.py', event, env=CONDUCTOR)
 
 
 def test_tagged_lane_question_still_obeys_conductor_rule():
-    event = question_event('click the magic link to log in [his-only: auth]')
+    event = question_event('enter the 2FA code [his-only: password]')
     event['cwd'] = '/src/lane'
     result = blocked(HOOKS / 'lane-no-questions.py', event, env=CONDUCTOR)
     assert 'only the conductor' in result['stdout']

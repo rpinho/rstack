@@ -9,7 +9,9 @@ import argparse
 import re
 import sys
 
-HIS_ONLY = ('auth', 'money', 'delete', 'attest', 'first-email', 'terms', 'judgment')
+HIS_ONLY = ('auth', 'money', 'delete', 'attest', 'first-email', 'terms', 'judgment',
+            'password', '2fa', 'oauth', 'sso')
+ALIASES = dict.fromkeys(('2fa', 'oauth', 'sso'), 'password')
 TAG = re.compile(r'\[his-only:\s*([^\]]+)\]', re.I)
 
 # Imperatives, polite questions, and explicit second-person requests. Requiring
@@ -40,6 +42,8 @@ MECHANICAL = (
     ('submit at', r'submit\b'),
     ('enter', r'enter\b'),
     ('follow link', r'follow\b[^\n.!?;]*?\blink\b'),
+    ('use login link', r'use\s+(?:(?:the|a|your)\s+)?(?:magic[ -]link|'
+                      r'(?:log[ -]?in|sign[ -]?in|authentication|auth)[ -]link)\b'),
 )
 ACTIONS = tuple((name, re.compile(ADDRESS + r'(?P<step>' + pattern + r'[^\n.!?;]*)', re.I))
                 for name, pattern in MECHANICAL)
@@ -53,7 +57,8 @@ def lint(text, reason_tag=None):
 
     Direct his-only verbs (sign in, log in, approve, read and OK, decide, pay)
     are allowed. They do not excuse a separate upload/paste/etc. A mechanical
-    login-link instruction is allowed only with an explicit auth reason.
+    login-link instruction is agent work unless an explicit password reason
+    (or its 2fa/oauth/sso aliases) declares an owner-only authentication step.
     """
     tags = [m.group(1).strip().lower() for m in TAG.finditer(text)]
     if reason_tag is not None:
@@ -61,6 +66,7 @@ def lint(text, reason_tag=None):
     invalid = [tag for tag in tags if tag not in HIS_ONLY]
     if invalid:
         raise ValueError('unknown his-only class: ' + ', '.join(invalid))
+    tags = [ALIASES.get(tag, tag) for tag in tags]
     clean = TAG.sub('', text)
     found = []
     for _, pattern in ACTIONS:
@@ -69,13 +75,14 @@ def lint(text, reason_tag=None):
             # is our work. "I will read, then you upload" still addresses him.
             clause = re.split(r'[.!?;\n]', clean[:match.start()])[-1].strip()
             address = clean[match.start():match.start('step')]
-            if (re.match(r'(?:I|we)\b', clause, re.I)
-                    and not re.search(r'\b(?:you|Ricardo)\b', address, re.I)):
-                continue
             step = match.group('step').strip(' \t,')
-            # Clicking/following a login link is authentication, never a generic
-            # mechanical exception under judgment, money, etc.
-            allowed = 'auth' in tags if LOGIN_LINK.search(step) else bool(tags)
+            if (not re.search(r'\b(?:you|Ricardo)\b', address, re.I)
+                    and (re.match(r'(?:I|we|(?:the\s+)?agent)\b', clause, re.I)
+                         or re.search(r'\b(?:myself|ourselves)\b', step, re.I))):
+                continue
+            # Password-free login links are agent work, including when tagged
+            # auth. Passwords, 2FA and OAuth/SSO consent stay with the owner.
+            allowed = 'password' in tags if LOGIN_LINK.search(step) else bool(tags)
             if not allowed:
                 found.append((match.start('step'), 'do it yourself: ' + step))
     return [message for _, message in sorted(set(found))]
