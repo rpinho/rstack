@@ -12,6 +12,7 @@ its result in. Same class: a failure that only reaches a log. These checks need 
            a job that loses its input and keeps running empty rounds still stops refreshing what it makes
   x-engage queued engagement without executed actions, or repeated same-reason post refusals
   net-failover more than 60 minutes continuously on the backup network (opt-in state source)
+  release-protection registry differs from the deploy CLI's own protected set for over 1 hour (opt-in)
 
 The problems are written to $RSTACK_STATE_DIR/asks-waiting/<host>-jobs.tsv, so the conductor's
 asks-waiting hook shows them on every turn while they last, and each NEW problem runs --alert once
@@ -22,7 +23,8 @@ Registry (default ~/.config/rstack/job-health.json):
      "exit_ok": {"com.example.lane-yield": {"codes": [1], "why": "exit 1 is its FAIL verdict, alerted on its own"}},
      "disk": [{"path": "/", "min_free_gib": 25, "why": "deploys refuse under 15 GiB"}],
      "x_engage": {"path": "~/.local/share/x-engage/log.jsonl", "host": "m4"},
-     "net_failover": {"path": "~/.local/state/net-failover/state.json", "label": "M4"}}
+     "net_failover": {"path": "~/.local/state/net-failover/state.json", "label": "M4"},
+     "release_protection": [{"deploy_root": "~/.local/share/family-games"}]}
 
     x_engage is opt-in: omit host for a local path; SSH is used only with a configured host.
     --x-engage-log FILE overrides the registry source with a local file. Skips are logged to stderr.
@@ -351,7 +353,16 @@ def main(argv=None):
         codex_rows = health_problems(reg.get('codex'), now, repair=bool(a.prefix) and not a.dry)
     except (OSError, ValueError, TypeError, KeyError, ImportError) as exc:
         codex_rows = [('codex-read', 'Codex spend backstop', 'unavailable: ' + type(exc).__name__)]
-    rows = (bad + codex_rows + exit_problems(launchd_jobs(a.prefix), reg.get('exit_ok') or {})
+    release_rows = []
+    if reg.get('release_protection'):
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from release_sync import health_problems as release_health
+            release_rows = release_health(reg['release_protection'], now,
+                state_dir() / 'job-health/release-protection.json', write=bool(a.prefix) and not a.dry)
+        except (OSError, ValueError, TypeError, KeyError, ImportError) as exc:
+            release_rows = [('release-protection', 'registry comparison', 'unavailable: ' + str(exc))]
+    rows = (bad + codex_rows + release_rows + exit_problems(launchd_jobs(a.prefix), reg.get('exit_ok') or {})
             + fresh_problems(reg.get('fresh') or [], now) + disk_problems(reg.get('disk') or [])
             + x_engage_problems(x_source, now) + net_failover_problems(reg.get('net_failover'), now))
     lines = ['{}\t{}\t{}'.format(kind, what, detail) for kind, what, detail in rows]

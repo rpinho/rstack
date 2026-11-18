@@ -418,7 +418,7 @@ Fake-only tests (CDP, syndication and rh stubs; no live app or X actions):
 python3 -m pytest -q rstack/tests/test_grok_ask.py harness/tests/test_outreach.py
 ```
 
-- [`release-protect`](release-protect.md): checks a private protected-path registry before cleanup; registered sources are reread on every call. The Finder shim and harness Trash adapter share the check.
+- [`release-protect`](release-protect.md): checks a private protected-path registry before cleanup; registered sources are reread on every call. `sync --from-deploy ROOT` refreshes release entries from the deploy CLI's retention function; `--dry-run` prints the diff without writes. The optional job-health `release_protection` check alerts after an hour of drift. The Finder shim and harness Trash adapter share the check.
 
 ## Codex spend
 
