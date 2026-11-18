@@ -218,6 +218,15 @@ for (( i = start; i <= 5; i++ )); do
     claude) cx=${LAUNCH_CLAUDE:-claude};;
     *) print -u2 -- "launch.sh refused $job: unsupported executor route $backend"; exit 2;;
   esac
+  # Read local allowance after route selection and before each paid attempt (including retries).
+  # The selected executor can differ from the requested one. Provider routes spend elsewhere.
+  python3 "${LAUNCH_ALLOWANCE:-${self:h:h}/rstack/tools/allowance}" --guard "$job" \
+    --role "$LAUNCH_ROLE" --backend "$backend" --provider "${LAUNCH_PROVIDER:-}" --log "$log"
+  allowance_rc=$?
+  if (( allowance_rc != 0 )); then
+    print -- "exit $allowance_rc allowance-refused $(date)" >> "$log"
+    exit "$allowance_rc"
+  fi
   # Authentication is read only by the executing shell, never put in a receipt or command file.
   if [[ -n ${LAUNCH_PROVIDER:-} && ( $LAUNCH_PROVIDER != (openrouter|gemini) || $backend != codex ) ]]; then
     print -u2 -- "launch.sh refused $job: unsupported LAUNCH_PROVIDER"; exit 2
