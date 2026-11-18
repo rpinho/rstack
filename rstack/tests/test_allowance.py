@@ -335,3 +335,17 @@ def test_snapshot_age_includes_time_spent_reading(tmp_path, monkeypatch):
     ticks = iter([NOW, NOW + 10])
     monkeypatch.setattr(allowance.time, 'time', lambda: next(ticks))
     assert allowance.read_allowance([tmp_path])['codex']['snapshot_age_seconds'] == 13
+
+
+def test_files_last_written_before_the_newest_snapshot_are_not_read(tmp_path, monkeypatch):
+    """11-18: reading every rollout in full took minutes per call on an 8 GB home."""
+    fresh = rollout(tmp_path / '.codex', [event(used=11)], name='rollout-fresh.jsonl')
+    os.utime(fresh, (NOW, NOW))
+    for i in range(30):
+        old = rollout(tmp_path / '.codex', [event(used=90, age=86400)], name='rollout-old{}.jsonl'.format(i))
+        os.utime(old, (NOW - 86400, NOW - 86400))
+    opened = []
+    real = allowance.reverse_lines
+    monkeypatch.setattr(allowance, 'reverse_lines', lambda path: opened.append(path) or real(path))
+    assert allowance.read_allowance([tmp_path / '.codex'], NOW)['codex']['weekly_used_percent'] == 11
+    assert opened == [fresh]

@@ -100,26 +100,39 @@ def snapshot(row, path, root, now):
 def read_allowance(roots, now=None):
     read_started = time.time() if now is None else now
     newest = None
+    # Newest-modified first, then stop at files last written before the best event found. Events are
+    # appended in time order, so a file's newest event is no later than its mtime; older files cannot
+    # hold a newer snapshot. Without this, every call read every rollout in full (11-18: over three
+    # minutes per codex call on a Mac with 8 GB of rollouts, inside the wrapper's admission lock).
+    files = []
     for root in roots:
         for path in (root / 'sessions').rglob('rollout-*.jsonl'):
             try:
-                for line in reverse_lines(path):
-                    if b'"rate_limits"' not in line or b'"token_count"' not in line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except (ValueError, UnicodeError):
-                        continue
-                    if not isinstance(row, dict):
-                        continue
-                    found = snapshot(row, path, root, read_started)
-                    if found:
-                        # Rollouts append events in time order. Compare event times, never file mtimes.
-                        if newest is None or found['snapshot_at'] > newest['snapshot_at']:
-                            newest = found
-                        break
+                files.append((path.stat().st_mtime, path, root))
             except OSError:
-                continue  # A rotated/unreadable file must not hide another home's snapshot.
+                continue
+    files.sort(key=lambda item: item[0], reverse=True)
+    for mtime, path, root in files:
+        if newest and mtime < datetime.fromisoformat(newest['snapshot_at']).timestamp() - 60:
+            break
+        try:
+            for line in reverse_lines(path):
+                if b'"rate_limits"' not in line or b'"token_count"' not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except (ValueError, UnicodeError):
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                found = snapshot(row, path, root, read_started)
+                if found:
+                    # Rollouts append events in time order. Compare event times, never file mtimes.
+                    if newest is None or found['snapshot_at'] > newest['snapshot_at']:
+                        newest = found
+                    break
+        except OSError:
+            continue  # A rotated/unreadable file must not hide another home's snapshot.
     if newest:
         # Discovery/reading can be slow; age must describe the returned snapshot at completion.
         read_finished = time.time() if now is None else now
