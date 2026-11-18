@@ -11,6 +11,13 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
+@pytest.fixture(autouse=True)
+def tools_import_path(monkeypatch):
+    # The spec loader above doesn't add the tool's directory as a normal import
+    # or script invocation would. Make its sibling parser importable too.
+    monkeypatch.syspath_prepend(str(TOOLS))
+
+
 def test_releases_contents_parents_and_aliases_refuse(tmp_path):
     release = tmp_path / 'releases/game/old'
     release.mkdir(parents=True)
@@ -89,4 +96,32 @@ def test_harness_only_install_keeps_the_trash_guard(tmp_path):
                             text=True, capture_output=True)
     assert result.returncode == 1
     assert 'protected release' in result.stderr
+    assert keep.exists()
+
+
+def test_copied_hook_and_helpers_work_without_a_repo_or_harness(tmp_path):
+    import os
+    import shutil
+    home = tmp_path / 'home'
+    hooks = home / '.claude/hooks'
+    tools = home / '.local/bin'
+    hooks.mkdir(parents=True)
+    tools.mkdir(parents=True)
+    for name in ('trash-guard.py', '_hookfail.py'):
+        shutil.copyfile(TOOLS.parent / 'hooks' / name, hooks / name)
+    for name in ('protected_paths.py', 'shell_commands.py'):
+        shutil.copyfile(TOOLS / name, tools / name)
+    keep = home / 'release'
+    keep.mkdir()
+    registry = home / 'protected.json'
+    registry.write_text(json.dumps({'paths': [str(keep)]}))
+    env = {**os.environ, 'HOME': str(home), 'PYTHONPATH': '',
+           'RSTACK_PROTECTED_PATHS': str(registry)}
+    for command, denied in ((f'/usr/bin/trash "{keep}"', True),
+                            ('echo "use trash not rm"', False)):
+        result = subprocess.run([sys.executable, str(hooks / 'trash-guard.py')],
+                                input=json.dumps({'tool_name': 'Bash', 'tool_input': {'command': command}}),
+                                cwd=home, env=env, text=True, capture_output=True)
+        assert result.returncode == 0, result.stderr
+        assert ('"permissionDecision": "deny"' in result.stdout) == denied
     assert keep.exists()
