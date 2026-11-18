@@ -24,6 +24,26 @@ REASON = ('lane-no-questions: only the conductor shows question cards. If you wo
 def body(event):
     if not str(event.get('tool_name', '')).endswith('AskUserQuestion'):
         return 0
+    # Import inside the fail-safe body: a missing install must refuse, not crash
+    # before _hookfail can emit a deny. The same hook runs from repo or ~/.claude.
+    from pathlib import Path
+    source_tools = Path(__file__).resolve().parents[1] / 'tools'
+    if 'RSTACK_TOOLS' in os.environ:
+        tools = Path(os.environ['RSTACK_TOOLS']).expanduser()
+    elif (source_tools / 'ask_lint.py').is_file():
+        tools = source_tools
+    else:
+        tools = Path.home() / '.local/share/research-harness/rstack/tools'
+    sys.path.insert(0, str(tools))
+    from ask_lint import lint
+    for question in event.get('tool_input', {}).get('questions', []):
+        texts = [question.get('question', ''), question.get('header', '')]
+        for option in question.get('options', []):
+            texts.extend((option.get('label', ''), option.get('description', '')))
+        messages = lint('\n'.join(texts))
+        if messages:
+            _hookfail.decide('deny', '\n'.join(messages))
+            return 0
     if not _hookfail.is_conductor(event):   # one definition, shared with the ask default
         _hookfail.decide('deny', REASON)
     return 0
@@ -31,4 +51,4 @@ def body(event):
 
 if __name__ == '__main__':
     sys.exit(_hookfail.run('lane-no-questions.py', body, lambda raw, ev: 'AskUserQuestion' in raw,
-                           guards='question cards outside the conductor'))
+                           guards='mechanical owner asks and question cards outside the conductor'))
