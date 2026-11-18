@@ -47,35 +47,85 @@ def assert_disposable(paths, registry=None, *, required=False):
                     raise ValueError('cleanup refused: path overlaps a protected release')
 
 
-def assert_shell_disposable(command, registry=None):
-    """Cover ordinary explicit trash/rm commands at the existing shell hook boundary."""
-    import glob
+def deletion_commands(command, _depth=0):
+    """Yield executed cleanup argv, never words in echo arguments or heredocs."""
     import shlex
-    protected = protected_paths(registry)
-    if not protected:
-        return
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|')
-    lexer.whitespace_split = True
-    segments, current = [], []
-    for token in lexer:
-        if token and all(c in ';&|' for c in token):
-            segments.append(current)
-            current = []
-        else:
-            current.append(token)
-    segments.append(current)
-    for segment in segments:
-        start = next((i for i, t in enumerate(segment) if Path(t).name in
-                      {'trash', 'rm', 'rmdir', 'unlink'}), None)
-        if start is None:
+    import re
+    from shell_commands import shell_commands
+
+    if _depth > 16:
+        raise ValueError('cleanup command nesting is too deep')
+    for args, _ in shell_commands(command):
+        while args and args[0] in {'do', 'then', 'else', 'if', 'while', 'until', '!', '{'}:
+            args = args[1:]
+        # Wrappers execute their following command; their option values do not.
+        argv = args
+        while argv:
+            name = Path(argv[0]).name
+            if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', argv[0]):
+                argv = argv[1:]
+            elif name in {'env', 'command', 'exec', 'sudo', 'nohup', 'xargs'}:
+                value_options = {'env': {'-u', '--unset', '-C', '--chdir'},
+                                 'sudo': {'-u', '-g', '-h', '-p', '-C', '-T', '-R', '-D'},
+                                 'exec': {'-a'},
+                                 'xargs': {'-E', '-I', '-J', '-L', '-n', '-P', '-s', '-a'}}.get(name, set())
+                argv = argv[1:]
+                while argv and argv[0].startswith('-'):
+                    option = argv[0]
+                    argv = argv[2:] if option in value_options else argv[1:]
+                    if option == '--':
+                        break
+            else:
+                break
+        if not argv:
             continue
-        for token in segment[start + 1:]:
+        name = Path(argv[0]).name
+        script = None
+        if name in {'sh', 'bash', 'zsh', 'dash', 'ksh'}:
+            for i, arg in enumerate(argv[1:], 1):
+                if arg.startswith('-') and not arg.startswith('--') and 'c' in arg:
+                    script = argv[i + 1] if i + 1 < len(argv) else ''
+                    break
+        elif name == 'ssh':
+            i = 1
+            while i < len(argv) and argv[i].startswith('-'):
+                i += 2 if argv[i] in {'-b', '-c', '-D', '-E', '-e', '-F', '-I', '-i', '-J',
+                                     '-L', '-l', '-m', '-O', '-o', '-p', '-Q', '-R', '-S', '-W', '-w'} else 1
+            script = ' '.join(argv[i + 1:])  # ssh hands the command to the remote shell
+        elif name == 'eval':
+            script = ' '.join(argv[1:])
+        elif name == 'find':
+            for i, arg in enumerate(argv):
+                if arg in {'-exec', '-execdir', '-ok', '-okdir'}:
+                    script = shlex.join(argv[i + 1:])
+                    break
+        if script is not None:
+            yield from deletion_commands(script, _depth + 1)
+        elif name in {'trash', 'rm', 'rmdir', 'unlink', 'osascript'}:
+            yield argv
+        elif name == 'mv' and len(argv) > 2:
+            destination = Path(os.path.expandvars(os.path.expanduser(argv[-1])))
+            if {'.Trash', '.Trashes', 'Trash'}.intersection(destination.parts):
+                yield argv
+
+
+def assert_shell_disposable(command, registry=None):
+    """Check real cleanup operands using the model gate's shell reader/fallback."""
+    import glob
+    commands = [argv for argv in deletion_commands(command) if Path(argv[0]).name != 'osascript']
+    if not commands or not protected_paths(registry):
+        return
+    for argv in commands:
+        for token in argv[1:]:
             if token.startswith('-'):
                 continue
-            expanded = os.path.expandvars(os.path.expanduser(token))
-            if '$' in expanded or '`' in expanded:
-                raise ValueError('cleanup refused: cannot resolve a deletion operand with protected releases registered')
-            candidates = glob.glob(expanded) if glob.has_magic(expanded) else [expanded]
-            if not candidates:
-                candidates = [expanded.split('*', 1)[0].split('?', 1)[0].split('[', 1)[0]]
-            assert_disposable(candidates, registry)
+            # The unfinished-quote fallback retains quote marks. Check that path
+            # too, rather than letting an open quote hide a protected operand.
+            for operand in {token, token.strip('\"\x27')}:
+                expanded = os.path.expandvars(os.path.expanduser(operand))
+                if '$' in expanded or '`' in expanded:
+                    raise ValueError('cleanup refused: cannot resolve a deletion operand with protected releases registered')
+                candidates = glob.glob(expanded) if glob.has_magic(expanded) else [expanded]
+                if not candidates:
+                    candidates = [expanded.split('*', 1)[0].split('?', 1)[0].split('[', 1)[0]]
+                assert_disposable(candidates, registry)

@@ -12,7 +12,9 @@ application has registered paths; an explicitly requested missing file refuses.
 
 The Finder-delete `osascript` shim checks this registry before either Trash or
 Finder fallback. Install `protected_paths.py` beside the shim, including when
-copying it rather than symlinking it. `harness.storage.trash` uses the same check. The canonical library is tracked under
+copying it rather than symlinking it. Copy its sibling `shell_commands.py` too for
+the shell hook; it shares the model gate's parser and unfinished-quote fallback.
+`harness.storage.trash` uses the same check. The canonical library is tracked under
 `harness/`, so normal harness sync includes it; the tools directory links to it.
 Application-specific retention belongs to the application: the games deployment
 code computes its last three successful live releases and registers its private
@@ -22,5 +24,8 @@ Direct calls to the operating system's deletion utilities are outside these
 Python boundaries. Cleanup clients must call this check immediately before moving
 paths, and applications must keep their own cleanup code protected as well.
 The existing `trash-guard.py` shell hook also checks ordinary `trash`, `rm`,
-`rmdir` and `unlink` operands against the registry. Unresolvable deletion operands
-refuse when protected paths are registered. This is not a general shell sandbox.
+`rmdir`, `unlink` and `mv`-to-Trash operands against the registry. It checks the
+executable command, including explicit shell/SSH command strings, rather than
+looking for deletion words in arbitrary arguments or file contents. Unresolvable
+deletion operands refuse when protected paths are registered. This is not a
+general shell sandbox.
