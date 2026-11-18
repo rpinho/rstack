@@ -37,9 +37,11 @@ def body(event):
     sys.path.insert(0, str(tools))
     from ask_lint import lint
     for question in event.get('tool_input', {}).get('questions', []):
-        texts = [question.get('question', ''), question.get('header', '')]
+        # Descriptions explain the option's work, often the agent's own plan.
+        # Only the question and option labels ask the owner to do something.
+        texts = [question.get('question', '')]
         for option in question.get('options', []):
-            texts.extend((option.get('label', ''), option.get('description', '')))
+            texts.append(option.get('label', ''))
         messages = lint('\n'.join(texts))
         if messages:
             _hookfail.decide('deny', '\n'.join(messages))
