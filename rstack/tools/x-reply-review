@@ -3,6 +3,12 @@
 
 No model or network calls. Default is read-only; --apply drops barred ready drafts
 in the producer's REPLY_DRAFTS.md and logs the refusal before it is synced for review.
+
+A hold sticks (11-18). A draft that an earlier run or flush held, by a 'Status: HELD ...' line
+or a hold row in log.jsonl (action draft_reply_held/draft_held, or a status starting held/hold),
+stays held: a later round that writes 'Status: ready' again does not re-decide it. The first
+time a held Status line is seen its hold is written to the log, so it survives that rewrite.
+Only a later release_hold row for the post releases it.
 """
 import argparse
 from datetime import datetime, timezone
@@ -20,10 +26,48 @@ from lane_registry import load
 TAG = re.compile(r'\b(?:lane|project|owner)\s*:\s*`?([A-Za-z0-9][A-Za-z0-9_.-]*)', re.I)
 STATUS = re.compile(r'(?im)^([-*]\s*)?Status:\s*ready[^\n]*')
 POST_ID = re.compile(r'(?:/status/|drafts/)(\d+)|(?<!\d)(\d{15,22})(?!\d)')
+HELD_STATUS = re.compile(r'(?im)^(?:[-*]\s*)?Status:\s*(?:held|hold|on hold)\b[^\n]*')
+HOLD_ACTIONS = {'draft_reply_held', 'draft_held', 'hold_draft'}
+RELEASE_ACTIONS = {'release_hold', 'hold_release'}
 
 
 def post_ids(text):
     return {a or b for a, b in POST_ID.findall(text)}
+
+
+def draft_ids(block):
+    """The draft's own post: the ID in its heading, else every ID in the block."""
+    first = block.split('\n', 1)[0]
+    return post_ids(first) if first.startswith('#') and post_ids(first) else post_ids(block)
+
+
+def log_holds(path):
+    """post ID -> hold reason, read in order, so only a later release row clears a hold."""
+    holds = {}
+    if not path.exists():
+        return holds
+    with path.open() as stream:
+        for line in stream:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            action, status = str(row.get('action', '')), str(row.get('status', ''))
+            held = action in HOLD_ACTIONS or re.match(r'(?i)\s*(held|hold)\b', status)
+            if not (held or action in RELEASE_ACTIONS):
+                continue
+            ids = set()
+            for key in ('target_url', 'in_reply_to', 'post_id', 'target_id', 'draft', 'draft_file', 'file'):
+                ids.update(post_ids(str(row.get(key, ''))))
+            for pid in ids:
+                if held:
+                    holds[pid] = ' '.join(str(part) for part in (row.get('utc', ''), action,
+                                          row.get('reason') or status) if part)
+                else:
+                    holds.pop(pid, None)
+    return holds
 
 
 def log_tags(path):
@@ -48,7 +92,8 @@ def log_tags(path):
     return tags
 
 
-def filter_drafts(text, tags, registry, lanes_root, stamp):
+def filter_drafts(text, tags, registry, lanes_root, stamp, holds=None):
+    holds = dict(holds or {})
     refusals = []
     # Keep heading boundaries so a tag on one draft never contaminates its neighbour.
     blocks = re.split(r'(?m)(?=^#{1,6}\s)', text)
@@ -59,6 +104,18 @@ def filter_drafts(text, tags, registry, lanes_root, stamp):
             depth = len(heading.group(1))
             sections = {level: tags for level, tags in sections.items() if level < depth}
             sections[depth] = set(TAG.findall(heading.group(2)))
+        held_line = HELD_STATUS.search(block)
+        if held_line:
+            # Record a hold the log does not have yet, so a later 'Status: ready' cannot undo it.
+            new = sorted(pid for pid in draft_ids(block) if pid not in holds)
+            if new:
+                reason = held_line.group(0).strip().lstrip('-* ')
+                for pid in new:
+                    holds[pid] = reason
+                refusals.append(dict(utc=stamp, action='draft_held', status='held', reason=reason,
+                                     post_ids=new, target_url='https://x.com/i/status/' + new[0],
+                                     session='x-reply-review'))
+            continue
         if not STATUS.search(block):
             continue
         ids = post_ids(block)
@@ -75,6 +132,14 @@ def filter_drafts(text, tags, registry, lanes_root, stamp):
                                    + ' (lane bars X: ' + reason.replace('\n', ' ') + ')', block)
             refusals.append(dict(utc=stamp, action='drop_draft', reason=reason,
                                  post_ids=sorted(ids), lanes=sorted(lanes), session='x-reply-review'))
+            continue
+        held = [pid for pid in sorted(draft_ids(block)) if pid in holds]
+        if held:
+            # Honor the earlier hold; the log already carries it, so no new row.
+            reason = holds[held[0]].replace('\n', ' ')
+            blocks[i] = STATUS.sub(lambda m: (m.group(1) or '') + 'Status: HELD ' + stamp
+                                   + ' (hold kept: ' + reason + ')', block)
+            refusals.append(dict(action='hold_kept', reason=reason, post_ids=held))
     return ''.join(blocks), refusals
 
 
@@ -90,14 +155,17 @@ def main(argv=None):
         registry = load(args.lanes_root)
         text = args.drafts.read_text()
         filtered, refusals = filter_drafts(text, log_tags(args.log), registry, args.lanes_root,
-                                          datetime.now(timezone.utc).isoformat())
+                                          datetime.now(timezone.utc).isoformat(), log_holds(args.log))
         if args.apply and refusals:
-            args.drafts.write_text(filtered)
+            if filtered != text:
+                args.drafts.write_text(filtered)
             with args.log.open('a') as stream:
                 for row in refusals:
-                    stream.write(json.dumps(row) + '\n')
+                    if row['action'] != 'hold_kept':
+                        stream.write(json.dumps(row) + '\n')
         for row in refusals:
-            print('REFUSED ' + ','.join(row['post_ids']) + ': ' + row['reason'])
+            label = {'drop_draft': 'REFUSED', 'draft_held': 'HOLD RECORDED'}.get(row['action'], 'HELD')
+            print(label + ' ' + ','.join(row['post_ids']) + ': ' + row['reason'])
         return 0 if args.apply or not refusals else 1
     except (OSError, ValueError, TypeError) as exc:
         print('x-reply-review: cannot read lane policy: ' + str(exc), file=sys.stderr)

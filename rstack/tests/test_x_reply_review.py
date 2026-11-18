@@ -91,3 +91,52 @@ def test_apply_drops_and_logs_once_and_invalid_registry_stops_review(tmp_path, m
 def test_registry_x_field_is_boolean(value):
     with pytest.raises(ValueError, match='x must be boolean'):
         registry(value)
+
+
+def run_twice_args(tmp_path, monkeypatch, text, log_rows=()):
+    lanes = tmp_path / 'lanes'
+    lanes.mkdir()
+    reg = lanes / 'REGISTRY.json'
+    reg.write_text(json.dumps({'lanes': registry(True).lanes}))
+    monkeypatch.setenv('RH_LANE_REGISTRY', str(reg))
+    drafts, log = tmp_path / 'drafts.md', tmp_path / 'log.jsonl'
+    drafts.write_text(text)
+    log.write_text(''.join(json.dumps(row) + '\n' for row in log_rows))
+    return drafts, log, ['--lanes-root', str(lanes), '--drafts', str(drafts), '--log', str(log), '--apply']
+
+
+def test_held_status_stays_held_when_a_later_round_marks_it_ready_again(tmp_path, monkeypatch):
+    held = draft('- Project: planets').replace('Status: ready', 'Status: HELD 11-17 (general flush: wait for Ricardo)')
+    other = draft('- Project: planets', '2222750198334292029')
+    drafts, log, args = run_twice_args(tmp_path, monkeypatch, held + other)
+    assert xrr.main(args) == 0                       # run 1 records the hold in the log
+    assert drafts.read_text() == held + other
+    rows = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [(r['action'], r['post_ids']) for r in rows] == [('draft_held', [PID])]
+    drafts.write_text(held.replace('Status: HELD', 'Status: ready') + other)   # a producer re-decides it
+    assert xrr.main(args) == 0                       # run 2 honors the hold
+    text = drafts.read_text()
+    assert 'Status: HELD' in text and 'hold kept' in text and 'wait for Ricardo' in text
+    assert text.count('Status: ready') == 1 and '2222750198334292029' in text.split('Status: ready')[0]
+    assert len(log.read_text().splitlines()) == 1    # no duplicate hold rows
+    assert xrr.main(args) == 0 and drafts.read_text() == text
+
+
+def test_logged_hold_holds_a_ready_draft_until_released(tmp_path, monkeypatch):
+    hold = dict(utc='2026-10-31T13:19:56Z', action='draft_reply_held',
+                target_url='https://x.com/example/status/' + PID, status='not ready; browser check required')
+    drafts, log, args = run_twice_args(tmp_path, monkeypatch, draft(), [hold])
+    for _ in range(2):
+        assert xrr.main(args) == 0
+        assert 'Status: ready' not in drafts.read_text() and 'draft_reply_held' in drafts.read_text()
+    assert len(log.read_text().splitlines()) == 1
+    released = dict(utc='2026-11-18T07:00:00Z', action='release_hold', target_url=hold['target_url'])
+    drafts.write_text(draft())
+    log.write_text(log.read_text() + json.dumps(released) + '\n')
+    assert xrr.main(args) == 0 and 'Status: ready' in drafts.read_text()
+
+
+def test_hold_on_a_quoted_post_does_not_hold_the_draft_quoting_it(tmp_path):
+    text = draft('- Context: quotes https://x.com/other/status/2333750198334292029')
+    holds = {'2333750198334292029': 'held'}
+    assert xrr.filter_drafts(text, {}, registry(True), tmp_path, 'today', holds) == (text, [])
