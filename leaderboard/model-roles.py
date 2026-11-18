@@ -39,6 +39,8 @@ MODELS = {'anthropic/claude-opus-5.5': ('claude', 'claude-opus-5-5'),
  'anthropic/claude-sonnet-5.5': ('claude', 'claude-sonnet-5-5'),
  'anthropic/claude-haiku-5.5': ('claude', 'claude-haiku-5-5'),
  'anthropic/claude-opus-4.6': ('claude', 'claude-opus-4-6'),
+ 'openai/gpt-6.2-sol': ('codex', 'gpt-6.2-sol'),
+ 'openai/gpt-6.2-astra': ('codex', 'gpt-6.2-astra'),
  'openai/gpt-6.1-sol': ('codex', 'gpt-6.1-sol'),
  'openai/gpt-6-astra': ('codex', 'gpt-6-astra'),
  'openai/gpt-6.1-terra': ('codex', 'gpt-6.1-terra'),
@@ -72,7 +74,7 @@ ALIASES = [('opus[- ]?5[.-]5', 'anthropic/claude-opus-5.5'),
 
 SEED = {'taste': ['anthropic/claude-opus-5.5', 'anthropic/claude-fable-5.2'],
  'review': ['anthropic/claude-opus-5.5',
-            'openai/gpt-6-astra',
+            'openai/gpt-6.2-astra',
             'anthropic/claude-fable-5.2',
             'openai/gpt-6.1-sol'],
  'mechanical': ['openai/gpt-6.1-sol', 'deepseek/deepseek-v4.1-flash-1017'],
@@ -81,7 +83,7 @@ SEED = {'taste': ['anthropic/claude-opus-5.5', 'anthropic/claude-fable-5.2'],
  'biology': ['moonshotai/kimi-k3.1-pro'],
  'batch': ['openai/gpt-6.1-sol', 'deepseek/deepseek-v4.1-flash-1017'],
  'writing': ['anthropic/claude-opus-5.5'],
- 'ideation': ['anthropic/claude-opus-5.5', 'openai/gpt-6-astra', 'moonshotai/kimi-k3.1-pro']}
+ 'ideation': ['anthropic/claude-opus-5.5', 'openai/gpt-6.2-astra', 'moonshotai/kimi-k3.1-pro']}
 
 FIELD_ROLE = {'scientific-verification': 'mechanical',
  'independent-review': 'review',
@@ -96,10 +98,9 @@ FIELD_ROLE = {'scientific-verification': 'mechanical',
 SEED['design'] = list(SEED['taste'])
 SEED['judge'] = list(SEED['review'])
 ROLES = tuple(SEED)
-# Listed challengers enter after the existing seeds at the usual unscored rate.
-# They must earn promotion under the same five-outcomes-on-two-days rule.
-CANDIDATES = {role: ['google/gemini-4-carbon', 'google/gemini-4-hydrogen']
-              for role in ('review', 'judge', 'ideation', 'design', 'mechanical', 'batch')}
+# Google routes and observations remain readable for historical tables only.
+# Owner, 2026-11-18: "Spending OpenRouter money on Google is a waste".
+CANDIDATES = {}
 
 
 def close_faults_proposal(row, prose):
@@ -335,6 +336,13 @@ def spread_labs(order, min_labs):
     return out + rest
 
 
+def served_model(model):
+    """Google is history-only, including newly observed model versions."""
+    canonical = canon(model)
+    return bool(canonical and not canonical.startswith('google/')
+                and MODELS[canonical][0] != 'gemini')
+
+
 def rank(role, ev):
     e = ev.get(role, {})
     def eligible(m):
@@ -344,7 +352,8 @@ def rank(role, ev):
     def low(m):
         return wilson_low(e[m]["k"], e[m]["n"]) if eligible(m) else -1
     pool = list(SEED[role]) + CANDIDATES.get(role, [])
-    order = pool + sorted((m for m in e if m not in pool), key=low, reverse=True)
+    order = [m for m in pool + sorted((m for m in e if m not in pool), key=low, reverse=True)
+             if served_model(m)]
     for _ in range(len(order) ** 2):              # stable bubble: pass only on evidence
         swapped = False
         for i in range(len(order) - 1):
@@ -529,6 +538,10 @@ def snapshot_rows(path):
         if not line.startswith('| ') or len(cells) not in tables or cells[0] == 'Role':
             continue
         role, model = cells[:2]
+        # Diagnostic calibration tables can also have six columns. Their first
+        # column is Entry/a canonical model ID, not a routing role.
+        if role == 'Entry' or role in MODELS:
+            continue
         safe_cell(role); safe_cell(model)
         if role not in ROLES or not canon(model):
             raise ValueError('unknown public role or model in snapshot')
@@ -610,6 +623,8 @@ def bootstrap(path):
         if len(cells) != 6 or cells[0] == 'Role':
             continue
         role, model, position, _, _, date = cells
+        if role == 'Entry' or role in MODELS:
+            continue
         safe_cell(role); safe_cell(model)
         if role not in ROLES:
             raise ValueError('unknown role')
@@ -631,7 +646,8 @@ def bootstrap(path):
         if sorted(p for p, _ in rows) != list(range(1, len(rows) + 1)) or any(m not in routes for _, m in rows):
             raise ValueError('invalid routing order or unknown route')
     return {'schema': 1, 'updated': max(dates) + 'T00:00:00+00:00',
-            'roles': {r: [m for _, m in sorted(rows)] for r, rows in roles.items()},
+            'roles': {r: [m for _, m in sorted(rows) if served_model(m)]
+                      for r, rows in roles.items()},
             'routes': routes, 'evidence': {}}
 
 

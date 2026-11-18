@@ -1,37 +1,72 @@
-"""Gemini challengers use the ordinary candidate ranking and evidence threshold."""
+"""Google scores stay in history; no served role may resolve to Google."""
 import importlib.util
 from pathlib import Path
+
+import pytest
 
 spec = importlib.util.spec_from_file_location('model_roles', Path(__file__).with_name('model-roles.py'))
 mr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mr)
 
 
-def test_carbon_has_a_gemini_route_and_its_own_alias():
+def test_google_routes_and_aliases_remain_for_history():
     for suffix in ('carbon', 'hydrogen', 'argon'):
         model = 'google/gemini-4-' + suffix
         assert mr.MODELS[model] == ('gemini', model)
-    assert mr.canon('google/gemini-4-carbon') == 'google/gemini-4-carbon'
-    assert mr.canon('google/gemini-4-argon') == 'google/gemini-4-argon'   # the two never collide
+        assert mr.canon(model) == model
+    assert mr.canon('hydrogen') == 'google/gemini-4-hydrogen'
 
 
-def test_carbon_is_a_candidate_not_a_seed():
-    assert all('google/gemini-4-carbon' not in seeds for seeds in mr.SEED.values())
-
-
-def test_geminis_enter_six_pools_after_seeds_without_scores(tmp_path, monkeypatch):
+@pytest.mark.parametrize('role', mr.ROLES)
+def test_no_served_role_resolves_to_google_even_with_winning_evidence(role, tmp_path, monkeypatch):
+    # Exercise seeds, candidates, observed models, and an exclusion that would be lifted.
+    google = [m for m in mr.MODELS if m.startswith('google/')]
+    google.append(mr.canon('google/gemini-future'))
     monkeypatch.setattr(mr, 'LEDGER', tmp_path / 'absent.jsonl')
     monkeypatch.delenv('RH_LAUNCH_RECEIPTS', raising=False)
+    monkeypatch.setitem(mr.SEED, role, google + mr.SEED[role])
+    monkeypatch.setitem(mr.CANDIDATES, role, google)
+    monkeypatch.setitem(mr.OVERRIDES, role, dict(exclude=google, date='2026-11-18'))
+    ev = {role: {m: dict(n=1000, k=1000, days={'2026-11-17', '2026-11-18'}) for m in google}}
+    monkeypatch.setattr(mr, 'evidence', lambda: ev)
     data = mr.recompute(write=False)
-    for role in ('review', 'judge', 'ideation', 'design', 'mechanical', 'batch'):
-        expected = [mr.MODELS[m][1] for m in mr.SEED[role]]
-        assert data['roles'][role] == expected + mr.CANDIDATES[role]
-        for model in mr.CANDIDATES[role]:
-            assert data['routes'][model] == dict(cli='gemini', canonical=model)
-            assert model not in data['evidence'][role]
-            # One day never qualifies, even with perfect outcomes.
-            ev = {role: {model: dict(n=20, k=20, days={'2026-01-01'})}}
-            assert mr.rank(role, ev)[0][0] == mr.SEED[role][0]
-            ev[role][model]['days'].add('2026-01-02')
-            assert mr.rank(role, ev)[0][0] == model
-    assert mr.canon('hydrogen') == 'google/gemini-4-hydrogen'
+    for order in data['roles'].values():
+        assert order
+        assert all(not data['routes'][m]['canonical'].startswith('google/') for m in order)
+    assert set(google).issubset(data['evidence'][role])
+    page = tmp_path / 'LEADERBOARD.md'
+    mr.public(data, page)
+    assert '| ' + role + ' | google/gemini-4-carbon | - | 1.0 |' in page.read_text()
+    restored = mr.bootstrap(page)
+    assert all(not restored['routes'][m]['canonical'].startswith('google/')
+               for order in restored['roles'].values() for m in order)
+
+
+def test_bootstrap_old_google_routing_rows_are_history_only(tmp_path):
+    page = tmp_path / 'old.md'
+    historical = ('| review | google/gemini-4-carbon | 1 | 1.0 | 0.99 | 2026-11-17 |\n'
+                  '| review | gpt-6.1-sol | 2 | - | - | 2026-11-17 |\n')
+    page.write_text(historical)
+    data = mr.bootstrap(page)
+    assert data['roles']['review'] == ['gpt-6.1-sol']
+    data['updated'] = '2026-11-18T00:00:00Z'
+    mr.public(data, page)
+    assert all(line in page.read_text() for line in historical.splitlines())
+
+
+def test_exact_62_versions_have_distinct_native_routes():
+    for native in ('gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.1-sol', 'gpt-6-astra'):
+        canonical = 'openai/' + native
+        assert mr.canon(native) == canonical
+        assert mr.MODELS[canonical] == ('codex', native)
+
+
+def test_snapshot_ignores_six_column_calibration_table(tmp_path):
+    page = tmp_path / 'mixed.md'
+    page.write_text('| Entry | Completed /9 | Review /2 | Judge /3 | Ideation /3 | Plants /24 |\n'
+                    '| openai/gpt-6.2-astra | 6 | 2 | 3 | 0 | 24 |\n'
+                    '| review | gpt-6.1-sol | 1 | - | - | 2026-11-18 |\n'
+                    '| review | gpt-6.1-sol | 0, 4 | 2026-11-18 |\n')
+    rows = mr.snapshot_rows(page)
+    assert len(rows[6]) == len(rows[4]) == 1
+    assert mr.bootstrap(page)['roles'] == {'review': ['gpt-6.1-sol']}
