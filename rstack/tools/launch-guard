@@ -27,7 +27,9 @@ def running_jobs(backend, provider, lane):
         if current.startswith('job-'):
             for key, value in (('@launch_backend', backend), ('@launch_provider', provider), ('@launch_lane', lane)):
                 if run(['set-option', '-t', '=' + current, key, value]).returncode:
-                    raise ValueError('cannot mark selected tmux route')
+                    # 11-18: tagging is advisory; a failed set-option (math's --host m5 launch) refused every job.
+                    sys.stderr.write('launch-guard: WARNING: cannot mark selected tmux route; counting continues\n')
+                    break
     fmt = '#{session_name}\t#{pane_dead}\t#{@launch_backend}\t#{@launch_provider}\t#{@launch_lane}\t#{pane_start_command}'
     result = run(['list-panes', '-a', '-F', fmt])
     if result.returncode:
