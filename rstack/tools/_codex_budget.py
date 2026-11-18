@@ -29,6 +29,12 @@ _spec = importlib.util.spec_from_loader(_loader.name, _loader)
 allowance = importlib.util.module_from_spec(_spec)
 _loader.exec_module(allowance)
 REFUSED = 75
+# 11-17 accounting final.py RATE: credits/M uncached, cached, output; priority multiplier.
+RATES = {'gpt-6.1-sol': (50, 2.5, 250, 2.5), 'gpt-6.2-sol': (50, 2.5, 250, 2),
+         'gpt-6.2-astra': (200, 10, 1000, 2), 'gpt-6-astra': (250, 25, 1250, 2.5),
+         'gpt-6-sol': (50, 5, 250, 2.5), 'gpt-6.1-terra': (25, 1.25, 125, 2.5)}
+FALLBACK_TOKENS_PER_POINT = 250 / 50 * 1_000_000
+
 DEFAULTS = {'calls_hour': 60, 'weekly_percent_day': 3}
 LANES = {name: {'calls_hour': 200, 'weekly_percent_day': 10} for name in ('games', 'open-source')}
 VALUE_OPTIONS = {'-c', '--config', '--remote', '-C', '--cd', '--add-dir', '--add-root', '-m', '--model',
@@ -359,6 +365,110 @@ def calls(rows):
     return list(starts.values())
 
 
+def ledger_tokens(base, row, cache=None):
+    """Read new metered finishes, or recover legacy usage at its recorded byte boundary."""
+    if 'weighted_tokens' in row:
+        return row['weighted_tokens']
+    if 'output_tokens' in row:
+        return weighted_tokens(row, row.get('model', 'gpt-6.1-sol'), row.get('priority', False))
+    path = base / '.legacy-token-usage.json'
+    owned_cache = cache is None
+    if owned_cache:
+        cache = json.loads(path.read_text()) if path.exists() else {}
+    key = '{}:{}:{}'.format(row.get('lane'), row.get('call_id'), row['ts'])
+    if key not in cache:
+        recovered = 0.0
+        paths = row.get('rollouts', [])
+        try:
+            for name in paths:
+                # Older resumes did not save offsets; timestamps delimit the wrapper's interval.
+                total, _ = usage_at(Path(name), end=row.get('rollout_sizes', {}).get(name),
+                                    since=row.get('started_at', 0))
+                recovered += total.get('weighted_tokens', 0)
+        except OSError:
+            paths = []
+        # Legacy rows without readable rollouts have only input/cache evidence.
+        cache[key] = recovered if paths else weighted_tokens(row)
+        if owned_cache:
+            path.write_text(json.dumps(cache, sort_keys=True) + '\n')
+    return cache[key]
+
+
+def calibration_from_rows(rows, now, weekly):
+    """One account-window difference, never the sum of overlapping per-call deltas.
+
+    At least six hours, five percentage points and ten completed calls suppress
+    snapshot quantization and single-probe noise. Windows never cross a reset.
+    """
+    snapshots = []
+    for row in rows:
+        for key in ('weekly_before', 'weekly_after'):
+            snapshot = row.get(key)
+            if snapshot and snapshot.get('resets_at') == weekly['resets_at']:
+                stamp = datetime.fromisoformat(snapshot['snapshot_at'].replace('Z', '+00:00')).timestamp()
+                if now - 7 * 86400 <= stamp <= now:
+                    snapshots.append((stamp, snapshot['weekly_used_percent']))
+    if not snapshots:
+        return None
+    snapshots = sorted(set(snapshots))
+    if any(b[1] < a[1] for a, b in zip(snapshots, snapshots[1:])):
+        return None
+    first, last = snapshots[0], snapshots[-1]
+    points = last[1] - first[1]
+    if last[0] - first[0] < 6 * 3600 or points < 5:
+        return None
+    finished = [r for r in rows if r.get('event') == 'finish' and first[0] < r['ts'] <= last[0]]
+    if len(finished) < 10 or any(r.get('usage_missing') for r in finished):
+        return None
+    tokens = sum(r['weighted_tokens'] for r in finished)
+    if tokens <= 0:
+        return None
+    return dict(source='ledger/account-window', tokens_per_point=tokens / points,
+                weighted_tokens=tokens, weekly_points=points, calls=len(finished),
+                window_start=first[0], window_end=last[0], resets_at=weekly['resets_at'])
+
+
+def token_calibration(base, now, weekly):
+    """Refresh on the first batch admission each UTC day; retain the last usable fit."""
+    path = base / '.token-calibration.json'
+    day = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
+    try:
+        saved = json.loads(path.read_text())
+        if not isinstance(saved, dict) or not allowance.finite(saved.get('tokens_per_point')) or saved['tokens_per_point'] <= 0:
+            saved = {}
+    except (OSError, ValueError):
+        saved = {}
+    if saved.get('checked_day') == day:
+        return saved
+    rows = []
+    legacy_path = base / '.legacy-token-usage.json'
+    cache = json.loads(legacy_path.read_text()) if legacy_path.exists() else {}
+    for ledger in sorted(base.glob('*.jsonl')):
+        if ledger.name.startswith('.'):
+            continue
+        for row in calls(read_rows(ledger)):
+            if now - 7 * 86400 < row['ts'] <= now:
+                if row.get('event') == 'finish':
+                    row['weighted_tokens'] = ledger_tokens(base, row, cache)
+                rows.append(row)
+    if weekly:
+        rows.append(dict(weekly_after=weekly))
+    fitted = calibration_from_rows(rows, now, weekly) if weekly else None
+    # A local ledger cannot see other machines or native bypasses. A rate below
+    # 200 credits/point (20% below the measured 250 floor) indicates incomplete
+    # coverage, not that this host's lanes should pay for the missing traffic.
+    if fitted and fitted['tokens_per_point'] < .8 * FALLBACK_TOKENS_PER_POINT:
+        fitted = None
+    result = fitted or saved or dict(source='11-17 fallback: 250 credits/point; 50 credits/M Sol input',
+                                    tokens_per_point=FALLBACK_TOKENS_PER_POINT)
+    result = dict(result, checked_day=day, checked_at=now)
+    if fitted:
+        result['calibrated_at'] = now
+    legacy_path.write_text(json.dumps(cache, sort_keys=True) + '\n')
+    path.write_text(json.dumps(result, sort_keys=True) + '\n')
+    return result
+
+
 def account_alerts(cfg, base, lane, weekly, now):
     """Share 70/85% delivery receipts with the companion launcher's allowance reader."""
     folder = state_dir() / 'allowance'
@@ -409,7 +519,8 @@ def admit(cfg, base, lane, now, prefix, prompt_tokens, weekly, interactive=False
     if len([r for r in history if now - 3600 < r['started_at'] <= now]) >= limits['calls_hour']:
         return '{} calls/hour limit for {}'.format(limits['calls_hour'], lane)
     daily = [r for r in history if now - 86400 < r['ts'] <= now]
-    spent = sum(r.get('weekly_percent', 0) for r in daily)
+    calibration = token_calibration(base, now, weekly)
+    spent = sum(ledger_tokens(base, r) for r in daily if r.get('event') == 'finish') / calibration['tokens_per_point']
     pending = [r for r in daily if r.get('event') == 'start']
     for row in pending:
         if row.get('pid'):
@@ -417,11 +528,6 @@ def admit(cfg, base, lane, now, prefix, prompt_tokens, weekly, interactive=False
                 os.kill(row['pid'], 0)
             except ProcessLookupError:
                 return 'previous wrapper run has incomplete accounting; reconcile its rollout before continuing'
-    if weekly:
-        baselines = [r['weekly_before']['weekly_used_percent'] for r in pending if r.get('weekly_before') and
-                     r['weekly_before']['resets_at'] == weekly['resets_at']]
-        if baselines:
-            spent += max(0, weekly['weekly_used_percent'] - min(baselines))
     if spent >= limits['weekly_percent_day']:
         return '{}% weekly allowance/day limit for {}'.format(limits['weekly_percent_day'], lane)
     if any(r.get('usage_missing') for r in daily):
@@ -507,28 +613,56 @@ def rollout_meta(path):
     return row.get('payload', {}) if row.get('type') == 'session_meta' else {}
 
 
-def usage_at(path, offset=0):
-    total, snapshot = {}, None
+def weighted_tokens(row, model='gpt-6.1-sol', priority=False):
+    """Sol-input-equivalent tokens; cached input is included in input_tokens already."""
+    if '/' in model or (model not in RATES and not model.startswith('gpt')):
+        return 0.0  # the 11-17 accounting excluded non-OpenAI providers
+    rate = RATES.get(model, RATES['gpt-6.1-sol'])
+    tokens = row.get('input_tokens', 0)
+    cached = min(tokens, max(0, row.get('cached_input_tokens', tokens * row.get('cached_share', 0))))
+    output = row.get('output_tokens', 0)  # includes reasoning tokens, never add them twice
+    return ((tokens - cached) * rate[0] + cached * rate[1] + output * rate[2]) / 50 * (rate[3] if priority else 1)
+
+
+def usage_at(path, offset=0, previous=None, model='gpt-6.1-sol', priority=False, end=None, since=None):
+    total, snapshot, weighted = {}, None, 0.0
+    prior = previous or {}
+    model = prior.get('model', model)
     with path.open('rb') as stream:
         stream.seek(offset)
         while True:
+            if end is not None and stream.tell() >= end:
+                break
             line = stream.readline(1024 * 1024)
-            if not line:
+            if not line or (end is not None and stream.tell() > end):
                 break
             if not line.endswith(b'\n'):
                 while line and not line.endswith(b'\n'):
                     line = stream.readline(1024 * 1024)
                 continue
-            if b'"token_count"' not in line:
+            if b'"token_count"' not in line and b'"turn_context"' not in line:
                 continue
             try:
                 row = json.loads(line)
             except ValueError:
                 continue
             payload = row.get('payload') or {}
+            if row.get('type') == 'turn_context':
+                model = payload.get('model') or model
+                # The wrapper's effective priority policy is passed in; rollout context may refine it.
+                if 'service_tier' in payload:
+                    priority = payload['service_tier'] in ('priority', 'fast')
             if row.get('type') == 'event_msg' and payload.get('type') == 'token_count':
                 info = payload.get('info') or {}
-                total = info.get('total_token_usage') or total
+                current = info.get('total_token_usage')
+                if current:
+                    delta = {k: max(0, current.get(k, 0) - prior.get(k, 0))
+                             for k in ('input_tokens', 'cached_input_tokens', 'output_tokens')}
+                    stamp = row.get('timestamp')
+                    if since is None or (stamp and datetime.fromisoformat(stamp.replace('Z', '+00:00')).timestamp() > since):
+                        weighted += weighted_tokens(delta, model, priority)
+                    prior = current
+                    total = dict(current, weighted_tokens=weighted, model=model)
                 root = next((p.parent for p in path.parents if p.name == 'sessions'), path.parent)
                 found = allowance.snapshot(row, path, root, time.time())
                 if found:
@@ -593,6 +727,7 @@ def supervise(native, args, cfg, lane, cwd, interactive, batch):
     started, call_id = time.time(), uuid.uuid4().hex
     marker = 'codex-rstack-' + call_id
     urgent = os.environ.get('LAUNCH_URGENT', '').strip()
+    priority = bool(urgent) and strip_priority(args, '')[1]
     args, stripped = strip_priority(args, urgent)
     before, old_usage = {}, {}
     # Resume accounting is a delta, never the thread's lifetime total.
@@ -644,13 +779,15 @@ def supervise(native, args, cfg, lane, cwd, interactive, batch):
                 signal.signal(sig, handler)
         try:
             paths = own_rollouts(home, marker, started, cwd, before)
-            tokens, cached, weekly_used = 0, 0, 0.0
+            tokens, cached, output, weighted, weekly_used = 0, 0, 0, 0.0, 0.0
             final_weekly = None
             for path in paths:
-                total, snapshot = usage_at(path, before.get(str(path), 0))
                 old = old_usage.get(str(path), {})
+                total, snapshot = usage_at(path, before.get(str(path), 0), previous=old, priority=priority)
                 tokens += max(0, total.get('input_tokens', 0) - old.get('input_tokens', 0))
                 cached += max(0, total.get('cached_input_tokens', 0) - old.get('cached_input_tokens', 0))
+                output += max(0, total.get('output_tokens', 0) - old.get('output_tokens', 0))
+                weighted += total.get('weighted_tokens', 0)
                 if snapshot:
                     if final_weekly is None or snapshot['snapshot_at'] > final_weekly['snapshot_at']:
                         final_weekly = snapshot
@@ -662,7 +799,8 @@ def supervise(native, args, cfg, lane, cwd, interactive, batch):
             with locked() as base:
                 append(base, lane, dict(event='finish', call_id=call_id, ts=time.time(), exit_code=code,
                                        rollouts=list(map(str, paths)), rollout_sizes={str(p): p.stat().st_size for p in paths},
-                                       input_tokens=tokens, cached_input_tokens=cached,
+                                       input_tokens=tokens, cached_input_tokens=cached, output_tokens=output,
+                                       weighted_tokens=weighted,
                                        cached_share=cached / tokens if tokens else 0, weekly_percent=weekly_used,
                                        weekly_before=weekly, weekly_after=final_weekly,
                                        usage_missing=(code == 0 or tokens > 0) and (not paths or not tokens or not final_weekly)))

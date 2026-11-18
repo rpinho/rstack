@@ -28,12 +28,12 @@ def write_jsonl(path, rows):
     path.write_text(''.join(json.dumps(r) + '\n' for r in rows))
 
 
-def rollout(path, marker='', cwd='/test', tokens=27000, cached=0, used=10.1, stamp=None):
+def rollout(path, marker='', cwd='/test', tokens=27000, cached=0, used=10.1, stamp=None, output=0):
     stamp = time.time() if stamp is None else stamp
     iso = cb.datetime.fromtimestamp(stamp, cb.timezone.utc).isoformat()
     write_jsonl(path, [dict(type='session_meta', payload=dict(originator=marker, cwd=cwd, id=path.stem)),
         dict(timestamp=iso, type='event_msg', payload=dict(type='token_count',
-             info=dict(total_token_usage=dict(input_tokens=tokens, cached_input_tokens=cached)),
+             info=dict(total_token_usage=dict(input_tokens=tokens, cached_input_tokens=cached, output_tokens=output)),
              rate_limits=dict(limit_id='codex', primary=dict(used_percent=used, window_minutes=10080,
                                                           resets_at=stamp + 7 * 86400))))])
 
@@ -91,7 +91,7 @@ def test_games_and_open_source_have_finite_higher_limits(isolated):
             seed(base, lane, 61, percent=.1)
             cb.append(base, lane, dict(event='estimate', calls=200, total_tokens=200000, ts=NOW))
             assert cb.admit(cfg, base, lane, NOW, 'new', 100, weekly()) is None
-        seed(base, 'normal', 4, percent=1)
+        seed(base, 'normal', 4, tokens=30_000_000, percent=1)
         assert '3% weekly' in cb.admit(cfg, base, 'normal', NOW, 'new', 100, weekly())
         seed(base, 'games', 200, percent=0)
         assert '200 calls/hour' in cb.admit(cfg, base, 'games', NOW, 'new', 100, weekly())
@@ -240,7 +240,7 @@ h=Path(os.environ['CODEX_HOME'])
 p=h/'sessions'/('rollout-'+os.environ.get('CODEX_INTERNAL_ORIGINATOR_OVERRIDE','bare')+'.jsonl')
 p.parent.mkdir(parents=True,exist_ok=True)
 rows=[dict(type='session_meta',payload=dict(originator=os.environ.get('CODEX_INTERNAL_ORIGINATOR_OVERRIDE'),cwd=os.getcwd())),
- dict(type='event_msg',payload=dict(type='token_count',info=dict(total_token_usage=dict(input_tokens=27000,cached_input_tokens=5400))))]
+ dict(type='event_msg',payload=dict(type='token_count',info=dict(total_token_usage=dict(input_tokens=27000,cached_input_tokens=5400,output_tokens=1000))))]
 if WITH_WEEKLY:
  limits=json.loads((h/'sessions/rollout-before.jsonl').read_text().splitlines()[-1])['payload']['rate_limits']
  limits['primary']['used_percent']=AFTER_PERCENT
@@ -274,6 +274,8 @@ def test_wrapper_records_actual_tokens_stdin_priority_and_exit(isolated):
     finish = rows[-1]
     assert finish['event'] == 'finish' and finish['input_tokens'] == 27000
     assert finish['cached_share'] == .2 and len(finish['rollouts']) == 1
+    assert finish['output_tokens'] == 1000
+    assert finish['weighted_tokens'] == pytest.approx(21870 + 5000)
     assert 'x' * 50 not in json.dumps(rows)
 
 
@@ -549,25 +551,28 @@ def test_job_health_reports_bypass_to_general_once(isolated, monkeypatch):
 def test_resumed_usage_counts_only_new_tokens(isolated):
     _, home, _, _, _ = isolated
     path = home / 'sessions/rollout-old.jsonl'
-    rollout(path, tokens=100000, cached=70000)
+    rollout(path, tokens=100000, cached=70000, output=1000)
     offset = path.stat().st_size
     old, _ = cb.usage_at(path)
     with path.open('a') as stream:
         stream.write(json.dumps(dict(type='event_msg', payload=dict(type='token_count',
-            info=dict(total_token_usage=dict(input_tokens=127000, cached_input_tokens=75400))))) + '\n')
-    new, _ = cb.usage_at(path, offset)
+            info=dict(total_token_usage=dict(input_tokens=127000, cached_input_tokens=75400, output_tokens=2000))))) + '\n')
+    new, _ = cb.usage_at(path, offset, previous=old)
+    assert new['output_tokens'] - old['output_tokens'] == 1000
+    assert new['weighted_tokens'] == 26870
     assert new['input_tokens'] - old['input_tokens'] == 27000
     assert new['cached_input_tokens'] - old['cached_input_tokens'] == 5400
 
 
-def test_wrapper_measures_weekly_delta_and_refuses_next_call_at_daily_limit(isolated):
-    fake_native(isolated, after_percent=13.1)
+def test_tiny_lane_is_admitted_after_five_point_account_jump(isolated):
+    fake_native(isolated, after_percent=15)
     first = run_wrapper('exec', 'hello')
     assert first.returncode == 0, first.stderr
     rows = cb.read_rows(cb.state_dir() / 'codex-ledger/normal.jsonl')
-    assert rows[-1]['weekly_percent'] == pytest.approx(3.1)
+    assert rows[-1]['weekly_percent'] == pytest.approx(5)
+    assert rows[-1]['weighted_tokens'] / cb.FALLBACK_TOKENS_PER_POINT < .01
     second = run_wrapper('exec', 'hello')
-    assert second.returncode == 75 and '3% weekly allowance/day' in second.stderr
+    assert second.returncode == 0, second.stderr
 
 
 def test_failed_owner_push_refuses_urgent_and_keeps_it_logged(isolated):
@@ -583,7 +588,7 @@ def test_finished_today_counts_even_if_started_yesterday(isolated):
     _, _, cfg, _, _ = isolated
     with cb.locked() as base:
         cb.append(base, 'normal', dict(event='start', call_id='long', ts=NOW - 90000))
-        cb.append(base, 'normal', dict(event='finish', call_id='long', ts=NOW - 10, weekly_percent=3))
+        cb.append(base, 'normal', dict(event='finish', call_id='long', ts=NOW - 10, input_tokens=15_000_000, weekly_percent=0))
         assert '3% weekly' in cb.admit(cfg, base, 'normal', NOW, '', 0, weekly())
 
 
@@ -599,12 +604,12 @@ def test_account_alerts_share_launcher_dedup_state(isolated):
     assert '50% threshold' in notified.read_text()
 
 
-def test_live_pending_run_reserves_observed_weekly_delta(isolated):
+def test_live_pending_run_does_not_charge_account_movement(isolated):
     _, _, cfg, _, _ = isolated
     with cb.locked() as base:
         cb.append(base, 'normal', dict(event='start', call_id='pending', ts=NOW - 10,
                                       pid=os.getpid(), weekly_before=weekly(10)))
-        assert '3% weekly' in cb.admit(cfg, base, 'normal', NOW, '', 0, weekly(13))
+        assert cb.admit(cfg, base, 'normal', NOW, '', 0, weekly(15)) is None
 
 
 def test_prompt_named_version_after_separator_does_not_bypass_guard(isolated):
@@ -754,3 +759,128 @@ def test_phone_daemon_management_needs_no_snapshot_or_ledger_row(isolated):
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout)['args'] == ['remote-control', 'start', '--json']
     assert not list((cb.state_dir() / 'codex-ledger').glob('*.jsonl'))
+
+
+def snapshot_at(ts, used=10, reset=NOW + 7 * 86400):
+    return dict(weekly_used_percent=used, resets_at=reset,
+                snapshot_at=cb.datetime.fromtimestamp(ts, cb.timezone.utc).isoformat())
+
+
+def calibration_rows():
+    # Concurrent lane deltas grossly overlap; only the 10 -> 20 account change counts.
+    return [dict(event='finish', call_id=str(i), ts=NOW - 7200 + i,
+                 weighted_tokens=1_000_000, weekly_percent=10,
+                 weekly_before=snapshot_at(NOW - 8 * 3600, 10),
+                 weekly_after=snapshot_at(NOW - 1, 20)) for i in range(10)]
+
+
+def test_calibration_uses_total_tokens_over_one_account_window():
+    rows = calibration_rows()
+    result = cb.calibration_from_rows(rows, NOW, snapshot_at(NOW, 20))
+    assert result['weighted_tokens'] == 10_000_000
+    assert result['weekly_points'] == 10
+    assert result['tokens_per_point'] == 1_000_000
+    assert result['calls'] == 10
+    # A different reset is never part of this fit.
+    rows.append(dict(weekly_before=snapshot_at(NOW - 2 * 86400, 99, reset=NOW)))
+    assert cb.calibration_from_rows(rows, NOW, snapshot_at(NOW, 20)) == result
+
+
+@pytest.mark.parametrize('case', ['short', 'quantized', 'few_calls', 'decreasing', 'missing'])
+def test_calibration_requires_enough_same_window_evidence(case):
+    rows = calibration_rows()
+    if case == 'short':
+        for row in rows:
+            row['weekly_before'] = snapshot_at(NOW - 3600, 10)
+    elif case == 'quantized':
+        for row in rows:
+            row['weekly_after'] = snapshot_at(NOW - 1, 11)
+    elif case == 'few_calls':
+        rows.pop()
+    elif case == 'decreasing':
+        rows.append(dict(weekly_after=snapshot_at(NOW - 60, 25)))
+    else:
+        rows[0]['usage_missing'] = True
+    assert cb.calibration_from_rows(rows, NOW, snapshot_at(NOW, 20)) is None
+
+
+def test_calibration_stored_and_refreshed_daily(isolated):
+    with cb.locked() as base:
+        initial = cb.token_calibration(base, NOW, snapshot_at(NOW))
+        assert initial['tokens_per_point'] == 5_000_000
+        assert '250 credits/point' in initial['source']
+        for row in calibration_rows():
+            cb.append(base, 'other', dict(event='start', call_id=row['call_id'], ts=row['ts'] - 1))
+            cb.append(base, 'other', dict(row, weighted_tokens=6_000_000))
+        assert cb.token_calibration(base, NOW + 1, snapshot_at(NOW, 20)) == initial
+        refreshed = cb.token_calibration(base, NOW + 86400, snapshot_at(NOW + 86400, 20))
+        assert refreshed['source'] == 'ledger/account-window'
+        assert refreshed['tokens_per_point'] == 6_000_000
+        assert json.loads((base / '.token-calibration.json').read_text()) == refreshed
+        # No suitable new window: keep the previous empirical calibration.
+        assert cb.token_calibration(base, NOW + 8 * 86400, snapshot_at(NOW + 8 * 86400, 20))['tokens_per_point'] == 6_000_000
+
+
+@pytest.mark.parametrize('lane', ['normal', 'open-source'])
+def test_own_weighted_output_and_cached_input_exhaust_lane_cap(isolated, lane):
+    cfg = isolated[2]
+    cfg['lanes'][lane] = dict(calls_hour=60, weekly_percent_day=1)
+    with cb.locked() as base:
+        seed(base, 'bio' if lane == 'open-source' else lane, 1, tokens=1_000_000, cached_share=1)
+        row = dict(event='finish', call_id='output', ts=NOW - 1, input_tokens=0, output_tokens=1_000_000)
+        cb.append(base, lane, dict(event='start', call_id='output', ts=NOW - 2))
+        cb.append(base, lane, row)
+        assert '1% weekly allowance/day' in cb.admit(cfg, base, lane, NOW, '', 0, weekly())
+        # The fully cached legacy input row is only 0.01 points; output contributes 1 point.
+        assert cb.ledger_tokens(base, cb.calls(cb.read_rows(base / ('bio.jsonl' if lane == 'open-source' else lane + '.jsonl')))[0]) == 50_000
+
+
+def test_rate_card_model_cache_and_priority_weights():
+    tokens = dict(input_tokens=1_000_000, cached_input_tokens=800_000, output_tokens=10_000)
+    assert cb.weighted_tokens(tokens) == 290_000
+    assert cb.weighted_tokens(tokens, 'gpt-6.2-astra') == 1_160_000
+    assert cb.weighted_tokens(tokens, 'gpt-6.2-astra', priority=True) == 2_320_000
+    assert cb.weighted_tokens(dict(input_tokens=100, cached_share=.9)) == pytest.approx(14.5)
+
+
+def test_legacy_usage_recovered_at_saved_size_and_cached(isolated):
+    _, home, _, _, _ = isolated
+    path = home / 'sessions/rollout-legacy.jsonl'
+    rollout(path, tokens=100000, cached=80000, stamp=NOW - 5)
+    with path.open('a') as stream:
+        stream.write(json.dumps(dict(timestamp=cb.datetime.fromtimestamp(NOW - 3, cb.timezone.utc).isoformat(),
+            type='event_msg', payload=dict(type='token_count', info=dict(total_token_usage=dict(
+                input_tokens=127000, cached_input_tokens=85400, output_tokens=1000))))) + '\n')
+    row = dict(event='finish', call_id='old', ts=NOW - 1, started_at=NOW - 4,
+               input_tokens=27000, cached_input_tokens=5400, rollouts=[str(path)],
+               rollout_sizes={str(path): path.stat().st_size})
+    # An unwrapped later resume must never inflate this finish.
+    with path.open('a') as stream:
+        stream.write(json.dumps(dict(type='event_msg', payload=dict(type='token_count', info=dict(
+            total_token_usage=dict(input_tokens=9000000, output_tokens=999999))))) + '\n')
+    with cb.locked() as base:
+        assert cb.ledger_tokens(base, row) == 26870
+        path.rename(path.with_suffix('.saved'))
+        assert cb.ledger_tokens(base, row) == 26870
+
+
+def test_partial_host_calibration_does_not_bill_other_machines(isolated):
+    with cb.locked() as base:
+        for row in calibration_rows():
+            cb.append(base, 'other', dict(event='start', call_id=row['call_id'], ts=row['ts'] - 1))
+            cb.append(base, 'other', row)
+        calibration = cb.token_calibration(base, NOW, snapshot_at(NOW, 20))
+        assert calibration['tokens_per_point'] == cb.FALLBACK_TOKENS_PER_POINT
+        assert 'fallback' in calibration['source']
+
+
+def test_token_weights_follow_turn_models_and_priority(isolated):
+    path = isolated[1] / 'sessions/rollout-model-switch.jsonl'
+    rollout(path, tokens=100, output=10)
+    with path.open('a') as stream:
+        stream.write(json.dumps(dict(type='turn_context', payload=dict(model='gpt-6-astra', service_tier='priority'))) + '\n')
+        stream.write(json.dumps(dict(type='event_msg', payload=dict(type='token_count', info=dict(total_token_usage=dict(
+            input_tokens=200, cached_input_tokens=50, output_tokens=25))))) + '\n')
+    total, _ = cb.usage_at(path)
+    assert total['weighted_tokens'] == 150 + 650 * 2.5
+    assert cb.weighted_tokens(dict(input_tokens=1_000_000), 'other/provider') == 0

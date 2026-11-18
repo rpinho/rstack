@@ -25,7 +25,8 @@ The wrapper reuses the local allowance reader. The launcher applies only its tmu
   use `~/.codex`; all other batch runs use `~/.codex-clean`. Both lists live only in the host
   config, so private paths never enter this repo.
 - Default: 60 admitted calls per rolling hour, 3 percentage points of the weekly allowance
-  per rolling day. `games` and `open-source` default to 200 and 10, respectively.
+  per rolling day, charged only from that lane's weighted ledger tokens (see below).
+  `games` and `open-source` default to 200 and 10, respectively.
   Configure finite positive overrides in `~/.config/rstack/codex-budget.json` or
   `CODEX_BUDGET_CONFIG`; see `codex-budget.json.example`.
 - A twentieth call sharing the first 4,096 prompt characters is refused when previous calls
@@ -54,9 +55,56 @@ The wrapper reuses the local allowance reader. The launcher applies only its tmu
 
 JSONL start/finish records join on `call_id`. Finishes contain input/cached tokens, cache
 share, rollout paths and sizes, start/end allowance snapshots, percentage delta and native
-exit status. Refusals, stripped priority requests, estimates and urgent reasons are separate
+exit status. Finishes also record output tokens (including reasoning) and model/rate-weighted
+tokens. Refusals, stripped priority requests, estimates and urgent reasons are separate
 append-only events. Run starts are reservations, so concurrent calls cannot race the call cap.
 The wrapper forwards INT, TERM and HUP and records the resulting native exit.
+
+## Lane percentage accounting
+
+A lane's rolling-day charge is the sum of its completed calls' weighted tokens divided
+by calibrated weighted tokens per weekly percentage point. Finishes count on their
+completion date, including calls started before the window. `bio` history still counts
+against `open-source`. A pending call never reserves account-wide percent movement;
+call reservations and incomplete-accounting refusals still apply. A single admitted
+run can exceed its budget before the next admission.
+
+Weights reproduce the 11-17 accounting's rate card in Sol-input-equivalent units:
+
+| Model | Uncached input | Cached input | Output | Priority multiplier |
+| --- | ---: | ---: | ---: | ---: |
+| GPT-6.1 Sol | 1 | 0.05 | 5 | 2.5 |
+| GPT-6.2 Sol | 1 | 0.05 | 5 | 2 |
+| GPT-6.2 Astra | 4 | 0.2 | 20 | 2 |
+| GPT-6 Astra | 5 | 0.5 | 25 | 2.5 |
+| GPT-6 Sol | 1 | 0.1 | 5 | 2.5 |
+| GPT-6.1 Terra | 0.5 | 0.025 | 2.5 | 2.5 |
+
+Input counts include cached input: subtract the cached tokens before weighting uncached
+input. Reasoning tokens already belong to output. Turn contexts supply the model and,
+when present, tier; resume accounting subtracts the prior cumulative counts. Unknown
+GPT models use the 11-17 Sol fallback; other-provider models do not count. Legacy finishes
+recover weights from their saved rollout byte boundaries and wrapper timestamps, cached
+in `codex-ledger/.legacy-token-usage.json`. Missing old rollouts can only contribute their
+recorded input/cache tokens, with Sol weights; output and model cannot be recovered.
+
+On the first batch admission of each UTC day, all local lane ledgers in the past week
+supply tokens and snapshots for one same-reset account window. Calibration divides total
+weighted tokens in that window by its account percentage change, without summing
+per-call overlapping deltas. It needs six hours, five points, ten finishes, monotone
+snapshots and accounted usage. The result and source are stored in
+`codex-ledger/.token-calibration.json`. If no usable window exists, retain the last fit;
+otherwise use 5,000,000 weighted tokens/point: the conservative 11-17 measurement of
+250 credits/point divided by 50 credits per million Sol input tokens. The measured
+250–285 range corresponds to 5.0–5.7 million weighted tokens/point.
+
+Other machines and native bypasses can move the account meter without appearing in a
+host's ledger. A candidate below 4,000,000 weighted tokens/point (200 credits, 20% below
+the conservative measured rate) is treated as insufficient ledger coverage and keeps
+the prior fit/fallback. This does not establish full account coverage: a partially
+observed window can still pass that bound. The scale is an estimate; host ledgers and
+calibrations are independent. Account alerts and the urgent-only rule continue to use
+the unmodified account snapshot.
 
 ## Operator installation (not performed by this change)
 
@@ -136,8 +184,8 @@ run; ephemeral/deleted rollouts and remote-only sessions are not observable. The
 same-user filesystem installation that prohibits every arbitrary executable while retaining the
 native binary. Existing in-flight runs are not stopped, and a single admitted long run can pass
 a percentage boundary before the next admission. Weekly percentages have the provider's meter
-granularity, and positive account movement across overlapping runs is conservatively attributed
-to each lane; it is not an exact per-lane billing API. Local ledgers do not aggregate live calls
+granularity. Lane charges are estimates from their own tokens, not per-lane provider billing.
+Local ledgers do not aggregate live calls
 across Macs. Threshold delivery state is once per host unless a shared state directory is used.
 
 Tests use synthetic rollouts, fake native processes and temporary PATH entrypoints, never an
