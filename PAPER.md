@@ -1,8 +1,8 @@
 ![rstack](https://raw.githubusercontent.com/rpinho/rstack/main/assets/banner.jpg)
 
-# rstack: agent output you can trust
+# rstack
 
-rstack is the harness I run research agents on. One agent searches, a separate one referees, and a result is reported only after an independent check. This is how it works, what it found, and what still doesn't work. Every number has a source at the end. No journal has accepted any of this, so all of it is a candidate.
+rstack is the harness I run research agents on. One agent searches, and a separate one referees. This is how it works, what it found, and what still doesn't work. Every number has a source at the end. No journal has accepted any of this, so all of it is a candidate.
 
 ## The problem
 
@@ -18,13 +18,13 @@ It has a yes or no gate for a lot of stuff that I do. There are five parts, and 
 
 ### 1. One agent searches, a different one checks
 
-One agent searches. The referee gets only the claim and the source. It doesn't see the code, so it has to do it all over again. If the referee doesn't say yes, it doesn't go out.
+This is the bug hunt. One agent finds bugs and writes them up as claims. The referee gets the claims and clones the code at the same commit. It reads the code, but it does not get the scripts, outputs or reasoning of the agent that found it. It writes its own input and works out the right answer by itself. Then it gives each claim a verdict, like CONFIRMED or REFUTED. A bug email that points at a verdict fails the lint until that verdict is accepted. https://github.com/rpinho/rstack/blob/main/harness/templates/bug_referee.md
 
-The referee has to be a different model family. If it's the same family, we don't use it. And we don't ask the referee what it is, because on 11-09 a Gemini referee said it was GPT. We get it from the launcher. https://github.com/rpinho/rstack/blob/main/docs/outreach.md
+The referee has to be a different model family than the hunter. If it's the same family, nothing in the verdict counts. The family comes from the launcher's receipt, because on 11-09 a Gemini referee said it was GPT. If there's no receipt, the harness uses what the referee says about itself and flags it. Batches from before we kept the hunter's family aren't checked, and get a flag too. https://github.com/rpinho/rstack/blob/main/docs/outreach.md
 
 ### 2. Planted false claims
 
-A different family is not enough by itself. It can still say yes to everything. So every time, we put at least one fake claim in with the real ones. It's a real claim with the observed and expected values swapped, or with the cause in the wrong place. The referee doesn't know which one it is. If it says yes to the fake one, we don't use any of it. The harness counts how many each referee caught.
+A different family is not enough by itself. It can still say yes to everything. So in the bug hunt, every batch has at least one fake claim in with the real ones. It's a real claim with the observed and expected values swapped, or with the cause in the wrong place. The referee doesn't know which one it is. A verdict with no fake claim in its batch is refused. If it says yes to the fake one, nothing in the verdict counts. The harness counts how many each referee caught. The fakes are made from the real claims, so a careful referee can sometimes tell which one it is. They catch a referee that says yes without running anything.
 
 Same thing for exact checkers. A checker has to say no to broken certificates before we trust it.
 
@@ -36,21 +36,21 @@ A rule that is only written down is as good as the agent that reads it. The same
 
 The order is poteto's hierarchy, from Lauren Tan's pstack: architecture > compiler and tests > CI and lint > bot rules > prose. Architecture makes the wrong thing impossible. Prose is just a note, and the agent might not read it. When something breaks, we move it up one. https://github.com/rpinho/rstack/blob/main/rstack/principles/architecture-not-prose.md
 
-Every guard has a test that shows it says no when it should. And a guard has to say no, not crash. If it crashes, most hooks just let it go through. We looked at 12 of my guards, and 5 did exactly that. Now we test for that too. https://github.com/rpinho/rstack/blob/main/rstack/principles/a-guard-must-refuse-not-crash.md
+Every guard here has a test that shows it says no when it should. And a guard has to say no, not crash. If it crashes, most hooks just let it go through. We looked at 12 of my guards, and 5 did exactly that. Now we test for that too. https://github.com/rpinho/rstack/blob/main/rstack/principles/a-guard-must-refuse-not-crash.md
 
 ### 4. The egress gate
 
-Agents make public stuff on the same machine as my private stuff. So every push goes through `egress-gate` first, and it says no if it sees a secret or a word on your list. Anything that goes public is done in `clean-room`, with an empty identity. https://github.com/rpinho/rstack/blob/main/rstack/tools/README.md
+Agents make public stuff on the same machine as my private stuff. `egress-gate` scans a folder, a text or a push, and says no if it sees a secret or a word on your list. On my machines it runs as a global git pre-push hook. You have to install the hook yourself, and anything that doesn't go through git has to be scanned by hand. Work that goes public runs in `clean-room`, with an empty identity. https://github.com/rpinho/rstack/blob/main/rstack/tools/README.md
 
 ### 5. The Codex spend wrapper
 
-On 11-17 a Python loop called Codex 1,568 times, and the launcher never saw it. Now every call goes through a wrapper that counts it. By default it stops a lane at 60 calls an hour, or 3 points of the weekly allowance in a day. https://github.com/rpinho/rstack/blob/main/rstack/tools/codex-spend.md
+On 11-17 a Python loop called Codex 1,568 times, and the launcher never saw it. Now `codex` on the PATH is a wrapper that counts every call it sees. By default it stops a lane at 60 calls an hour, or 3 points of the weekly allowance in a day. It's not a wall. A call to the real binary by its full path, `npx`, or another machine goes around it, and one long run can go over the limit before the next call is checked. A scheduled job looks for the runs it missed. https://github.com/rpinho/rstack/blob/main/rstack/tools/codex-spend.md
 
 ## What it found
 
 ### Merged PRs
 
-I opened 122 PRs on other people's repos, and 15 are merged. 99 are still open and 8 were closed. That's as of November 18, 2026. The 6 in Tao's table are bounds, and the other 9 are bug fixes.
+I opened 129 PRs on other people's repos, and 15 are merged. 106 are still open and 8 were closed. That's from a snapshot on November 18, 2026, with the query in it: https://github.com/rpinho/rstack/blob/main/docs/snapshots/2026-11-18-prs.md The 6 in Tao's table are bounds, and the other 9 are bug fixes.
 
 | | Merged |
 |---|---|
@@ -68,13 +68,9 @@ The plants caught something real. On 11-09 the GPT referees said yes to fake cla
 
 A catch is not the whole story. A referee can catch every fake one and still say yes to every real claim. That doesn't mean it would say no to a real one that's wrong. The harness warns about it, but it's only a warning.
 
-### MIPLIB
-
-We sent MIPLIB a better solution for gmut-76-40, an open MIPLIB 2017 problem, and the exact checker passes it. It's not on the page yet, so there is nothing to link, and I'm leaving the number out until it is. https://miplib.zib.de/instance_details_gmut-76-40.html
-
 ### RNAAS
 
-We sent four Research Notes on possible planets from NASA TESS data to RNAAS. We had to fix all four, and we sent the fixes on October 30. The new versions are on Zenodo: https://doi.org/10.5281/zenodo.23895484, https://doi.org/10.5281/zenodo.23824790, https://doi.org/10.5281/zenodo.23836131, https://doi.org/10.5281/zenodo.23895440. On November 16 an ExoFOP note pointed TESS observers to the new TOI-6000 c version. https://github.com/rpinho/planet-hunt/blob/main/RESEARCH_STATUS.md
+We sent four reports based on NASA TESS data to Research Notes of the American Astronomical Society (RNAAS). All four were corrected after the numbers were re-audited, and the corrected versions are on Zenodo: https://doi.org/10.5281/zenodo.23895484, https://doi.org/10.5281/zenodo.23824790, https://doi.org/10.5281/zenodo.23836131, https://doi.org/10.5281/zenodo.23895440. The corrections credit two earlier public sources for some of the signals. https://github.com/rpinho/rstack/blob/main/harness/README.md
 
 ### MecCog
 
@@ -86,7 +82,7 @@ For MecCog, a pipeline finds the papers on an APOE4 hypothesis and gets each fin
 | H2 | 48 | 64 | 517 | 13 | 72 |
 | H3 | 40 | 59 | 163 | 21 | 61 |
 
-H2 is the first round. Claude checked 5 rows, and all 5 matched. It also found 2 bad rows, and the code catches those now. https://github.com/rpinho/meccog-literature-pipeline
+H2 is the first round. Claude checked 5 rows, and all 5 matched. It also found 2 bad rows, and the code catches those now. All of this is from the pipeline's README at its November 18 commit: https://github.com/rpinho/meccog-literature-pipeline/blob/2ffa2ab105e7df6d51ce07008c9bb8e270de37f8/README.md
 
 ## What still doesn't work
 
@@ -94,9 +90,7 @@ Most of the rules are still prose. From the README: "131 of the 356 rules have s
 
 The harness can't tell if anyone was honest. From its README: "It is not an access-control sandbox, a competition platform or an independent judge of scientific truth."
 
-The spend wrapper is not a wall. You can still run Codex around it.
-
-The referees are models too. Apart from the PRs, no expert has refereed any of this.
+The referees are models too. No human expert has refereed any of this.
 
 ## References
 
@@ -104,8 +98,6 @@ The referees are models too. Apart from the PRs, no expert has refereed any of t
 - Lilian Weng, Harness Engineering for Self-Improvement, 2026: https://lilianweng.github.io/posts/2026-07-04-harness/
 - Cynthia Dwork, Vitaly Feldman, Moritz Hardt, Toniann Pitassi, Omer Reingold, Aaron Roth, Generalization in Adaptive Data Analysis and Holdout Reuse, 2015: https://arxiv.org/abs/1506.02629
 - Avrim Blum, Moritz Hardt, The Ladder: A Reliable Leaderboard for Machine Learning Competitions, 2015: https://arxiv.org/abs/1502.04585
-- Roger Peng, Reproducible Research in Computational Science, Science 334, 1226-1227, 2011: https://doi.org/10.1126/science.1213847
-- David Soergel, Rampant software errors may undermine scientific results, F1000Research 3:303, 2015: https://doi.org/10.12688/f1000research.5930.2
 - Google DeepMind, AlphaEvolve, 2025: https://arxiv.org/abs/2506.13131
 
 ## Sources
@@ -116,9 +108,9 @@ The referees are models too. Apart from the PRs, no expert has refereed any of t
 | 11-09 | https://github.com/rpinho/rstack/blob/main/docs/outreach.md |
 | 12, 5 | https://github.com/rpinho/rstack/blob/main/rstack/principles/a-guard-must-refuse-not-crash.md |
 | 1,568, 60, 3 | https://github.com/rpinho/rstack/blob/main/rstack/tools/codex-spend.md |
-| 15, 122, 99, 8 | https://github.com/search?q=author%3Arpinho+is%3Apr+-user%3Arpinho&type=pullrequests (November 18) |
+| 129, 15, 106, 8, and the PR list | https://github.com/rpinho/rstack/blob/main/docs/snapshots/2026-11-18-prs.md |
 | 4, 18 | https://github.com/rpinho/rstack/blob/main/harness/README.md |
 | 11-09 fix | https://github.com/rpinho/rstack/commit/ee2c52c |
-| 4, October 30, November 16 | https://github.com/rpinho/planet-hunt/blob/main/RESEARCH_STATUS.md |
+| 4 reports, 4 Zenodo versions, 2 earlier reports | https://github.com/rpinho/rstack/blob/main/harness/README.md |
 | H1, H2, H3, 5, 2 | https://github.com/rpinho/meccog-literature-pipeline/blob/2ffa2ab105e7df6d51ce07008c9bb8e270de37f8/README.md |
 | 131, 356, 225 | https://github.com/rpinho/rstack/blob/main/README.md (November 13) |

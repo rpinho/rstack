@@ -6,6 +6,23 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from protected_paths import assert_disposable
 
+if len(sys.argv) > 1 and sys.argv[1] == 'sync':
+    from release_sync import sync
+    p = argparse.ArgumentParser(description='Sync release protection from the deploy retention function')
+    p.add_argument('--from-deploy', required=True)
+    p.add_argument('--registry')
+    p.add_argument('--retention-script', help='default: DEPLOY_ROOT/bin/release-retention.mjs')
+    p.add_argument('--node', default='node')
+    p.add_argument('--dry-run', action='store_true')
+    a = p.parse_args(sys.argv[2:])
+    try:
+        sync(a.from_deploy, a.registry, dry_run=a.dry_run,
+             retention_script=a.retention_script, node=a.node)
+    except Exception as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--registry')
 p.add_argument('paths', nargs='+')

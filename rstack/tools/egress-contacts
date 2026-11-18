@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""Generate private contact rules from local health records and contacts.
+
+    egress-contacts /private/path/patterns.txt --kb WIKI_DIR --contacts CONTACTS_JSON [--dry-run]
+
+--kb defaults to $EGRESS_CONTACTS_KB and --contacts to $EGRESS_CONTACTS_JSON; the
+source locations are host values and never live in this repository.
+
+Only counts go to stdout. Names go only into the explicitly named patterns file.
+Replaces its own marked block, preserving all other rules. Back up that file before
+running. Text/Markdown/HTML/JSON are read directly; PDFs use pdftotext when available.
+Images, audio and unsupported files are counted as skipped, never called covered.
+No network, model, installation or writes to the input sources.
+"""
+import argparse
+from collections import Counter
+from html.parser import HTMLParser
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import unicodedata
+
+BEGIN = '# BEGIN egress-contacts'
+END = '# END egress-contacts'
+MAX_BYTES = 8 * 1024 * 1024
+GENERIC = set('clinic clinics health hospital hospitals medical medicine care primary '
+              'provider providers doctor doctors physician physicians dentist dental '
+              'portal patient patients name unknown none null records specialty '
+              'center centre associates group practice university insurance welcome '
+              'login sign in online services visit appointment results message '
+              'ordering authorizing referring signed electronically'.split())
+MEDICAL = re.compile(r'\b(?:doctor|physician|dentist|dental|clinic|hospital|medical|'
+                     r'healthcare|provider|portal|optometr\w*|ophthalm\w*|'
+                     r'dermatolog\w*|cardiolog\w*|therapist)\b', re.I)
+# Capitalized name tokens, including initials, apostrophes and hyphenated surnames.
+TOKEN = r"(?:[A-ZÀ-ÖØ-Þ][^\W\d_]*(?:['’\-][A-ZÀ-ÖØ-Þa-zà-öø-ÿ]+)*\.?)"
+NAME = TOKEN + r'(?:[ \t]+' + TOKEN + r'){0,4}'
+TITLED = re.compile(r'\b(?i:dr\.?|doctor|dra\.?)\s+(' + NAME + ')')
+CREDENTIAL = re.compile(r'\b(' + NAME + r'),\s*(?:M\.?D\.?|D\.?O\.?|OD|DDS|DMD|NP|PA-C)\b')
+ORG_SUFFIXES = ('Clinic', 'Hospital', 'Health', 'Healthcare', 'Medical', 'Medical Center',
+                'Medical Group', 'Care', 'Primary Care', 'Eye Care', 'Urgent Care',
+                'Dental Care', 'Dentistry', 'Physicians', 'Associates')
+ORGANIZATION = re.compile(r'\b(' + TOKEN + r'(?:[ \t]+' + TOKEN + r'){0,5}[ \t]+(?:' +
+                          '|'.join(re.escape(s) for s in ORG_SUFFIXES + tuple(s.upper() for s in ORG_SUFFIXES)) + r'))\b')
+PORTAL = re.compile(r'\b(' + NAME + r')\s+(?i:portal)\b|\b(?i:portal)\s*[:=]\s*(' + NAME + ')')
+PORTAL_BRAND = re.compile(r'\b(?:[A-Z][a-z]+)+(?:Portal|Chart)\b')
+FIELD = re.compile(r'(?im)^\s*(?:[-*]\s*)?(?:doctor|provider(?: name)?|physician|'
+                   r'(?:ordering|authorizing|referring) provider|clinic|hospital|'
+                   r'medical portal|portal|practice|organization)\s*[:|=]\s*(.+)')
+ROLE_FIELDS = {'group', 'relationship', 'org', 'organization', 'role', 'type', 'specialty'}
+ENTITY_FIELDS = {'name', 'org', 'organization', 'doctor', 'doctors', 'provider', 'providers',
+                 'clinic', 'clinics', 'hospital', 'practice', 'portal', 'portals', 'aliases'}
+
+
+class TextHTML(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.hidden = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {'script', 'style'}:
+            self.hidden += 1
+        if tag in {'br', 'p', 'div', 'tr', 'li'}:
+            self.parts.append('\n')
+
+    def handle_endtag(self, tag):
+        if tag in {'script', 'style'}:
+            self.hidden = max(0, self.hidden - 1)
+        if tag in {'p', 'div', 'tr', 'li'}:
+            self.parts.append('\n')
+
+    def handle_data(self, data):
+        if not self.hidden:
+            self.parts.append(data)
+
+
+def clean(value):
+    value = unicodedata.normalize('NFC', value)
+    value = re.sub(r'\b(?i:dr\.?|doctor|dra\.?)\s+', '', value.strip())
+    value = re.sub(r',?\s+\b(?:MD|M\.D\.|DO|OD|DDS|DMD|NP|PA-C)\b\.?$', '', value)
+    return ' '.join(value.strip(' \t\r\n*`|:;,.—–-').split())
+
+
+def add(names, value, person=False):
+    value = clean(value)
+    words = re.findall(r'[^\W\d_]+', value, re.UNICODE)
+    if sum(c.isalpha() for c in value) < 4 or not words:
+        return
+    if all(w.casefold() in GENERIC for w in words):
+        return
+    names.add(value.casefold())
+    # Records often use just the doctor's surname in follow-up notes.
+    if person and len(words) > 1:
+        add(names, words[-1])
+
+
+def text_names(text):
+    names = set()
+    # Keep line boundaries: a name must not swallow the following record field.
+    text = re.sub(r'\[([^]\n]+)\]\([^\n)]*\)', r'\1', text)
+    text = text.replace('**', '').replace('`', '')
+    for rx in (TITLED, CREDENTIAL):
+        for m in rx.finditer(text):
+            add(names, m.group(1), person=True)
+    for rx in (ORGANIZATION, PORTAL):
+        for m in rx.finditer(text):
+            add(names, next(g for g in m.groups() if g))
+    # A portal-specific suffix also recognizes a standalone brand in a record title.
+    for m in PORTAL_BRAND.finditer(text):
+        add(names, m.group())
+    for m in FIELD.finditer(text):
+        value = re.split(r'[|;,—–()]', m.group(1))[0].strip()
+        match = re.match(NAME, re.sub(r'^(?i:dr\.?)\s+', '', value))
+        if match:
+            add(names, match.group(), person=bool(re.search(r'(?i)doctor|physician|provider', m.group())))
+    return names
+
+
+def strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from strings(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from strings(item)
+
+
+def contact_names(data):
+    """Handle row lists, {contacts: [...]}, and maps keyed by contact name."""
+    names, records, medical_records = set(), 0, 0
+    if isinstance(data, dict):
+        if 'contacts' in data:
+            return contact_names(data['contacts'])
+        rows = [dict(value, name=value.get('name', key)) for key, value in data.items()
+                if isinstance(value, dict)]
+    elif isinstance(data, list) and all(isinstance(row, dict) for row in data):
+        rows = data
+    else:
+        raise ValueError('unsupported contacts structure')
+    for row in rows:
+        records += 1
+        roles = ' '.join(s for k, v in row.items() if k.casefold() in ROLE_FIELDS for s in strings(v))
+        medical = bool(MEDICAL.search(roles))
+        explicit = any(k.casefold() in ENTITY_FIELDS - {'name', 'org', 'organization', 'aliases'} for k in row)
+        if medical or explicit:
+            medical_records += 1
+        for key, value in row.items():
+            field = key.casefold()
+            if field in ENTITY_FIELDS and (medical or field not in {'name', 'org', 'organization', 'aliases'}):
+                for s in strings(value):
+                    # Structured name fields are literal; descriptive org values use the prose extractor.
+                    if field in {'org', 'organization'}:
+                        names.update(text_names(s))
+                        if re.fullmatch(NAME, s.strip()):
+                            add(names, s)
+                    else:
+                        add(names, s, person=field in {'name', 'doctor', 'doctors', 'provider', 'providers'})
+            # Medical entities embedded in notes still count; the nonmedical contact's own name doesn't.
+            for s in strings(value):
+                names.update(text_names(s))
+    return names, records, medical_records
+
+
+def read_record(path):
+    if path.stat().st_size > MAX_BYTES:
+        return None
+    suffix = path.suffix.lower()
+    if suffix == '.pdf':
+        binary = shutil.which('pdftotext')
+        if not binary:
+            return None
+        result = subprocess.run([binary, '-layout', str(path), '-'], capture_output=True, timeout=30)
+        if result.returncode:
+            raise ValueError('PDF extraction failed')
+        return result.stdout.decode('utf-8', errors='replace')
+    if suffix not in {'.md', '.txt', '.html', '.htm', '.json'}:
+        return None
+    text = path.read_text(encoding='utf-8')
+    if suffix in {'.html', '.htm'}:
+        parser = TextHTML()
+        parser.feed(text)
+        text = ''.join(parser.parts)
+    elif suffix == '.json':
+        text = '\n'.join(strings(json.loads(text)))
+    return text
+
+
+def collect(kb, contacts):
+    names, summaries = set(), []
+    if not (kb / 'health').is_dir():
+        raise ValueError('KB health directory missing')
+    for root in (kb / 'health', kb / 'people'):
+        if not root.exists():
+            continue
+        found, counts = set(), Counter()
+        for path in sorted(root.rglob('*')):
+            if not path.is_file() or path.is_symlink():
+                continue
+            text = read_record(path)
+            if text is None:
+                counts['files_skipped'] += 1
+                counts['skipped_' + (path.suffix.lower().lstrip('.') or 'no_suffix')] += 1
+                continue
+            counts['files_read'] += 1
+            found.update(text_names(text))
+        summaries.append(dict(source=str(root), patterns=len(found), **counts))
+        names.update(found)
+    for path in contacts:
+        if path.stat().st_size > MAX_BYTES:
+            raise ValueError('contacts file too large')
+        found, records, medical = contact_names(json.loads(path.read_text(encoding='utf-8')))
+        summaries.append(dict(source=str(path), records=records, medical_records=medical, patterns=len(found)))
+        names.update(found)
+    return names, summaries
+
+
+def pattern(name):
+    return r'(?i)(?<!\w)' + re.escape(name).replace(r'\ ', r'\s+') + r'(?!\w)'
+
+
+def merged(old, names):
+    lines = old.splitlines(keepends=True)
+    starts = [i for i, line in enumerate(lines) if line.rstrip('\r\n') == BEGIN]
+    ends = [i for i, line in enumerate(lines) if line.rstrip('\r\n') == END]
+    block = BEGIN + '\n' + ''.join('contact\t' + pattern(n) + '\n' for n in sorted(names)) + END + '\n'
+    if not starts and not ends:
+        return old + ('\n' if old and not old.endswith('\n') else '') + block
+    if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:
+        raise ValueError('malformed managed block; patterns unchanged')
+    return ''.join(lines[:starts[0]]) + block + ''.join(lines[ends[0]+1:])
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('patterns', type=Path, help='private patterns file to update (never stdout)')
+    kb_env = os.environ.get('EGRESS_CONTACTS_KB')
+    ap.add_argument('--kb', type=Path, default=Path(kb_env) if kb_env else None,
+                    help='wiki root holding health/ (default: $EGRESS_CONTACTS_KB)')
+    ap.add_argument('--contacts', type=Path, action='append',
+                    help='contacts JSON; repeat for more (default: $EGRESS_CONTACTS_JSON)')
+    ap.add_argument('--dry-run', action='store_true', help='read sources and print counts; write nothing')
+    args = ap.parse_args(argv)
+    contacts_env = os.environ.get('EGRESS_CONTACTS_JSON')
+    contacts = args.contacts or ([Path(contacts_env)] if contacts_env else [])
+    if args.kb is None or not contacts:
+        ap.error('pass --kb and --contacts (or set EGRESS_CONTACTS_KB and EGRESS_CONTACTS_JSON)')
+    try:
+        names, sources = collect(args.kb.expanduser(), [p.expanduser() for p in contacts])
+        if not names:
+            raise ValueError('no contact names extracted; patterns unchanged')
+        out = args.patterns.expanduser()
+        if out.is_symlink():
+            raise ValueError('output must not be a symlink')
+        old = out.read_text(encoding='utf-8') if out.exists() else ''
+        result = merged(old, names)
+        if not args.dry_run:
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=out.parent,
+                                                 prefix='.egress-contacts-', delete=False) as f:
+                    temporary = Path(f.name)
+                    f.write(result)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temporary, out)
+            finally:
+                if temporary is not None and temporary.exists():
+                    temporary.unlink()  # only this invocation's temporary file
+        print(json.dumps(dict(dry_run=args.dry_run, sources=sources, patterns=len(names)), sort_keys=True))
+        return 0
+    except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
+        # Input filenames, malformed JSON and decoder errors can themselves contain names.
+        print('egress-contacts: cannot read sources or update patterns; no names printed', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
