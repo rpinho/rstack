@@ -30,6 +30,8 @@ rules have something enforcing them and which are still only prose.
 
 It has produced real results, and the short list is near the bottom.
 
+How it works, what it found and what still doesn't work, with a source for every number: [PAPER.md](PAPER.md).
+
 Named after, and owed to, **pstack**, which is where the idea of a single stack-wide entry point
 came from.
 
