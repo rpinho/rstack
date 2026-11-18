@@ -9,6 +9,7 @@ Standalone scripts (Python 3.9+ standard library, plus bash for `clean-room`; `u
 - `voice-lint`: `--measure` profiles your own writing (sentence length, contractions, hedges, exclamations, em dashes) so a voice guide can state numbers; check mode refuses a draft with a phrase from your private slop list, an em dash or too many exclamation marks, and works as the harness's `RH_VOICE_COMMAND`. `slop.example.txt` has generic entries only.
 - `relay`: files a message for the conductor session, waking it only for decisions, owner requests and breakages, and quarantines messages that match your terms file, logging a count and never the terms. Relayed detail from a sensitive project stalled the conductor on a safety classifier, and naming the terms in the inbox row stalled it again.
 - `egress-gate`: refuses to pass a directory, a push or a text that contains secret shapes or your own patterns and terms (exit 2). Agents build public output on a machine that holds private context, and checking by hand was prose.
+- `egress-contacts`: generates private `contact` patterns from local KB health records, optional `people/`, and outreach contacts JSON. Prints counts only; see the regeneration instructions below.
 - `clean-room`: runs codex or claude in an empty identity for work that will leave the machine. A fresh config dir still loaded the personal CLAUDE.md from the home directory, an ancestor of the workspace.
 - `reload-lint.py`: blocks a commit that puts a configured term next to a configured working-detail marker in a file every session reloads, printing markers and counts, never the terms. An index line carrying a project's working detail stalled every general-purpose session that reloaded it.
 - `hook-audit`: feeds every registered PreToolUse guard malformed events (unparseable text, a string or list instead of an object, fields of the wrong type) shaped like the action it guards, and lists the ones that crash. Claude Code treats a crash as allow, so a guard that raises on input it cannot read is no guard. Its first run found three send gates on one machine that did exactly that.
@@ -330,6 +331,34 @@ shapes are enabled.
 Pre-push also respects a worktree's `PUBLISH` manifest: when its first `remote` line identifies the
 push destination, it blocks direct pushing and directs the operator to `publish-public`. SSH and
 HTTPS spellings of the same destination match. Missing scan inputs fail with exit 1.
+
+### Private medical contact patterns
+
+Run `egress-contacts /private/path/patterns.txt --kb WIKI_DIR --contacts FILE --dry-run` to inspect source counts, then omit
+`--dry-run` to update that explicit private file. Sources are host values, never repo defaults:
+`--kb WIKI_DIR` (or `$EGRESS_CONTACTS_KB`) is a wiki root holding `health/` and optional `people/`,
+and `--contacts FILE` (or `$EGRESS_CONTACTS_JSON`) is a contacts database; repeat it for more.
+The JSON may be a row list, a `contacts` wrapper, or a map keyed by name. Medical roles select
+contact names and organizations; titled doctors and medical entities in notes also contribute.
+
+Names are escaped literals with case-insensitive whole-word boundaries and flexible whitespace.
+Entries with fewer than four letters and generic-only phrases such as `Medical Clinic` are dropped.
+The deterministic extractor recognizes doctor titles, credentials, provider fields, named medical
+organizations and portal names (including standalone brands ending in `Portal` or `Chart`).
+It is not exhaustive entity recognition.
+Markdown, UTF-8 text, HTML and JSON are read directly; PDFs need an existing `pdftotext` command.
+Unsupported formats, PDFs without that command, and files over 8 MiB are counted as skipped.
+Images and audio need an existing text transcription to contribute. Missing/unreadable inputs
+leave the patterns file unchanged. Only counts and source roots are printed, never extracted names.
+
+Before updating, make a private backup of `patterns.txt`. The generator refreshes only its
+`# BEGIN egress-contacts` / `# END egress-contacts` block, retaining manually maintained contact
+patterns and every other rule. It replaces the output atomically with mode `0600`. On each Mac,
+point it at that Mac's actual gate patterns file and readable private sources. Keep generated
+patterns and backups out of public checkouts. Importers that classify labels (including private
+backup tools) must include `contact` in their personal-data classification before regeneration.
+Schedule the same backed-up command weekly with launchd or an existing job-health job; don't
+register a schedule until the command has run successfully with the intended local paths.
 
 Fleet help (`-h` or `--help`) prints documentation without inspecting sessions. Dry mode retains the
 save/compact decision output and changes no session state. A completed reset writes an empty state
