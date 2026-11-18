@@ -351,7 +351,28 @@ It is not exhaustive entity recognition.
 Markdown, UTF-8 text, HTML and JSON are read directly; PDFs need an existing `pdftotext` command.
 Unsupported formats, PDFs without that command, and files over 8 MiB are counted as skipped.
 Images and audio need an existing text transcription to contribute. Missing/unreadable inputs
-leave the patterns file unchanged. Only counts and source roots are printed, never extracted names.
+leave the patterns file unchanged. Output contains counts and (in dry-run mode) fixed rule shapes,
+never extracted names or source paths. Source counts use numeric indexes in scan order: health,
+people when present, then each contacts input.
+
+Before filtering, candidates are counted once by category (portal, organization, then provider when
+categories overlap) and by whitespace-delimited word count. Rules containing any component of the owner's
+name, git author name/email, OS full name/login, or home-directory name are excluded. Household
+identities come from page name/title/aliases and H1 identity prefixes marked by `self/` or `family/`
+directories, or inline `Tags:`, relationship or role fields containing `self` or `family`. An unmarked
+mention of a relative in prose does not identify that page as a household identity.
+Existing private regexes exclude matching candidates and their components, including manually
+maintained contact rules; the generator's own managed block is ignored for this exclusion.
+`--exclude-patterns FILE` adds that file's labels to those in the output file; by default it reads
+`$RSTACK_EGRESS_DIR/patterns.txt` or `~/.config/rstack/egress/patterns.txt`. It must be readable.
+
+Single-word provider and organization rules need at least six letters and must be absent from
+`/usr/share/dict/words` and `/usr/share/dict/propernames` when present. Distinctive portal words
+may have four or more letters and must pass the same word/name checks. `--dictionary FILE` and
+repeatable `--first-names FILE` support other hosts; the English dictionary is required. Hyphens and apostrophes do not make a phrase multi-word; their components also pass the word/name
+checks. Multi-word rules retain their literal phrase. A final self-test checks every generated rule against git/OS
+identity strings, the home path and both absolute and resolved KB root paths before any write;
+a match refuses the update. Existing rules outside the managed block are preserved, not repaired.
 
 Before updating, make a private backup of `patterns.txt`. The generator refreshes only its
 `# BEGIN egress-contacts` / `# END egress-contacts` block, retaining manually maintained contact
