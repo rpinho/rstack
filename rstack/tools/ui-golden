@@ -42,7 +42,7 @@ def render(args):
                     if response.status >= 400 else None)
             page.on("pageerror", lambda error: failures.append(str(error)))
             page.set_default_timeout(args.timeout_ms)
-            response = page.goto(args.url, wait_until="networkidle")
+            response = page.goto(args.url, wait_until=args.wait_until)
             if response and response.status >= 400:
                 raise ValueError(f"page returned HTTP {response.status}")
             if args.wait_selector:
@@ -50,11 +50,15 @@ def render(args):
             if args.expect_hash and page.evaluate("location.hash") != args.expect_hash:
                 raise ValueError("first-screen route changed; refused a redirected home or unavailable activity")
             for frame in page.frames:
-                frame.wait_for_load_state("networkidle")
+                # 11-17: the live hub polls forever and never reaches networkidle; with --wait-until load the
+                # gate's --wait-selector and the fonts/images settle below decide when the page is ready.
+                frame.wait_for_load_state(args.wait_until)
                 frame.evaluate("""async () => {
                 await document.fonts.ready;
                 await Promise.all(Array.from(document.images, image => image.decode()));
             }""")
+            if args.settle_ms:
+                page.wait_for_timeout(args.settle_ms)
             if failures:
                 raise ValueError("render failed: " + "; ".join(failures[:10]))
             out = Path(args.out)
@@ -150,6 +154,9 @@ def main():
     command.add_argument("--wait-selector")
     command.add_argument("--expect-hash", help="refuse a redirect away from the requested activity route")
     command.add_argument("--timeout-ms", type=int, default=30000)
+    command.add_argument("--wait-until", choices=["networkidle", "load", "domcontentloaded"], default="networkidle",
+                         help="page readiness; use load with --wait-selector for pages that poll")
+    command.add_argument("--settle-ms", type=int, default=0, help="extra wait after fonts and images settle")
     command = commands.add_parser("compare")
     command.add_argument("--golden", required=True)
     command.add_argument("--actual", required=True)

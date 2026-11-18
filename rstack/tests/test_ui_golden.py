@@ -89,6 +89,12 @@ def page():
             self.send_response(404 if self.path == "/missing" else 200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
+            if self.path == "/poll":
+                # 11-17: the live hub polls forever, so networkidle never comes.
+                self.wfile.write(b'''<!doctype html><style>body{margin:0;background:white}</style><body>
+                    <div id="ready">ok</div>
+                    <script>setInterval(() => fetch('/tick'), 100);</script>''')
+                return
             self.wfile.write(b'''<!doctype html><style>body{margin:0;background:white}</style><body>
                 <script>document.body.style.background=localStorage.getItem('color')||'white';</script>''')
 
@@ -131,3 +137,14 @@ def test_first_screen_refuses_redirected_home(page, tmp_path):
     assert refused.returncode == 2
     assert 'route changed' in refused.stderr
     assert not (tmp_path / 'home.png').exists()
+
+
+def test_a_polling_page_renders_with_wait_until_load(page, tmp_path):
+    pytest.importorskip("playwright")
+    stuck = run("render", "--url", page + "/poll", "--viewport", "40x20", "--timeout-ms", "3000",
+                "--out", tmp_path / "stuck.png")
+    assert stuck.returncode != 0
+    ok = run("render", "--url", page + "/poll", "--viewport", "40x20", "--wait-until", "load",
+             "--wait-selector", "#ready", "--settle-ms", "100", "--out", tmp_path / "ok.png")
+    assert ok.returncode == 0, ok.stderr
+    assert (tmp_path / "ok.png").exists()
