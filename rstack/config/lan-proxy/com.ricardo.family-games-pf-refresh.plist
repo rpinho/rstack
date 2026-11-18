@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.ricardo.family-games-pf-refresh</string>
+	<key>UserName</key>
+	<string>root</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>/Library/FamilyGamesLAN/lan-proxy-pf-refresh</string>
+		<string>--host</string>
+		<string>Ricardos-Mac-mini.local</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StartInterval</key>
+	<integer>60</integer>
+	<key>StandardOutPath</key>
+	<string>/var/log/family-games-pf-refresh.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/family-games-pf-refresh.log</string>
+</dict>
+</plist>

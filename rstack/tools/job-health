@@ -13,6 +13,7 @@ its result in. Same class: a failure that only reaches a log. These checks need 
   x-engage queued engagement without executed actions, or repeated same-reason post refusals
   net-failover more than 60 minutes continuously on the backup network (opt-in state source)
   release-protection registry differs from the deploy CLI's own protected set for over 1 hour (opt-in)
+  lan-proxy m5.local resolves off the home LAN, or hub HTTP fails through the M4 relay (opt-in)
 
 The problems are written to $RSTACK_STATE_DIR/asks-waiting/<host>-jobs.tsv, so the conductor's
 asks-waiting hook shows them on every turn while they last, and each NEW problem runs --alert once
@@ -30,6 +31,8 @@ Registry (default ~/.config/rstack/job-health.json):
     --x-engage-log FILE overrides the registry source with a local file. Skips are logged to stderr.
     net_failover is opt-in too, with the same explicit host/local behavior. It requires the
     fail-back script's current_net and network_since (Unix seconds); legacy state is skipped.
+    lan_proxy is local to the M4, opt-in, and probes /api/config through 127.0.0.1:14325.
+    Keys: target, proxy_port, http_host (a name the hub accepts), timeout, label. See lan-proxy.md.
 
     job-health [--prefix com.example.] [--registry FILE] [--alert CMD] [--push HOST] [--dry]
 """
@@ -38,6 +41,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 import glob
+import http.client
 import json
 import math
 import os
@@ -47,6 +51,9 @@ import socket
 import subprocess
 import sys
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _lan import home_lan_addresses, resolve_ipv4
 
 
 
@@ -325,6 +332,44 @@ def net_failover_problems(source, now):
     return [('net-failover', label, '{} on backup network for {:.0f} min (starlink)'.format(label, minutes))]
 
 
+def lan_proxy_problems(source, resolver=None, connection=None):
+    """Opt-in M4 check: m5 resolves on the home LAN AND HTTP answers through the relay."""
+    if source is None:
+        return []
+    rows = []
+    label = 'm5.local via LAN proxy'
+    try:
+        if not isinstance(source, dict):
+            raise ValueError('lan_proxy must be an object')
+        host = source.get('target', 'm5.local')
+        label = source.get('label') or host + ' via LAN proxy'
+        addresses = (resolver or resolve_ipv4)(host)
+        if not addresses or set(home_lan_addresses(addresses)) != set(addresses):
+            raise ValueError('{} resolves outside 192.168.86.x: {}'.format(host, ','.join(addresses)))
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError) as exc:
+        rows.append(('lan-proxy-dns', label, str(exc)))
+    conn = None
+    try:
+        if not isinstance(source, dict):
+            raise ValueError('lan_proxy must be an object')
+        port = int(source.get('proxy_port', 14325))
+        timeout = float(source.get('timeout', 8))
+        if not 1 <= port <= 65535 or not 0 < timeout <= 30:
+            raise ValueError('invalid proxy_port or timeout')
+        conn = (connection or http.client.HTTPConnection)('127.0.0.1', port, timeout=timeout)
+        conn.request('GET', '/api/config', headers={
+            'Host': source.get('http_host') or 'localhost', 'Connection': 'close'})
+        response = conn.getresponse()
+        if response.status != 200 or not response.read(1):
+            raise ValueError('hub /api/config returned HTTP {} or empty body'.format(response.status))
+    except (OSError, ValueError, TypeError, http.client.HTTPException) as exc:
+        rows.append(('lan-proxy-hub', label, 'hub not answering through proxy: ' + str(exc)))
+    finally:
+        if conn is not None:
+            conn.close()
+    return rows
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--prefix', default=os.environ.get('JOB_HEALTH_PREFIX', ''),
@@ -364,7 +409,8 @@ def main(argv=None):
             release_rows = [('release-protection', 'registry comparison', 'unavailable: ' + str(exc))]
     rows = (bad + codex_rows + release_rows + exit_problems(launchd_jobs(a.prefix), reg.get('exit_ok') or {})
             + fresh_problems(reg.get('fresh') or [], now) + disk_problems(reg.get('disk') or [])
-            + x_engage_problems(x_source, now) + net_failover_problems(reg.get('net_failover'), now))
+            + x_engage_problems(x_source, now) + net_failover_problems(reg.get('net_failover'), now)
+            + lan_proxy_problems(reg.get('lan_proxy')))
     lines = ['{}\t{}\t{}'.format(kind, what, detail) for kind, what, detail in rows]
     for l in lines:
         print(l)
