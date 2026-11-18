@@ -72,10 +72,19 @@ def test_snapshot_ignores_six_column_calibration_table(tmp_path):
     assert mr.bootstrap(page)['roles'] == {'review': ['gpt-6.2-sol']}
 
 
-def test_superseded_versions_are_history_only():
-    # Owner 2026-11-18: Astra 6.2 replaces GPT-6 Astra, Sol 6.2 replaces Sol 6.1.
-    assert not mr.served_model("gpt-6-astra") and not mr.served_model("gpt-6.1-sol")
-    assert mr.served_model("gpt-6.2-astra") and mr.served_model("gpt-6.2-sol")
+def test_superseded_versions_are_fallbacks_only():
+    # Laptop leaderboard 2026-11-18: 6.2 Astra #3, 6.2 Sol #4; GPT-6 Astra and 6.1 Sol are fallbacks.
+    old = {"openai/gpt-6-astra": "openai/gpt-6.2-astra", "openai/gpt-6.1-sol": "openai/gpt-6.2-sol"}
     for role in mr.ROLES:
         order, _ = mr.rank(role, {})
-        assert "openai/gpt-6-astra" not in order and "openai/gpt-6.1-sol" not in order
+        for o, n in old.items():
+            if n in order:
+                assert order.index(o) > order.index(n)
+                assert all(mr.canon(m) in old for m in order[order.index(o):])
+            else:
+                assert o not in order
+    assert "openai/gpt-6.1-sol" in mr.rank("batch", {})[0]
+    assert mr.rank("batch", {})[0][0] == "openai/gpt-6.2-sol"
+    # strong evidence for the old version still never lifts it above anything
+    ev = {"batch": {"openai/gpt-6.1-sol": {"k": 170, "n": 171, "days": {str(i) for i in range(9)}}}}
+    assert mr.rank("batch", ev)[0][-1] == "openai/gpt-6.1-sol"

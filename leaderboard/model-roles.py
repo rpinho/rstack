@@ -104,7 +104,8 @@ ROLES = tuple(SEED)
 # Owner, 2026-11-18: "Spending OpenRouter money on Google is a waste".
 CANDIDATES = {}
 # Owner, 2026-11-18: "Astra 6.2 should replace Astra on the leaderboard. Sol 6.2 should/could replace Sol 6.1."
-# A superseded version is history-only (like Google): its outcomes stay in tables, it is never served.
+# Laptop leaderboard 2026-11-18 (owner call after measurement): the old versions are FALLBACKS, not history.
+# A superseded version is served only last, in roles where its successor is served, and evidence never lifts it.
 SUPERSEDED = {'openai/gpt-6-astra': 'openai/gpt-6.2-astra', 'openai/gpt-6.1-sol': 'openai/gpt-6.2-sol'}
 
 
@@ -344,10 +345,16 @@ def spread_labs(order, min_labs):
 def served_model(model):
     """Google is history-only, including newly observed model versions."""
     canonical = canon(model)
-    if canonical in SUPERSEDED:
-        return False
     return bool(canonical and not canonical.startswith('google/')
                 and MODELS[canonical][0] != 'gemini')
+
+
+def fallback_tail(order):
+    """Superseded versions go last, and only where their successor is served."""
+    keep = [m for m in order if canon(m) not in SUPERSEDED]
+    have = {canon(m) for m in keep}
+    tail = [old for old, new in SUPERSEDED.items() if new in have]
+    return keep + [m for m in tail if m not in keep]
 
 
 def rank(role, ev):
@@ -381,7 +388,7 @@ def rank(role, ev):
                 flags.append(f"{m} exclusion LIFTED by evidence (n={e[m]['n']}); override dated {ov['date']}")
             elif m in order:
                 order.remove(m)
-    return order, flags
+    return fallback_tail(order), flags
 
 REVIEW_ROOT = Path(os.environ['MODEL_REVIEW_ROOT']).expanduser() if os.environ.get('MODEL_REVIEW_ROOT') else None
 DRAFTS_LOG = Path(os.environ['MODEL_DRAFTS_LOG']).expanduser() if os.environ.get('MODEL_DRAFTS_LOG') else None
