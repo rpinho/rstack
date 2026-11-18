@@ -45,10 +45,10 @@ def test_no_served_role_resolves_to_google_even_with_winning_evidence(role, tmp_
 def test_bootstrap_old_google_routing_rows_are_history_only(tmp_path):
     page = tmp_path / 'old.md'
     historical = ('| review | google/gemini-4-carbon | 1 | 1.0 | 0.99 | 2026-11-17 |\n'
-                  '| review | gpt-6.1-sol | 2 | - | - | 2026-11-17 |\n')
+                  '| review | gpt-6.2-sol | 2 | - | - | 2026-11-17 |\n')
     page.write_text(historical)
     data = mr.bootstrap(page)
-    assert data['roles']['review'] == ['gpt-6.1-sol']
+    assert data['roles']['review'] == ['gpt-6.2-sol']
     data['updated'] = '2026-11-18T00:00:00Z'
     mr.public(data, page)
     assert all(line in page.read_text() for line in historical.splitlines())
@@ -65,8 +65,17 @@ def test_snapshot_ignores_six_column_calibration_table(tmp_path):
     page = tmp_path / 'mixed.md'
     page.write_text('| Entry | Completed /9 | Review /2 | Judge /3 | Ideation /3 | Plants /24 |\n'
                     '| openai/gpt-6.2-astra | 6 | 2 | 3 | 0 | 24 |\n'
-                    '| review | gpt-6.1-sol | 1 | - | - | 2026-11-18 |\n'
-                    '| review | gpt-6.1-sol | 0, 4 | 2026-11-18 |\n')
+                    '| review | gpt-6.2-sol | 1 | - | - | 2026-11-18 |\n'
+                    '| review | gpt-6.2-sol | 0, 4 | 2026-11-18 |\n')
     rows = mr.snapshot_rows(page)
     assert len(rows[6]) == len(rows[4]) == 1
-    assert mr.bootstrap(page)['roles'] == {'review': ['gpt-6.1-sol']}
+    assert mr.bootstrap(page)['roles'] == {'review': ['gpt-6.2-sol']}
+
+
+def test_superseded_versions_are_history_only():
+    # Owner 2026-11-18: Astra 6.2 replaces GPT-6 Astra, Sol 6.2 replaces Sol 6.1.
+    assert not mr.served_model("gpt-6-astra") and not mr.served_model("gpt-6.1-sol")
+    assert mr.served_model("gpt-6.2-astra") and mr.served_model("gpt-6.2-sol")
+    for role in mr.ROLES:
+        order, _ = mr.rank(role, {})
+        assert "openai/gpt-6-astra" not in order and "openai/gpt-6.1-sol" not in order

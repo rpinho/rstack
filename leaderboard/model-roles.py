@@ -60,8 +60,10 @@ ALIASES = [('opus[- ]?5[.-]5', 'anthropic/claude-opus-5.5'),
  ('haiku[- ]?5[.-]5', 'anthropic/claude-haiku-5.5'),
  ('opus[- ]?4[.-]6', 'anthropic/claude-opus-4.6'),
  ('5\\.6-sol', 'openai/gpt-5.6-sol'),
- ('6\\.1-sol|^sol\\b', 'openai/gpt-6.1-sol'),
- ('astra', 'openai/gpt-6-astra'),
+ ('6\\.1-sol', 'openai/gpt-6.1-sol'),
+ ('6[- ]astra', 'openai/gpt-6-astra'),
+ ('^sol\\b', 'openai/gpt-6.2-sol'),
+ ('astra', 'openai/gpt-6.2-astra'),
  ('terra', 'openai/gpt-6.1-terra'),
  ('luna', 'openai/gpt-6-luna'),
  ('deepseek', 'deepseek/deepseek-v4.1-flash-1017'),
@@ -76,12 +78,12 @@ SEED = {'taste': ['anthropic/claude-opus-5.5', 'anthropic/claude-fable-5.2'],
  'review': ['anthropic/claude-opus-5.5',
             'openai/gpt-6.2-astra',
             'anthropic/claude-fable-5.2',
-            'openai/gpt-6.1-sol'],
- 'mechanical': ['openai/gpt-6.1-sol', 'deepseek/deepseek-v4.1-flash-1017'],
- 'builder': ['anthropic/claude-opus-5.5', 'openai/gpt-6.1-sol'],
+            'openai/gpt-6.2-sol'],
+ 'mechanical': ['openai/gpt-6.2-sol', 'deepseek/deepseek-v4.1-flash-1017'],
+ 'builder': ['anthropic/claude-opus-5.5', 'openai/gpt-6.2-sol'],
  'cheap': ['deepseek/deepseek-v4.1-flash-1017', 'z-ai/glm-5.3-flash'],
  'biology': ['moonshotai/kimi-k3.1-pro'],
- 'batch': ['openai/gpt-6.1-sol', 'deepseek/deepseek-v4.1-flash-1017'],
+ 'batch': ['openai/gpt-6.2-sol', 'deepseek/deepseek-v4.1-flash-1017'],
  'writing': ['anthropic/claude-opus-5.5'],
  'ideation': ['anthropic/claude-opus-5.5', 'openai/gpt-6.2-astra', 'moonshotai/kimi-k3.1-pro']}
 
@@ -101,6 +103,9 @@ ROLES = tuple(SEED)
 # Google routes and observations remain readable for historical tables only.
 # Owner, 2026-11-18: "Spending OpenRouter money on Google is a waste".
 CANDIDATES = {}
+# Owner, 2026-11-18: "Astra 6.2 should replace Astra on the leaderboard. Sol 6.2 should/could replace Sol 6.1."
+# A superseded version is history-only (like Google): its outcomes stay in tables, it is never served.
+SUPERSEDED = {'openai/gpt-6-astra': 'openai/gpt-6.2-astra', 'openai/gpt-6.1-sol': 'openai/gpt-6.2-sol'}
 
 
 def close_faults_proposal(row, prose):
@@ -339,6 +344,8 @@ def spread_labs(order, min_labs):
 def served_model(model):
     """Google is history-only, including newly observed model versions."""
     canonical = canon(model)
+    if canonical in SUPERSEDED:
+        return False
     return bool(canonical and not canonical.startswith('google/')
                 and MODELS[canonical][0] != 'gemini')
 
