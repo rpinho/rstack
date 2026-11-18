@@ -195,29 +195,36 @@ A dated routing snapshot from selected local harness outcomes. Scores are held-o
 | review | gpt-5.6-sol | 5 | - | - | 2026-11-18 |
 | review | moonshotai/kimi-k3.1-pro | 6 | - | - | 2026-11-18 |
 | review | claude-sonnet-5-5 | 7 | - | - | 2026-11-18 |
+| review | gpt-6-astra | 8 | - | - | 2026-11-18 |
+| review | gpt-6.1-sol | 9 | - | - | 2026-11-18 |
 | review | google/gemini-4-argon | - | - | - | 2026-11-18 |
 | review | google/gemini-4-hydrogen | - | - | - | 2026-11-18 |
 | mechanical | gpt-6.2-sol | 1 | - | - | 2026-11-18 |
 | mechanical | deepseek/deepseek-v4.1-flash-1017 | 2 | - | - | 2026-11-18 |
+| mechanical | gpt-6.1-sol | 3 | - | - | 2026-11-18 |
 | builder | claude-opus-5-5 | 1 | - | - | 2026-11-18 |
 | builder | gpt-6.2-sol | 2 | - | - | 2026-11-18 |
+| builder | gpt-6.1-sol | 3 | - | - | 2026-11-18 |
 | cheap | deepseek/deepseek-v4.1-flash-1017 | 1 | - | - | 2026-11-18 |
 | cheap | z-ai/glm-5.3-flash | 2 | - | - | 2026-11-18 |
 | biology | moonshotai/kimi-k3.1-pro | 1 | - | - | 2026-11-18 |
 | batch | gpt-6.2-sol | 1 | - | - | 2026-11-18 |
 | batch | deepseek/deepseek-v4.1-flash-1017 | 2 | - | - | 2026-11-18 |
-| batch | gpt-6.1-sol | - | 1.0 | 0.867 | 2026-11-18 |
+| batch | gpt-6.1-sol | 3 | 1.0 | 0.867 | 2026-11-18 |
 | writing | claude-opus-5-5 | 1 | - | - | 2026-11-18 |
 | ideation | claude-opus-5-5 | 1 | 1.0 | 0.342 | 2026-11-18 |
 | ideation | gpt-6.2-astra | 2 | - | - | 2026-11-18 |
 | ideation | moonshotai/kimi-k3.1-pro | 3 | - | - | 2026-11-18 |
 | ideation | claude-fable-5-2 | 4 | 1.0 | 0.741 | 2026-11-18 |
+| ideation | gpt-6-astra | 5 | - | - | 2026-11-18 |
 | design | claude-opus-5-5 | 1 | - | - | 2026-11-18 |
 | design | claude-fable-5-2 | 2 | 1.0 | 0.438 | 2026-11-18 |
 | judge | claude-opus-5-5 | 1 | - | - | 2026-11-18 |
 | judge | gpt-6.2-astra | 2 | - | - | 2026-11-18 |
 | judge | claude-fable-5-2 | 3 | 0.0 | 0.0 | 2026-11-18 |
 | judge | gpt-6.2-sol | 4 | - | - | 2026-11-18 |
+| judge | gpt-6-astra | 5 | - | - | 2026-11-18 |
+| judge | gpt-6.1-sol | 6 | - | - | 2026-11-18 |
 
 ## Recorded observation scores
 
