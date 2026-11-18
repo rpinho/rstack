@@ -261,3 +261,90 @@ def test_x_stall_uses_existing_alert_dedup_and_push(tmp_path, monkeypatch):
     assert (tmp_path / 'state/asks-waiting/test-jobs.tsv').read_text() == ''
     assert 'RECOVERED x-engage' in (tmp_path / 'state/job-health/log').read_text()
     assert not any('cat --' in c[-1] for c in calls)
+
+
+@pytest.mark.parametrize('network,minutes,alerts', [
+    ('starlink', 61, True), ('starlink', 30, False), ('starlink', 60, False),
+    ('spectrum', 61, False), (None, 61, False),
+])
+def test_backup_network_duration(tmp_path, network, minutes, alerts):
+    state = tmp_path / 'state.json'
+    state.write_text(json.dumps(dict(current_net=network, network_since=X_NOW - minutes * 60)))
+    rows = jh.net_failover_problems(dict(path=str(state), label='M4'), X_NOW)
+    if alerts:
+        assert rows == [('net-failover', 'M4', 'M4 on backup network for 61 min (starlink)')]
+    else:
+        assert rows == []
+
+
+def test_missing_backup_state_is_skipped_and_logged(tmp_path, capsys):
+    assert jh.net_failover_problems(dict(path=str(tmp_path / 'missing')), X_NOW) == []
+    assert 'net-failover skipped:' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('contents', [
+    '{broken', '[]', '{"bad": 0, "last_switch": 100}',
+    '{"current_net": "starlink"}',
+    '{"current_net": "starlink", "network_since": "yesterday"}',
+    '{"current_net": "starlink", "network_since": true}',
+    '{"current_net": "starlink", "network_since": NaN}',
+    '{"current_net": "starlink", "network_since": 9999999999}',
+])
+def test_unusable_backup_state_is_skipped_with_a_reason(tmp_path, capsys, contents):
+    state = tmp_path / 'state.json'
+    state.write_text(contents)
+    assert jh.net_failover_problems(dict(path=str(state)), X_NOW) == []
+    assert 'net-failover skipped:' in capsys.readouterr().err
+
+
+def test_backup_check_is_opt_in_and_reads_locally_without_host(tmp_path, monkeypatch):
+    monkeypatch.setattr(jh.subprocess, 'run', lambda *a, **k: pytest.fail('unexpected SSH'))
+    assert jh.net_failover_problems(None, X_NOW) == []
+    state = tmp_path / 'state.json'
+    state.write_text(json.dumps(dict(current_net='starlink', network_since=X_NOW - 3660)))
+    assert jh.net_failover_problems(dict(path=str(state), label='M4'), X_NOW)
+
+
+def test_remote_backup_state_read_is_explicit_bounded_and_read_only(monkeypatch, capsys):
+    calls = []
+    def ssh(argv, **kwargs):
+        calls.append((argv, kwargs))
+        state = dict(current_net='starlink', network_since=X_NOW - 3660)
+        return subprocess.CompletedProcess(argv, 0, json.dumps(state), '')
+    monkeypatch.setattr(jh.subprocess, 'run', ssh)
+    source = dict(host='m4', path='~/.local/state/net-failover/state.json', label='M4')
+    assert jh.net_failover_problems(source, X_NOW)
+    argv, kwargs = calls[0]
+    assert argv == ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'm4',
+                    'cat -- "$HOME"/.local/state/net-failover/state.json']
+    assert kwargs['timeout'] == 30
+    monkeypatch.setattr(jh.subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a[0], 1, '', 'missing'))
+    assert jh.net_failover_problems(source, X_NOW) == []
+    assert 'SSH state read failed' in capsys.readouterr().err
+
+
+def test_backup_alarm_uses_existing_alert_dedup_push_and_recovery(tmp_path, monkeypatch):
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'report'))
+    monkeypatch.setenv('RSTACK_HOST', 'test')
+    monkeypatch.setattr(jh, 'launchd_jobs', lambda prefix: {})
+    monkeypatch.setattr(jh.time, 'time', lambda: X_NOW)
+    calls = []
+    monkeypatch.setattr(jh.subprocess, 'run', lambda argv, **kw: calls.append(argv))
+    state = tmp_path / 'state.json'
+    state.write_text(json.dumps(dict(current_net='starlink', network_since=X_NOW - 3660)))
+    reg = tmp_path / 'reg.json'
+    reg.write_text(json.dumps({'net_failover': {'path': str(state), 'label': 'M4'}}))
+    args = ['--prefix', 'com.example.', '--registry', str(reg), '--alert', 'notify', '--push', 'conductor']
+    assert jh.main(args + ['--dry']) == 1
+    assert calls == [] and not (tmp_path / 'report').exists()
+    assert jh.main(args) == 0
+    state.write_text(json.dumps(dict(current_net='starlink', network_since=X_NOW - 7200)))
+    assert jh.main(args) == 0  # changing duration must not produce a second alert
+    assert len([c for c in calls if c[0] == 'notify']) == 1
+    assert 'M4 on backup network for 61 min' in next(c[-1] for c in calls if c[0] == 'notify')
+    assert len([c for c in calls if c[0] == 'scp']) == 2
+    listed = tmp_path / 'report/asks-waiting/test-jobs.tsv'
+    assert 'M4 on backup network for 120 min' in listed.read_text()
+    state.write_text(json.dumps(dict(current_net='spectrum', network_since=X_NOW)))
+    assert jh.main(args) == 0 and listed.read_text() == ''
+    assert 'RECOVERED net-failover' in (tmp_path / 'report/job-health/log').read_text()

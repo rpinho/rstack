@@ -11,6 +11,7 @@ its result in. Same class: a failure that only reaches a log. These checks need 
   fresh    every required output in the registry (`fresh`) that is missing or older than its limit:
            a job that loses its input and keeps running empty rounds still stops refreshing what it makes
   x-engage queued engagement without executed actions, or repeated same-reason post refusals
+  net-failover more than 60 minutes continuously on the backup network (opt-in state source)
 
 The problems are written to $RSTACK_STATE_DIR/asks-waiting/<host>-jobs.tsv, so the conductor's
 asks-waiting hook shows them on every turn while they last, and each NEW problem runs --alert once
@@ -20,10 +21,13 @@ Registry (default ~/.config/rstack/job-health.json):
     {"fresh": [{"path": "~/x/BOOKMARKS_FRESH.md", "max_hours": 6, "check_hours": [9, 22], "why": "X rounds read it"}],
      "exit_ok": {"com.example.lane-yield": {"codes": [1], "why": "exit 1 is its FAIL verdict, alerted on its own"}},
      "disk": [{"path": "/", "min_free_gib": 25, "why": "deploys refuse under 15 GiB"}],
-     "x_engage": {"path": "~/.local/share/x-engage/log.jsonl", "host": "m4"}}
+     "x_engage": {"path": "~/.local/share/x-engage/log.jsonl", "host": "m4"},
+     "net_failover": {"path": "~/.local/state/net-failover/state.json", "label": "M4"}}
 
     x_engage is opt-in: omit host for a local path; SSH is used only with a configured host.
     --x-engage-log FILE overrides the registry source with a local file. Skips are logged to stderr.
+    net_failover is opt-in too, with the same explicit host/local behavior. It requires the
+    fail-back script's current_net and network_since (Unix seconds); legacy state is skipped.
 
     job-health [--prefix com.example.] [--registry FILE] [--alert CMD] [--push HOST] [--dry]
 """
@@ -33,6 +37,7 @@ from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 import glob
 import json
+import math
 import os
 from pathlib import Path
 import shlex
@@ -274,6 +279,43 @@ def x_engage_problems(source, now):
     return [('x-engage', 'X engagement stalled', detail)] if reasons else []
 
 
+def net_failover_problems(source, now):
+    """Read the configured fail-back state; never probe or switch a network."""
+    if source is None:
+        return []
+    try:
+        if not isinstance(source, dict) or not source.get('path'):
+            raise ValueError('set net_failover.path to the fail-back state file')
+        path = source['path']
+        if source.get('host'):
+            remote = '"$HOME"/' + shlex.quote(path[2:]) if path.startswith('~/') else shlex.quote(path)
+            result = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
+                                     source['host'], 'cat -- ' + remote],
+                                    capture_output=True, text=True, timeout=30)
+            if result.returncode:
+                raise OSError('SSH state read failed (exit {})'.format(result.returncode))
+            contents = result.stdout
+        else:
+            contents = Path(path).expanduser().read_text()
+        state = json.loads(contents)
+        if not isinstance(state, dict) or 'current_net' not in state:
+            raise ValueError('state lacks current_net; install the fail-back script first')
+        if state['current_net'] != 'starlink':
+            return []
+        since = state.get('network_since')
+        if (isinstance(since, bool) or not isinstance(since, (int, float))
+                or not math.isfinite(since) or not 0 <= since <= now):
+            raise ValueError('backup state lacks a valid network_since Unix timestamp')
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError) as exc:
+        print('job-health: net-failover skipped: {}'.format(exc), file=sys.stderr)
+        return []
+    minutes = (now - since) / 60
+    if minutes <= 60:
+        return []
+    label = source.get('label') or source.get('host') or host_label()
+    return [('net-failover', label, '{} on backup network for {:.0f} min (starlink)'.format(label, minutes))]
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--prefix', default=os.environ.get('JOB_HEALTH_PREFIX', ''),
@@ -298,7 +340,7 @@ def main(argv=None):
     x_source = dict(path=a.x_engage_log) if a.x_engage_log is not None else reg.get('x_engage')
     rows = (bad + exit_problems(launchd_jobs(a.prefix), reg.get('exit_ok') or {})
             + fresh_problems(reg.get('fresh') or [], now) + disk_problems(reg.get('disk') or [])
-            + x_engage_problems(x_source, now))
+            + x_engage_problems(x_source, now) + net_failover_problems(reg.get('net_failover'), now))
     lines = ['{}\t{}\t{}'.format(kind, what, detail) for kind, what, detail in rows]
     for l in lines:
         print(l)
