@@ -226,3 +226,70 @@ def test_launchd_proposals_have_expected_shape():
     daemon = plistlib.loads((proposals / 'com.ricardo.family-games-pf-refresh.plist').read_bytes())
     assert daemon['StartInterval'] == 60
     assert daemon['UserName'] == 'root'
+
+
+def test_allowlist_admits_loopback_and_named_addresses_and_keeps_last_good():
+    async def scenario():
+        answers = {'now': ['192.168.86.247']}
+        lookups = []
+
+        async def resolver(name, port, type=None):
+            lookups.append(name)
+            if answers['now'] is None:
+                raise OSError('mDNS miss')
+            return [(socket.AF_INET, type, 6, '', (a, 0)) for a in answers['now']]
+
+        allow = proxy.Allow(['m4-name.local'], ttl=30, retry=0, resolver=resolver)
+        assert await allow.permits('127.0.0.1') and await allow.permits('::1')
+        assert lookups == []
+        assert await allow.permits('192.168.86.247')
+        assert await allow.permits('::ffff:192.168.86.247')
+        assert not await allow.permits('192.168.86.99')
+        answers['now'] = None
+        assert await allow.permits('192.168.86.247'), 'a failed lookup keeps the last good set'
+        answers['now'] = ['192.168.86.250']
+        assert await allow.permits('192.168.86.250'), 'a refused peer forces a fresh lookup'
+        assert not await allow.permits('192.168.86.247')
+
+        # Stale cache, peer still listed: answered at once, refreshed in the background.
+        allow.ttl, allow.retry, allow.at = 0, 30, asyncio.get_running_loop().time()
+        before = len(lookups)
+        answers['now'] = ['192.168.86.251']
+        assert await allow.permits('192.168.86.250')
+        await allow.pending
+        assert len(lookups) == before + 1 and allow.addresses == {proxy.ipaddress.ip_address('192.168.86.251')}
+
+    asyncio.run(scenario())
+
+
+def test_refused_peer_is_closed_without_dialing_upstream():
+    async def scenario():
+        dials = []
+
+        class Deny:
+            async def permits(self, peer):
+                assert peer == '127.0.0.1'
+                return False
+
+        async def connector(*args, **kwargs):
+            dials.append(args)
+            raise AssertionError('must not dial')
+
+        relay = proxy.Proxy('upstream.example', 1, connector=connector, allow=Deny())
+        server = await asyncio.start_server(relay.handle, '127.0.0.1', 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            reader, writer = await asyncio.open_connection('127.0.0.1', port)
+            # Closed before any byte is read or relayed (unread client bytes would turn the FIN into a reset).
+            assert await asyncio.wait_for(reader.read(), 5) == b''
+            writer.close()
+        finally:
+            await stop(relay, server)
+        assert dials == []
+
+    asyncio.run(scenario())
+
+
+def test_listening_beyond_loopback_requires_allow():
+    with pytest.raises(SystemExit):
+        proxy.main(['--listen-host', '0.0.0.0'])

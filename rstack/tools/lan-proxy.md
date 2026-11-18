@@ -11,7 +11,7 @@ macOS app warns that it cannot reach remote destinations on a non-default route.
 
 ## Relay
 
-- Python 3.9+ standard library (asyncio streams). Listens only on `127.0.0.1`.
+- Python 3.9+ standard library (asyncio streams). Listens on `127.0.0.1` unless `--listen-host` and `--allow` say otherwise.
 - Calls `getaddrinfo` for every accepted connection and dials the numeric result,
   IPv4 first. No upstream pool, no address cache.
 - Copies bytes unchanged: Host and Origin headers, uploads, streaming, WebSockets,
@@ -22,28 +22,42 @@ macOS app warns that it cannot reach remote destinations on a non-default route.
   never replays writes.
 - Defaults: 128 connections, 64 KiB chunks, four resolver threads, 120 s idle timeout.
 
+## Two relays, one per machine
+
+The service stays bound to loopback on its own machine, exactly as before the move.
+A second `lan-proxy` there listens on the LAN and admits only the front machine:
+
 ```sh
-lan-proxy --listen-port 14325 --target m5.local --target-port 4325 --log ~/Library/Logs/lan-proxy.log
+# front machine (runs tailscale serve); serve points at 127.0.0.1:14325
+lan-proxy --listen-port 14325 --target m5.local --target-port 14325
+# service machine; the service itself stays on 127.0.0.1:4325
+lan-proxy --listen-host 0.0.0.0 --listen-port 14325 --target 127.0.0.1 --target-port 4325 \
+  --allow FRONT-MACHINE.local
 ```
 
-The launchd agent is [com.ricardo.lan-proxy.plist](../config/lan-proxy/com.ricardo.lan-proxy.plist)
+Why the second hop: the service then sees a loopback peer, so whatever it already
+trusts from a local TLS front (for example `X-Forwarded-Proto` from loopback only)
+keeps working, and nothing that regenerates its launchd plist can undo a LAN bind.
+
+`--allow NAME` (repeatable) admits loopback and whatever NAME resolves to. Answers are
+cached for `--allow-ttl` seconds (default 30) and refreshed in the background; a failed
+lookup keeps the last good set; a refused peer forces one fresh lookup, so a front
+machine that just changed address gets in. A refused connection is closed before
+anything is dialed. Listening beyond loopback without `--allow` is refused at startup.
+
+The front machine's launchd agent is
+[com.ricardo.lan-proxy.plist](../config/lan-proxy/com.ricardo.lan-proxy.plist)
 (not loaded by anything here; installing it is an operator step).
 
-## Inbound limit on the target
+## Optional: pf instead of --allow
 
-The target service binds all interfaces, so the limit is a pf anchor,
-[family-games.pf](../config/lan-proxy/family-games.pf): loopback and the addresses in
-the table `family_games_clients` may reach the port; everything else is dropped. The
-table starts empty.
-
-`lan-proxy-pf-refresh --host NAME` resolves the proxy machine by name every 60 s (as
-root, from [its LaunchDaemon](../config/lan-proxy/com.ricardo.family-games-pf-refresh.plist)),
-keeps the usable IPv4s in the home LAN (`_lan.LAN`) and replaces the table. A failed
-lookup leaves the last good table in place and exits 1, so an mDNS blip does not cut
-clients off; the next good lookup replaces it. `--dry` resolves and prints only.
-
-It never enables pf or loads rules. The anchor load is runtime-only: after a reboot,
-load it again before relying on the limit.
+[family-games.pf](../config/lan-proxy/family-games.pf) admits loopback and the table
+`family_games_clients` to port 4325 and drops everything else, for a service bound to
+all interfaces. `lan-proxy-pf-refresh --host NAME` (as root, from
+[its LaunchDaemon](../config/lan-proxy/com.ricardo.family-games-pf-refresh.plist))
+fills the table by name every 60 s, keeps the last good table when a lookup fails, and
+never enables pf or loads rules. It needs root and a pf load after every reboot, which
+is why `--allow` is the default.
 
 ## Health
 

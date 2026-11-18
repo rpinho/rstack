@@ -9,6 +9,7 @@ import argparse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
+import ipaddress
 import logging
 from pathlib import Path
 import signal
@@ -70,13 +71,73 @@ async def failure_reply(reader, writer, status):
         pass
 
 
+class Allow:
+    """Source allowlist by NAME: loopback always, plus whatever the names resolve to now.
+
+    The answer is cached for `ttl` seconds. A failed lookup keeps the last good set (a
+    blip must not lock the client out). A refused peer forces one fresh lookup if the
+    cache is older than `retry` seconds, so a client that just changed address gets in.
+    """
+
+    def __init__(self, names, ttl=30, retry=5, timeout=3, resolver=None):
+        self.names, self.ttl, self.retry, self.timeout = list(names), ttl, retry, timeout
+        self.resolver = resolver
+        self.addresses, self.at = frozenset(), None
+        self.lock = None  # created on the running loop (Python 3.9 binds a Lock to its loop)
+        self.pending = None
+
+    async def refresh(self):
+        loop = asyncio.get_running_loop()
+        resolver = self.resolver or loop.getaddrinfo
+        found = set()
+        try:
+            for name in self.names:
+                infos = await asyncio.wait_for(resolver(name, None, type=socket.SOCK_STREAM), self.timeout)
+                found.update(ipaddress.ip_address(info[4][0].split('%')[0]) for info in infos)
+        except (OSError, ValueError, asyncio.TimeoutError) as exc:
+            LOG.warning('allowlist lookup failed (%s); keeping %s', type(exc).__name__,
+                        ','.join(sorted(map(str, self.addresses))) or 'nothing')
+            return
+        if found != self.addresses:
+            LOG.info('allowlist %s = %s', ','.join(self.names), ','.join(sorted(map(str, found))))
+        self.addresses = frozenset(found)
+        self.at = loop.time()
+
+    async def permits(self, peer):
+        ip = ipaddress.ip_address(str(peer).split('%')[0])
+        if getattr(ip, 'ipv4_mapped', None):
+            ip = ip.ipv4_mapped
+        if ip.is_loopback:
+            return True
+        self.lock = self.lock or asyncio.Lock()
+        now = asyncio.get_running_loop().time()
+        if self.at is None:
+            async with self.lock:
+                if self.at is None:
+                    await self.refresh()
+        elif now - self.at >= self.ttl and not self.lock.locked():
+            # Stale: answer from the cache now and refresh in the background, so a
+            # lookup never sits in front of an ordinary request.
+            async def background():
+                async with self.lock:
+                    await self.refresh()
+            self.pending = asyncio.ensure_future(background())
+        if ip in self.addresses:
+            return True
+        async with self.lock:
+            if self.at is None or asyncio.get_running_loop().time() - self.at >= self.retry:
+                await self.refresh()
+        return ip in self.addresses
+
+
 class Proxy:
     def __init__(self, host='m5.local', port=4325, connect_timeout=3, idle_timeout=120,
-                 max_connections=128, resolver=None, connector=None):
+                 max_connections=128, resolver=None, connector=None, allow=None):
         self.host, self.port = host, port
         self.connect_timeout, self.idle_timeout = connect_timeout, idle_timeout
         self.max_connections = max_connections
         self.resolver, self.connector = resolver, connector
+        self.allow = allow
         self.active = set()
 
     async def handle(self, reader, writer):
@@ -89,6 +150,15 @@ class Proxy:
         upstream = None
         pumps = []
         try:
+            if self.allow is not None:
+                peer = (writer.get_extra_info('peername') or ('',))[0]
+                try:
+                    allowed = await self.allow.permits(peer)
+                except ValueError:
+                    allowed = False
+                if not allowed:
+                    LOG.warning('refused %s: not in the allowlist', peer)
+                    return
             try:
                 incoming, upstream = await connect_target(
                     self.host, self.port, self.connect_timeout, self.resolver, self.connector)
@@ -149,13 +219,15 @@ async def run(args):
     loop = asyncio.get_running_loop()
     # libc DNS can outlive cancellation, so cap the resolver's thread count as well.
     loop.set_default_executor(ThreadPoolExecutor(max_workers=4, thread_name_prefix='lan-dns'))
+    allow = Allow(args.allow, args.allow_ttl) if args.allow else None
     proxy = Proxy(args.target, args.target_port, args.connect_timeout, args.idle_timeout,
-                  args.max_connections)
+                  args.max_connections, allow=allow)
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
-    server = await asyncio.start_server(proxy.handle, '127.0.0.1', args.listen_port, backlog=128)
-    LOG.info('listening 127.0.0.1:%s -> %s:%s', args.listen_port, args.target, args.target_port)
+    server = await asyncio.start_server(proxy.handle, args.listen_host, args.listen_port, backlog=128)
+    LOG.info('listening %s:%s -> %s:%s%s', args.listen_host, args.listen_port, args.target, args.target_port,
+             ' (allow: loopback, ' + ', '.join(args.allow) + ')' if args.allow else '')
     async with server:
         await stop.wait()
     for task in list(proxy.active):
@@ -165,18 +237,25 @@ async def run(args):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--listen-host', default='127.0.0.1',
+                    help='address to listen on (default loopback); anything else requires --allow')
     ap.add_argument('--listen-port', type=int, default=14325)
     ap.add_argument('--target', default='m5.local')
     ap.add_argument('--target-port', type=int, default=4325)
     ap.add_argument('--connect-timeout', type=float, default=3)
     ap.add_argument('--idle-timeout', type=float, default=120)
     ap.add_argument('--max-connections', type=int, default=128)
+    ap.add_argument('--allow', action='append', default=[], metavar='NAME',
+                    help='admit only loopback and the addresses NAME resolves to (repeatable)')
+    ap.add_argument('--allow-ttl', type=float, default=30, help='seconds to cache --allow lookups')
     ap.add_argument('--log', help='append-only file (default stderr); parent directory must exist')
     args = ap.parse_args(argv)
     if (not 1 <= args.listen_port <= 65535 or not 1 <= args.target_port <= 65535
             or not 0 < args.connect_timeout <= 60 or not 0 < args.idle_timeout <= 3600
-            or not 1 <= args.max_connections <= 1024):
+            or not 1 <= args.max_connections <= 1024 or not 1 <= args.allow_ttl <= 3600):
         ap.error('invalid port, timeout or connection bound')
+    if args.listen_host not in ('127.0.0.1', '::1', 'localhost') and not args.allow:
+        ap.error('--listen-host beyond loopback needs --allow NAME')
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s',
                         filename=str(Path(args.log).expanduser()) if args.log else None)
     try:
