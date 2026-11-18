@@ -6,7 +6,7 @@
 --kb defaults to $EGRESS_CONTACTS_KB and --contacts to $EGRESS_CONTACTS_JSON; the
 source locations are host values and never live in this repository.
 
-Only counts go to stdout. Names go only into the explicitly named patterns file.
+Only counts and fixed rule shapes go to stdout. Names go only into the explicitly named patterns file.
 Replaces its own marked block, preserving all other rules. Back up that file before
 running. Text/Markdown/HTML/JSON are read directly; PDFs use pdftotext when available.
 Images, audio and unsupported files are counted as skipped, never called covered.
@@ -57,6 +57,26 @@ ENTITY_FIELDS = {'name', 'org', 'organization', 'doctor', 'doctors', 'provider',
                  'clinic', 'clinics', 'hospital', 'practice', 'portal', 'portals', 'aliases'}
 
 
+class Candidates(set):
+    """Keep extraction categories without putting source values in summaries."""
+    def __init__(self):
+        super().__init__()
+        self.categories = {}
+
+    def record(self, value, category):
+        super().add(value)
+        self.categories.setdefault(value, set()).add(category)
+
+    def update(self, values):
+        for value in values:
+            for category in getattr(values, 'categories', {}).get(value, {'provider'}):
+                self.record(value, category)
+
+    def category(self, value):
+        categories = self.categories.get(value, {'provider'})
+        return next(c for c in ('portal', 'organization', 'provider') if c in categories)
+
+
 class TextHTML(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -87,21 +107,24 @@ def clean(value):
     return ' '.join(value.strip(' \t\r\n*`|:;,.—–-').split())
 
 
-def add(names, value, person=False):
+def add(names, value, person=False, category='provider'):
     value = clean(value)
     words = re.findall(r'[^\W\d_]+', value, re.UNICODE)
     if sum(c.isalpha() for c in value) < 4 or not words:
         return
     if all(w.casefold() in GENERIC for w in words):
         return
-    names.add(value.casefold())
+    if isinstance(names, Candidates):
+        names.record(value.casefold(), category)
+    else:
+        names.add(value.casefold())
     # Records often use just the doctor's surname in follow-up notes.
     if person and len(words) > 1:
-        add(names, words[-1])
+        add(names, words[-1], category=category)
 
 
 def text_names(text):
-    names = set()
+    names = Candidates()
     # Keep line boundaries: a name must not swallow the following record field.
     text = re.sub(r'\[([^]\n]+)\]\([^\n)]*\)', r'\1', text)
     text = text.replace('**', '').replace('`', '')
@@ -110,15 +133,19 @@ def text_names(text):
             add(names, m.group(1), person=True)
     for rx in (ORGANIZATION, PORTAL):
         for m in rx.finditer(text):
-            add(names, next(g for g in m.groups() if g))
+            add(names, next(g for g in m.groups() if g),
+                category='portal' if rx is PORTAL else 'organization')
     # A portal-specific suffix also recognizes a standalone brand in a record title.
     for m in PORTAL_BRAND.finditer(text):
-        add(names, m.group())
+        add(names, m.group(), category='portal')
     for m in FIELD.finditer(text):
         value = re.split(r'[|;,—–()]', m.group(1))[0].strip()
         match = re.match(NAME, re.sub(r'^(?i:dr\.?)\s+', '', value))
         if match:
-            add(names, match.group(), person=bool(re.search(r'(?i)doctor|physician|provider', m.group())))
+            field = m.group().split(':', 1)[0].casefold()
+            category = ('portal' if 'portal' in field else 'provider'
+                        if re.search(r'doctor|physician|provider', field) else 'organization')
+            add(names, match.group(), person=category == 'provider', category=category)
     return names
 
 
@@ -135,7 +162,7 @@ def strings(value):
 
 def contact_names(data):
     """Handle row lists, {contacts: [...]}, and maps keyed by contact name."""
-    names, records, medical_records = set(), 0, 0
+    names, records, medical_records = Candidates(), 0, 0
     if isinstance(data, dict):
         if 'contacts' in data:
             return contact_names(data['contacts'])
@@ -160,9 +187,11 @@ def contact_names(data):
                     if field in {'org', 'organization'}:
                         names.update(text_names(s))
                         if re.fullmatch(NAME, s.strip()):
-                            add(names, s)
+                            add(names, s, category='organization')
                     else:
-                        add(names, s, person=field in {'name', 'doctor', 'doctors', 'provider', 'providers'})
+                        category = ('portal' if field in {'portal', 'portals'} else 'organization'
+                                    if field in {'clinic', 'clinics', 'hospital', 'practice'} else 'provider')
+                        add(names, s, person=category == 'provider', category=category)
             # Medical entities embedded in notes still count; the nonmedical contact's own name doesn't.
             for s in strings(value):
                 names.update(text_names(s))
@@ -194,13 +223,13 @@ def read_record(path):
 
 
 def collect(kb, contacts):
-    names, summaries = set(), []
+    names, summaries = Candidates(), []
     if not (kb / 'health').is_dir():
         raise ValueError('KB health directory missing')
     for root in (kb / 'health', kb / 'people'):
         if not root.exists():
             continue
-        found, counts = set(), Counter()
+        found, counts = Candidates(), Counter()
         for path in sorted(root.rglob('*')):
             if not path.is_file() or path.is_symlink():
                 continue
@@ -211,19 +240,175 @@ def collect(kb, contacts):
                 continue
             counts['files_read'] += 1
             found.update(text_names(text))
-        summaries.append(dict(source=str(root), patterns=len(found), **counts))
+        summaries.append(dict(source_index=len(summaries), patterns=len(found), **counts))
         names.update(found)
     for path in contacts:
         if path.stat().st_size > MAX_BYTES:
             raise ValueError('contacts file too large')
         found, records, medical = contact_names(json.loads(path.read_text(encoding='utf-8')))
-        summaries.append(dict(source=str(path), records=records, medical_records=medical, patterns=len(found)))
+        summaries.append(dict(source_index=len(summaries), records=records, medical_records=medical, patterns=len(found)))
         names.update(found)
     return names, summaries
 
 
 def pattern(name):
     return r'(?i)(?<!\w)' + re.escape(name).replace(r'\ ', r'\s+') + r'(?!\w)'
+
+
+def words(value):
+    return re.findall(r"[^\W\d_]+", unicodedata.normalize('NFC', value).casefold())
+
+
+def owner_identity(kb):
+    """Read the effective author as well as config (environment can override git)."""
+    identities = {str(Path.home()), str(kb.absolute()), str(kb.resolve())}
+    names = {Path.home().name}
+    commands = [('git', 'config', 'user.name'), ('git', 'config', 'user.email'),
+                ('git', 'var', 'GIT_AUTHOR_IDENT'), ('id', '-F'), ('id', '-un')]
+    for command in commands:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        value = result.stdout.strip() if result.returncode == 0 else ''
+        if command[:2] == ('git', 'var') and value:
+            identities.add(value)
+            match = re.fullmatch(r'(.*) <([^>]+)> \d+ [+-]\d+', value)
+            if not match:
+                raise ValueError('cannot parse author identity')
+            identities.update(match.groups())
+            names.update(match.groups())
+        elif value:
+            identities.add(value)
+            names.add(value)
+    return identities, identity_terms(names)
+
+
+def identity_terms(names):
+    # Components also exclude a household member embedded in a longer rule.
+    terms = set()
+    for name in names:
+        name = name.split('@', 1)[0]
+        terms.update(words(name))
+    return terms
+
+
+def household_names(kb):
+    """Actual KB markers: self/ and family/ directories and Markdown Tags lines.
+
+    Also accept people-page relationship/role and YAML metadata. Only page identity
+    fields and the H1 identity prefix contribute, never names mentioned in prose.
+    """
+    names, pages = set(), 0
+    for path in sorted(kb.rglob('*.md')):
+        if path.is_symlink() or path.stat().st_size > MAX_BYTES:
+            continue
+        text = path.read_text(encoding='utf-8')
+        marked = bool({'self', 'family'} & set(path.relative_to(kb).parts[:-1]))
+        for line in text.splitlines():
+            match = re.match(r'(?i)^\s*[-*]?\s*(?:tags|relationship|relation|role|type)\s*:\s*(.*)', line)
+            if match and {'self', 'family'} & set(words(match[1])):
+                marked = True
+        if not marked:
+            continue
+        pages += 1
+        for line in text.splitlines():
+            match = re.match(r'(?i)^\s*(?:name|title|aliases)\s*:\s*(.+)', line)
+            heading = re.match(r'^#\s+(.+)', line)
+            if match:
+                values = re.split(r'[,;|]', match[1].strip(' []'))
+            elif heading:
+                values = [re.split(r'\s+[—–-]\s+|\s*--\s*|:', heading[1])[0]]
+            else:
+                continue
+            for value in values:
+                value = value.strip(' *`\"\'')
+                if re.fullmatch(NAME, value, re.I if match else 0):
+                    names.add(value)
+    return identity_terms(names), pages
+
+
+def private_rules(text):
+    rules, labels = [], Counter()
+    managed = False
+    for line in text.splitlines():
+        if line == BEGIN:
+            managed = True
+        elif line == END:
+            managed = False
+            continue
+        if managed:
+            continue
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        label, sep, expression = line.partition('\t')
+        if not sep or not label.strip() or not expression.strip():
+            raise ValueError('malformed private rule')
+        rules.append(re.compile(expression.strip(), re.I))
+        labels[label.strip()] += 1
+    return rules, labels
+
+
+def load_word_lists(dictionary, first_names):
+    # Missing English dictionary refuses generation, rather than silently weakening it.
+    common = set()
+    for path in [dictionary, *first_names]:
+        if path is not None and path.exists():
+            common.update(line.strip().casefold() for line in path.read_text().splitlines()
+                          if line.strip() and not line.startswith('#'))
+        elif path == dictionary:
+            raise ValueError('English dictionary missing')
+    # Keep the common short-name case covered even on hosts without propernames.
+    common.update('john mary linda paul james robert michael william david richard joseph thomas charles '
+                  'christopher daniel matthew anthony donald steven andrew joshua '
+                  'jennifer patricia elizabeth barbara susan jessica sarah karen '
+                  'nancy margaret lisa betty dorothy sandra ashley kimberly emily'.split())
+    return common
+
+
+def filter_names(names, excluded, existing, common):
+    kept, before, after, dropped = Candidates(), Counter(), Counter(), Counter()
+    excluded = set(excluded)
+    # A pre-existing full person-name rule also protects its extracted surname.
+    for name in names:
+        if names.category(name) == 'provider' and any(rx.fullmatch(name) for rx in existing):
+            excluded.update(words(name))
+    for name in sorted(names):
+        category = names.category(name)
+        tokens = words(name)
+        single = len(name.split()) == 1
+        kind = category + ('_single' if single else '_multi')
+        before[kind] += 1
+        if excluded.intersection(tokens) or any(rx.search(name) or
+                any(rx.search(token) for token in tokens) for rx in existing):
+            dropped['excluded'] += 1
+            continue
+        minimum = 4 if category == 'portal' else 6
+        if single and (sum(map(len, tokens)) < minimum or name in common
+                       or any(token in common for token in tokens)):
+            # Portal brands still need to be distinctive, not common words/names.
+            dropped['single_word'] += 1
+            continue
+        kept.record(name, category)
+        after[kind] += 1
+    counts = {kind: {'before': before[kind], 'after': after[kind]}
+              for kind in sorted(set(before) | set(after))}
+    return kept, counts, dict(dropped)
+
+
+def self_test(names, identities):
+    if any(re.search(pattern(name), identity) for name in names for identity in identities):
+        raise ValueError('identity self-test refused generated rules')
+
+
+def rule_shapes(names):
+    # Shape vocabulary is fixed; no token from a source can reach stdout.
+    counts = Counter()
+    for name in names:
+        category = names.category(name)
+        count = len(name.split())
+        shape = ('<Portal>' if category == 'portal' else '<Organization>'
+                 if category == 'organization' else '<Last>') if count == 1 else (
+                     '<First> <Last>' if category == 'provider' else '<Word> <Word+>')
+        counts[shape] += 1
+    return dict(sorted(counts.items()))
 
 
 def merged(old, names):
@@ -246,7 +431,12 @@ def main(argv=None):
                     help='wiki root holding health/ (default: $EGRESS_CONTACTS_KB)')
     ap.add_argument('--contacts', type=Path, action='append',
                     help='contacts JSON; repeat for more (default: $EGRESS_CONTACTS_JSON)')
-    ap.add_argument('--dry-run', action='store_true', help='read sources and print counts; write nothing')
+    ap.add_argument('--dry-run', action='store_true', help='print counts and rule shapes; write nothing')
+    ap.add_argument('--exclude-patterns', type=Path,
+                    help='read existing private labels here too (default: gate patterns.txt)')
+    ap.add_argument('--dictionary', type=Path, default=Path('/usr/share/dict/words'))
+    ap.add_argument('--first-names', type=Path, action='append',
+                    help='optional first-name list; defaults to /usr/share/dict/propernames if present')
     args = ap.parse_args(argv)
     contacts_env = os.environ.get('EGRESS_CONTACTS_JSON')
     contacts = args.contacts or ([Path(contacts_env)] if contacts_env else [])
@@ -260,6 +450,21 @@ def main(argv=None):
         if out.is_symlink():
             raise ValueError('output must not be a symlink')
         old = out.read_text(encoding='utf-8') if out.exists() else ''
+        private = args.exclude_patterns or Path(os.environ.get('RSTACK_EGRESS_DIR') or
+                                               '~/.config/rstack/egress').expanduser() / 'patterns.txt'
+        private_text = private.expanduser().read_text(encoding='utf-8')
+        existing, labels = private_rules(private_text)
+        if private.expanduser().resolve() != out.resolve():
+            output_rules, output_labels = private_rules(old)
+            existing.extend(output_rules)
+            labels.update(output_labels)
+        identities, excluded = owner_identity(args.kb.expanduser())
+        household, pages = household_names(args.kb.expanduser())
+        common = load_word_lists(args.dictionary.expanduser(),
+                                 [p.expanduser() for p in args.first_names] if args.first_names
+                                 else [Path('/usr/share/dict/propernames')])
+        names, categories, dropped = filter_names(names, excluded | household, existing, common)
+        self_test(names, identities)
         result = merged(old, names)
         if not args.dry_run:
             temporary = None
@@ -274,9 +479,14 @@ def main(argv=None):
             finally:
                 if temporary is not None and temporary.exists():
                     temporary.unlink()  # only this invocation's temporary file
-        print(json.dumps(dict(dry_run=args.dry_run, sources=sources, patterns=len(names)), sort_keys=True))
+        summary = dict(dry_run=args.dry_run, sources=sources, patterns=len(names),
+                       categories=categories, dropped=dropped, household_pages=pages,
+                       private_rules=sum(labels.values()), identity_checks=len(identities))
+        if args.dry_run:
+            summary['shapes'] = rule_shapes(names)
+        print(json.dumps(summary, sort_keys=True))
         return 0
-    except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
+    except (OSError, ValueError, UnicodeError, re.error, subprocess.SubprocessError):
         # Input filenames, malformed JSON and decoder errors can themselves contain names.
         print('egress-contacts: cannot read sources or update patterns; no names printed', file=sys.stderr)
         return 1

@@ -44,13 +44,19 @@ def sources(tmp_path):
     ]))
     conf = tmp_path / 'egress'
     conf.mkdir()
+    (conf / 'exclusions.txt').write_text('# no private fixture exclusions\n')
+    (conf / 'words.txt').write_text('summer\nclinic\nportal\n')
+    (conf / 'first-names.txt').write_text('jennifer\nmichael\n')
     return kb, contacts, conf
 
 
 def generate(sources, *args):
     kb, contacts, conf = sources
     return subprocess.run([sys.executable, str(TOOLS / 'egress-contacts'), str(conf / 'patterns.txt'),
-                           '--kb', str(kb), '--contacts', str(contacts), *args],
+                           '--kb', str(kb), '--contacts', str(contacts),
+                           '--exclude-patterns', str(conf / 'exclusions.txt'),
+                           '--dictionary', str(conf / 'words.txt'),
+                           '--first-names', str(conf / 'first-names.txt'), *args],
                           text=True, capture_output=True, timeout=30)
 
 
@@ -169,3 +175,115 @@ def test_pre_push_contact_rules(sources, tmp_path, text, blocked):
     assert result.returncode == (2 if blocked else 0), result.stdout + result.stderr
     if blocked:
         assert '[contact]' in result.stdout
+
+
+def test_owner_household_and_private_label_exclusions(sources, monkeypatch):
+    mod = load('contact_exclusions', TOOLS / 'egress-contacts')
+    kb, contacts, conf = sources
+    contacts.write_text(json.dumps([
+        dict(name='Syntheticowner Exampleowner', role='doctor'),
+        dict(name='Dr. Syntheticowner Othername', role='doctor'),
+        dict(name='Dr. Familymember Othername', role='doctor'),
+        dict(name='Dr. Aliasrelative Othername', role='doctor'),
+        dict(name='Dr. Privatefamily Othername', role='doctor'),
+    ]))
+    (kb / 'people/self.md').write_text('# Syntheticowner Exampleowner\n*Tags: self, person*\n')
+    (kb / 'people/relative.md').write_text(
+        '---\nrelationship: family\naliases: [Aliasrelative]\n---\n# Familymember Examplerelative\n')
+    (conf / 'exclusions.txt').write_text('family-name\t(?i)\\bprivatefamily\\b\n')
+    result = generate(sources)
+    assert result.returncode == 0
+    body = (conf / 'patterns.txt').read_text()
+    for name in ['syntheticowner', 'exampleowner', 'familymember', 'aliasrelative', 'privatefamily']:
+        assert name not in body
+    assert json.loads(result.stdout)['dropped']['excluded'] >= 5
+    assert 'source' not in json.loads(result.stdout)['sources'][0]
+    names = mod.Candidates()
+    mod.add(names, 'Syntheticowner Exampleowner', person=True)
+    monkeypatch.setattr(mod.Path, 'home', classmethod(lambda cls: Path('/Users/Syntheticowner')))
+    class Result:
+        returncode = 0
+        stdout = ''
+    def run(command, **kwargs):
+        result = Result()
+        result.stdout = ('Syntheticowner Exampleowner <owner@example.invalid> 123 +0000'
+                         if command[:2] == ('git', 'var') else 'Syntheticowner')
+        return result
+    monkeypatch.setattr(mod.subprocess, 'run', run)
+    identities, excluded = mod.owner_identity(kb)
+    kept, _, _ = mod.filter_names(names, excluded, [], set())
+    assert not kept
+    assert '/Users/Syntheticowner' in identities
+
+
+def test_single_word_policy_and_titled_provider(sources):
+    kb, contacts, conf = sources
+    contacts.write_text(json.dumps([
+        dict(name='Jennifer', role='doctor'),
+        dict(name='Summer', role='doctor'),
+        dict(name='Short', role='doctor'),
+        dict(name='Li-Bo', role='doctor'),
+        dict(name='John-Paul', role='doctor'),
+        dict(name='Dr. Testname Example', role='doctor'),
+        dict(portal='Zyxra'),
+    ]))
+    result = generate(sources, '--dry-run')
+    assert result.returncode == 0
+    summary = json.loads(result.stdout)
+    assert summary['dropped']['single_word'] >= 5
+    assert '<First> <Last>' in summary['shapes']
+    assert generate(sources).returncode == 0
+    body = (conf / 'patterns.txt').read_text()
+    matches = lambda value: any(re.search(line.split('\t', 1)[1], value)
+                               for line in body.splitlines() if line.startswith('contact\t'))
+    assert matches('Dr. Testname Example')
+    assert matches('Zyxra')
+    assert not any(matches(name) for name in ['Jennifer', 'Summer', 'Short', 'Li-Bo', 'John-Paul'])
+
+
+def test_self_test_refuses_before_any_write(sources, monkeypatch):
+    mod = load('contact_self_test', TOOLS / 'egress-contacts')
+    kb, contacts, conf = sources
+    output = conf / 'patterns.txt'
+    output.write_text('# untouched\n')
+    monkeypatch.setattr(mod, 'owner_identity', lambda kb: ({'/Users/Testname'}, set()))
+    assert mod.main([str(output), '--kb', str(kb), '--contacts', str(contacts),
+                     '--exclude-patterns', str(conf / 'exclusions.txt'),
+                     '--dictionary', str(conf / 'words.txt'),
+                     '--first-names', str(conf / 'first-names.txt')]) == 1
+    assert output.read_text() == '# untouched\n'
+    with pytest.raises(ValueError):
+        mod.self_test({'testname'}, {'/Users/Testname'})
+
+
+def test_existing_labels_apply_inside_multiword_names_and_bad_rules_refuse(sources):
+    kb, contacts, conf = sources
+    contacts.write_text(json.dumps([dict(name='Dr. Othername Hiddenfamily', role='doctor')]))
+    (conf / 'exclusions.txt').write_text('other-private-label\t(?i)hiddenfamily\n')
+    assert generate(sources).returncode == 0
+    assert 'hiddenfamily' not in (conf / 'patterns.txt').read_text()
+    original = (conf / 'patterns.txt').read_bytes()
+    (conf / 'exclusions.txt').write_text('family-name\t[\n')
+    assert generate(sources).returncode == 1
+    assert (conf / 'patterns.txt').read_bytes() == original
+
+
+def test_private_rules_ignore_only_the_generated_block():
+    mod = load('contact_existing_rules', TOOLS / 'egress-contacts')
+    rules, labels = mod.private_rules(
+        'contact\tManualname\n# BEGIN egress-contacts\ncontact\tGeneratedname\n'
+        '# END egress-contacts\nfamily-name\tFamilyname\n')
+    assert labels == {'contact': 1, 'family-name': 1}
+    assert any(rx.search('manualname') for rx in rules)
+    assert not any(rx.search('generatedname') for rx in rules)
+
+
+def test_existing_full_person_rule_also_excludes_extracted_surname():
+    mod = load('contact_full_name_exclusion', TOOLS / 'egress-contacts')
+    candidates, _, _ = mod.contact_names([
+        dict(name='Othername Protectedname', role='doctor'),
+        dict(name='Dr. Protectedname Differentname', role='doctor'),
+    ])
+    existing, _ = mod.private_rules('family-name\tOthername\\s+Protectedname\n')
+    kept, _, _ = mod.filter_names(candidates, set(), existing, set())
+    assert not any('protectedname' in name for name in kept)
