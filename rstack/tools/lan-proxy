@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""Transparent HTTP/raw TCP relay; resolve the target on EVERY accepted connection.
+
+No HTTP parsing on the success path: Host, Origin, streaming, WebSockets and half-closes
+are preserved. No upstream pooling or address cache. Existing connections stay attached
+to their original peer. Run --help; see lan-proxy.md for the unloaded launchd proposal.
+"""
+import argparse
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import contextlib
+import logging
+from pathlib import Path
+import signal
+import socket
+
+
+LOG = logging.getLogger('lan-proxy')
+HTTP_METHODS = (b'GET ', b'HEAD ', b'POST ', b'PUT ', b'PATCH ', b'DELETE ', b'OPTIONS ', b'CONNECT ')
+
+
+async def connect_target(host, port, timeout, resolver=None, connector=None):
+    """One total deadline covers fresh system resolution and all address attempts."""
+    loop = asyncio.get_running_loop()
+    resolver = resolver or loop.getaddrinfo
+    connector = connector or asyncio.open_connection
+
+    async def dial():
+        addresses = await resolver(host, port, type=socket.SOCK_STREAM)
+        # The deployed hub binds 0.0.0.0 and PF denies LAN IPv6. Prefer IPv4 so
+        # an mDNS AAAA answer cannot consume the deadline before its working A.
+        addresses = sorted(addresses, key=lambda item: item[0] != socket.AF_INET)
+        last = OSError('resolver returned no addresses')
+        seen = set()
+        for family, _, _, _, address in addresses:
+            if (family, address) in seen:
+                continue
+            seen.add((family, address))
+            try:
+                # The resolver already ran; a numeric dial must not do another lookup.
+                return await connector(address[0], address[1], family=family,
+                                       flags=socket.AI_NUMERICHOST)
+            except OSError as exc:
+                last = exc
+        raise last
+
+    return await asyncio.wait_for(dial(), timeout)
+
+
+async def close_writer(writer):
+    writer.close()
+    with contextlib.suppress(OSError, asyncio.TimeoutError):
+        await asyncio.wait_for(writer.wait_closed(), 1)
+
+
+async def failure_reply(reader, writer, status):
+    """HTTP gets a small gateway error; binary/server-first TCP gets clean EOF.
+
+    Only inspect a bounded prefix after a failed dial, never on the relay path.
+    """
+    try:
+        prefix = await asyncio.wait_for(reader.read(16), .25)
+        if prefix.startswith(HTTP_METHODS):
+            body = (status + '\n').encode('ascii')
+            writer.write(('HTTP/1.1 ' + status + '\r\nConnection: close\r\n'
+                          'Content-Type: text/plain\r\nContent-Length: ' + str(len(body)) +
+                          '\r\n\r\n').encode('ascii') + body)
+            await asyncio.wait_for(writer.drain(), 1)
+    except (OSError, asyncio.TimeoutError):
+        pass
+
+
+class Proxy:
+    def __init__(self, host='m5.local', port=4325, connect_timeout=3, idle_timeout=120,
+                 max_connections=128, resolver=None, connector=None):
+        self.host, self.port = host, port
+        self.connect_timeout, self.idle_timeout = connect_timeout, idle_timeout
+        self.max_connections = max_connections
+        self.resolver, self.connector = resolver, connector
+        self.active = set()
+
+    async def handle(self, reader, writer):
+        task = asyncio.current_task()
+        if len(self.active) >= self.max_connections:
+            LOG.warning('capacity reached; connection closed')
+            await close_writer(writer)
+            return
+        self.active.add(task)
+        upstream = None
+        pumps = []
+        try:
+            try:
+                incoming, upstream = await connect_target(
+                    self.host, self.port, self.connect_timeout, self.resolver, self.connector)
+            except (OSError, asyncio.TimeoutError) as exc:
+                timed_out = isinstance(exc, (asyncio.TimeoutError, TimeoutError))
+                LOG.warning('connect %s:%s failed: %s%s', self.host, self.port,
+                            type(exc).__name__, ' (deadline)' if timed_out else ': ' + str(exc))
+                await failure_reply(reader, writer, '504 Gateway Timeout' if timed_out else '502 Bad Gateway')
+                return
+            LOG.info('connected %s:%s -> %s', self.host, self.port, upstream.get_extra_info('peername'))
+            last_activity = asyncio.get_running_loop().time()
+
+            async def copy(source, destination):
+                nonlocal last_activity
+                while True:
+                    chunk = await source.read(65536)
+                    if not chunk:
+                        if destination.can_write_eof():
+                            destination.write_eof()
+                        return
+                    last_activity = asyncio.get_running_loop().time()
+                    destination.write(chunk)
+                    await asyncio.wait_for(destination.drain(), self.idle_timeout)
+
+            async def idle_watch():
+                while True:
+                    remaining = self.idle_timeout - (asyncio.get_running_loop().time() - last_activity)
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError('connection idle')
+                    await asyncio.sleep(remaining)
+
+            pumps = [asyncio.create_task(copy(reader, upstream)),
+                     asyncio.create_task(copy(incoming, writer))]
+            watchdog = asyncio.create_task(idle_watch())
+            pumps.append(watchdog)
+            # A half-close in either direction must not discard the other direction.
+            transfer = asyncio.gather(*pumps[:2])
+            try:
+                done, _ = await asyncio.wait([transfer, watchdog], return_when=asyncio.FIRST_COMPLETED)
+                for completed in done:
+                    completed.result()
+            finally:
+                transfer.cancel()
+                await asyncio.gather(transfer, return_exceptions=True)
+        except (OSError, asyncio.TimeoutError) as exc:
+            LOG.info('connection closed: %s', type(exc).__name__)
+        finally:
+            for pump in pumps:
+                pump.cancel()
+            await asyncio.gather(*pumps, return_exceptions=True)
+            if upstream is not None:
+                await close_writer(upstream)
+            await close_writer(writer)
+            self.active.discard(task)
+
+
+async def run(args):
+    loop = asyncio.get_running_loop()
+    # libc DNS can outlive cancellation, so cap the resolver's thread count as well.
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=4, thread_name_prefix='lan-dns'))
+    proxy = Proxy(args.target, args.target_port, args.connect_timeout, args.idle_timeout,
+                  args.max_connections)
+    stop = asyncio.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+    server = await asyncio.start_server(proxy.handle, '127.0.0.1', args.listen_port, backlog=128)
+    LOG.info('listening 127.0.0.1:%s -> %s:%s', args.listen_port, args.target, args.target_port)
+    async with server:
+        await stop.wait()
+    for task in list(proxy.active):
+        task.cancel()
+    await asyncio.gather(*list(proxy.active), return_exceptions=True)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--listen-port', type=int, default=14325)
+    ap.add_argument('--target', default='m5.local')
+    ap.add_argument('--target-port', type=int, default=4325)
+    ap.add_argument('--connect-timeout', type=float, default=3)
+    ap.add_argument('--idle-timeout', type=float, default=120)
+    ap.add_argument('--max-connections', type=int, default=128)
+    ap.add_argument('--log', help='append-only file (default stderr); parent directory must exist')
+    args = ap.parse_args(argv)
+    if (not 1 <= args.listen_port <= 65535 or not 1 <= args.target_port <= 65535
+            or not 0 < args.connect_timeout <= 60 or not 0 < args.idle_timeout <= 3600
+            or not 1 <= args.max_connections <= 1024):
+        ap.error('invalid port, timeout or connection bound')
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s',
+                        filename=str(Path(args.log).expanduser()) if args.log else None)
+    try:
+        asyncio.run(run(args))
+    except OSError as exc:
+        LOG.error('startup failed: %s', exc)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

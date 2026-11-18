@@ -1,0 +1,7 @@
+# Proposal only. Load as com.apple/ricardo.family-games through com.apple/*.
+# No fixed destination address: protect the port on every IPv4/IPv6 interface.
+# Empty until lan-proxy-pf-refresh resolves M4; no stale hardcoded DHCP address.
+table <family_games_clients> persist
+pass in quick on lo0 proto tcp from any to self port 4325 flags S/SA keep state
+pass in quick inet proto tcp from <family_games_clients> to self port 4325 flags S/SA keep state
+block drop in quick proto tcp from any to self port 4325

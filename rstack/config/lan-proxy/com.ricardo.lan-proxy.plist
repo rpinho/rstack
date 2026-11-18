@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.ricardo.lan-proxy</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>/Users/ricardo/.local/share/research-harness/rstack/tools/lan-proxy</string>
+		<string>--listen-port</string>
+		<string>14325</string>
+		<string>--target</string>
+		<string>m5.local</string>
+		<string>--target-port</string>
+		<string>4325</string>
+		<string>--connect-timeout</string>
+		<string>3</string>
+		<string>--idle-timeout</string>
+		<string>120</string>
+		<string>--max-connections</string>
+		<string>128</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>StandardOutPath</key>
+	<string>/Users/ricardo/Library/Logs/lan-proxy.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/ricardo/Library/Logs/lan-proxy.log</string>
+</dict>
+</plist>

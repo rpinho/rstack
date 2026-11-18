@@ -23,6 +23,71 @@ def load():
 
 
 jh = load()
+
+
+class HubAnswer:
+    def __init__(self, *args, **kwargs):
+        self.status = 200
+
+    def request(self, method, path, headers):
+        assert method == 'GET' and path == '/api/config'
+        assert headers['Connection'] == 'close'
+
+    def getresponse(self):
+        return self
+
+    def read(self, size):
+        return b'{'
+
+    def close(self):
+        pass
+
+
+def test_lan_proxy_is_opt_in_and_dns_problem_reaches_existing_alerts(tmp_path, monkeypatch):
+    monkeypatch.setattr(jh, 'resolve_ipv4', lambda host: ['100.64.0.7'])
+    monkeypatch.setattr(jh.http.client, 'HTTPConnection', HubAnswer)
+    assert jh.lan_proxy_problems(None) == []
+    rows = jh.lan_proxy_problems({})
+    assert len(rows) == 1 and rows[0][0] == 'lan-proxy-dns'
+    assert 'outside 192.168.86.x' in rows[0][2]
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
+    sent = tmp_path / 'sent'
+    alert = "/bin/sh -c 'echo \"$0\" >> {}'".format(sent)
+    jh.report(rows, 'job-health', 'jobs', 'job', alert)
+    jh.report(rows, 'job-health', 'jobs', 'job', alert)
+    assert sent.read_text().count('lan-proxy-dns') == 1
+    monkeypatch.setattr(jh, 'resolve_ipv4', lambda host: ['192.168.86.135'])
+    assert jh.lan_proxy_problems({}) == []
+    jh.report([], 'job-health', 'jobs', 'job', alert)
+    assert 'RECOVERED lan-proxy-dns' in (tmp_path / 'state/job-health/log').read_text()
+
+
+@pytest.mark.parametrize('failure', ['resolve', 'connect', 'no-response', 'gateway-error'])
+def test_lan_proxy_missing_dns_or_no_hub_answer_alerts(failure, tmp_path, monkeypatch):
+    def resolver(host):
+        if failure == 'resolve':
+            raise OSError('no mDNS answer')
+        return ['192.168.86.134']
+
+    class BrokenHub(HubAnswer):
+        def request(self, *args, **kwargs):
+            if failure == 'connect':
+                raise ConnectionRefusedError('proxy absent')
+
+        def getresponse(self):
+            if failure == 'no-response':
+                raise TimeoutError('hub never replied')
+            if failure == 'gateway-error':
+                self.status = 504
+            return self
+
+    rows = jh.lan_proxy_problems({}, resolver=resolver, connection=BrokenHub)
+    assert rows[0][0] == ('lan-proxy-dns' if failure == 'resolve' else 'lan-proxy-hub')
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
+    sent = tmp_path / 'sent'
+    jh.report(rows, 'job-health', 'jobs', 'job', "/bin/sh -c 'echo \"$0\" >> {}'".format(sent))
+    assert rows[0][0] in sent.read_text()
+
 LISTING = ('PID\tStatus\tLabel\n'
            '-\t0\tcom.example.fine\n'
            '-\t78\tcom.example.preview\n'
