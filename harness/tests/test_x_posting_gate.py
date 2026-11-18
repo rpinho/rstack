@@ -290,6 +290,23 @@ def test_daily_limit_rechecked_at_posting_gate(local):
     assert hook_pipe(local, event('bash', payload('A checked certificate is ready.', None)))['hookSpecificOutput']['permissionDecision'] == 'deny'
 
 
+@pytest.mark.parametrize('gap, refused', [('', True), ('120', True), ('30', False), ('0', False)])
+def test_posting_gate_honours_the_gap_override(local, monkeypatch, gap, refused):
+    """11-17: the xr gate must apply RH_X_MIN_GAP_MINUTES the way lint and approve do."""
+    monkeypatch.setenv('RH_X_ORIGINALS_PER_DAY', '3')
+    approve(local, channel='x_post', text='A checked certificate is ready.')
+    other = local / 'lanes/other'
+    other.mkdir()
+    hour_ago = (dt.datetime.now(outreach.UTC) - dt.timedelta(minutes=60)).isoformat()
+    rh.append(other / 'OUTREACH.jsonl', dict(id='past', lane='other', channel='x_post', text='A previous original.',
+                                             status='sent', sent={'utc': hour_ago}))
+    monkeypatch.setenv('RH_X_MIN_GAP_MINUTES', gap)
+    run = xr_pipe(local, payload('A checked certificate is ready.', None))
+    assert Path(os.environ['XURL_TEST_RECORD']).exists() == (not refused), run.stderr
+    if refused:
+        assert 'within 120 min of another original: other/past' in run.stderr
+
+
 def test_one_approval_cannot_be_reused(local):
     approve(local)
     assert hook_pipe(local, event('browser')) is None

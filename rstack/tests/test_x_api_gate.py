@@ -65,6 +65,9 @@ def rows(path):
     ['--method=POST', '/2/tweets'], ['-XDELETE', '/2/tweets/00001'],
     ['-X', 'POST', '/2/dm_conversations/00001/messages'],
     ['media', 'upload', 'fixture.png'], ['/2/usage'], ['/2/usage/tweets?days=7'],
+    # 11-17: xr puts `-u ACCOUNT` first; x-post-ready's upload was refused as "expected one API endpoint".
+    ['-u', 'fixture_acct', 'media', 'upload', '--category', 'tweet_image', '--media-type', 'image/png', 'fixture.png'],
+    ['-u', 'fixture_acct', 'media', 'status', '00001'],
 ])
 def test_allow_classes_execute_and_record_outcome(gate, args):
     result = invoke(*args)
@@ -89,6 +92,7 @@ def test_allow_classes_execute_and_record_outcome(gate, args):
     ['/2/tweets', '-d{}'], ['-X', 'GET', '/2/users/00000/bookmarks', '--data', '{}'],
     ['-H', '/2/users/00000/bookmarks', '/2/tweets/00001'],
     ['/2/users/00000/bookmarks', '/2/tweets/00001'],
+    ['-u', 'fixture_acct', '/2/tweets/00001'], ['-u', 'media', '/2/tweets/00001'],
 ])
 def test_block_classes_never_execute_and_log_exit_86(gate, args):
     result = invoke(*args)

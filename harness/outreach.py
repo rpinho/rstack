@@ -508,7 +508,13 @@ def post_gone(pid):
         return None
 
 
-def activity_time(row):
+# An approval that never went out stops holding a slot after this long (general, 11-17: x-post-ready re-approved
+# four math originals every round, each failed its image upload, and each approval held the 120-min gap and a
+# daily-cap slot, so no other original could go out all day).
+APPROVAL_HOLD = dt.timedelta(minutes=30)
+
+
+def activity_time(row, clock=None):
     # A posting attempt also consumes a slot: the hook cannot know whether the network succeeded.
     # A dropped row does not: dropping it is the record that it never went out (general, 11-09: two
     # originals that failed on a media upload and on a still-processing video, both dropped, kept
@@ -520,7 +526,11 @@ def activity_time(row):
         if row.get(key, {}).get('utc'):
             return time_of(row[key]['utc'])
     if row.get('status') == 'approved':
-        return time_of(row['approval']['utc'])
+        # Only a fresh approval holds a slot: the post it approves is about to go out. One that is
+        # APPROVAL_HOLD old with no send or posting attempt did not go out, and counts for nothing.
+        stamp = time_of(row['approval']['utc'])
+        if clock is None or dt.timedelta(0) <= clock - stamp < APPROVAL_HOLD:
+            return stamp
     return None
 
 
@@ -577,7 +587,7 @@ def x_checks(row, text, everyone, clock, selected=(), cfg=None, posting=False):
         today = []
         for other in others:
             if original(other):
-                stamp = activity_time(other)
+                stamp = activity_time(other, clock)
                 if stamp and stamp.astimezone(UTC).date() == clock.astimezone(UTC).date():
                     today.append(other)
                 if stamp and abs(clock - stamp) < gap:
@@ -603,7 +613,7 @@ def x_checks(row, text, everyone, clock, selected=(), cfg=None, posting=False):
         for other in others:
             if not original(other):
                 continue
-            stamp = activity_time(other)
+            stamp = activity_time(other, clock)
             is_selected = any(same_row(other, r) for r in selected)
             if not is_selected and not (stamp and dt.timedelta(0) <= clock - stamp <= dt.timedelta(hours=48)):
                 continue

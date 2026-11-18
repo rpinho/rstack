@@ -118,6 +118,23 @@ def request(args):
     return method, path, body, explicit, len(paths)
 
 
+def subcommand(args):
+    """The first word that is not an option or an option's value. xr pins the account with
+    `-u ACCOUNT` before the rest (11-17: `xr media upload` was refused as "expected one API
+    endpoint" because only args[0] was checked, so every x-post-ready image upload failed)."""
+    values = {'-H', '--header', '-d', '--data', '-F', '--file', '-o', '--output',
+              '--auth', '-u', '--username', '--app', '-X', '--method'}
+    i = 0
+    while i < len(args):
+        if args[i] in values:
+            i += 2
+        elif args[i].startswith('-'):
+            i += 1
+        else:
+            return args[i]
+    return ''
+
+
 def caller():
     try:
         pid = os.getppid()
@@ -148,7 +165,7 @@ def decide(args, cfg, config_error):
             why = config_error
         elif body and (not explicit or method == 'GET'):
             why = 'body arguments require an explicit non-GET method'
-        elif first == 'media':
+        elif subcommand(args) == 'media':
             allow, why = True, 'media upload for an own post'
         elif npaths != 1:
             why = 'expected one API endpoint'

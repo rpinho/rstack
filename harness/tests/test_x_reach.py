@@ -108,10 +108,27 @@ def test_missing_media_fails(state):
 @pytest.mark.parametrize('status', ['sent', 'approved'])
 def test_one_original_per_utc_day_cross_lane(state, status, monkeypatch):
     monkeypatch.setenv('RH_X_ORIGINALS_PER_DAY', '1')
-    history(state, status=status, age=3)
+    # An approval holds a slot only while it is fresh (11-17); a sent post holds it all day.
+    history(state, status=status, age=3 if status == 'sent' else 0.2)
     ident, _ = draft(state)
     rc, out, _ = lint(state, ident)
     assert rc == 1 and 'x_post daily limit (1 per UTC day' in out and 'b/past' in out
+
+
+def test_an_old_unsent_approval_holds_no_slot(state, monkeypatch):
+    """general, 11-17: x-post-ready re-approved four math originals each round, every image upload
+    failed, and each approval held the 120-min gap and a daily slot, so no other original went out."""
+    monkeypatch.setenv('RH_X_ORIGINALS_PER_DAY', '1')
+    monkeypatch.delenv('RH_X_MIN_GAP_MINUTES', raising=False)
+    for n, age in enumerate((0.6, 1, 1.5, 3)):
+        history(state, ident='stuck%d' % n, status='approved', age=age)
+    ident, _ = draft(state)
+    rc, out, _ = lint(state, ident)
+    assert rc == 0, out
+    # A fresh approval (under 30 min) is about to go out, so it still holds the gap and the cap.
+    history(state, ident='fresh', status='approved', age=0.25)
+    rc, out, _ = lint(state, ident)
+    assert rc == 1 and 'within 120 min of another original: b/fresh' in out and 'daily limit' in out
 
 
 def test_default_allows_three_originals_spaced_out(state, monkeypatch):
