@@ -1038,3 +1038,13 @@ class IntakeRegressionTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_a_lane_held_in_the_registry_is_held_without_a_hold_file(tmp_path):
+    """11-18: math and planets paused by the owner's pivot through REGISTRY.json, not HOLD files."""
+    lanes = tmp_path / 'lanes'
+    (lanes / 'math').mkdir(parents=True)
+    (lanes / 'REGISTRY.json').write_text(json.dumps({'lanes': {'math': {'status': 'held', 'since': '2026-11-18', 'why': 'owner pivot'}}}))
+    assert sweep.held(lanes / 'math').startswith('registry:')
+    (lanes / 'other').mkdir()
+    assert sweep.held(lanes / 'other') is None

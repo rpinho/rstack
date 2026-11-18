@@ -1526,6 +1526,15 @@ def held(lane):
     lane-nudge leaves the lane alone (friends, 11-11: paused by its owner, then nudged to start rounds)."""
     path = lane / 'HOLD'
     if not path.is_file():
+        # 11-18: a registry status of held/retired/ended pauses the lane too (math, planets: owner pivot),
+        # so the registry, the nudge, launch.sh and the sweep agree without a HOLD file per lane.
+        try:
+            import lane_registry
+            registry = lane_registry.load(lane.parent)
+            if registry.status(lane.name) in ('held', 'retired', 'ended'):
+                return 'registry: ' + str(registry.reason(lane.name))[:180]
+        except Exception:
+            pass
         return None
     try:
         return (path.read_text(errors='replace').strip().splitlines() or ['(empty HOLD file)'])[0][:200]
