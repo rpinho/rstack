@@ -417,3 +417,14 @@ python3 -m pytest -q rstack/tests/test_grok_ask.py harness/tests/test_outreach.p
 ```
 
 - [`release-protect`](release-protect.md): checks a private protected-path registry before cleanup; registered sources are reread on every call. The Finder shim and harness Trash adapter share the check.
+
+## Codex spend
+
+[`codex`](codex-spend.md) preserves the existing privacy routing and supervises the stock CLI
+with per-lane call/allowance limits, cold-prefix fan-out detection, finite bulk estimates,
+priority suppression and urgent owner pushes. `codex-budget estimate LANE --calls N --tokens T`
+records planned calls times input tokens per call. The allowance parser is reused from the
+companion spend guard. `harness-sync` installs the wrapper and dependencies under its
+`rstack/tools/` directory; PATH activation is an operator step. Deployed job-health restores
+entrypoints replaced by brew and reports rollouts without ledger coverage. See the linked
+installation instructions and the explicit limits of admission controls versus OS isolation.

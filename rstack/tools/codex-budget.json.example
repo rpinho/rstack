@@ -1,0 +1,11 @@
+{
+  "defaults": {"calls_hour": 60, "weekly_percent_day": 3},
+  "lanes": {
+    "games": {"calls_hour": 200, "weekly_percent_day": 10},
+    "open-source": {"calls_hour": 200, "weekly_percent_day": 10}
+  },
+  "notify_command": ["tell-general"],
+  "owner_command": ["notify-ricardo"],
+  "codex_homes": [],
+  "native_glob": "/opt/homebrew/Caskroom/codex/*/bin/codex"
+}

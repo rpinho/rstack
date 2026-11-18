@@ -3,7 +3,8 @@
 
 The installed copy and the repo drifted for days: fixes went straight into the installed
 files, other fixes went only into the repo, and each copy aged differently. This makes the
-committed repo the only source. It installs the git-tracked files under harness/ at a
+committed repo the only source. It installs the git-tracked files under harness/ plus the
+Codex wrapper/health tools under rstack/tools/ at a
 committed ref (default: main), never the working tree, so a half-finished edit cannot reach
 running lanes. Installed code is made read-only so a hand edit fails loudly instead of
 drifting quietly. Lanes, ledgers and other runtime state in the installed root are never
@@ -35,6 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import storage  # noqa: E402  (Trash-only deletion; refuses when no Trash command exists)
 
 RECEIPT = '.harness-sync.json'
+# Spend enforcement and its dependencies ship with the harness, at a distinct namespace.
+RSTACK_TOOLS = ('codex', 'codex-budget', '_codex_budget.py', 'codex-budget.json.example', 'allowance', 'job-health', 'npx')
 CODE_SUFFIXES = {'.py', '.sh'}
 SKIP_DIRS = {'lanes', '__pycache__', 'alerts', '.pytest_cache'}
 HOST_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z')
@@ -50,14 +53,15 @@ def blob_id(data):
 
 
 def manifest(repo, ref):
-    """{relative path: (mode, blob id)} for tracked files under harness/ at ref."""
-    out = git(repo, 'ls-tree', '-r', '-z', '--full-tree', ref, 'harness/')
+    """Tracked harness files and selected spend tools, from a committed ref only."""
+    out = git(repo, 'ls-tree', '-r', '-z', '--full-tree', ref, 'harness/', *('rstack/tools/' + name for name in RSTACK_TOOLS))
     files = {}
     for entry in filter(None, out.split(b'\0')):
         meta, path = entry.split(b'\t', 1)
         mode, kind, oid = meta.decode().split()
         if kind == 'blob' and mode != '120000':
-            files[path.decode()[len('harness/'):]] = (mode, oid)
+            rel = path.decode()
+            files[rel[len('harness/'):] if rel.startswith('harness/') else rel] = (mode, oid)
     return files
 
 

@@ -151,3 +151,21 @@ def test_running_job_blocks_install(env, monkeypatch, capsys):
     assert 'harness job running' in capsys.readouterr().out
     assert not (root / 'rh.py').exists()
     assert run('--allow-running') == 0
+
+
+def test_codex_wrapper_and_policy_ship_from_committed_source(env):
+    repo, root, _, _, run = env
+    tools = repo / 'rstack/tools'
+    tools.mkdir(parents=True)
+    for name in hs.RSTACK_TOOLS:
+        path = tools / name
+        path.write_text('committed ' + name + '\n')
+        path.chmod(0o755 if name in ('codex', 'codex-budget', 'job-health', 'allowance', 'npx') else 0o644)
+    git(repo, 'add', 'rstack')
+    git(repo, 'commit', '-qm', 'wrapper and policy')
+    (tools / 'codex').write_text('uncommitted change must not ship\n')
+    assert run() == 0
+    assert (root / 'rstack/tools/codex').read_text() == 'committed codex\n'
+    assert os.access(root / 'rstack/tools/codex', os.X_OK)
+    assert (root / 'rstack/tools/_codex_budget.py').exists()
+    assert run('--check') == 0

@@ -1,0 +1,14 @@
+#!/bin/sh
+# npx, minus Codex. 11-17: a lane drained the weekly Codex allowance outside every guard, and a
+# fresh `npx @openai/codex` is a Codex that never passes the spend wrapper. Refuse it here; every
+# other package runs the real npx unchanged through ~/.local/libexec/npx-real (set by activation).
+for a in "$@"; do
+  case $a in
+    codex|codex@*|@openai/codex|@openai/codex@*|--package=codex|--package=codex@*|--package=@openai/codex|--package=@openai/codex@*)
+      echo "npx: REFUSED $a: run the installed codex (the spend wrapper) instead of a fresh npm copy" >&2
+      exit 75 ;;
+  esac
+done
+real="$HOME/.local/libexec/npx-real"
+[ -x "$real" ] || { echo "npx: $real missing; re-run codex-budget activate --npx" >&2; exit 127; }
+exec "$real" "$@"

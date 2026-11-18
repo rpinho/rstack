@@ -146,7 +146,14 @@ def report(rows, tool, stem, label, alert='', push=None):
             fh.write('{} RECOVERED {}\n'.format(time.strftime('%F %T'), key.replace('\t', ' ')))
     if new and alert:
         summary = '{} on {}: {}'.format(len(new), host, '; '.join('{} {} ({})'.format(k, w, d) for k, w, d in new))[:900]
-        subprocess.run(shlex.split(alert) + [tool + ': ' + summary], capture_output=True, timeout=60)
+        try:
+            result = subprocess.run(shlex.split(alert) + [tool + ': ' + summary], capture_output=True, timeout=60)
+            delivered = result.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            delivered = False
+        if not delivered:
+            print(tool + ': alert delivery failed; new findings will be retried', file=sys.stderr)
+            keys -= {'{}\t{}'.format(k, w) for k, w, _ in new}
     tmp = out.with_suffix('.tmp')
     tmp.write_text(''.join('{}\t{}\t{}\n'.format(label, w, '{}: {}'.format(k, d)) for k, w, d in rows))
     os.replace(tmp, out)
@@ -338,7 +345,13 @@ def main(argv=None):
         reg, bad = {}, [('registry', a.registry, 'unreadable: {}'.format(exc))]
     now = time.time()
     x_source = dict(path=a.x_engage_log) if a.x_engage_log is not None else reg.get('x_engage')
-    rows = (bad + exit_problems(launchd_jobs(a.prefix), reg.get('exit_ok') or {})
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from _codex_budget import health_problems
+        codex_rows = health_problems(reg.get('codex'), now, repair=bool(a.prefix) and not a.dry)
+    except (OSError, ValueError, TypeError, KeyError, ImportError) as exc:
+        codex_rows = [('codex-read', 'Codex spend backstop', 'unavailable: ' + type(exc).__name__)]
+    rows = (bad + codex_rows + exit_problems(launchd_jobs(a.prefix), reg.get('exit_ok') or {})
             + fresh_problems(reg.get('fresh') or [], now) + disk_problems(reg.get('disk') or [])
             + x_engage_problems(x_source, now) + net_failover_problems(reg.get('net_failover'), now))
     lines = ['{}\t{}\t{}'.format(kind, what, detail) for kind, what, detail in rows]
@@ -350,6 +363,8 @@ def main(argv=None):
         return 0
     if a.dry:
         return 1 if rows else 0
+    if codex_rows and not a.alert:
+        a.alert = str(Path.home() / '.local/bin/tell-general') + ' decision'
     report(rows, 'job-health', 'jobs', 'job', a.alert, a.push)
     # Problems are reported above, not through this exit code: a scheduled run that found problems
     # exiting 1 would list job-health itself as a failing job (11-12, its own first day).

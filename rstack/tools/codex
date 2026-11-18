@@ -1,0 +1,13 @@
+#!/usr/bin/python3
+"""Stock Homebrew Codex, preserving privacy routing and enforcing local spend limits.
+
+The real CLI is reached ONLY through ~/.local/libexec/codex-real, a symlink to the newest
+Caskroom binary that activation and job-health re-point after a brew upgrade (or an explicit
+native_binary in the host config). Never /opt/homebrew/bin/codex: that entry is this wrapper.
+"""
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _codex_budget import wrapper_main
+if __name__ == '__main__':
+    sys.exit(wrapper_main())

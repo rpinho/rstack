@@ -244,7 +244,7 @@ def test_x_stall_uses_existing_alert_dedup_and_push(tmp_path, monkeypatch):
     monkeypatch.setattr(jh, 'launchd_jobs', lambda prefix: {})
     monkeypatch.setattr(jh.time, 'time', lambda: X_NOW)
     calls = []
-    monkeypatch.setattr(jh.subprocess, 'run', lambda argv, **kw: calls.append(argv))
+    monkeypatch.setattr(jh.subprocess, 'run', lambda argv, **kw: (calls.append(argv) or subprocess.CompletedProcess(argv, 0)))
     reg = tmp_path / 'reg.json'
     reg.write_text(json.dumps({'x_engage': {'path': str(X_FIXTURE)}}))
     args = ['--prefix', 'com.example.', '--registry', str(reg), '--alert', 'notify', '--push', 'conductor']
@@ -329,7 +329,7 @@ def test_backup_alarm_uses_existing_alert_dedup_push_and_recovery(tmp_path, monk
     monkeypatch.setattr(jh, 'launchd_jobs', lambda prefix: {})
     monkeypatch.setattr(jh.time, 'time', lambda: X_NOW)
     calls = []
-    monkeypatch.setattr(jh.subprocess, 'run', lambda argv, **kw: calls.append(argv))
+    monkeypatch.setattr(jh.subprocess, 'run', lambda argv, **kw: calls.append(argv) or subprocess.CompletedProcess(argv, 0, '', ''))
     state = tmp_path / 'state.json'
     state.write_text(json.dumps(dict(current_net='starlink', network_since=X_NOW - 3660)))
     reg = tmp_path / 'reg.json'
@@ -348,3 +348,17 @@ def test_backup_alarm_uses_existing_alert_dedup_push_and_recovery(tmp_path, monk
     state.write_text(json.dumps(dict(current_net='spectrum', network_since=X_NOW)))
     assert jh.main(args) == 0 and listed.read_text() == ''
     assert 'RECOVERED net-failover' in (tmp_path / 'report/job-health/log').read_text()
+
+
+def test_failed_alert_is_retried_instead_of_marked_delivered(tmp_path, monkeypatch):
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setenv('RSTACK_HOST', 'test')
+    rows = [('codex-bypass', '/rollout', 'cwd=/missed/lane')]
+    jh.report(rows, 'job-health', 'jobs', 'job', '/usr/bin/false')
+    seen = tmp_path / 'state/job-health/seen.json'
+    assert json.loads(seen.read_text()) == []
+    sent = tmp_path / 'sent'
+    alert = "/bin/sh -c 'echo \"$0\" >> {}'".format(sent)
+    jh.report(rows, 'job-health', 'jobs', 'job', alert)
+    jh.report(rows, 'job-health', 'jobs', 'job', alert)
+    assert sent.read_text().count('codex-bypass') == 1
