@@ -79,10 +79,11 @@ def command(backend, executable, model, effort, directory, output, budget='1.00'
                 *(['--effort', effort] if effort in AGY_EFFORTS
                   and not str(model).endswith(tuple('-' + e for e in AGY_EFFORTS)) else []),
                 '--mode', 'accept-edits', '--disable-slash-commands',
-                # Headless agy auto-denies shell commands. A job whose tools include Bash (the same
-                # --allowed-tools a Claude job widens) gets them through a session-only allow rule.
-                *(['--settings', json.dumps({'permissions': {'allow': ['command(*)']}})]
-                  if 'Bash' in str(tools).split(',') else [])]
+                # Headless agy auto-denies what it cannot prompt for, reading files included (11-19: a
+                # referee ran 213 s and wrote nothing). Reading is always allowed, as Read is for Claude;
+                # shell commands only when the job's --allowed-tools include Bash. Session-only rules.
+                '--settings', json.dumps({'permissions': {'allow': ['read_file(*)'] + (
+                    ['command(*)'] if 'Bash' in str(tools).split(',') else [])}})]
     if backend == 'codex':
         mode = codex_sandbox(sandbox)
         # `bypass` is the single flag that turns off approvals AND the sandbox together; the other
@@ -299,6 +300,10 @@ def run_agy(cmd, directory, output, timeout_seconds=0):
         return 124
     if code == 0 and (not isinstance(result, dict) or result.get('status') == 'ERROR' or error):
         print('agy returned an error result' + (': ' + error if error else ''), file=sys.stderr)
+        return 1
+    if code == 0 and not str(result.get('response') or '').strip() and result.get('denied_actions'):
+        print('agy produced nothing; it was denied: ' + ', '.join(
+            str(d.get('action')) for d in result['denied_actions'] if isinstance(d, dict)), file=sys.stderr)
         return 1
     return code
 

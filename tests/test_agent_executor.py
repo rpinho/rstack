@@ -268,11 +268,12 @@ def test_agy_command_is_print_mode_with_the_prompt_as_its_argument():
     assert cmd[:5] == ['agy', '-p', 'Referee this.', '--output-format', 'json']
     assert cmd[cmd.index('--model') + 1] == 'gemini-fixture' and cmd[cmd.index('--effort') + 1] == 'high'
     assert '--model' not in command('agy', 'agy', 'default', 'none', '/w', '/o', prompt='x')
-    assert '--settings' not in command('agy', 'agy', 'm', 'low', '/w', '/o', prompt='x')
+    plain = command('agy', 'agy', 'm', 'low', '/w', '/o', prompt='x')
+    assert json.loads(plain[plain.index('--settings') + 1]) == {'permissions': {'allow': ['read_file(*)']}}
     # 11-19: agy refused --model gemini-3.8-flash-low with --effort high; the tier is the effort.
     assert '--effort' not in command('agy', 'agy', 'gemini-3.8-flash-low', 'high', '/w', '/o', prompt='x')
     shell = command('agy', 'agy', 'm', 'low', '/w', '/o', tools='Read,Write,Edit,Bash', prompt='x')
-    assert json.loads(shell[shell.index('--settings') + 1]) == {'permissions': {'allow': ['command(*)']}}
+    assert json.loads(shell[shell.index('--settings') + 1]) == {'permissions': {'allow': ['read_file(*)', 'command(*)']}}
 
 
 FAKE_TMUX = (
@@ -340,3 +341,5 @@ def test_an_agy_result_is_saved_and_an_error_result_fails(tmp_path):
     assert json.loads((tmp_path/'last').read_text())['response'] == 'fine'
     bad = agy_run(tmp_path, 'print(\'{"status":"ERROR","response":"","error":"quota"}\')\n')
     assert bad.returncode == 1 and 'quota' in bad.stderr
+    denied = agy_run(tmp_path, 'print(\'{"status":"SUCCESS","response":"","denied_actions":[{"action":"read_file"}]}\')\n')
+    assert denied.returncode == 1 and 'denied: read_file' in denied.stderr
