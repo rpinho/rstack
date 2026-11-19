@@ -23,6 +23,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'harness' if (ROOT / 'harness/x_route.py').exists() else ROOT))
@@ -99,9 +100,13 @@ def api(kind, target, path, body, ok_keys, cfg):
 def user_id(handle, cfg):
     query = ('Call the X tool get_users_by_username for the username {} and report only what it returns. '
              'Take no other action.'.format(handle))
-    argv = [cfg['grok_ask'], '--schema', json.dumps(['id', 'username'])]
-    argv += [] if cfg['grok_host'] == 'local' else ['--host', cfg['grok_host']]
-    rc, out, err = run(argv + [query], 150)
+    # grok-ask takes --schema as a file path (live 11-19: a JSON string was read as a missing file).
+    with tempfile.NamedTemporaryFile('w', suffix='.json') as schema:
+        schema.write(json.dumps(['id', 'username']))
+        schema.flush()
+        argv = [cfg['grok_ask'], '--schema', schema.name]
+        argv += [] if cfg['grok_host'] == 'local' else ['--host', cfg['grok_host']]
+        rc, out, err = run(argv + [query], 150)
     try:
         found = [r for r in json.loads(out) if str(r.get('username', '')).casefold() == handle.casefold()]
     except (ValueError, TypeError, AttributeError):

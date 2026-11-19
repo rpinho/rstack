@@ -206,7 +206,9 @@ def test_api_refusal_opens_the_browser(env, tmp_path):
 
 
 def test_follow_looks_up_the_id_through_grok_then_follows(env, tmp_path):
-    out, rows = route(env, tmp_path, 'follow', '@someone', xr='print(json.dumps({"data": {"following": True}}))')
+    out, rows = route(env, tmp_path, 'follow', '@someone', xr='print(json.dumps({"data": {"following": True}}))',
+                      ask='assert json.load(open(sys.argv[sys.argv.index("--schema") + 1])) == ["id", "username"]\n'
+                          'print(json.dumps([{"id": "42", "username": "someone"}]))')
     assert out.returncode == 0 and rows[-1] == dict(rows[-1], kind='follow', target='someone', ok=True)
     out, rows = route(env, tmp_path, 'follow', '@other', ask='print("[]")')
     assert out.returncode == 10 and 'lookup failed' in rows[-1]['detail']
