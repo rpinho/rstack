@@ -18,12 +18,15 @@ the logged-in account from X's own left navigation, so it answers "who is logged
 browser forgets every earlier answer. Reads (screenshots, scrolling, page text, find,
 navigation, tab management) are always allowed, so the agent can open x.com and probe.
 
-  X_HANDLE_GUARD_HANDLE   expected screen_name without @ (required; unset refuses every action)
+  handle                  expected screen_name, from "handle" in ~/.config/rstack/x-submit-gate.json
+                          (X_SUBMIT_GATE_CONFIG), the config both X hooks read; X_HANDLE_GUARD_HANDLE
+                          overrides it. None configured refuses every X action.
   X_HANDLE_GUARD_TTL      seconds a probe stays valid (default 2700, the reviewer's alarm)
   RSTACK_STATE_DIR        state root (default ~/.local/state/rstack)
 
-An unreadable event denies the call; unreadable state is treated as empty (URLs unknown, so
-only tabs seen again as X are guarded). Exit 0 always, with the decision as hook JSON on stdout.
+Runs through _hookfail.run: a call it cannot read is refused only when it is a click, key, form
+input or script on a known X tab; anything else passes with the error on stderr. Unreadable state
+is treated as empty (URLs unknown). The decision is hook JSON on stdout.
 """
 import json
 import os
@@ -61,7 +64,7 @@ PASSIVE = {'tabs_context_mcp', 'tabs_create_mcp', 'tabs_close_mcp', 'navigate', 
 
 
 def handle():
-    return os.environ.get('X_HANDLE_GUARD_HANDLE', '').strip().lstrip('@')
+    return shared_handle()
 
 
 def ttl():
@@ -145,17 +148,62 @@ def reason(tab, why):
             'returns XHANDLE={}: {}').format(tab, why, handle(), PROBE)
 
 
+# --- fail-safe wrapper (11-19, hook-audit: both guards crashed on a JSON string or list and so failed open) ---
+# _hookfail: the repo's rstack/hooks copy, else the installed one in ~/.claude/hooks (byte-identical, hook-wrap-check).
+for _lib in (Path(__file__).resolve().parents[1] / 'hooks', Path(os.path.expanduser('~/.claude/hooks'))):
+    if (_lib / '_hookfail.py').is_file():
+        sys.path.insert(0, str(_lib))
+        break
+import _hookfail  # noqa: E402
+
+ACT_WORDS = re.compile(r'left_click|right_click|double_click|triple_click|left_click_drag|"type"|"key"|'
+                       r'form_input|javascript_tool|browser_batch|file_upload|upload_image|shortcuts_execute')
+
+
+def x_tab_triage(raw, event):
+    """Is this call a click, key, form input or script on a tab known to be x.com or twitter.com?
+
+    Raw text and the tab-URL state only. An unknown tab, a non-X tab, or anything unreadable answers
+    no: general, 11-19, the guard must never refuse non-X work, even when it breaks."""
+    try:
+        tabs = set(re.findall(r'"tabId"\s*:\s*"?(\d+)', raw))
+        if not tabs or not ACT_WORDS.search(raw):
+            return False
+        sid = re.search(r'"session_id"\s*:\s*"([^"]*)"', raw)
+        sid = re.sub(r'[^A-Za-z0-9_-]', '', sid.group(1) if sid else '')[:64] or 'none'
+        root = Path(os.environ.get('RSTACK_STATE_DIR') or Path.home() / '.local/state/rstack').expanduser()
+        urls = json.loads((root / 'x-handle-guard' / (sid + '.json')).read_text()).get('urls') or {}
+        return any(_on_x(urls.get(t)) for t in tabs)
+    except Exception:
+        return False
+
+
+def _on_x(url):
+    m = re.match(r'https?://([^/:?#]+)', str(url or ''), re.I)
+    host = m[1].casefold() if m else ''
+    return host in ('x.com', 'twitter.com') or host.endswith(('.x.com', '.twitter.com'))
+
+
+def shared_handle():
+    """The expected handle: X_HANDLE_GUARD_HANDLE, else "handle" in the config both X hooks read."""
+    if os.environ.get('X_HANDLE_GUARD_HANDLE', '').strip():
+        return os.environ['X_HANDLE_GUARD_HANDLE'].strip().lstrip('@')
+    path = Path(os.environ.get('X_SUBMIT_GATE_CONFIG') or '~/.config/rstack/x-submit-gate.json').expanduser()
+    try:
+        return str(json.loads(path.read_text()).get('handle', '')).strip().lstrip('@')
+    except (OSError, ValueError, AttributeError):
+        return ''
+
+
 def deny(text):
     print(json.dumps(dict(hookSpecificOutput=dict(hookEventName='PreToolUse', permissionDecision='deny',
                                                   permissionDecisionReason=text))))
 
 
 def pre(event, name):
-    try:
-        state = load(event)
-        pairs = steps(name, event.get('tool_input'))
-    except (OSError, ValueError, TypeError) as exc:
-        return deny('x-handle-guard: cannot read the event or its state ({}); refusing'.format(exc))
+    # A call it cannot read raises; _hookfail.run then refuses it only on a known X tab (x_tab_triage).
+    state = load(event)
+    pairs = steps(name, event.get('tool_input'))
     for tool, inp in pairs:
         if not acting(tool, inp):
             continue
@@ -205,12 +253,7 @@ def post(event, name):
         save(event, state)
 
 
-def main():
-    try:
-        event = json.load(sys.stdin)
-    except ValueError:
-        deny('x-handle-guard: unreadable hook event; refusing')
-        return 0
+def body(event):
     name = str(event.get('tool_name', ''))
     if not name.startswith(PREFIX):
         return 0
@@ -218,12 +261,13 @@ def main():
     if event.get('hook_event_name') == 'PostToolUse':
         try:
             post(event, name)
-        except (OSError, ValueError, TypeError):
-            pass    # an unrecorded probe only means the next action is refused: the safe way
+        except Exception:
+            pass    # an unrecorded probe or URL only means the next X action is refused: the safe way
         return 0
     pre(event, name)
     return 0
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(_hookfail.run('x-handle-guard', body, x_tab_triage, timeout=8,
+                           guards='clicks, keys, form inputs and scripts on x.com and twitter.com tabs'))

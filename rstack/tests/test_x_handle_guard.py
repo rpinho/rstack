@@ -110,7 +110,11 @@ def test_unclear_answer_and_bad_input_refuse(run):
     run('PostToolUse', 'javascript_tool', dict(action='javascript_exec', tabId=7, text=guard.PROBE),
         response=[dict(type='text', text='XHANDLE=example_sci XHANDLE=other')])
     assert run('PreToolUse', 'computer', LIKE)['permissionDecision'] == 'deny'
-    assert run('PreToolUse', 'computer', 'not an object')['permissionDecision'] == 'deny'
+    # A call it cannot read is refused on a known X tab, and passes anywhere else.
+    bad_x = dict(actions='not a list', tabId=7, action='left_click')
+    assert run('PreToolUse', 'browser_batch', bad_x)['permissionDecision'] == 'deny'
+    assert run('PreToolUse', 'browser_batch', dict(bad_x, tabId=3)) is None
+    assert run('PreToolUse', 'computer', 'not an object') is None
 
 
 def test_sessions_are_separate_and_other_tools_ignored(run):
@@ -165,3 +169,41 @@ def test_tab_urls_come_from_tab_context_and_tabs_json(run):
         dict(tabId=4, title='Home / X', url='https://x.com/home'), dict(tabId=5, title='Inbox', url='https://mail.google.com/')])))])
     assert run('PreToolUse', 'computer', dict(LIKE, tabId=4))['permissionDecision'] == 'deny'
     assert run('PreToolUse', 'computer', dict(LIKE, tabId=5)) is None
+
+
+
+# hook-audit's probe inputs (rstack/tools/hook-audit PAYLOADS), with the tool name its matcher gives.
+AUDIT_TOOL = 'mcp__claude-in-chrome__'
+AUDIT = [('unparseable text', 'not json {'), ('a JSON string', json.dumps('tool_input')),
+         ('a JSON list', json.dumps([{'tool_name': AUDIT_TOOL}])),
+         ('tool_input a string', json.dumps({'tool_name': AUDIT_TOOL, 'tool_input': 'rm -rf /'})),
+         ('tool_input a list', json.dumps({'tool_name': AUDIT_TOOL, 'tool_input': [{'command': 'x'}]})),
+         ('fields of the wrong type', json.dumps({'tool_name': AUDIT_TOOL, 'tool_input': {
+             'command': ['x'], 'action_summary': {'a': 1}, 'actions': 'x', 'body': 3, 'file_path': None}}))]
+
+
+@pytest.mark.parametrize('label,raw', AUDIT)
+def test_hook_audit_probes_never_crash(tmp_path, label, raw):
+    """11-19: both X guards exited 1 on a JSON string or list, and a crash is an allow."""
+    out = subprocess.run([sys.executable, str(TOOL)], input=raw, capture_output=True, text=True, timeout=10,
+                         env=dict(RSTACK_STATE_DIR=str(tmp_path), X_HANDLE_GUARD_HANDLE='example_sci', PATH='/usr/bin:/bin'))
+    assert out.returncode == 0, out.stderr
+    assert not out.stdout.strip() or json.loads(out.stdout)['hookSpecificOutput']['permissionDecision'] == 'deny'
+
+
+def test_handle_comes_from_the_shared_config(tmp_path):
+    cfg = tmp_path / 'gate.json'
+    cfg.write_text(json.dumps(dict(handle='example_sci', deny_devices=[])))
+    env = dict(RSTACK_STATE_DIR=str(tmp_path), X_SUBMIT_GATE_CONFIG=str(cfg), PATH='/usr/bin:/bin')
+
+    def call(name, inp, event='PreToolUse', response=None):
+        ev = dict(hook_event_name=event, session_id='s1', tool_name=C + name, tool_input=inp)
+        if response is not None:
+            ev['tool_response'] = response
+        out = subprocess.run([sys.executable, str(TOOL)], input=json.dumps(ev), capture_output=True,
+                             text=True, env=env, timeout=10)
+        return json.loads(out.stdout)['hookSpecificOutput'] if out.stdout.strip() else None
+    call('navigate', dict(tabId=7, url='https://x.com/home'), 'PostToolUse', [])
+    js = dict(action='javascript_exec', tabId=7, text=guard.PROBE)
+    call('javascript_tool', js, 'PostToolUse', [dict(type='text', text='XHANDLE=example_sci')])
+    assert call('computer', LIKE) is None

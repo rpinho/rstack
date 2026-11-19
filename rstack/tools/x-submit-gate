@@ -16,7 +16,8 @@ target: a post URL or ID, or the @handle. Anything that is not an X submit passe
 
 Config ~/.config/rstack/x-submit-gate.json (or X_SUBMIT_GATE_CONFIG):
   {"deny_devices": ["<device id>"], "handle": "<screen_name>"}
-No config, or an unreadable one, refuses every X submit. Exit 0 always; the decision is hook JSON.
+No config, or an unreadable one, refuses every X submit. Runs through _hookfail.run: a call it
+cannot read is refused only on a known X tab; everything else passes, with the error on stderr.
 """
 import json
 import os
@@ -41,6 +42,53 @@ KINDS = (('reply', re.compile(r'\b(?:posts?|sends?|submits?)\s+(?:the|a|our|my)?
          ('repost', re.compile(r'\b(?:re-?posts?|retweets?|quotes?)\b', re.I)),
          ('post', re.compile(r'\b(?:posts?|publish(?:es)?|tweets?)\b(?! (?:text|thread|page|replies))', re.I)))
 NOT_SUBMIT = re.compile(r'\b(?:opens?|reads?|scrolls?|views?|expands?|shows?|navigates?|closes?|checks?|looks?)\b', re.I)
+
+
+# --- fail-safe wrapper (11-19, hook-audit: both guards crashed on a JSON string or list and so failed open) ---
+# _hookfail: the repo's rstack/hooks copy, else the installed one in ~/.claude/hooks (byte-identical, hook-wrap-check).
+for _lib in (Path(__file__).resolve().parents[1] / 'hooks', Path(os.path.expanduser('~/.claude/hooks'))):
+    if (_lib / '_hookfail.py').is_file():
+        sys.path.insert(0, str(_lib))
+        break
+import _hookfail  # noqa: E402
+
+ACT_WORDS = re.compile(r'left_click|right_click|double_click|triple_click|left_click_drag|"type"|"key"|'
+                       r'form_input|javascript_tool|browser_batch|file_upload|upload_image|shortcuts_execute')
+
+
+def x_tab_triage(raw, event):
+    """Is this call a click, key, form input or script on a tab known to be x.com or twitter.com?
+
+    Raw text and the tab-URL state only. An unknown tab, a non-X tab, or anything unreadable answers
+    no: general, 11-19, the guard must never refuse non-X work, even when it breaks."""
+    try:
+        tabs = set(re.findall(r'"tabId"\s*:\s*"?(\d+)', raw))
+        if not tabs or not ACT_WORDS.search(raw):
+            return False
+        sid = re.search(r'"session_id"\s*:\s*"([^"]*)"', raw)
+        sid = re.sub(r'[^A-Za-z0-9_-]', '', sid.group(1) if sid else '')[:64] or 'none'
+        root = Path(os.environ.get('RSTACK_STATE_DIR') or Path.home() / '.local/state/rstack').expanduser()
+        urls = json.loads((root / 'x-handle-guard' / (sid + '.json')).read_text()).get('urls') or {}
+        return any(_on_x(urls.get(t)) for t in tabs)
+    except Exception:
+        return False
+
+
+def _on_x(url):
+    m = re.match(r'https?://([^/:?#]+)', str(url or ''), re.I)
+    host = m[1].casefold() if m else ''
+    return host in ('x.com', 'twitter.com') or host.endswith(('.x.com', '.twitter.com'))
+
+
+def shared_handle():
+    """The expected handle: X_HANDLE_GUARD_HANDLE, else "handle" in the config both X hooks read."""
+    if os.environ.get('X_HANDLE_GUARD_HANDLE', '').strip():
+        return os.environ['X_HANDLE_GUARD_HANDLE'].strip().lstrip('@')
+    path = Path(os.environ.get('X_SUBMIT_GATE_CONFIG') or '~/.config/rstack/x-submit-gate.json').expanduser()
+    try:
+        return str(json.loads(path.read_text()).get('handle', '')).strip().lstrip('@')
+    except (OSError, ValueError, AttributeError):
+        return ''
 
 
 def deny(reason):
@@ -87,8 +135,10 @@ def submits(event):
         raise ValueError('tool_input is not an object')
     steps = [(name, inp)]
     if name == 'browser_batch':
+        if not isinstance(inp.get('actions'), list):
+            raise ValueError('browser_batch actions is not a list')
         steps = [(str(a.get('name', '')).replace(PREFIX, ''), a.get('input') or {})
-                 for a in inp.get('actions') or [] if isinstance(a, dict)]
+                 for a in inp['actions'] if isinstance(a, dict)]
     urls = guard_state_or_empty(event).get('urls') or {}
     out = []
     for tool, step in steps:
@@ -143,30 +193,18 @@ def check(event, cfg):
     return None
 
 
-def main():
-    try:
-        event = json.load(sys.stdin)
-    except ValueError:
-        deny('unreadable hook event; refusing')
-        return 0
+def body(event):
     if not str(event.get('tool_name', '')).startswith(PREFIX):
         return 0
-    try:
-        found = submits(event)
-    except (ValueError, TypeError) as exc:
-        deny('cannot read the browser call ({}); refusing'.format(exc))
-        return 0
+    found = submits(event)      # raises on a call it cannot read; run() then triages it
     if not found:
         return 0
-    try:
-        cfg = load_config()
-        why = check(event, cfg)
-    except (OSError, ValueError, TypeError) as exc:
-        why = 'no readable config or state ({}); refusing every X submit'.format(exc)
+    why = check(event, load_config())
     if why:
         deny(why)
     return 0
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(_hookfail.run('x-submit-gate', body, x_tab_triage, timeout=8,
+                           guards='X submits (reply, post, like, follow, repost) on x.com and twitter.com tabs'))

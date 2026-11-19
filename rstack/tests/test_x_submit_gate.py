@@ -132,7 +132,7 @@ def test_repost_has_no_route_but_still_needs_the_checks(env):
 def test_no_config_refuses_every_x_submit(env, tmp_path):
     probe(env)
     env = dict(env, X_SUBMIT_GATE_CONFIG=str(tmp_path / 'missing.json'))
-    assert 'refusing every X submit' in gate(env, REPLY)
+    assert 'could not check this call' in gate(env, REPLY)     # _hookfail's refusal on an X tab
     assert gate(env, 'Opens the thread by @someone') is None
 
 
@@ -236,3 +236,33 @@ def test_non_x_browser_work_passes(env):
 def test_an_email_address_is_not_an_x_handle(env):
     probe(env)    # even on an X tab, an e-mail reply summary is not an X submit
     assert gate(env, 'Sends the reply to hugo@example.com in Gmail') is None
+
+
+
+AUDIT_TOOL = 'mcp__claude-in-chrome__'
+AUDIT = [('unparseable text', 'not json {'), ('a JSON string', json.dumps('tool_input')),
+         ('a JSON list', json.dumps([{'tool_name': AUDIT_TOOL}])),
+         ('tool_input a string', json.dumps({'tool_name': AUDIT_TOOL, 'tool_input': 'rm -rf /'})),
+         ('tool_input a list', json.dumps({'tool_name': AUDIT_TOOL, 'tool_input': [{'command': 'x'}]})),
+         ('fields of the wrong type', json.dumps({'tool_name': AUDIT_TOOL, 'tool_input': {
+             'command': ['x'], 'action_summary': {'a': 1}, 'actions': 'x', 'body': 3, 'file_path': None}}))]
+
+
+@pytest.mark.parametrize('label,raw', AUDIT)
+def test_hook_audit_probes_never_crash(env, label, raw):
+    """11-19: hook-audit found the gate exiting 1 on a JSON string or list, and a crash is an allow."""
+    out = subprocess.run([sys.executable, str(GATE)], input=raw, capture_output=True, text=True, env=env, timeout=10)
+    assert out.returncode == 0, out.stderr
+
+
+def test_unreadable_call_on_an_x_tab_is_refused(env):
+    probe(env)
+    event = dict(hook_event_name='PreToolUse', session_id='s1', tool_name=C + 'browser_batch',
+                 tool_input=dict(actions='x', tabId=7, action='left_click'))
+    out = subprocess.run([sys.executable, str(GATE)], input=json.dumps(event), capture_output=True, text=True,
+                         env=env, timeout=10)
+    assert json.loads(out.stdout)['hookSpecificOutput']['permissionDecision'] == 'deny'
+    event['tool_input']['tabId'] = 1     # the Gmail tab
+    out = subprocess.run([sys.executable, str(GATE)], input=json.dumps(event), capture_output=True, text=True,
+                         env=env, timeout=10)
+    assert not out.stdout.strip()
