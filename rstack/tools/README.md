@@ -470,6 +470,28 @@ Fake-only tests (CDP, syndication and rh stubs; no live app or X actions):
 python3 -m pytest -q rstack/tests/test_grok_ask.py harness/tests/test_outreach.py
 ```
 
+Live (11-19): the X connector in Grok Bot has a create-posts tool but no like or follow
+tool, so Grok posts and the browser likes and follows. `harness-sync` installs
+`grok-post` and its modules beside the other rstack tools; the installed copy imports
+the harness modules from the install root.
+
+## x-handle-guard
+
+A Claude Code PreToolUse and PostToolUse hook for the Claude in Chrome tools. It refuses
+every click, keypress, form input, upload or script in a tab until one `javascript_tool`
+call with the exact `PROBE` text has run in that tab, in the selected browser, and
+returned `XHANDLE=<handle>` for `X_HANDLE_GUARD_HANDLE` (required; unset refuses all). The probe
+reads X's own left navigation, so it answers which account is logged in. Selecting or
+switching a browser forgets every probe; a probe lasts `X_HANDLE_GUARD_TTL` seconds
+(default 2700). Reads, navigation and tab management always pass, and anything it cannot
+parse is refused. Load it only in the X executor's run, with
+`claude -p ... --settings FILE` whose hooks match `mcp__claude-in-chrome__.*` for both
+events, so other browser sessions are unaffected.
+
+```sh
+python3 -m pytest -q rstack/tests/test_x_handle_guard.py
+```
+
 - [`ask_lint.py`](ask-lint.md): refuses mechanical steps addressed to the owner; shared by the question hook and private review/notification wrappers. His-only reasons use `--his-only class` or `[his-only: class]`.
 - [`release-protect`](release-protect.md): checks a private protected-path registry before cleanup; registered sources are reread on every call. `sync --from-deploy ROOT` refreshes release entries from the deploy CLI's retention function; `--dry-run` prints the diff without writes. The optional job-health `release_protection` check alerts after an hour of drift. The Finder shim and harness Trash adapter share the check.
 

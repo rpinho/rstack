@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""x-handle-guard: no X action from a browser that is not logged in as the posting account.
+
+A Claude Code hook (PreToolUse and PostToolUse) for the Claude in Chrome tools, loaded only by
+the X executor's own `claude -p` run through `--settings` (see `x-reply-review-remote`).
+
+Why (11-19): two Chrome browsers are paired with the same Claude login on the project host.
+One is the project account; the other is the owner's private account and must never like,
+follow or reply. The reviewer prompt said "check the handle first", which is prose. This makes it code:
+every click, keypress, form input, upload or script in a tab is refused until the handle probe
+has run in that tab, in the currently selected browser, and returned the expected handle.
+
+The probe is one `javascript_tool` call whose text is exactly PROBE (whitespace aside). It reads
+the logged-in account from X's own left navigation, so it answers "who is logged in", not
+"which handles appear on this page". PostToolUse records the answer. Switching or selecting a
+browser forgets every earlier answer. Reads (screenshots, scrolling, page text, find,
+navigation, tab management) are always allowed, so the agent can open x.com and probe.
+
+  X_HANDLE_GUARD_HANDLE   expected screen_name without @ (required; unset refuses every action)
+  X_HANDLE_GUARD_TTL      seconds a probe stays valid (default 2700, the reviewer's alarm)
+  RSTACK_STATE_DIR        state root (default ~/.local/state/rstack)
+
+Fails closed: an unreadable event or state denies the acting call. Exit 0 always, with the
+decision as hook JSON on stdout.
+"""
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import time
+
+PREFIX = 'mcp__claude-in-chrome__'
+PROBE = ("(() => { const a = document.querySelector('a[data-testid=AppTabBar_Profile_Link]'); "
+         "const s = document.querySelector('[data-testid=SideNav_AccountSwitcher_Button]'); "
+         "const m = s && (s.innerText || '').match(/@([A-Za-z0-9_]+)/); "
+         "if (location.hostname !== 'x.com') return 'XHANDLE=off-x'; "
+         "return 'XHANDLE=' + (a ? a.pathname.split('/')[1] : m ? m[1] : 'none'); })()")
+ANSWER = re.compile(r'XHANDLE=([A-Za-z0-9_-]+)')
+# Computer actions that only look. Everything else (clicks, typing, keys, drags) acts.
+LOOK = {'screenshot', 'scroll', 'scroll_to', 'wait', 'zoom', 'hover', 'mouse_move', 'cursor_position'}
+# Tools that never act on a page.
+PASSIVE = {'tabs_context_mcp', 'tabs_create_mcp', 'tabs_close_mcp', 'navigate', 'read_page', 'get_page_text',
+           'find', 'list_connected_browsers', 'read_console_messages', 'read_network_requests',
+           'gif_creator', 'resize_window', 'shortcuts_list', 'select_browser', 'switch_browser'}
+
+
+def handle():
+    return os.environ.get('X_HANDLE_GUARD_HANDLE', '').strip().lstrip('@')
+
+
+def ttl():
+    try:
+        return float(os.environ.get('X_HANDLE_GUARD_TTL', '2700'))
+    except ValueError:
+        return 2700.0
+
+
+def state_path(event):
+    root = Path(os.environ.get('RSTACK_STATE_DIR') or Path.home() / '.local/state/rstack').expanduser()
+    sid = re.sub(r'[^A-Za-z0-9_-]', '', str(event.get('session_id', '')))[:64] or 'none'
+    return root / 'x-handle-guard' / (sid + '.json')
+
+
+def load(event):
+    path = state_path(event)
+    if not path.exists():
+        return dict(device=None, tabs={})
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict) or not isinstance(data.get('tabs'), dict):
+        raise ValueError('bad guard state')
+    return data
+
+
+def save(event, data):
+    path = state_path(event)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_suffix('.tmp')
+    tmp.write_text(json.dumps(data))
+    tmp.replace(path)
+
+
+def norm(text):
+    return re.sub(r'\s+', '', str(text))
+
+
+def is_probe(inp):
+    return isinstance(inp, dict) and norm(inp.get('text', '')) == norm(PROBE)
+
+
+def steps(name, inp):
+    """(tool, input) pairs: one call, or every action inside a browser_batch."""
+    if not isinstance(inp, dict):
+        raise ValueError('tool_input is not an object')
+    if name != 'browser_batch':
+        return [(name, inp)]
+    found = inp.get('actions')
+    if not isinstance(found, list):
+        raise ValueError('browser_batch actions is not a list')
+    out = []
+    for item in found:
+        if not isinstance(item, dict) or not isinstance(item.get('input', {}), dict):
+            raise ValueError('browser_batch action is not an object')
+        out.append((str(item.get('name', '')).replace(PREFIX, ''), item.get('input', {})))
+    return out
+
+
+def acting(tool, inp):
+    if tool in PASSIVE:
+        return False
+    if tool == 'computer':
+        return inp.get('action') not in LOOK
+    if tool == 'javascript_tool':
+        return not is_probe(inp)
+    return True     # form_input, file_upload, upload_image, shortcuts_execute and anything new
+
+
+def verified(state, tab):
+    row = state['tabs'].get(str(tab))
+    return (bool(handle()) and isinstance(row, dict) and row.get('handle', '').casefold() == handle().casefold()
+            and row.get('device') == state.get('device') and time.time() - float(row.get('utc', 0)) <= ttl())
+
+
+def reason(tab, why):
+    return ('x-handle-guard: refused an X action in tab {}: {}. Before any click, keypress, form input or '
+            'script, run this exact javascript_tool call in that tab on an x.com page, and act only if it '
+            'returns XHANDLE={}: {}').format(tab, why, handle(), PROBE)
+
+
+def deny(text):
+    print(json.dumps(dict(hookSpecificOutput=dict(hookEventName='PreToolUse', permissionDecision='deny',
+                                                  permissionDecisionReason=text))))
+
+
+def pre(event, name):
+    try:
+        state = load(event)
+        pairs = steps(name, event.get('tool_input'))
+    except (OSError, ValueError, TypeError) as exc:
+        return deny('x-handle-guard: cannot read the event or its state ({}); refusing'.format(exc))
+    for tool, inp in pairs:
+        if not acting(tool, inp):
+            continue
+        tab = inp.get('tabId')
+        if tab is None:
+            return deny(reason('?', 'the call names no tabId, so its account cannot be checked'))
+        if not verified(state, tab):
+            row = state['tabs'].get(str(tab))
+            seen = row.get('handle') if isinstance(row, dict) else None
+            why = ('the handle probe returned @{} there, not @{}'.format(seen, handle()) if seen and seen != handle()
+                   else 'no current handle probe for this tab in the selected browser')
+            return deny(reason(tab, why))
+    return None
+
+
+def response_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return '\n'.join(response_text(v) for v in value)
+    if isinstance(value, dict):
+        return response_text(value.get('text', '')) + '\n' + response_text(value.get('content', ''))
+    return ''
+
+
+def post(event, name):
+    inp = event.get('tool_input')
+    state = load(event)
+    if name in ('select_browser', 'switch_browser'):
+        # A different browser may be a different account: forget every earlier probe.
+        state = dict(device=str((inp or {}).get('deviceId') or (inp or {}).get('device_id') or 'switched'), tabs={})
+        save(event, state)
+        return
+    if name == 'javascript_tool' and is_probe(inp) and inp.get('tabId') is not None:
+        found = ANSWER.findall(response_text(event.get('tool_response')))
+        seen = found[-1] if len(set(found)) == 1 else 'unclear'
+        state['tabs'][str(inp['tabId'])] = dict(handle=seen, device=state.get('device'), utc=time.time())
+        save(event, state)
+
+
+def main():
+    try:
+        event = json.load(sys.stdin)
+    except ValueError:
+        deny('x-handle-guard: unreadable hook event; refusing')
+        return 0
+    name = str(event.get('tool_name', ''))
+    if not name.startswith(PREFIX):
+        return 0
+    name = name[len(PREFIX):]
+    if event.get('hook_event_name') == 'PostToolUse':
+        try:
+            post(event, name)
+        except (OSError, ValueError, TypeError):
+            pass    # an unrecorded probe only means the next action is refused: the safe way
+        return 0
+    pre(event, name)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -20,7 +20,9 @@ import uuid
 import _grok_ask as ask
 
 # Import the repository's ledger implementation, including its current-row semantics.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'harness'))
+# Both the checkout (harness/) and harness-sync's installed layout (modules at the root).
+_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_ROOT / 'harness' if (_ROOT / 'harness/outreach.py').exists() else _ROOT))
 import outreach
 import rh
 
@@ -115,7 +117,10 @@ def post_js(config, action, prompt='', snapshot=None):
       if (!data.snapshot) return {users:users.length, assistants:assistants.length};
       const mine = users[data.snapshot.users];
       const norm = t => t.replace(/\\s+/g, ' ').trim();
-      const sent = !!mine && norm(text(mine)) === norm(data.prompt);
+      // 11-19 live: a user turn is two nested [data-role=user] nodes, and the outer one also holds the
+      // "You" label and the time, so an equality test never matched. Match the unique marker instead.
+      const key = (data.prompt.match(/EXACT_[0-9a-f]{32}/) || [norm(data.prompt)])[0];
+      const sent = !!mine && norm(text(mine)).includes(key);
       const after = sent ? assistants.slice(data.snapshot.assistants).filter(el =>
         mine.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) : [];
       return {text:after.length ? text(after[after.length-1]) : '', sent,
