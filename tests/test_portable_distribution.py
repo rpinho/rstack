@@ -28,7 +28,7 @@ spec.loader.exec_module(roles)
 def data():
     return {'updated': '2026-01-02T03:04:05+00:00',
             'roles': {'batch': ['gpt-6.1-sol']},
-            'evidence': {'batch': {'gpt-6.1-sol': {'rate': .8, 'low': .6}}},
+            'evidence': {'batch': {'gpt-6.1-sol': {'rate': .8, 'low': .6, 'n': 20}}},
             'prompt': 'PRIVATE_SENTINEL', 'why': 'PRIVATE_SENTINEL',
             'overrides': {'private': 'PRIVATE_SENTINEL'}, 'cost_usd': 12345}
 
@@ -38,7 +38,7 @@ def test_public_export_keeps_only_routing_scores_and_date(tmp_path):
     roles.public(data(), path)
     text = path.read_text()
     assert 'PRIVATE_SENTINEL' not in text and '12345' not in text
-    assert '| batch | gpt-6.1-sol | 1 | 0.8 | 0.6 | 2026-01-02 |' in text
+    assert '| batch | gpt-6.1-sol | 1 | 0.8 | 20 | - | 2026-01-02 |' in text
     restored = roles.bootstrap(path)
     assert restored['roles'] == {'batch': ['gpt-6.1-sol']}
     path.write_text('PRIVATE_SENTINEL')
@@ -90,16 +90,17 @@ def test_current_snapshot_routes_are_consumable_without_private_state(tmp_path):
         worker_models.select('batch', 'claude', path=path)
 
 
-def test_ranking_needs_multiple_days_and_strong_lower_bound():
+def test_ranking_needs_five_graded_everyday_tasks_then_ranks_by_them():
+    # 11-19: n<5 ranks below every model with data; at n>=5 the everyday record decides, not the seed order.
     a, b = roles.SEED['batch']
     def observations(n, k, days):
         return {'n': n, 'k': k, 'days': set(days)}
-    one_day = {'batch': {b: observations(200, 200, ['2026-01-01'])}}
-    assert roles.rank('batch', one_day)[0][0] == a
-    strong = {'batch': {b: observations(200, 200, ['2026-01-01', '2026-01-02'])}}
-    assert roles.rank('batch', strong)[0][0] == b
-    weak = {'batch': {b: observations(5, 4, ['2026-01-01', '2026-01-02'])}}
-    assert roles.rank('batch', weak)[0][0] == a
+    few = {'batch': {b: observations(4, 4, ['2026-01-01', '2026-01-02'])}}
+    assert roles.rank('batch', few)[0][0] == a
+    some = {'batch': {b: observations(5, 4, ['2026-01-01'])}}
+    assert roles.rank('batch', some)[0][0] == b
+    both = {'batch': {a: observations(50, 30, ['2026-01-01']), b: observations(50, 45, ['2026-01-01'])}}
+    assert roles.rank('batch', both)[0][:2] == [b, a]
 
 
 def test_killed_at_own_bar_is_not_a_taste_failure(tmp_path, monkeypatch):

@@ -219,6 +219,11 @@ for (( i = start; i <= 5; i++ )); do
     agy) cx=${LAUNCH_AGY:-agy};;
     *) print -u2 -- "launch.sh refused $job: unsupported executor route $backend"; exit 2;;
   esac
+  # 11-19: a codex-sized job delegated or overflowed to claude or agy keeps the shell a codex job has.
+  if [[ $sel_exec == codex && $backend == (claude|agy) && $LAUNCH_CLAUDE_TOOLS != *Bash* ]]; then
+    LAUNCH_CLAUDE_TOOLS+=,Bash
+    print -- "tools widened to $LAUNCH_CLAUDE_TOOLS: a codex job routed to $backend $(date)" >> "$log"
+  fi
   # Allowance/call limits belong to the Codex wrapper. Only tmux concurrency is local here.
   python3 "${LAUNCH_GUARD:-${self:h:h}/rstack/tools/launch-guard}" \
     --job "$job" --lane "$lane" --backend "$backend" --provider "${LAUNCH_PROVIDER:-}" --log "$log"
@@ -402,6 +407,7 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
     print -- "exit $rc $(date)" >> "$log"
   fi
   python3 "$selector" --log "$log" --receipt "$log.selection.json" --outcome "$rc" || exit 2
+  print -r -- "GRADE ON RETURN: python3 ${selector:A} --grade pass|partial|fail --note WHY --receipt ${log:A}.selection.json --log ${log:A}" >> "$log"
   (( policy_flag == 0 && rc != 0 && i < 5 )) || break
   [[ $backend == codex ]] || break  # A Claude retry must not reset its spend cap.
   # A quota response ends this model's attempt even if it also says 'at capacity'.

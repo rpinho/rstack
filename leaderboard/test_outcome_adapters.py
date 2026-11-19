@@ -106,8 +106,8 @@ def test_new_model_enters_unscored_and_can_move_only_with_existing_evidence_rule
     assert data['roles']['design'][-1] == 'claude-fable-5-3'
     page = tmp_path / 'LEADERBOARD.md'
     roles.public(data, page)
-    # 11-19: after the two seeds and the six agy candidates (three Flash tiers, three Gemini 4).
-    assert '| design | claude-fable-5-3 | 9 | - | - |' in page.read_text()
+    # 11-19: after the two seeds and the nine agy candidates (three Flash tiers, Gemini 4 low and medium).
+    assert '| design | claude-fable-5-3 | 12 | n<5 | 1 | - |' in page.read_text()
     strong = {'design': {new: dict(n=100, k=100, days={'2026-01-01', '2026-01-02'})}}
     assert roles.rank('design', strong)[0][0] == new
     assert roles.SEED['judge'] == roles.SEED['review']
@@ -554,7 +554,7 @@ def test_public_merge_retains_scored_and_observation_history(setup_reader, tmp_p
     roles.public(data, page)
     for line in historical.splitlines():
         assert line in page.read_text()
-    assert '| design | claude-fable-5-3 | 9 | - | - | 2026-01-03 |' in page.read_text()
+    assert '| design | claude-fable-5-3 | 12 | n<5 | 1 | - | 2026-01-03 |' in page.read_text()
     once = page.read_text()
     roles.public(data, page)
     assert page.read_text() == once
@@ -620,3 +620,21 @@ def test_codex_launching_transcript_function_call(setup_reader, tmp_path):
     adapters = load('codex_transcript_adapters', 'outcome_adapters.py')
     row = adapters.Receipts(receipts, transcript_root=transcripts).get('experiment')
     assert row['model'] == 'gpt-6-astra' and row['link_kind'] == 'transcript-call'
+
+
+def test_graded_returned_jobs_beside_the_receipts_are_everyday_outcomes(setup_reader, tmp_path, monkeypatch):
+    _, roles, receipts = setup_reader
+    write_rows(receipts / 'everyday-grades.jsonl', [
+        dict(id='g1', source_kind='everyday', job='author', grade='pass', date='2026-01-02'),
+        dict(id='g2', source_kind='everyday', job='author', grade='partial', date='2026-01-02'),
+        dict(id='g3', source_kind='everyday', job='author', grade='fail', date='2026-01-03')])
+    ledger = tmp_path / 'ledger.jsonl'
+    monkeypatch.setenv('RH_LAUNCH_RECEIPTS', str(receipts))
+    monkeypatch.delenv('MODEL_OUTCOMES_ROOT', raising=False)
+    monkeypatch.delenv('RH_EVIDENCE_ROOT', raising=False)
+    monkeypatch.setattr(roles, 'LEDGER', ledger)
+    rows, _ = roles.ingest()
+    assert sorted(r['outcome'] for r in rows) == ['held', 'overturned', 'partial']
+    assert {r['pick_role'] for r in rows} == {'builder'} and not any(roles.is_bench(r) for r in rows)
+    e = roles.evidence()['builder']['anthropic/claude-fable-5.2']
+    assert (e['n'], e['k']) == (3, 1.5)

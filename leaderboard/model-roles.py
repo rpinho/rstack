@@ -57,11 +57,16 @@ MODELS = {'anthropic/claude-opus-5.5': ('claude', 'claude-opus-5-5'),
  'google/gemini-3.8-flash-high': ('agy', 'gemini-3.8-flash-high'),
  'google/gemini-3.8-flash-medium': ('agy', 'gemini-3.8-flash-medium'),
  'google/gemini-3.8-flash-low': ('agy', 'gemini-3.8-flash-low'),
- # 11-19 later: Google AI Pro adds Gemini 4 to agy. Medium tier, the one general's test calls used; Carbon is
- # Ultra-only. Distinct canonical IDs from the Gemini API routes above, whose history stays as it is.
+ # 11-19 later: Google AI Pro adds Gemini 4 to agy (Carbon is Ultra-only). Distinct canonical IDs from the
+ # Gemini API routes above, whose history stays as it is. Low and medium are both candidates: effort is chosen
+ # like everything else, from graded real lane work at each effort (Ricardo 11-19: "Those are synthetic tests.
+ # I wouldn't use synthetic tests as the guidance... It's everyday work.").
  'google/gemini-4-neon-medium': ('agy', 'gemini-4-neon-medium'),
  'google/gemini-4-argon-medium': ('agy', 'gemini-4-argon-medium'),
- 'google/gemini-4-hydrogen-medium': ('agy', 'gemini-4-hydrogen-medium')}
+ 'google/gemini-4-hydrogen-medium': ('agy', 'gemini-4-hydrogen-medium'),
+ 'google/gemini-4-neon-low': ('agy', 'gemini-4-neon-low'),
+ 'google/gemini-4-argon-low': ('agy', 'gemini-4-argon-low'),
+ 'google/gemini-4-hydrogen-low': ('agy', 'gemini-4-hydrogen-low')}
 
 ALIASES = [('opus[- ]?5[.-]5', 'anthropic/claude-opus-5.5'),
  ('fable[- ]?5[.-]1|fable-5-1', 'anthropic/claude-fable-5.1'),
@@ -116,7 +121,8 @@ ROLES = tuple(SEED)
 # 11-19: Google on the agy subscription is not metered, so its Flash tiers enter as candidates: after every
 # seed, with no evidence, and moved only by the same Wilson rule as any other model. No winner is picked here.
 AGY_FLASH = ['google/gemini-3.8-flash-high', 'google/gemini-3.8-flash-medium', 'google/gemini-3.8-flash-low']
-AGY_GEMINI4 = ['google/gemini-4-neon-medium', 'google/gemini-4-argon-medium', 'google/gemini-4-hydrogen-medium']
+AGY_GEMINI4 = ['google/gemini-4-neon-low', 'google/gemini-4-neon-medium', 'google/gemini-4-argon-low',
+               'google/gemini-4-argon-medium', 'google/gemini-4-hydrogen-low', 'google/gemini-4-hydrogen-medium']
 AGY_CANDIDATES = AGY_FLASH + AGY_GEMINI4
 CANDIDATES = {role: list(AGY_CANDIDATES) for role in ROLES if role != 'writing'}
 # Owner, 2026-11-18: "Astra 6.2 should replace Astra on the leaderboard. Sol 6.2 should/could replace Sol 6.1."
@@ -204,7 +210,7 @@ def obs(source, item, model, role, outcome, date, evidence, note):
         case = case[:103] + "-" + hashlib.sha1(case.encode()).hexdigest()[:16]
     return {"id": "auto-" + hashlib.sha1(key.encode()).hexdigest()[:12], "case": case,
             "date": date[:10], "model": model, "effort": "as run", "route": MODELS[model][0], "role": "harness",
-            "task_family": f"auto-{role}", "layer": "model", "score": 4 if outcome == "held" else 0,
+            "task_family": f"auto-{role}", "layer": "model", "score": {"held": 4, "partial": 2}.get(outcome, 0),
             "cost_usd": None, "evidence": [str(e) for e in evidence], "note": note,
             "pick_role": role, "source": source, "outcome": outcome}
 
@@ -309,12 +315,33 @@ def wilson_low(k, n):
     return (p + Z * Z / (2 * n) - Z * math.sqrt(p * (1 - p) / n + Z * Z / (4 * n * n))) / d
 
 
+# 11-19 Ricardo (laptop handoff): "rank by everyday work first". Everyday work is real tasks handed to workers,
+# graded pass, partial or fail when they come back. The bench (reproductions with known answers, planted claims) is
+# a second check on correctness and cost and never ranks: almost every model scores 100% on it.
+BENCH_SOURCES = {'receipt-review'}          # planted-claim referee batches
+GRADE = {'held': 1.0, 'partial': 0.5, 'overturned': 0.0}
+
+
+def is_bench(r):
+    return bool(r.get('bench')) or r.get('source') in BENCH_SOURCES or str(r.get('task_family', '')).startswith('bench')
+
+
 def evidence():
+    """{role: {model: {n, k, days}}} from graded everyday work. k counts a partial as half."""
+    return graded('everyday')
+
+
+def bench_evidence():
+    """The same shape from the bench, shown beside the ranking and never used for it."""
+    return graded('bench')
+
+
+def graded(kind):
     rows = validate(LEDGER.read_text()) if LEDGER.exists() else []
     retired = {r["supersedes"] for r in rows if r.get("supersedes")}
     ev = collections.defaultdict(lambda: collections.defaultdict(lambda: {"n": 0, "k": 0, "days": set()}))
     for r in rows:
-        if r["id"] in retired:
+        if r["id"] in retired or is_bench(r) != (kind == 'bench'):
             continue
         model = canon(r.get("model"))
         if not model:
@@ -322,9 +349,11 @@ def evidence():
         if r.get("pick_role") == "corrections":
             continue                              # reported as a rate, never ranked; see CORRECTIONS_CAVEAT
         if r.get("pick_role"):
-            role, ok = r["pick_role"], r.get("outcome") == "held"
-        elif r.get("task_family") in FIELD_ROLE and r.get("score") in (0, 1, 3, 4):
-            role, ok = FIELD_ROLE[r["task_family"]], r["score"] >= 3
+            if r.get("outcome") not in GRADE:
+                continue
+            role, ok = r["pick_role"], GRADE[r["outcome"]]
+        elif r.get("task_family") in FIELD_ROLE and r.get("score") in (0, 1, 2, 3, 4):
+            role, ok = FIELD_ROLE[r["task_family"]], (1.0 if r["score"] >= 3 else 0.5 if r["score"] == 2 else 0.0)
         else:
             continue
         e = ev[role][model]
@@ -379,25 +408,20 @@ def fallback_tail(order):
 
 
 def rank(role, ev):
+    """Models with MIN_N or more graded everyday tasks first, by Wilson lower bound; every other model after
+    them in its seed/candidate order ("n<5"). The bench never enters: rank is called with everyday evidence."""
     e = ev.get(role, {})
-    def eligible(m):
-        return e.get(m, {}).get("n", 0) >= MIN_N and len(e[m]["days"]) >= MIN_DAYS
+    def graded(m):
+        return e.get(m, {}).get("n", 0) >= MIN_N
     def rate(m):
-        return e[m]["k"] / e[m]["n"] if eligible(m) else SEED_RATE
+        return e[m]["k"] / e[m]["n"] if graded(m) else SEED_RATE
     def low(m):
-        return wilson_low(e[m]["k"], e[m]["n"]) if eligible(m) else -1
+        return wilson_low(e[m]["k"], e[m]["n"]) if graded(m) else -1
     pool = list(SEED[role]) + CANDIDATES.get(role, [])
     order = [m for m in pool + sorted((m for m in e if m not in pool), key=low, reverse=True)
              if served_model(m)]
-    for _ in range(len(order) ** 2):              # stable bubble: pass only on evidence
-        swapped = False
-        for i in range(len(order) - 1):
-            a, b = order[i], order[i + 1]
-            if eligible(b) and low(b) > rate(a):
-                order[i], order[i + 1] = b, a
-                swapped = True
-        if not swapped:
-            break
+    data = sorted((m for m in order if graded(m)), key=lambda m: (low(m), rate(m)), reverse=True)
+    order = data + [m for m in order if not graded(m)]
     order = spread_labs(order, MIN_LABS.get(role, 1))
     flags = []
     ov = OVERRIDES.get(role)
@@ -538,12 +562,18 @@ def recompute(write=True):
            'routes': {native: {'cli': cli, 'canonical': canonical}
                       for canonical, (cli, native) in MODELS.items()}, 'evidence': {},
            'overrides': OVERRIDES, 'min_labs': MIN_LABS}
+    bench = bench_evidence()
+    out['bench'] = {}
+    out['ranking'] = 'everyday'
     for role in ROLES:
         order, _ = rank(role, ev)
         out['roles'][role] = [MODELS[m][1] for m in order]
+        # 'scored' is the n<5 rule: under MIN_N graded everyday tasks the model shows "n<5" and has no rate.
         out['evidence'][role] = {MODELS[m][1]: {'n': v['n'], 'rate': round(v['k']/v['n'], 3),
-                      'low': round(wilson_low(v['k'], v['n']), 3), 'days': len(v['days']), 'scored': m in SEED[role] or (v['n'] >= MIN_N and len(v['days']) >= MIN_DAYS)}
+                      'low': round(wilson_low(v['k'], v['n']), 3), 'days': len(v['days']), 'scored': v['n'] >= MIN_N}
                       for m, v in ev.get(role, {}).items() if v['n']}
+        out['bench'][role] = {MODELS[m][1]: {'n': v['n'], 'rate': round(v['k']/v['n'], 3)}
+                              for m, v in bench.get(role, {}).items() if v['n'] and m in MODELS}
     if write:
         write_roles(out)
     return out
@@ -565,7 +595,7 @@ def score(value):
 
 def snapshot_rows(path):
     """Read only the two public table schemas; never copy arbitrary page prose."""
-    tables = {6: [], 4: []}
+    tables = {7: [], 6: [], 4: []}
     if not path or not Path(path).is_file():
         return tables
     for line in Path(path).read_text().splitlines():
@@ -581,7 +611,15 @@ def snapshot_rows(path):
         if role not in ROLES or not canon(model):
             raise ValueError('unknown public role or model in snapshot')
         dt.date.fromisoformat(cells[-1])
-        if len(cells) == 6:
+        if len(cells) == 7:
+            if cells[2] != '-' and (not cells[2].isdigit() or int(cells[2]) < 1):
+                raise ValueError('invalid routing position in snapshot')
+            for value in (cells[3], cells[5]):
+                if value not in ('-', 'n<5'):
+                    score(float(value))
+            if cells[4] != '-' and not cells[4].isdigit():
+                raise ValueError('invalid everyday n in snapshot')
+        elif len(cells) == 6:
             if cells[2] != '-' and (not cells[2].isdigit() or int(cells[2]) < 1):
                 raise ValueError('invalid routing position in snapshot')
             for value in cells[3:5]:
@@ -598,27 +636,36 @@ def public(data, path, observations=(), previous=None):
     date = dt.datetime.fromisoformat(data['updated'].replace('Z', '+00:00')).date().isoformat()
     old = snapshot_rows(previous if previous is not None else path)
     lines = ['# Model leaderboard', '',
-             'A dated routing snapshot from selected local harness outcomes. Scores are held-outcome rates and 95% Wilson lower bounds. A dash means unscored; starting orders include operator seed choices. This is not a universal benchmark.', '',
-             '| Role | Model | Routing order | Held score | Wilson lower score | Date |',
-             '|---|---|---:|---:|---:|---|']
+             'A dated routing snapshot from selected local harness outcomes. The ranking is everyday delegated work: real tasks handed to workers, graded pass, partial (half) or fail when they came back. "n<5" means fewer than 5 graded everyday tasks, and such a model ranks below every model with data. The bench (planted claims, reproductions with known answers) is a separate check on correctness and cost and never ranks. Starting orders include operator seed choices. This is not a universal benchmark.', '',
+             '| Role | Model | Routing order | Everyday passed | Everyday n | Bench passed | Date |',
+             '|---|---|---:|---:|---:|---:|---|']
     # A rerun on the same day replaces that day's routing rows; older days are kept (merge, never erase).
-    lines.extend(l for l in old[6] if not l.rstrip().endswith(f'| {date} |'))
+    lines.extend(l for l in old[7] if not l.rstrip().endswith(f'| {date} |'))
     for role, ranked in data['roles'].items():
         safe_cell(role)
         if role not in ROLES:
             raise ValueError('unknown public role')
         role_scores = data.get('evidence', {}).get(role, {})
-        for model in list(ranked) + sorted(set(role_scores) - set(ranked)):
+        role_bench = data.get('bench', {}).get(role, {})
+        for model in list(ranked) + sorted((set(role_scores) | set(role_bench)) - set(ranked)):
             safe_cell(model)
             if model not in {native for _, native in MODELS.values()}:
                 raise ValueError('unknown public model')
             observation = role_scores.get(model, {})
-            if observation.get('scored') is False:
-                observation = {}
+            n = observation.get('n', 0)
+            if type(n) is not int or n < 0:
+                raise ValueError('invalid everyday n')
+            rate = score(observation.get('rate'))      # validated even when it is not shown
+            everyday = rate if n >= MIN_N else 'n<5'
+            bench = score(role_bench[model]['rate']) if model in role_bench else '-'
             order = str(ranked.index(model) + 1) if model in ranked else '-'
-            line = f"| {role} | {model} | {order} | {score(observation.get('rate'))} | {score(observation.get('low'))} | {date} |"
+            line = f"| {role} | {model} | {order} | {everyday} | {n} | {bench} | {date} |"
             if line not in lines:
                 lines.append(line)
+    if old[6]:
+        lines += ['', '## Routing before 2026-11-19 (held-outcome scores, bench included)', '',
+                  '| Role | Model | Routing order | Held score | Wilson lower score | Date |',
+                  '|---|---|---:|---:|---:|---|', *old[6]]
     groups = collections.defaultdict(list)
     for observation in observations:
         canonical = canon(observation.get('model'))
@@ -655,9 +702,9 @@ def bootstrap(path):
         if not line.startswith('| '):
             continue
         cells = [cell.strip() for cell in line.strip('|').split('|')]
-        if len(cells) != 6 or cells[0] == 'Role':
+        if len(cells) not in (6, 7) or cells[0] == 'Role':
             continue
-        role, model, position, _, _, date = cells
+        role, model, position, date = cells[0], cells[1], cells[2], cells[-1]
         if role == 'Entry' or role in MODELS:
             continue
         safe_cell(role); safe_cell(model)

@@ -38,6 +38,8 @@ def verdict(value):
     value = re.split(r'\s*\(', value, maxsplit=1)[0].strip()
     if value in ('HOLDS', 'HOLDS WITH CAVEATS', 'HELD', 'CONFIRMED', 'CAUGHT'):
         return 'held'
+    if value in ('PARTIAL', 'PARTIALLY HOLDS'):
+        return 'partial'
     if value in ('FAILS', 'OVERTURNED', 'MISSED', 'NOT HELD'):
         return 'overturned'
     return None
@@ -523,6 +525,11 @@ class Outcomes:
             if path.name == 'IDEAS.jsonl':
                 ideas[row['id']].append(row)
                 continue
+            if kind == 'everyday':
+                # pass / partial / fail of a returned delegated job, credited to the model its receipt ran.
+                grade = {'pass': 'held', 'partial': 'partial', 'fail': 'overturned'}.get(str(row.get('grade')).lower())
+                self.emit('everyday', item, self.producer(row), grade, row, str(path))
+                continue
             if path.name == 'REFEREE.jsonl':
                 self.referee_batch(row, str(path), row.get('batch') or item)
             elif kind == 'ideation':
@@ -553,6 +560,10 @@ def collect(evidence_root, receipts_root, canon, make_observation, outcomes_root
             raise ValueError(f'evidence root has no lanes directory: {evidence_root}')
         for name in ('IDEAS.jsonl', 'RESULTS.jsonl', 'REFEREE.jsonl', '.upstream-prs.json'):
             paths.update(lanes.glob('*/' + name))
+    # Grades of returned delegated jobs (worker_models.py --grade) sit beside the receipts they name.
+    grades = Path(receipts_root) / 'everyday-grades.jsonl' if receipts_root else None
+    if grades and grades.is_file():
+        paths.add(grades)
     if outcomes_root:
         root = Path(outcomes_root)
         if not root.is_dir():

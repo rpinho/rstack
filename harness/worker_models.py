@@ -148,6 +148,45 @@ def claude_overflow(executor, model):
     return model + '-' + tier, 'claude overflow via agy (weekly at {:g}%)'.format(weekly['weekly_used_percent'])
 
 
+# 11-19 Ricardo: "It's everyday work. That's why it's very, very important that we delegate to other models.
+# That's how we get real data of their performance." A share of real lane work in these roles goes to the models
+# below instead of the leaderboard's first pick, so they collect graded everyday outcomes. Explicit, never
+# silent: RH_DELEGATE_SHARE (0..1, unset = 0) turns it on, and the receipt and the log name the draw. Kimi is
+# left out: it exists only through OpenRouter, which is refused (no pay-as-you-go).
+DELEGATE_ROLES = ('review', 'judge', 'audit', 'mechanical', 'builder')
+DELEGATE_MODELS = ('gemini-4-neon-low', 'gemini-4-neon-medium', 'gemini-4-argon-low', 'gemini-4-argon-medium',
+                   'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium', 'gpt-6.2-sol', 'gpt-6.2-astra',
+                   'claude-sonnet-5-5')
+
+
+def delegate(role, data, excluded, made_by, top, draw):
+    """(model, note) when this selection is one of the delegated share, else None."""
+    try:
+        share = float(os.environ.get('RH_DELEGATE_SHARE') or 0)
+    except ValueError:
+        raise ValueError('RH_DELEGATE_SHARE must be a number from 0 to 1')
+    roles = [r.strip() for r in (os.environ.get('RH_DELEGATE_ROLES') or ','.join(DELEGATE_ROLES)).split(',')]
+    if share <= 0 or role not in roles or draw >= share:
+        return None
+    evidence = (data.get('evidence') or {}).get(ROLE_ROWS.get(role, role) if role not in data['roles'] else role, {})
+    pool = []
+    for m in DELEGATE_MODELS:
+        route = data['routes'].get(m)
+        if (m == top or not isinstance(route, dict) or route.get('cli') not in ('claude', 'codex', 'agy')
+                or m in excluded or route.get('canonical') in excluded):
+            continue
+        if role in JUDGMENT and made_by and maker(m, route.get('canonical')) == maker(made_by):
+            continue
+        pool.append(m)
+    if not pool:
+        return None
+    # Fewest graded outcomes first, so every delegate reaches n=5; the draw breaks ties.
+    n = lambda m: (evidence.get(m) or {}).get('n', 0)
+    pick = min(pool, key=lambda m: (n(m), hashlib.sha256((m + repr(draw)).encode()).hexdigest()))
+    return pick, 'delegated share {:g} of {}: {} (everyday n={}) instead of the leaderboard pick {}'.format(
+        share, role, pick, n(pick), top)
+
+
 def select(role, executor, model='', override='', path=None, made_by='', job='', lane='', explore=''):
     judgment_hint = ''
     if role == 'batch' and JUDGMENT_JOB.search(job):
@@ -192,7 +231,14 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     if explore and explore not in ranked:
         raise ValueError('--explore model is not in the role {} pool: {}'.format(role, explore))
     chosen = explore or model or eligible[0]
+    delegated = None
+    if not (explore or model):
+        delegated = delegate(role, data, excluded, made_by, chosen, int(uuid.uuid4().hex[:8], 16) / 2 ** 32)
+        if delegated:
+            chosen = delegated[0]
     route = data['routes'].get(chosen)
+    if delegated:
+        executor = route['cli']   # named in the receipt and the log below; not a silent swap
     if isinstance(route, dict) and (role in JUDGMENT or (not model and route.get('cli') in ('openrouter', 'gemini'))):
         executor = route.get('cli')
         if executor not in ('codex', 'claude', 'agy', 'openrouter', 'gemini'):
@@ -214,7 +260,17 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     receipt = dict(schema=1, selection_id=uuid.uuid4().hex, utc=dt.datetime.now(dt.timezone.utc).isoformat(),
         role=role, model=chosen, canonical=route['canonical'], executor=executor,
         roles_sha256=hashlib.sha256(raw).hexdigest(), roles_updated=data.get('updated'),
-        model_override=override, source='explore' if explore else 'override' if model else 'leaderboard', job=job, lane=lane, made_by=made_by)
+        model_override=override, source='explore' if explore else 'override' if model else 'delegate' if delegated else 'leaderboard', job=job, lane=lane, made_by=made_by)
+    if delegated:
+        receipt['delegate'] = delegated[1]
+    # 11-19: the receipt states what the pick rests on, everyday work first (n<5 = fewer than 5 graded tasks)
+    # and the bench beside it, never instead of it.
+    everyday = (data.get('evidence') or {}).get(row, {}).get(chosen) or {}
+    receipt['everyday'] = ({'rate': everyday.get('rate'), 'n': everyday['n']}
+                           if everyday.get('n', 0) >= 5 else 'n<5')
+    bench = (data.get('bench') or {}).get(row, {}).get(chosen)
+    if bench:
+        receipt['bench'] = {'rate': bench.get('rate'), 'n': bench.get('n')}
     if overflow:
         # Same model, other route: evidence still credits the canonical model; the receipt shows the route.
         receipt.update(executor='agy', route_model=overflow[0], overflow=overflow[1])
@@ -232,7 +288,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
 def log_record(path, event, record):
     with Path(path).open('a') as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)
-        stream.write(event + ' ' + json.dumps(record, sort_keys=True) + '\n')
+        stream.write((event + ' ' if event else '') + json.dumps(record, sort_keys=True) + '\n')
         stream.flush()
         os.fsync(stream.fileno())
 
@@ -255,8 +311,23 @@ def main(argv=None):
     parser.add_argument('--log', type=Path, required=True)
     parser.add_argument('--receipt', type=Path, required=True)
     parser.add_argument('--outcome', type=int)
+    parser.add_argument('--grade', choices=('pass', 'partial', 'fail'),
+                        help='grade a returned job: credited to the model its --receipt ran, as everyday work')
+    parser.add_argument('--note', default='')
     args = parser.parse_args(argv)
     try:
+        if args.grade:
+            receipt = json.loads(args.receipt.read_text())
+            row = dict(id='grade-' + receipt['selection_id'], date=dt.date.today().isoformat(),
+                       source_kind='everyday', job=receipt.get('job') or args.job, grade=args.grade,
+                       model=receipt.get('route_model') or receipt['model'], role=receipt['role'],
+                       note=' '.join(args.note.split())[:300])
+            # The grade lands where the job's outcome is already recorded (its log), and in the grades file
+            # beside its receipt, which the daily model scorer reads.
+            log_record(args.log, 'MODEL_GRADE', row)
+            log_record(args.receipt.with_name('everyday-grades.jsonl'), '', row)
+            print('graded {} {} ({})'.format(row['job'], args.grade, row['model']))
+            return 0
         if args.outcome is not None:
             receipt = json.loads(args.receipt.read_text())
             receipt.update(exit_code=args.outcome, finished=dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -272,6 +343,10 @@ def main(argv=None):
             return 2
         args.receipt.write_text(json.dumps(receipt, sort_keys=True) + '\n')
         log_record(args.log, 'MODEL_SELECTION', receipt)
+        if receipt.get('delegate'):
+            with Path(args.log).open('a') as stream:
+                stream.write('{} job={}\n'.format(receipt['delegate'], args.job))
+            print('worker model: ' + receipt['delegate'], file=sys.stderr)
         if receipt.get('overflow'):
             with Path(args.log).open('a') as stream:
                 stream.write('{} job={} model={} route={}\n'.format(receipt['overflow'], args.job, receipt['model'],

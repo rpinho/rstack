@@ -1,6 +1,141 @@
 # Model leaderboard
 
-A dated routing snapshot from selected local harness outcomes. Scores are held-outcome rates and 95% Wilson lower bounds. A dash means unscored; starting orders include operator seed choices. This is not a universal benchmark.
+A dated routing snapshot from selected local harness outcomes. The ranking is everyday delegated work: real tasks handed to workers, graded pass, partial (half) or fail when they came back. "n<5" means fewer than 5 graded everyday tasks, and such a model ranks below every model with data. The bench (planted claims, reproductions with known answers) is a separate check on correctness and cost and never ranks. Starting orders include operator seed choices. This is not a universal benchmark.
+
+| Role | Model | Routing order | Everyday passed | Everyday n | Bench passed | Date |
+|---|---|---:|---:|---:|---:|---|
+| taste | claude-opus-5-5 | 1 | n<5 | 0 | - | 2026-11-19 |
+| taste | claude-fable-5-2 | 2 | n<5 | 0 | - | 2026-11-19 |
+| taste | gemini-3.8-flash-high | 3 | n<5 | 0 | - | 2026-11-19 |
+| taste | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | 2026-11-19 |
+| taste | gemini-3.8-flash-low | 5 | n<5 | 0 | - | 2026-11-19 |
+| taste | gemini-4-neon-low | 6 | n<5 | 0 | - | 2026-11-19 |
+| taste | gemini-4-neon-medium | 7 | n<5 | 0 | - | 2026-11-19 |
+| taste | gemini-4-argon-low | 8 | n<5 | 0 | - | 2026-11-19 |
+| taste | gemini-4-argon-medium | 9 | n<5 | 0 | - | 2026-11-19 |
+| taste | gemini-4-hydrogen-low | 10 | n<5 | 0 | - | 2026-11-19 |
+| taste | gemini-4-hydrogen-medium | 11 | n<5 | 0 | - | 2026-11-19 |
+| review | claude-opus-5-5 | 1 | n<5 | 0 | 1.0 | 2026-11-19 |
+| review | gpt-6.2-astra | 2 | n<5 | 0 | - | 2026-11-19 |
+| review | claude-fable-5-2 | 3 | n<5 | 0 | - | 2026-11-19 |
+| review | gpt-6.2-sol | 4 | n<5 | 0 | - | 2026-11-19 |
+| review | gemini-3.8-flash-high | 5 | n<5 | 0 | 1.0 | 2026-11-19 |
+| review | gemini-3.8-flash-medium | 6 | n<5 | 0 | 1.0 | 2026-11-19 |
+| review | gemini-3.8-flash-low | 7 | n<5 | 0 | 1.0 | 2026-11-19 |
+| review | gemini-4-neon-low | 8 | n<5 | 0 | - | 2026-11-19 |
+| review | gemini-4-neon-medium | 9 | n<5 | 0 | 1.0 | 2026-11-19 |
+| review | gemini-4-argon-low | 10 | n<5 | 0 | - | 2026-11-19 |
+| review | gemini-4-argon-medium | 11 | n<5 | 0 | 1.0 | 2026-11-19 |
+| review | gemini-4-hydrogen-low | 12 | n<5 | 0 | - | 2026-11-19 |
+| review | gemini-4-hydrogen-medium | 13 | n<5 | 0 | 1.0 | 2026-11-19 |
+| review | gpt-5.6-sol | 14 | n<5 | 0 | 0.667 | 2026-11-19 |
+| review | claude-sonnet-5-5 | 15 | n<5 | 0 | - | 2026-11-19 |
+| review | gpt-6-astra | 16 | n<5 | 0 | - | 2026-11-19 |
+| review | gpt-6.1-sol | 17 | n<5 | 0 | - | 2026-11-19 |
+| review | google/gemini-4-argon | - | n<5 | 0 | 1.0 | 2026-11-19 |
+| review | google/gemini-4-hydrogen | - | n<5 | 0 | 0.5 | 2026-11-19 |
+| review | moonshotai/kimi-k3.1-pro | - | n<5 | 0 | 1.0 | 2026-11-19 |
+| mechanical | gpt-6.2-sol | 1 | n<5 | 0 | - | 2026-11-19 |
+| mechanical | claude-sonnet-5-5 | 2 | n<5 | 0 | - | 2026-11-19 |
+| mechanical | gemini-3.8-flash-high | 3 | n<5 | 0 | - | 2026-11-19 |
+| mechanical | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | 2026-11-19 |
+| mechanical | gemini-3.8-flash-low | 5 | n<5 | 0 | - | 2026-11-19 |
+| mechanical | gemini-4-neon-low | 6 | n<5 | 0 | - | 2026-11-19 |
+| mechanical | gemini-4-neon-medium | 7 | n<5 | 0 | - | 2026-11-19 |
+| mechanical | gemini-4-argon-low | 8 | n<5 | 0 | - | 2026-11-19 |
+| mechanical | gemini-4-argon-medium | 9 | n<5 | 0 | - | 2026-11-19 |
+| mechanical | gemini-4-hydrogen-low | 10 | n<5 | 0 | - | 2026-11-19 |
+| mechanical | gemini-4-hydrogen-medium | 11 | n<5 | 0 | - | 2026-11-19 |
+| mechanical | gpt-6.1-sol | 12 | n<5 | 0 | - | 2026-11-19 |
+| builder | claude-opus-5-5 | 1 | n<5 | 0 | - | 2026-11-19 |
+| builder | gpt-6.2-sol | 2 | n<5 | 0 | - | 2026-11-19 |
+| builder | gemini-3.8-flash-high | 3 | n<5 | 0 | - | 2026-11-19 |
+| builder | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | 2026-11-19 |
+| builder | gemini-3.8-flash-low | 5 | n<5 | 0 | - | 2026-11-19 |
+| builder | gemini-4-neon-low | 6 | n<5 | 0 | - | 2026-11-19 |
+| builder | gemini-4-neon-medium | 7 | n<5 | 0 | - | 2026-11-19 |
+| builder | gemini-4-argon-low | 8 | n<5 | 0 | - | 2026-11-19 |
+| builder | gemini-4-argon-medium | 9 | n<5 | 0 | - | 2026-11-19 |
+| builder | gemini-4-hydrogen-low | 10 | n<5 | 0 | - | 2026-11-19 |
+| builder | gemini-4-hydrogen-medium | 11 | n<5 | 0 | - | 2026-11-19 |
+| builder | gpt-6.1-sol | 12 | n<5 | 0 | - | 2026-11-19 |
+| cheap | gpt-6-luna | 1 | n<5 | 0 | - | 2026-11-19 |
+| cheap | claude-haiku-5-5 | 2 | n<5 | 0 | - | 2026-11-19 |
+| cheap | gemini-3.8-flash-high | 3 | n<5 | 0 | - | 2026-11-19 |
+| cheap | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | 2026-11-19 |
+| cheap | gemini-3.8-flash-low | 5 | n<5 | 0 | - | 2026-11-19 |
+| cheap | gemini-4-neon-low | 6 | n<5 | 0 | - | 2026-11-19 |
+| cheap | gemini-4-neon-medium | 7 | n<5 | 0 | - | 2026-11-19 |
+| cheap | gemini-4-argon-low | 8 | n<5 | 0 | - | 2026-11-19 |
+| cheap | gemini-4-argon-medium | 9 | n<5 | 0 | - | 2026-11-19 |
+| cheap | gemini-4-hydrogen-low | 10 | n<5 | 0 | - | 2026-11-19 |
+| cheap | gemini-4-hydrogen-medium | 11 | n<5 | 0 | - | 2026-11-19 |
+| biology | claude-opus-5-5 | 1 | n<5 | 0 | - | 2026-11-19 |
+| biology | gpt-6.2-astra | 2 | n<5 | 0 | - | 2026-11-19 |
+| biology | gemini-3.8-flash-high | 3 | n<5 | 0 | - | 2026-11-19 |
+| biology | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | 2026-11-19 |
+| biology | gemini-3.8-flash-low | 5 | n<5 | 0 | - | 2026-11-19 |
+| biology | gemini-4-neon-low | 6 | n<5 | 0 | - | 2026-11-19 |
+| biology | gemini-4-neon-medium | 7 | n<5 | 0 | - | 2026-11-19 |
+| biology | gemini-4-argon-low | 8 | n<5 | 0 | - | 2026-11-19 |
+| biology | gemini-4-argon-medium | 9 | n<5 | 0 | - | 2026-11-19 |
+| biology | gemini-4-hydrogen-low | 10 | n<5 | 0 | - | 2026-11-19 |
+| biology | gemini-4-hydrogen-medium | 11 | n<5 | 0 | - | 2026-11-19 |
+| biology | gpt-6-astra | 12 | n<5 | 0 | - | 2026-11-19 |
+| batch | gpt-6.2-sol | 1 | n<5 | 0 | - | 2026-11-19 |
+| batch | claude-sonnet-5-5 | 2 | n<5 | 0 | - | 2026-11-19 |
+| batch | gemini-3.8-flash-high | 3 | n<5 | 0 | - | 2026-11-19 |
+| batch | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | 2026-11-19 |
+| batch | gemini-3.8-flash-low | 5 | n<5 | 0 | - | 2026-11-19 |
+| batch | gemini-4-neon-low | 6 | n<5 | 0 | - | 2026-11-19 |
+| batch | gemini-4-neon-medium | 7 | n<5 | 0 | - | 2026-11-19 |
+| batch | gemini-4-argon-low | 8 | n<5 | 0 | - | 2026-11-19 |
+| batch | gemini-4-argon-medium | 9 | n<5 | 0 | - | 2026-11-19 |
+| batch | gemini-4-hydrogen-low | 10 | n<5 | 0 | - | 2026-11-19 |
+| batch | gemini-4-hydrogen-medium | 11 | n<5 | 0 | - | 2026-11-19 |
+| batch | gpt-6.1-sol | 12 | 1.0 | 25 | - | 2026-11-19 |
+| writing | claude-opus-5-5 | 1 | n<5 | 0 | - | 2026-11-19 |
+| ideation | claude-fable-5-2 | 1 | 1.0 | 11 | - | 2026-11-19 |
+| ideation | gpt-6.2-astra | 2 | n<5 | 0 | - | 2026-11-19 |
+| ideation | claude-opus-5-5 | 3 | n<5 | 2 | - | 2026-11-19 |
+| ideation | gemini-3.8-flash-high | 4 | n<5 | 0 | - | 2026-11-19 |
+| ideation | gemini-3.8-flash-medium | 5 | n<5 | 0 | - | 2026-11-19 |
+| ideation | gemini-3.8-flash-low | 6 | n<5 | 0 | - | 2026-11-19 |
+| ideation | gemini-4-neon-low | 7 | n<5 | 0 | - | 2026-11-19 |
+| ideation | gemini-4-neon-medium | 8 | n<5 | 0 | - | 2026-11-19 |
+| ideation | gemini-4-argon-low | 9 | n<5 | 0 | - | 2026-11-19 |
+| ideation | gemini-4-argon-medium | 10 | n<5 | 0 | - | 2026-11-19 |
+| ideation | gemini-4-hydrogen-low | 11 | n<5 | 0 | - | 2026-11-19 |
+| ideation | gemini-4-hydrogen-medium | 12 | n<5 | 0 | - | 2026-11-19 |
+| ideation | gpt-6-astra | 13 | n<5 | 0 | - | 2026-11-19 |
+| design | claude-opus-5-5 | 1 | n<5 | 0 | - | 2026-11-19 |
+| design | claude-fable-5-2 | 2 | n<5 | 3 | - | 2026-11-19 |
+| design | gemini-3.8-flash-high | 3 | n<5 | 0 | - | 2026-11-19 |
+| design | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | 2026-11-19 |
+| design | gemini-3.8-flash-low | 5 | n<5 | 0 | - | 2026-11-19 |
+| design | gemini-4-neon-low | 6 | n<5 | 0 | - | 2026-11-19 |
+| design | gemini-4-neon-medium | 7 | n<5 | 0 | - | 2026-11-19 |
+| design | gemini-4-argon-low | 8 | n<5 | 0 | - | 2026-11-19 |
+| design | gemini-4-argon-medium | 9 | n<5 | 0 | - | 2026-11-19 |
+| design | gemini-4-hydrogen-low | 10 | n<5 | 0 | - | 2026-11-19 |
+| design | gemini-4-hydrogen-medium | 11 | n<5 | 0 | - | 2026-11-19 |
+| judge | claude-opus-5-5 | 1 | n<5 | 0 | - | 2026-11-19 |
+| judge | gpt-6.2-astra | 2 | n<5 | 0 | - | 2026-11-19 |
+| judge | claude-fable-5-2 | 3 | n<5 | 2 | - | 2026-11-19 |
+| judge | gpt-6.2-sol | 4 | n<5 | 0 | - | 2026-11-19 |
+| judge | gemini-3.8-flash-high | 5 | n<5 | 0 | - | 2026-11-19 |
+| judge | gemini-3.8-flash-medium | 6 | n<5 | 0 | - | 2026-11-19 |
+| judge | gemini-3.8-flash-low | 7 | n<5 | 0 | - | 2026-11-19 |
+| judge | gemini-4-neon-low | 8 | n<5 | 0 | - | 2026-11-19 |
+| judge | gemini-4-neon-medium | 9 | n<5 | 0 | - | 2026-11-19 |
+| judge | gemini-4-argon-low | 10 | n<5 | 0 | - | 2026-11-19 |
+| judge | gemini-4-argon-medium | 11 | n<5 | 0 | - | 2026-11-19 |
+| judge | gemini-4-hydrogen-low | 12 | n<5 | 0 | - | 2026-11-19 |
+| judge | gemini-4-hydrogen-medium | 13 | n<5 | 0 | - | 2026-11-19 |
+| judge | gpt-6-astra | 14 | n<5 | 0 | - | 2026-11-19 |
+| judge | gpt-6.1-sol | 15 | n<5 | 0 | - | 2026-11-19 |
+
+## Routing before 2026-11-19 (held-outcome scores, bench included)
 
 | Role | Model | Routing order | Held score | Wilson lower score | Date |
 |---|---|---:|---:|---:|---|
@@ -312,6 +447,12 @@ Selected local labels on a 0–4 scale, including proxy and operational outcomes
 | review | claude-opus-5-5 | 4 | 2026-11-09 |
 | review | claude-opus-5-5 | 4, 4 | 2026-11-17 |
 | review | claude-opus-5-5 | 4, 4 | 2026-11-18 |
+| review | gemini-3.8-flash-high | 4 | 2026-11-19 |
+| review | gemini-3.8-flash-low | 4 | 2026-11-19 |
+| review | gemini-3.8-flash-medium | 4 | 2026-11-19 |
+| review | gemini-4-argon-medium | 4 | 2026-11-19 |
+| review | gemini-4-hydrogen-medium | 4 | 2026-11-19 |
+| review | gemini-4-neon-medium | 4 | 2026-11-19 |
 | review | google/gemini-4-argon | 4 | 2026-11-10 |
 | review | google/gemini-4-hydrogen | 0, 4 | 2026-11-16 |
 | review | gpt-5.6-sol | 0, 4, 4 | 2026-11-10 |

@@ -533,3 +533,60 @@ def test_a_stale_weekly_reading_does_not_overflow(tmp_path, monkeypatch):
     p = overflow_setup(tmp_path, monkeypatch, 95)
     (tmp_path / 'state/usage/claude.json').write_text(json.dumps({'weekly_percent': 95, 'at': 1000.0}))
     assert wm.select('batch', 'claude', path=p)['executor'] == 'claude'
+
+
+def test_the_receipt_shows_everyday_rate_and_n_first_and_the_bench_apart(tmp_path):
+    p = tmp_path / 'roles.json'
+    p.write_text(json.dumps({'roles': {'batch': ['fixture-a', 'fixture-b']},
+        'routes': {'fixture-a': {'cli': 'codex', 'canonical': 'openai/fixture-a'},
+                   'fixture-b': {'cli': 'codex', 'canonical': 'openai/fixture-b'}},
+        'evidence': {'batch': {'fixture-a': {'n': 100, 'rate': 0.91}, 'fixture-b': {'n': 3, 'rate': 1.0}}},
+        'bench': {'batch': {'fixture-b': {'n': 8, 'rate': 1.0}}}}))
+    a = wm.select('batch', 'codex', path=p)
+    assert a['everyday'] == {'rate': 0.91, 'n': 100} and 'bench' not in a
+    b = wm.select('batch', 'codex', path=p, explore='fixture-b')
+    assert b['everyday'] == 'n<5' and b['bench'] == {'rate': 1.0, 'n': 8}
+
+
+def delegate_roles(path):
+    routes = {'claude-opus-5-5': ('claude', 'anthropic/claude-opus-5.5'), 'gpt-6.2-sol': ('codex', 'openai/gpt-6.2-sol'),
+              'gemini-4-argon-low': ('agy', 'google/gemini-4-argon-low'),
+              'gemini-4-neon-low': ('agy', 'google/gemini-4-neon-low')}
+    path.write_text(json.dumps({'roles': {'review': ['claude-opus-5-5', 'gpt-6.2-sol'], 'batch': ['claude-opus-5-5']},
+        'routes': {m: {'cli': c, 'canonical': k} for m, (c, k) in routes.items()},
+        'evidence': {'review': {'gemini-4-argon-low': {'n': 3, 'rate': 1.0}}}}))
+    return path
+
+
+def test_a_delegated_share_goes_to_the_delegate_with_fewest_graded_outcomes_and_says_so(tmp_path, monkeypatch):
+    p = delegate_roles(tmp_path / 'roles.json')
+    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
+    got = wm.select('review', 'codex', path=p, made_by='gpt-6')
+    assert got['source'] == 'delegate' and got['model'] == 'gemini-4-neon-low' and got['executor'] == 'agy'
+    assert got['delegate'] == ('delegated share 1 of review: gemini-4-neon-low (everyday n=0) instead of the '
+                               'leaderboard pick claude-opus-5-5')
+    # Never to the job's own maker for judgment, and only in the delegated roles.
+    assert wm.select('review', 'codex', path=p, made_by='gemini-3')['model'] == 'gpt-6.2-sol'
+    assert wm.select('batch', 'claude', path=p)['source'] == 'leaderboard'
+    log, receipt = tmp_path / 'job.log', tmp_path / 'job.log.selection.json'
+    assert wm.main(['--role', 'review', '--made-by', 'gpt-6', '--roles-file', str(p), '--job', 'j',
+                    '--log', str(log), '--receipt', str(receipt)]) == 0
+    assert 'delegated share 1 of review' in log.read_text()
+
+
+def test_with_no_share_set_the_leaderboard_pick_stands(tmp_path, monkeypatch):
+    p = delegate_roles(tmp_path / 'roles.json')
+    monkeypatch.delenv('RH_DELEGATE_SHARE', raising=False)
+    got = wm.select('review', 'codex', path=p, made_by='gpt-6')
+    assert got['source'] == 'leaderboard' and got['model'] == 'claude-opus-5-5' and 'delegate' not in got
+
+
+def test_a_returned_job_is_graded_into_its_log_and_the_grades_file(tmp_path):
+    p = delegate_roles(tmp_path / 'roles.json')
+    log, receipt = tmp_path / 'job.log', tmp_path / 'job.log.selection.json'
+    assert wm.main(['--role', 'review', '--made-by', 'gpt-6', '--roles-file', str(p), '--job', 'j',
+                    '--log', str(log), '--receipt', str(receipt)]) == 0
+    assert wm.main(['--grade', 'partial', '--note', 'half the checks', '--receipt', str(receipt), '--log', str(log)]) == 0
+    row = json.loads((tmp_path / 'everyday-grades.jsonl').read_text())
+    assert (row['grade'], row['job'], row['model'], row['source_kind']) == ('partial', 'j', 'claude-opus-5-5', 'everyday')
+    assert 'MODEL_GRADE' in log.read_text()

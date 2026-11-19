@@ -112,7 +112,8 @@
    "in": 2,
    "out": 6,
    "cache_read": 0.5,
-   "checked": "2026-10-25"
+   "checked": "2026-10-25",
+   "note": "Bill is mostly cache reads: $0.50 per 1M, 25% of its $2 input price (GPT-6.2 Sol and Opus 5.5 pay 5%). Cache hit rate >90%, so cache reads are about 2/3 of the cost (laptop, 11-19)."
   }
  },
  "roles": {
@@ -239,5 +240,7 @@
     "reason": "owner's call: weak taste, until evidence says otherwise"
    }
   ]
- }
+ },
+ "grok": "Grok 4.7 is not preferred over 4.6: 94% vs 100% on the bench at about 1.1x the cost per pass (laptop, 11-19). Neither is routed: both are OpenRouter, which is refused (no pay-as-you-go).",
+ "ranking": "Since 2026-11-19 roles rank by everyday delegated work (real lane tasks graded pass, partial or fail on return); fewer than 5 graded tasks shows n<5 and ranks below every model with data. Benches and planted claims are smoke tests that a route works and never rank."
 }
