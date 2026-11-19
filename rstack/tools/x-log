@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Append rows to the x-engage log.jsonl so target_url is always a string.
+
+11-19: the browser reviewer (a Claude session that writes log rows by prompt) wrote summary rows
+with "target_url": null from 20:56Z, and bookmark_queue.py's reader passed that None to re.search,
+which crashed every round after it. Readers expect target_url to be a string ("" when a row has no URL).
+
+  x-log [--log FILE] 'JSON'   append one row. A missing or null target_url is written as "";
+                              any other non-string target_url, a row that is not a JSON object,
+                              or a row with no action is refused (exit 2) and nothing is written.
+  x-log [--log FILE] --repair rewrite rows already in the log whose target_url is not a string
+                              (null -> "", anything else -> its text). Run by the review launcher
+                              after each round, so a row written around the helper is fixed too.
+
+No model or network calls. Default log: $X_ENGAGE_LOG, else ~/.local/share/x-engage/log.jsonl.
+"""
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+
+def default_log():
+    return Path(os.environ.get('X_ENGAGE_LOG') or '~/.local/share/x-engage/log.jsonl').expanduser()
+
+
+def clean_row(row):
+    """The row to append, or raise ValueError saying why it is refused."""
+    if not isinstance(row, dict):
+        raise ValueError('a log row must be a JSON object')
+    action = row.get('action')
+    if not isinstance(action, str) or not action.strip():
+        raise ValueError('a log row needs a non-empty string "action"')
+    row = dict(row)
+    url = row.get('target_url')
+    if url is None:
+        row['target_url'] = ''
+    elif not isinstance(url, str):
+        raise ValueError('target_url must be a string ("" when there is no URL), not '
+                         + type(url).__name__)
+    if not row.get('utc'):
+        row['utc'] = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    return row
+
+
+def append(path, row):
+    row = clean_row(row)
+    line = json.dumps(row, ensure_ascii=False) + '\n'
+    with open(path, 'a') as stream:
+        stream.write(line)
+    return row
+
+
+def repaired(line):
+    """(line, changed): the same line with a non-string target_url made a string."""
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return line, False
+    if not isinstance(row, dict) or 'target_url' not in row or isinstance(row['target_url'], str):
+        return line, False
+    url = row['target_url']
+    row['target_url'] = '' if url is None else (url if isinstance(url, str) else
+                                                 json.dumps(url) if isinstance(url, (list, dict)) else str(url))
+    end = '\n' if line.endswith('\n') else ''
+    return json.dumps(row, ensure_ascii=False) + end, True
+
+
+def repair(path, attempts=3):
+    """Rewrite bad rows in place (atomic replace). Returns how many rows changed."""
+    path = Path(path)
+    if not path.exists():
+        return 0
+    for _ in range(attempts):
+        before = path.stat()
+        lines = path.read_text().splitlines(keepends=True)
+        out, changed = [], 0
+        for line in lines:
+            new, hit = repaired(line)
+            out.append(new)
+            changed += hit
+        if not changed:
+            return 0
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix='.x-log-')
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(''.join(out))
+        os.chmod(tmp, before.st_mode & 0o7777)
+        now = path.stat()
+        if (now.st_size, now.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
+            os.unlink(tmp)  # someone appended meanwhile; read again
+            continue
+        os.replace(tmp, path)
+        return changed
+    raise OSError('log kept changing during repair: ' + str(path))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('row', nargs='?', help='one JSON object to append')
+    parser.add_argument('--log', type=Path, default=None)
+    parser.add_argument('--repair', action='store_true')
+    args = parser.parse_args(argv)
+    log = args.log or default_log()
+    if args.repair:
+        try:
+            n = repair(log)
+        except OSError as exc:
+            print('x-log: ' + str(exc), file=sys.stderr)
+            return 1
+        print('x-log: repaired {} row(s) in {}'.format(n, log))
+        return 0
+    if args.row is None:
+        parser.error('give one JSON row, or --repair')
+    try:
+        append(log, json.loads(args.row))
+    except ValueError as exc:
+        print('x-log: refused: ' + str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
