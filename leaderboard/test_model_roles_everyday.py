@@ -1,6 +1,8 @@
 """11-19 Ricardo: rank by everyday delegated work first; the bench is a second check and never ranks."""
 import importlib.util
 import json
+
+import pytest
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location('model_roles', Path(__file__).with_name('model-roles.py'))
@@ -86,3 +88,48 @@ def test_no_role_serves_grok_4_7_over_4_6(monkeypatch):
     monkeypatch.setattr(mr, 'bench_evidence', lambda: {})
     data = mr.recompute(write=False)
     assert all('grok' not in m for order in data['roles'].values() for m in order)
+
+
+def sol_ledger(tmp_path, monkeypatch, old_n, new_n, new_held=None):
+    monkeypatch.delenv('RH_LAUNCH_RECEIPTS', raising=False)
+    ledger = tmp_path / 'ledger.jsonl'
+    rows = [mr.obs('receipt-result', 'old-%d' % i, 'openai/gpt-6.1-sol', 'batch', 'held', '2026-11-1%d' % (i % 9),
+                   ['fixture'], 'everyday') for i in range(old_n)]
+    held = new_n if new_held is None else new_held
+    rows += [mr.obs('receipt-result', 'new-%d' % i, 'openai/gpt-6.2-sol', 'batch', 'held' if i < held else 'overturned',
+                    '2026-11-19', ['fixture'], 'everyday') for i in range(new_n)]
+    ledger.write_text(''.join(json.dumps(r) + '\n' for r in rows))
+    monkeypatch.setattr(mr, 'LEDGER', ledger)
+    return mr.recompute(write=False)
+
+
+def test_a_successor_ranks_on_its_predecessors_record_while_its_own_n_is_smaller(tmp_path, monkeypatch):
+    # Ricardo 11-19: "6.2 should inherit the scores of 6.1 in the rank until we get a larger sample size."
+    data = sol_ledger(tmp_path, monkeypatch, 25, 3, new_held=0)
+    assert 'gpt-6.1-sol' not in data['roles']['batch'] and data['roles']['batch'][0] == 'gpt-6.2-sol'
+    row = data['evidence']['batch']['gpt-6.2-sol']
+    assert row['n'] == 3 and row['inherited'] == {'from': 'gpt-6.1-sol', 'n': 25, 'rate': 1.0}
+    page = tmp_path / 'LEADERBOARD.md'
+    mr.public(data, page)
+    text = page.read_text()
+    assert '| batch | gpt-6.2-sol | 1 | 1.0 | inherited from gpt-6.1-sol (n=25); own n=3 |' in text
+    assert '| batch | gpt-6.1-sol | - | 1.0 | 25 |' in text   # historical: visible, not routed
+    assert mr.bootstrap(page)['roles']['batch'][0] == 'gpt-6.2-sol'
+
+
+def test_the_inheritance_drops_when_its_own_n_reaches_the_predecessors(tmp_path, monkeypatch):
+    data = sol_ledger(tmp_path, monkeypatch, 6, 6, new_held=3)
+    row = data['evidence']['batch']['gpt-6.2-sol']
+    assert 'inherited' not in row and (row['n'], row['rate']) == (6, 0.5)
+    # ranked on its own record now: a seed with no data does not pass it, and its 0.5 is what is shown
+    page = tmp_path / 'LEADERBOARD.md'
+    mr.public(data, page)
+    assert '| batch | gpt-6.2-sol | 1 | 0.5 | 6 |' in page.read_text()
+
+
+def test_there_is_no_inheritance_across_families():
+    with pytest.raises(ValueError, match='across families'):
+        mr.check_inherits({'anthropic/claude-sonnet-5.5': 'openai/gpt-6.1-sol'})
+    e = {'openai/gpt-6.1-sol': {'n': 25, 'k': 25}}
+    assert mr.effective('anthropic/claude-sonnet-5.5', e) == (0, 0, None)
+    assert mr.effective('openai/gpt-6.2-sol', e) == (25, 25, 'openai/gpt-6.1-sol')

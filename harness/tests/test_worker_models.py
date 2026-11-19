@@ -1,5 +1,6 @@
 """Model routing tests use local files and fake executors; no workers or APIs."""
 import contextlib
+import datetime as dt
 import io
 import json
 import os
@@ -567,7 +568,10 @@ def test_a_delegated_share_goes_to_the_delegate_with_fewest_graded_outcomes_and_
                                'leaderboard pick claude-opus-5-5')
     # Never to the job's own maker for judgment, and only in the delegated roles.
     assert wm.select('review', 'codex', path=p, made_by='gemini-3')['model'] == 'gpt-6.2-sol'
+    assert wm.select('batch', 'claude', path=p)['source'] == 'delegate'   # batch is delegated too (11-19)
+    monkeypatch.setenv('RH_DELEGATE_ROLES', 'review')
     assert wm.select('batch', 'claude', path=p)['source'] == 'leaderboard'
+    monkeypatch.delenv('RH_DELEGATE_ROLES')
     log, receipt = tmp_path / 'job.log', tmp_path / 'job.log.selection.json'
     assert wm.main(['--role', 'review', '--made-by', 'gpt-6', '--roles-file', str(p), '--job', 'j',
                     '--log', str(log), '--receipt', str(receipt)]) == 0
@@ -590,3 +594,63 @@ def test_a_returned_job_is_graded_into_its_log_and_the_grades_file(tmp_path):
     row = json.loads((tmp_path / 'everyday-grades.jsonl').read_text())
     assert (row['grade'], row['job'], row['model'], row['source_kind']) == ('partial', 'j', 'claude-opus-5-5', 'everyday')
     assert 'MODEL_GRADE' in log.read_text()
+
+
+def test_a_spec_that_pins_its_model_is_never_delegated(tmp_path, monkeypatch):
+    p = delegate_roles(tmp_path / 'roles.json')
+    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
+    assert wm.spec_pin('Do the thing.\n- Model pin: sealed referee for batch 3\n') == 'sealed referee for batch 3'
+    assert wm.spec_pin('We discussed whether a model pin: matters') == ''
+    got = wm.select('review', 'codex', path=p, made_by='gpt-6', pin='cross-family check')
+    assert got['source'] == 'leaderboard' and got['model_pin'] == 'cross-family check' and 'delegate' not in got
+    spec = tmp_path / 'job.md'
+    spec.write_text('Referee the claims.\nModel pin: sealed referee\n')
+    receipt = tmp_path / 'r.json'
+    assert wm.main(['--role', 'batch', '--executor', 'claude', '--roles-file', str(p), '--spec', str(spec),
+                    '--log', str(tmp_path / 'l'), '--receipt', str(receipt)]) == 0
+    assert json.loads(receipt.read_text())['model_pin'] == 'sealed referee'
+    assert 'batch' in wm.DELEGATE_ROLES
+
+
+def returned_delegate(receipts, job, lane, hours_ago):
+    sid = uuid_hex = job + 'sid'
+    finished = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours_ago)).isoformat()
+    (receipts / (job + '.log.selection.json')).write_text(json.dumps(dict(
+        selection_id=sid, job=job, lane=lane, role='batch', model='gemini-4-argon-low', source='delegate')))
+    (receipts / (job + '.log')).write_text('MODEL_OUTCOME ' + json.dumps(dict(selection_id=sid, finished=finished)) + '\n')
+    return receipts / (job + '.log.selection.json')
+
+
+def test_a_lane_cannot_launch_while_a_returned_delegated_job_is_ungraded(tmp_path, capsys):
+    receipts = tmp_path / 'receipts'; receipts.mkdir()
+    receipt = returned_delegate(receipts, 'lane-a-job1', 'lane-a', 2)
+    assert wm.main(['--pending-grades', str(receipts), '--lane', 'lane-b', '--job', 'x']) == 0
+    assert wm.main(['--pending-grades', str(receipts), '--lane', 'lane-a', '--job', 'lane-a-job2']) == 3
+    err = capsys.readouterr().err
+    assert 'lane-a-job1' in err and '--grade pass|partial|fail' in err and str(receipt) in err
+    assert wm.main(['--grade', 'pass', '--receipt', str(receipt), '--log', str(receipts / 'lane-a-job1.log')]) == 0
+    assert wm.main(['--pending-grades', str(receipts), '--lane', 'lane-a', '--job', 'lane-a-job2']) == 0
+
+
+def test_after_24_hours_an_ungraded_job_is_recorded_and_listed_for_the_morning(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setattr(wm, 'UNGRADED_TODAY', [])
+    receipts = tmp_path / 'receipts'; receipts.mkdir()
+    returned_delegate(receipts, 'lane-a-old', 'lane-a', 25)
+    assert wm.main(['--sweep-ungraded', str(receipts)]) == 0
+    assert 'ungraded after 24 h: lane-a-old' in capsys.readouterr().out
+    row = json.loads((receipts / 'everyday-grades.jsonl').read_text().splitlines()[-1])
+    assert (row['grade'], row['job']) == ('ungraded', 'lane-a-old')
+    listed = list((tmp_path / 'state/asks-waiting').glob('*-ungraded.tsv'))
+    assert listed and 'lane-a-old' in listed[0].read_text()
+    assert wm.main(['--pending-grades', str(receipts), '--lane', 'lane-a', '--job', 'next']) == 0
+
+
+def test_the_launcher_refuses_the_next_job_and_names_the_grade_command(fake_home):
+    home, c, work, env = fake_home
+    assert run_launcher(fake_home).returncode == 0
+    lane = json.loads((c / 'fixture-job.log.selection.json').read_text())['lane']
+    returned_delegate(c, 'earlier-job', lane, 1)
+    result = run_launcher(fake_home)
+    assert result.returncode == 3
+    assert 'earlier-job' in result.stderr and '--grade' in result.stderr

@@ -527,7 +527,7 @@ class Outcomes:
                 continue
             if kind == 'everyday':
                 # pass / partial / fail of a returned delegated job, credited to the model its receipt ran.
-                grade = {'pass': 'held', 'partial': 'partial', 'fail': 'overturned'}.get(str(row.get('grade')).lower())
+                grade = {'pass': 'held', 'partial': 'partial', 'fail': 'overturned', 'ungraded': 'ungraded'}.get(str(row.get('grade')).lower())
                 self.emit('everyday', item, self.producer(row), grade, row, str(path))
                 continue
             if path.name == 'REFEREE.jsonl':

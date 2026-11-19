@@ -205,6 +205,14 @@ selector=${LAUNCH_SELECTOR:-${self:h:h}/harness/worker_models.py}
 # an unavailable `rh` is not fatal: a job that cannot read its goal still runs, and the gap shows
 # up in the prompt's absence rather than as a dead lane.
 lessons=$(rh --root "${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-${RH_ROOT:-$PWD/.runtime}}}" lessons for "$lane" -n "${LAUNCH_LESSONS:-12}" 2>/dev/null)
+# 11-19 (owner via general): the lane session that reads a returned delegated job's REPORT grades it in the
+# same step, and the next job from a spec waits until it has. After 24 h an ungraded job is recorded
+# "ungraded" and listed for the morning report, so a lane is never held longer than that.
+if ! python3 "$selector" --pending-grades "$artifacts" --lane "$lane" --job "$job" 2>> "$log.grade"; then
+  tail -1 "$log.grade" >&2
+  print -- "exit 3 ungraded-delegated-job $(date)" >> "$log"
+  exit 3
+fi
 start=1; [[ -n $LAUNCH_RESUME ]] && start=2
 for (( i = start; i <= 5; i++ )); do
   sel_exec=$backend
@@ -223,6 +231,11 @@ for (( i = start; i <= 5; i++ )); do
   if [[ $sel_exec == codex && $backend == (claude|agy) && $LAUNCH_CLAUDE_TOOLS != *Bash* ]]; then
     LAUNCH_CLAUDE_TOOLS+=,Bash
     print -- "tools widened to $LAUNCH_CLAUDE_TOOLS: a codex job routed to $backend $(date)" >> "$log"
+  fi
+  # A codex-sized job on claude gets a budget for its size rather than the $1 default of a claude job.
+  if [[ $sel_exec == codex && $backend == claude && -z ${LAUNCH_CLAUDE_BUDGET:-} ]]; then
+    LAUNCH_CLAUDE_BUDGET=5.00
+    print -- "claude budget 5.00: a codex job routed to claude $(date)" >> "$log"
   fi
   # Allowance/call limits belong to the Codex wrapper. Only tmux concurrency is local here.
   python3 "${LAUNCH_GUARD:-${self:h:h}/rstack/tools/launch-guard}" \

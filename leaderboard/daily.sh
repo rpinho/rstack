@@ -39,6 +39,8 @@ else
   : ${MODEL_STATE:?configure MODEL_STATE}
   mkdir -p -- "$MODEL_STATE"
   target=$MODEL_STATE/LEADERBOARD.md
+  # Returned delegated jobs ungraded for 24 h are recorded "ungraded" and listed for the morning report.
+  "$PYTHON" "$REPO/harness/worker_models.py" --sweep-ungraded "$RH_LAUNCH_RECEIPTS" || true
 fi
 "$PYTHON" "$HERE/model-roles.py" ingest
 "$PYTHON" "$HERE/model-roles.py" recompute

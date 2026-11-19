@@ -30,8 +30,6 @@ A dated routing snapshot from selected local harness outcomes. The ranking is ev
 | review | gemini-4-hydrogen-medium | 13 | n<5 | 0 | 1.0 | 2026-11-19 |
 | review | gpt-5.6-sol | 14 | n<5 | 0 | 0.667 | 2026-11-19 |
 | review | claude-sonnet-5-5 | 15 | n<5 | 0 | - | 2026-11-19 |
-| review | gpt-6-astra | 16 | n<5 | 0 | - | 2026-11-19 |
-| review | gpt-6.1-sol | 17 | n<5 | 0 | - | 2026-11-19 |
 | review | google/gemini-4-argon | - | n<5 | 0 | 1.0 | 2026-11-19 |
 | review | google/gemini-4-hydrogen | - | n<5 | 0 | 0.5 | 2026-11-19 |
 | review | moonshotai/kimi-k3.1-pro | - | n<5 | 0 | 1.0 | 2026-11-19 |
@@ -46,7 +44,6 @@ A dated routing snapshot from selected local harness outcomes. The ranking is ev
 | mechanical | gemini-4-argon-medium | 9 | n<5 | 0 | - | 2026-11-19 |
 | mechanical | gemini-4-hydrogen-low | 10 | n<5 | 0 | - | 2026-11-19 |
 | mechanical | gemini-4-hydrogen-medium | 11 | n<5 | 0 | - | 2026-11-19 |
-| mechanical | gpt-6.1-sol | 12 | n<5 | 0 | - | 2026-11-19 |
 | builder | claude-opus-5-5 | 1 | n<5 | 0 | - | 2026-11-19 |
 | builder | gpt-6.2-sol | 2 | n<5 | 0 | - | 2026-11-19 |
 | builder | gemini-3.8-flash-high | 3 | n<5 | 0 | - | 2026-11-19 |
@@ -58,7 +55,6 @@ A dated routing snapshot from selected local harness outcomes. The ranking is ev
 | builder | gemini-4-argon-medium | 9 | n<5 | 0 | - | 2026-11-19 |
 | builder | gemini-4-hydrogen-low | 10 | n<5 | 0 | - | 2026-11-19 |
 | builder | gemini-4-hydrogen-medium | 11 | n<5 | 0 | - | 2026-11-19 |
-| builder | gpt-6.1-sol | 12 | n<5 | 0 | - | 2026-11-19 |
 | cheap | gpt-6-luna | 1 | n<5 | 0 | - | 2026-11-19 |
 | cheap | claude-haiku-5-5 | 2 | n<5 | 0 | - | 2026-11-19 |
 | cheap | gemini-3.8-flash-high | 3 | n<5 | 0 | - | 2026-11-19 |
@@ -81,8 +77,7 @@ A dated routing snapshot from selected local harness outcomes. The ranking is ev
 | biology | gemini-4-argon-medium | 9 | n<5 | 0 | - | 2026-11-19 |
 | biology | gemini-4-hydrogen-low | 10 | n<5 | 0 | - | 2026-11-19 |
 | biology | gemini-4-hydrogen-medium | 11 | n<5 | 0 | - | 2026-11-19 |
-| biology | gpt-6-astra | 12 | n<5 | 0 | - | 2026-11-19 |
-| batch | gpt-6.2-sol | 1 | n<5 | 0 | - | 2026-11-19 |
+| batch | gpt-6.2-sol | 1 | 1.0 | inherited from gpt-6.1-sol (n=25); own n=0 | - | 2026-11-19 |
 | batch | claude-sonnet-5-5 | 2 | n<5 | 0 | - | 2026-11-19 |
 | batch | gemini-3.8-flash-high | 3 | n<5 | 0 | - | 2026-11-19 |
 | batch | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | 2026-11-19 |
@@ -93,7 +88,7 @@ A dated routing snapshot from selected local harness outcomes. The ranking is ev
 | batch | gemini-4-argon-medium | 9 | n<5 | 0 | - | 2026-11-19 |
 | batch | gemini-4-hydrogen-low | 10 | n<5 | 0 | - | 2026-11-19 |
 | batch | gemini-4-hydrogen-medium | 11 | n<5 | 0 | - | 2026-11-19 |
-| batch | gpt-6.1-sol | 12 | 1.0 | 25 | - | 2026-11-19 |
+| batch | gpt-6.1-sol | - | 1.0 | 25 | - | 2026-11-19 |
 | writing | claude-opus-5-5 | 1 | n<5 | 0 | - | 2026-11-19 |
 | ideation | claude-fable-5-2 | 1 | 1.0 | 11 | - | 2026-11-19 |
 | ideation | gpt-6.2-astra | 2 | n<5 | 0 | - | 2026-11-19 |
@@ -107,7 +102,6 @@ A dated routing snapshot from selected local harness outcomes. The ranking is ev
 | ideation | gemini-4-argon-medium | 10 | n<5 | 0 | - | 2026-11-19 |
 | ideation | gemini-4-hydrogen-low | 11 | n<5 | 0 | - | 2026-11-19 |
 | ideation | gemini-4-hydrogen-medium | 12 | n<5 | 0 | - | 2026-11-19 |
-| ideation | gpt-6-astra | 13 | n<5 | 0 | - | 2026-11-19 |
 | design | claude-opus-5-5 | 1 | n<5 | 0 | - | 2026-11-19 |
 | design | claude-fable-5-2 | 2 | n<5 | 3 | - | 2026-11-19 |
 | design | gemini-3.8-flash-high | 3 | n<5 | 0 | - | 2026-11-19 |
@@ -132,8 +126,6 @@ A dated routing snapshot from selected local harness outcomes. The ranking is ev
 | judge | gemini-4-argon-medium | 11 | n<5 | 0 | - | 2026-11-19 |
 | judge | gemini-4-hydrogen-low | 12 | n<5 | 0 | - | 2026-11-19 |
 | judge | gemini-4-hydrogen-medium | 13 | n<5 | 0 | - | 2026-11-19 |
-| judge | gpt-6-astra | 14 | n<5 | 0 | - | 2026-11-19 |
-| judge | gpt-6.1-sol | 15 | n<5 | 0 | - | 2026-11-19 |
 
 ## Routing before 2026-11-19 (held-outcome scores, bench included)
 

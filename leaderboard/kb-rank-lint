@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""kb-rank-lint: fail when rank or effort guidance outside the generated block cites a bench.
+
+Owner, 11-19: "Those are synthetic tests. I wouldn't use synthetic tests as the guidance... It's everyday work."
+A laptop bench finding was relayed as routing guidance through a hand-written ranking on a KB page. The
+ranking now lives only in the block render-kb-block writes between the rstack:leaderboard markers. Outside
+it, a line that gives rank, preference, effort or routing guidance AND cites a bench, plant, synthetic,
+known-answer or smoke-test source is reported. A line that says such a source never ranks is not guidance.
+
+  kb-rank-lint PAGE.md [...]    exit 1 and list file:line for each finding; 0 when clean
+"""
+import re
+import sys
+from pathlib import Path
+
+BEGIN, END = '<!-- rstack:leaderboard:begin -->', '<!-- rstack:leaderboard:end -->'
+GUIDANCE = re.compile(r'\b(rank(s|ed|ing)?|prefer(s|red)?|effort|switch(es|ed)?|rout(e|es|ed|ing)|'
+                      r'demote[sd]?|promote[sd]?)\b', re.I)
+# Our own bench, not a public benchmark: a standalone "bench" (Terminal-Bench, SEC-bench and BioBasicsBench are
+# names of public benchmarks reported from elsewhere), planted claims, synthetic, known-answer or smoke tests.
+SOURCE = re.compile(r'(?<![\w-])bench(es)?(?![\w-])|\b(plants?|planted|synthetic|known[- ]answers?|'
+                    r'smoke[- ]tests?|matched mini[- ]tasks?)\b', re.I)
+# The rule itself, stated: these sources do not rank.
+DISCLAIMS = re.compile(r"\b(never|not|isn't|doesn't|don't|no longer|only a (second )?check|display only|"
+                       r"smoke tests? that a route works)\b", re.I)
+
+
+def findings(text):
+    out, inside = [], False
+    for number, line in enumerate(text.splitlines(), 1):
+        if BEGIN in line:
+            inside = True
+            continue
+        if END in line:
+            inside = False
+            continue
+        if inside or not (GUIDANCE.search(line) and SOURCE.search(line)) or DISCLAIMS.search(line):
+            continue
+        out.append((number, line.strip()))
+    return out
+
+
+def main(argv=None):
+    paths = (argv if argv is not None else sys.argv[1:])
+    if not paths:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    bad = 0
+    for path in paths:
+        for number, line in findings(Path(path).read_text()):
+            bad += 1
+            print('{}:{}: rank or effort guidance cites a bench or synthetic source: {}'.format(
+                path, number, line[:200]))
+    return 1 if bad else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

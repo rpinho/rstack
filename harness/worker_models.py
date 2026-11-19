@@ -153,10 +153,20 @@ def claude_overflow(executor, model):
 # below instead of the leaderboard's first pick, so they collect graded everyday outcomes. Explicit, never
 # silent: RH_DELEGATE_SHARE (0..1, unset = 0) turns it on, and the receipt and the log name the draw. Kimi is
 # left out: it exists only through OpenRouter, which is refused (no pay-as-you-go).
-DELEGATE_ROLES = ('review', 'judge', 'audit', 'mechanical', 'builder')
+DELEGATE_ROLES = ('review', 'judge', 'audit', 'mechanical', 'builder', 'batch')
 DELEGATE_MODELS = ('gemini-4-neon-low', 'gemini-4-neon-medium', 'gemini-4-argon-low', 'gemini-4-argon-medium',
                    'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium', 'gpt-6.2-sol', 'gpt-6.2-astra',
                    'claude-sonnet-5-5')
+
+
+# A spec that needs its model (a sealed referee, a cross-family check) says so in one line, and is never delegated:
+#   Model pin: sealed referee for batch 3, must stay Opus
+PIN = re.compile(r'^[ \t]*[-*]?[ \t]*model pin:[ \t]*(\S.*)$', re.I | re.M)
+
+
+def spec_pin(text):
+    found = PIN.search(text or '')
+    return ' '.join(found.group(1).split())[:200] if found else ''
 
 
 def delegate(role, data, excluded, made_by, top, draw):
@@ -187,7 +197,7 @@ def delegate(role, data, excluded, made_by, top, draw):
         share, role, pick, n(pick), top)
 
 
-def select(role, executor, model='', override='', path=None, made_by='', job='', lane='', explore=''):
+def select(role, executor, model='', override='', path=None, made_by='', job='', lane='', explore='', pin=''):
     judgment_hint = ''
     if role == 'batch' and JUDGMENT_JOB.search(job):
         role = 'review'
@@ -232,7 +242,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         raise ValueError('--explore model is not in the role {} pool: {}'.format(role, explore))
     chosen = explore or model or eligible[0]
     delegated = None
-    if not (explore or model):
+    if not (explore or model or pin):
         delegated = delegate(role, data, excluded, made_by, chosen, int(uuid.uuid4().hex[:8], 16) / 2 ** 32)
         if delegated:
             chosen = delegated[0]
@@ -263,6 +273,8 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         model_override=override, source='explore' if explore else 'override' if model else 'delegate' if delegated else 'leaderboard', job=job, lane=lane, made_by=made_by)
     if delegated:
         receipt['delegate'] = delegated[1]
+    if pin:
+        receipt['model_pin'] = pin
     # 11-19: the receipt states what the pick rests on, everyday work first (n<5 = fewer than 5 graded tasks)
     # and the bench beside it, never instead of it.
     everyday = (data.get('evidence') or {}).get(row, {}).get(chosen) or {}
@@ -283,6 +295,96 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
             stream.flush()
             os.fsync(stream.fileno())
     return receipt
+
+
+# 11-19 (owner via general): a returned delegated job is graded by the lane session that reads its REPORT, in
+# the same step. Architecture, not prose: the lane cannot launch its next job while one is ungraded, and after
+# UNGRADED_HOURS the job is recorded "ungraded" (counted, outside the rate) and listed for the morning report.
+UNGRADED_HOURS = 24
+
+
+def _grades(receipts_dir):
+    done = set()
+    try:
+        for line in (Path(receipts_dir) / 'everyday-grades.jsonl').read_text().splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                done.add(row.get('id'))
+    except OSError:
+        pass
+    return done
+
+
+def _finished(log, selection_id):
+    """When the launcher recorded this selection's exit, or None while it runs."""
+    try:
+        lines = Path(log).read_text(errors='replace').splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        if line.startswith('MODEL_OUTCOME '):
+            try:
+                row = json.loads(line.split(' ', 1)[1])
+            except ValueError:
+                continue
+            if row.get('selection_id') == selection_id:
+                return dt.datetime.fromisoformat(row['finished'])
+    return None
+
+
+def grade_command(receipt_path):
+    log = str(receipt_path)[:-len('.selection.json')]
+    return '{} {} --grade pass|partial|fail --note WHY --receipt {} --log {}'.format(
+        Path(sys.executable).name, Path(__file__).resolve(), receipt_path, log)
+
+
+def ungraded(receipts_dir, lane='', skip_job='', now=None):
+    """[(job, model, receipt path, finished)] for returned delegated jobs with no grade, oldest first.
+    Jobs ungraded for UNGRADED_HOURS are recorded "ungraded" here and no longer listed."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    receipts_dir = Path(receipts_dir)
+    done = _grades(receipts_dir)
+    out = []
+    for path in sorted(receipts_dir.glob('*.log.selection.json')):
+        try:
+            r = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if (not isinstance(r, dict) or r.get('source') != 'delegate' or r.get('job') == skip_job
+                or (lane and r.get('lane') != lane) or 'grade-' + str(r.get('selection_id')) in done):
+            continue
+        finished = _finished(str(path)[:-len('.selection.json')], r.get('selection_id'))
+        if not finished:
+            continue
+        if now - finished > dt.timedelta(hours=UNGRADED_HOURS):
+            log_record(receipts_dir / 'everyday-grades.jsonl', '', dict(
+                id='grade-' + r['selection_id'], date=now.date().isoformat(), source_kind='everyday', job=r['job'],
+                grade='ungraded', model=r.get('route_model') or r['model'], role=r.get('role'),
+                note='not graded within {} h of its return'.format(UNGRADED_HOURS)))
+            UNGRADED_TODAY.append((r['job'], r.get('lane'), r.get('route_model') or r['model']))
+            continue
+        out.append((r['job'], r.get('route_model') or r['model'], path, finished))
+    return sorted(out, key=lambda x: x[3])
+
+
+UNGRADED_TODAY = []
+
+
+def morning_report(rows, state=None, host=None):
+    """Write the jobs that timed out ungraded to the asks-waiting queue the morning report reads."""
+    import socket
+    base = Path(state or os.environ.get('RSTACK_STATE_DIR') or
+                Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'rstack').expanduser()
+    target = base / 'asks-waiting' / '{}-ungraded.tsv'.format(host or socket.gethostname().split('.')[0])
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open('a') as stream:
+        for job, lane, model in rows:
+            stream.write('{}\tungraded delegated job {} ({}, lane {})\tgrade: not graded within {} h; '
+                         'counted, outside the rate\n'.format(job, job, model, lane, UNGRADED_HOURS))
+    return target
 
 
 def log_record(path, event, record):
@@ -308,14 +410,39 @@ def main(argv=None):
     parser.add_argument('--spec', type=Path)
     parser.add_argument('--print-route', action='store_true', help='print model then executor on separate lines')
     parser.add_argument('--roles-file', type=Path, default=ROLES_FILE)
-    parser.add_argument('--log', type=Path, required=True)
-    parser.add_argument('--receipt', type=Path, required=True)
+    parser.add_argument('--log', type=Path)
+    parser.add_argument('--receipt', type=Path)
+    parser.add_argument('--pending-grades', type=Path, metavar='RECEIPTS_DIR',
+                        help='admission: refuse (exit 3) while a returned delegated job of --lane is ungraded')
+    parser.add_argument('--sweep-ungraded', type=Path, metavar='RECEIPTS_DIR',
+                        help='record jobs ungraded for 24 h as "ungraded" and list them for the morning report')
     parser.add_argument('--outcome', type=int)
     parser.add_argument('--grade', choices=('pass', 'partial', 'fail'),
                         help='grade a returned job: credited to the model its --receipt ran, as everyday work')
     parser.add_argument('--note', default='')
     args = parser.parse_args(argv)
     try:
+        if args.sweep_ungraded:
+            ungraded(args.sweep_ungraded)
+            if UNGRADED_TODAY:
+                where = morning_report(UNGRADED_TODAY)
+                for job, lane, model in UNGRADED_TODAY:
+                    print('ungraded after {} h: {} ({}, lane {})'.format(UNGRADED_HOURS, job, model, lane))
+                print('listed in ' + str(where))
+            return 0
+        if args.pending_grades:
+            waiting = ungraded(args.pending_grades, args.lane, args.job)
+            if UNGRADED_TODAY:
+                morning_report(UNGRADED_TODAY)
+            if waiting:
+                job, model, path, _ = waiting[0]
+                print('launch.sh refused {}: lane {} has a returned delegated job that is not graded: {} ({}). '
+                      'Read its REPORT and grade it first: {}'.format(args.job, args.lane, job, model,
+                                                                       grade_command(path)), file=sys.stderr)
+                return 3
+            return 0
+        if not args.log or not args.receipt:
+            raise ValueError('--log and --receipt are required')
         if args.grade:
             receipt = json.loads(args.receipt.read_text())
             row = dict(id='grade-' + receipt['selection_id'], date=dt.date.today().isoformat(),
@@ -336,7 +463,8 @@ def main(argv=None):
             log_record(args.log, 'MODEL_OUTCOME', receipt)
             return 0
         receipt = select(args.role, args.executor, args.model, args.model_override, args.roles_file,
-                         args.made_by, args.job, args.lane, args.explore)
+                         args.made_by, args.job, args.lane, args.explore,
+                         spec_pin(args.spec.read_text()) if args.spec and args.spec.is_file() else '')
         if receipt['role'] in JUDGMENT and args.spec and assigns_judgment_model(args.spec.read_text()):
             print('launch.sh refused {}: name the leaderboard role, not a model (LEADERBOARD.md); '
                   'the leaderboard picks {}'.format(args.job, receipt['model']), file=sys.stderr)

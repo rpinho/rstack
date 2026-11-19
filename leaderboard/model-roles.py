@@ -126,9 +126,34 @@ AGY_GEMINI4 = ['google/gemini-4-neon-low', 'google/gemini-4-neon-medium', 'googl
 AGY_CANDIDATES = AGY_FLASH + AGY_GEMINI4
 CANDIDATES = {role: list(AGY_CANDIDATES) for role in ROLES if role != 'writing'}
 # Owner, 2026-11-18: "Astra 6.2 should replace Astra on the leaderboard. Sol 6.2 should/could replace Sol 6.1."
-# Laptop leaderboard 2026-11-18 (owner call after measurement): the old versions are FALLBACKS, not history.
-# A superseded version is served only last, in roles where its successor is served, and evidence never lifts it.
+# 11-19 (general): a superseded version is history, not a fallback: shown with its own everyday record, never
+# routed, and its successor earns its own n from zero.
 SUPERSEDED = {'openai/gpt-6-astra': 'openai/gpt-6.2-astra', 'openai/gpt-6.1-sol': 'openai/gpt-6.2-sol'}
+# Ricardo, 11-19: "I think 6.2 should inherit the scores of 6.1 in the rank until we get a larger sample size."
+# Explicit successor -> predecessor pairs, never inferred from names. A successor ranks on its predecessor's
+# everyday record until its own graded n reaches the predecessor's n; then on its own. Its own outcomes count the
+# whole time. Same lab only: a pair across labs is refused when this module loads.
+INHERITS = {'openai/gpt-6.2-sol': 'openai/gpt-6.1-sol', 'openai/gpt-6.2-astra': 'openai/gpt-6-astra'}
+
+
+def check_inherits(pairs):
+    for new, old in pairs.items():
+        if new.split('/')[0] != old.split('/')[0]:
+            raise ValueError('inheritance across families refused: {} <- {}'.format(new, old))
+
+
+check_inherits(INHERITS)
+
+
+def effective(m, e):
+    """(n, k, inherited_from) the rank uses for m in one role's everyday evidence."""
+    own = e.get(m) or {'n': 0, 'k': 0}
+    old = INHERITS.get(canon(m) or m)
+    if old and old.split('/')[0] == str(canon(m) or m).split('/')[0]:
+        prev = e.get(old) or {'n': 0, 'k': 0}
+        if own['n'] < prev['n']:
+            return prev['n'], prev['k'], old
+    return own['n'], own['k'], None
 
 
 def close_faults_proposal(row, prose):
@@ -348,6 +373,10 @@ def graded(kind):
             continue
         if r.get("pick_role") == "corrections":
             continue                              # reported as a rate, never ranked; see CORRECTIONS_CAVEAT
+        if r.get("pick_role") and r.get("outcome") == "ungraded":
+            # Returned but never graded within 24 h: counted, and kept out of the rate.
+            ev[r["pick_role"]][model]["ungraded"] = ev[r["pick_role"]][model].get("ungraded", 0) + 1
+            continue
         if r.get("pick_role"):
             if r.get("outcome") not in GRADE:
                 continue
@@ -400,11 +429,9 @@ def served_model(model):
 
 
 def fallback_tail(order):
-    """Superseded versions go last, and only where their successor is served."""
-    keep = [m for m in order if canon(m) not in SUPERSEDED]
-    have = {canon(m) for m in keep}
-    tail = [old for old, new in SUPERSEDED.items() if new in have]
-    return keep + [m for m in tail if m not in keep]
+    """Superseded versions are not routed (general, 11-19: 6.1 was retired as a route on 11-18). Their everyday
+    record stays visible as a historical row in LEADERBOARD.md, and the successor inherits none of it."""
+    return [m for m in order if canon(m) not in SUPERSEDED]
 
 
 def rank(role, ev):
@@ -412,11 +439,13 @@ def rank(role, ev):
     them in its seed/candidate order ("n<5"). The bench never enters: rank is called with everyday evidence."""
     e = ev.get(role, {})
     def graded(m):
-        return e.get(m, {}).get("n", 0) >= MIN_N
+        return effective(m, e)[0] >= MIN_N
     def rate(m):
-        return e[m]["k"] / e[m]["n"] if graded(m) else SEED_RATE
+        n, k, _ = effective(m, e)
+        return k / n if graded(m) else SEED_RATE
     def low(m):
-        return wilson_low(e[m]["k"], e[m]["n"]) if graded(m) else -1
+        n, k, _ = effective(m, e)
+        return wilson_low(k, n) if graded(m) else -1
     pool = list(SEED[role]) + CANDIDATES.get(role, [])
     order = [m for m in pool + sorted((m for m in e if m not in pool), key=low, reverse=True)
              if served_model(m)]
@@ -572,6 +601,17 @@ def recompute(write=True):
         out['evidence'][role] = {MODELS[m][1]: {'n': v['n'], 'rate': round(v['k']/v['n'], 3),
                       'low': round(wilson_low(v['k'], v['n']), 3), 'days': len(v['days']), 'scored': v['n'] >= MIN_N}
                       for m, v in ev.get(role, {}).items() if v['n']}
+        for m in order:
+            n, k, old = effective(m, ev.get(role, {}))
+            if old:
+                own = ev.get(role, {}).get(m) or {'n': 0}
+                row = out['evidence'][role].setdefault(MODELS[m][1], {'n': own['n'], 'rate': None, 'low': None,
+                                                                         'days': 0, 'scored': False})
+                row['inherited'] = {'from': MODELS[old][1], 'n': n, 'rate': round(k / n, 3)}
+        for m, v in ev.get(role, {}).items():
+            if v.get('ungraded'):
+                out['evidence'][role].setdefault(MODELS[m][1], {'n': 0, 'rate': None, 'low': None, 'days': 0,
+                                                               'scored': False})['ungraded'] = v['ungraded']
         out['bench'][role] = {MODELS[m][1]: {'n': v['n'], 'rate': round(v['k']/v['n'], 3)}
                               for m, v in bench.get(role, {}).items() if v['n'] and m in MODELS}
     if write:
@@ -617,7 +657,8 @@ def snapshot_rows(path):
             for value in (cells[3], cells[5]):
                 if value not in ('-', 'n<5'):
                     score(float(value))
-            if cells[4] != '-' and not cells[4].isdigit():
+            if cells[4] != '-' and not cells[4].isdigit() and not re.fullmatch(
+                    r'inherited from [A-Za-z0-9][A-Za-z0-9/_.:-]* \(n=\d+\); own n=\d+', cells[4]):
                 raise ValueError('invalid everyday n in snapshot')
         elif len(cells) == 6:
             if cells[2] != '-' and (not cells[2].isdigit() or int(cells[2]) < 1):
@@ -657,6 +698,11 @@ def public(data, path, observations=(), previous=None):
                 raise ValueError('invalid everyday n')
             rate = score(observation.get('rate'))      # validated even when it is not shown
             everyday = rate if n >= MIN_N else 'n<5'
+            inherited = observation.get('inherited')
+            if inherited:
+                safe_cell(inherited['from'])
+                everyday = score(inherited['rate'])
+                n = 'inherited from {} (n={}); own n={}'.format(inherited['from'], int(inherited['n']), n)
             bench = score(role_bench[model]['rate']) if model in role_bench else '-'
             order = str(ranked.index(model) + 1) if model in ranked else '-'
             line = f"| {role} | {model} | {order} | {everyday} | {n} | {bench} | {date} |"
@@ -714,10 +760,12 @@ def bootstrap(path):
             canon(model)
         dt.date.fromisoformat(date)
         dates.append(date)
-        snapshots[(role, date)][model] = position
-    for role in {r for r, _ in snapshots}:
-        latest = max(date for r, date in snapshots if r == role)
-        for model, position in snapshots[(role, latest)].items():
+        # The everyday table (7 columns, 11-19) is the routing; the older held-score table is history.
+        snapshots[(role, len(cells), date)][model] = position
+    for role in {r for r, _, _ in snapshots}:
+        width = max(w for r, w, _ in snapshots if r == role)
+        latest = max(date for r, w, date in snapshots if r == role and w == width)
+        for model, position in snapshots[(role, width, latest)].items():
             if position != '-':
                 roles[role].append((int(position), model))
     if not roles:
