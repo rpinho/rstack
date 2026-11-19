@@ -51,6 +51,13 @@ class FakeCDP:
         self.syndication = None
         self.http_requests = []
         self.events = []
+        # Draft-card path (11-19 live shape): a card appears after the prompt; pressing its primary
+        # button posts, and Grok's next message carries the posted URL.
+        self.card = None
+        self.permission_first = False
+        self.permission_after_press = False
+        self.after_text = 'Posted: https://x.com/fixture_account/status/9001'
+        self.pressed = []
 
     def __enter__(self):
         fake = self
@@ -132,6 +139,26 @@ class FakeCDP:
                                 fake.sent_prompts.append(fake.prompt)
                                 if fake.on_send:
                                     fake.on_send(fake.prompt)
+                            if action in ('card_count', 'card_n'):
+                                value = 0
+                            if action == 'card_read':
+                                value = dict(cards=0, permission=None)
+                                if fake.sent_prompts and fake.permission_first:
+                                    value['permission'] = 'Allow Posts to send from X?'
+                                elif fake.sent_prompts and fake.card is not None:
+                                    value = dict(fake.card, cards=1, card='draft-reply',
+                                                 permission='Allow Posts to send from X?' if (
+                                                     fake.permission_after_press and fake.pressed) else None)
+                            if action == 'card_press':
+                                which = json.loads(re.search(r'const data = (.*?);\n', expression)[1])['arg']['which']
+                                fake.pressed.append(which)
+                                fake.events.append('press-' + which)
+                                value = 'Reply' if which == 'send' else 'Discard'
+                            if action == 'card_allow':
+                                fake.events.append('allow')
+                                value = 'allowed: Allow'
+                            if action == 'card_after':
+                                value = fake.after_text if 'send' in fake.pressed else ''
                             if action in ('read', 'post_read'):
                                 if fake.dom_error:
                                     reply['result'] = dict(exceptionDetails=dict(text='fixture DOM failure'))
@@ -836,3 +863,83 @@ def test_post_uses_real_rh_sent_implementation(posting):
     row = json.loads(posting.ledger_path.read_text().splitlines()[-1])
     assert row['sent']['via'] == 'grok' and row['sent']['message_id'] == '9001'
     assert row['status'] == 'sent'
+
+
+def card(posting, **change):
+    fields = dict(type='reply' if posting.row.get('in_reply_to') or posting.row.get('self_reply_to') else 'post',
+                  text=posting.text, author='fixture_account', reply_to='', media=[], quote=False, sent=False)
+    fields.update(change)
+    return fields
+
+
+def test_card_path_checks_structured_draft_presses_and_verifies(posting):
+    posting.options['draft_card'] = True
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        fake.card = card(posting)
+        result = posting.run('--post')
+    assert result.returncode == 0, result.stderr
+    assert fake.events == ['draft', 'press-send', 'syndication']
+    assert 'Call create_posts once now' in fake.sent_prompts[0] and posting.text in fake.sent_prompts[0]
+    args = json.loads(posting.sent_log.read_text())
+    assert args[-8:] == ['outreach', 'sent', 'fixture', 'o1', '--message-id', '9001', '--via', 'grok']
+    assert 'Verified: https://x.com/fixture_account/status/9001' in result.stdout
+
+
+@pytest.mark.parametrize('change', [dict(text='A fixed sample has three distinct periods.'),
+                                    dict(author='someone_else'), dict(reply_to='12'), dict(media=['media']),
+                                    dict(quote=True), dict(sent=True)])
+def test_card_path_discards_any_difference_exit_four(posting, change):
+    posting.options['draft_card'] = True
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        fake.card = card(posting, **change)
+        result = posting.run('--post')
+    assert result.returncode == 4, result.stderr
+    assert fake.events == ['draft', 'press-discard'] and not posting.sent_log.exists()
+    assert not json.loads(posting.ledger_path.read_text().splitlines()[-1]).get('gate_attempt')
+
+
+def test_card_path_dry_run_discards(posting):
+    posting.options['draft_card'] = True
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        fake.card = card(posting)
+        result = posting.run('--post', '--dry-run')
+    assert result.returncode == 0, result.stderr
+    assert fake.events == ['draft', 'press-discard'] and not fake.http_requests
+
+
+def test_card_path_permission_before_card_sends_nothing(posting):
+    posting.options['draft_card'] = True
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        fake.permission_first = True
+        result = posting.run('--post')
+    assert result.returncode == 3, result.stderr
+    assert fake.events == ['draft'] and not fake.pressed
+
+
+def test_card_path_allows_permission_after_press(posting):
+    posting.options['draft_card'] = True
+    posting.row.update(channel='x_post', self_reply_to='12')
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        fake.card = card(posting, reply_to='12')
+        fake.permission_after_press = True
+        fake.syndication['in_reply_to_status_id_str'] = '12'
+        result = posting.run('--reply-to', 'https://x.com/fixture_account/status/12')
+    assert result.returncode == 0, result.stderr
+    assert fake.events == ['draft', 'press-send', 'allow', 'syndication']
+
+
+def test_card_path_no_posted_url_is_uncertain_and_pages(posting):
+    posting.options['draft_card'] = True
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        fake.card = card(posting)
+        fake.after_text = 'Working on it'
+        result = posting.run('--post')
+    assert result.returncode == 5, result.stderr
+    assert posting.page_log.exists()
+    assert json.loads(posting.ledger_path.read_text().splitlines()[-1])['gate_attempt']['path'] == 'grok-post'
