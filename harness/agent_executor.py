@@ -75,7 +75,9 @@ def command(backend, executable, model, effort, directory, output, budget='1.00'
             raise ValueError('agy needs the prompt')
         return [executable, '-p', prompt, '--output-format', 'json',
                 *(['--model', model] if model and model != 'default' else []),
-                *(['--effort', effort] if effort in AGY_EFFORTS else []),
+                # A tier name such as gemini-3.8-flash-low is its effort; agy refuses a second one.
+                *(['--effort', effort] if effort in AGY_EFFORTS
+                  and not str(model).endswith(tuple('-' + e for e in AGY_EFFORTS)) else []),
                 '--mode', 'accept-edits', '--disable-slash-commands',
                 # Headless agy auto-denies shell commands. A job whose tools include Bash (the same
                 # --allowed-tools a Claude job widens) gets them through a session-only allow rule.

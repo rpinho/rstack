@@ -269,6 +269,8 @@ def test_agy_command_is_print_mode_with_the_prompt_as_its_argument():
     assert cmd[cmd.index('--model') + 1] == 'gemini-fixture' and cmd[cmd.index('--effort') + 1] == 'high'
     assert '--model' not in command('agy', 'agy', 'default', 'none', '/w', '/o', prompt='x')
     assert '--settings' not in command('agy', 'agy', 'm', 'low', '/w', '/o', prompt='x')
+    # 11-19: agy refused --model gemini-3.8-flash-low with --effort high; the tier is the effort.
+    assert '--effort' not in command('agy', 'agy', 'gemini-3.8-flash-low', 'high', '/w', '/o', prompt='x')
     shell = command('agy', 'agy', 'm', 'low', '/w', '/o', tools='Read,Write,Edit,Bash', prompt='x')
     assert json.loads(shell[shell.index('--settings') + 1]) == {'permissions': {'allow': ['command(*)']}}
 
