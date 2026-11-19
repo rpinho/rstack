@@ -70,10 +70,11 @@ that stopped reporting, and is treated as such. Process is not the task: do not 
 receipts, audits or review stages unless the spec asks for them; write the suggestion in STATUS.md
 and keep doing the task.
 
-**Grade a returned job when you read its REPORT.** Run the `GRADE ON RETURN` line at the end of its
-launch log: `worker_models.py --grade pass|partial|fail --note WHY --receipt JOB.log.selection.json
---log JOB.log`. Pass: it shipped what the spec asked. Partial: some of it. Fail: not usable. This is how
-other models earn a rank (Ricardo, 11-19: "it's very, very important that we delegate to other models").
-Grading never holds up a lane: a job returned without a grade is recorded "ungraded" at once and listed
-in the morning report, and a later grade replaces it.
+**Returned jobs are graded at return, by the harness.** A delegated job is graded pass, partial or fail
+from its own checks: exit code, the `Shipped:` and `You asked:` lines, and every `Check: COMMAND` line in
+its spec. Without Check lines the lane's reviewing model grades it. Put a `Check:` line in a spec whenever
+the result can be checked by a command. To correct a grade, run the `GRADE ON RETURN` line at the end of
+its launch log. Grading never holds up a lane: a job that could not be graded is recorded "ungraded" and
+listed in the morning report. This is how other models earn a rank (Ricardo, 11-19: "it's very, very
+important that we delegate to other models").
 <!-- /lane-rules-common -->
