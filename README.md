@@ -199,6 +199,7 @@ rstack is not built from scratch. What each source gave it:
 - Cynthia Dwork et al., [Generalization in Adaptive Data Analysis and Holdout Reuse](https://arxiv.org/abs/1506.02629) (2015) — why a reused holdout stops being evidence; the harness records a holdout disposition.
 - Avrim Blum and Moritz Hardt, [The Ladder](https://arxiv.org/abs/1502.04585) (2015) — how repeated public feedback overfits a leaderboard.
 - Google DeepMind, [AlphaEvolve](https://arxiv.org/abs/2506.13131) (2025) — related work on proposing programs and scoring them automatically.
+- Owen Queen, Evan Gorrell and coauthors, **DiscoveryAgent** ([paper](https://arxiv.org/abs/2611.21950), [code](https://github.com/evangorrell/DiscoveryAgent-app), MIT) (2026) — the audit agent: `rh audit LANE "question"` answers questions about a lane's work from its own reports, code and evidence.
 - Edwin B. Wilson (1927), [the score interval](https://doi.org/10.1080/01621459.1927.10502953) — the role ranker ranks on its lower endpoint, z = 1.96.
 - Hugo Fernandes (2026-11-03) — the ten anti-overfitting practices mapped in [docs/overfitting.md](docs/overfitting.md).
 - Comparable systems, as related work rather than inputs: [AI Scientist](https://sakana.ai/ai-scientist/), [aviary](https://github.com/Future-House/aviary), [ScienceAgentBench](https://github.com/OSU-NLP-Group/ScienceAgentBench), [MLE-bench](https://github.com/openai/mle-bench), [CORE-bench](https://github.com/siegelz/core-bench).

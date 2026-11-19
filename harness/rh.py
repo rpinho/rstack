@@ -907,6 +907,14 @@ def parser():
     a = sub.add_parser('voice-cuts', help='check a draft is cut from the author\'s own messages (DRAFT.cuts)',
                        add_help=False)
     a.add_argument('rest', nargs=argparse.REMAINDER)
+    a = sub.add_parser('audit', help="ask a read-only agent a question about a lane's work, answered from "
+                       'its own reports, code and evidence (saved under LANE/audits/)')
+    a.add_argument('lane')
+    a.add_argument('question')
+    a.add_argument('--run', help='a sweep run id (or unique prefix) the question is about')
+    a.add_argument('--backend', choices=('claude', 'codex'), default=os.environ.get('RH_AUDIT_BACKEND', 'claude'))
+    a.add_argument('--model', help='default: $RH_AUDIT_MODEL, else opus (claude) or $CODEX_MODEL (codex)')
+    a.add_argument('--dry-run', action='store_true', help='print the command and prompt; call nothing, write nothing')
     a = sub.add_parser('answers-sync')
     a.add_argument('lane')
     a.add_argument('--answers-file', type=Path, default=settings.path('RH_ANSWERS_FILE', Path('.runtime/ANSWERS.md')))
@@ -986,6 +994,18 @@ def main(argv=None):
             print(link)
             project = lane_config(lane).get('claude_science_project', '')
             print(project or 'no claude_science_project set in INTAKE.toml')
+            return 0
+        if args.command == 'audit':
+            # 11-19: DiscoveryAgent's Audit Agent (arXiv 2611.21950), on our lane layout; see harness/audit.py.
+            import audit as lane_audit
+            out = lane_audit.audit(lane, args.question, backend=args.backend, model=args.model,
+                                   run_id=args.run, dry_run=args.dry_run)
+            if args.dry_run:
+                print(' '.join(out['command']))
+                print(out['prompt'])
+                return 0
+            print(out['answer'])
+            print('\nsaved: ' + out['saved'])
             return 0
         if args.command == 'answers-sync':
             return answers_sync(lane, args.answers_file.expanduser())
