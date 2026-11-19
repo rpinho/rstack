@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Banked usage resets reach the conductor before they expire or while the week runs low.
+
+Why (Ricardo, 11-19: "You didn't tell me I had a free reset. We could have used it."). The second miss,
+after 10-22, so this is code, not a note. A reset (a Claude weekly reset, a Fable reset, a Codex full
+reset) sits unused on an account page nobody watches, and expires.
+
+Registry (default ~/.config/rstack/resets.json, RESETS_REGISTRY overrides):
+    {"resets": [{"provider": "claude", "kind": "weekly reset", "expires": "2026-12-10",
+                 "how_to_use": "claude.ai/settings/usage", "used": false}]}
+
+Every run, for each unused reset, it writes one asks-waiting row when either:
+  - it expires within EXPIRY_DAYS (7), or
+  - that provider's weekly usage is at USAGE_PERCENT (70) or more, when a number is readable:
+    Codex from the local rate-limit snapshots (rstack/tools/allowance); Claude only from a usage file
+    a session wrote ({"weekly_percent": 72, "at": <unix seconds>}, at most 24 h old; RESETS_USAGE_DIR,
+    default $RSTACK_STATE_DIR/usage/<provider>.json), since nothing headless can read claude.ai.
+The rows go to $RSTACK_STATE_DIR/asks-waiting/<host>-resets.tsv, which the conductor's asks-waiting hook
+prints on every turn. NOTIFY_DAYS (2) before each expiry it also sends Ricardo one notify-ricardo line,
+once per reset.
+
+    resets-check [--dry]                  --dry prints the rows and writes or sends nothing
+    resets-check --mark-used PROVIDER KIND   sets used=true (after the reset is spent)
+"""
+import argparse
+from datetime import date, datetime
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+EXPIRY_DAYS = 7
+NOTIFY_DAYS = 2
+USAGE_PERCENT = 70
+USAGE_MAX_AGE_S = 24 * 3600
+TOOLS = Path(__file__).resolve().parent
+
+
+def state_dir():
+    base = os.environ.get('RSTACK_STATE_DIR') or os.path.join(
+        os.environ.get('XDG_STATE_HOME') or os.path.expanduser('~/.local/state'), 'rstack')
+    return Path(os.path.expanduser(base))
+
+
+def registry_path():
+    return Path(os.path.expanduser(os.environ.get('RESETS_REGISTRY', '~/.config/rstack/resets.json')))
+
+
+def host_label():
+    value = os.environ.get('RSTACK_HOST', '').strip()
+    if value:
+        return value
+    if sys.platform == 'darwin':
+        try:
+            r = subprocess.run(['/usr/sbin/scutil', '--get', 'LocalHostName'], capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    import socket
+    return socket.gethostname().split('.')[0]
+
+
+def codex_percent(now):
+    """Codex weekly used percent from the local snapshots, or None when unreadable."""
+    try:
+        loader = importlib.machinery.SourceFileLoader('rstack_allowance', str(TOOLS / 'allowance'))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        allowance = importlib.util.module_from_spec(spec)
+        loader.exec_module(allowance)
+        # The known homes (~/.codex*, plus the wrapper's cached list), not allowance.homes(), which walks
+        # the whole home folder: this runs every 15 minutes.
+        roots = set(Path.home().glob('.codex*'))
+        known = state_dir() / 'codex-homes.json'
+        if known.exists():
+            roots.update(Path(p) for p in json.loads(known.read_text()))
+        roots = sorted(p for p in roots if (p / 'sessions').is_dir())
+        data = allowance.read_allowance(roots, now=now)['codex']
+    except Exception:
+        return None
+    if not isinstance(data, dict) or data.get('resets_at', 0) <= now:
+        return None
+    return data.get('weekly_used_percent')
+
+
+def file_percent(provider, now):
+    d = Path(os.path.expanduser(os.environ.get('RESETS_USAGE_DIR', str(state_dir() / 'usage'))))
+    try:
+        rec = json.loads((d / (provider + '.json')).read_text())
+        if now - float(rec['at']) <= USAGE_MAX_AGE_S:
+            return float(rec['weekly_percent'])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+def usage(provider, now, readers=None):
+    readers = readers or {'codex': codex_percent}
+    value = readers[provider](now) if provider in readers else None
+    return value if value is not None else file_percent(provider, now)
+
+
+def rows(resets, today, percents):
+    """(asks-waiting rows, resets due a phone notice). Pure: no I/O."""
+    out, notify = [], []
+    for r in resets:
+        if r.get('used'):
+            continue
+        days = (date.fromisoformat(r['expires']) - today).days
+        if days < 0:
+            continue
+        pct = percents.get(r['provider'])
+        why = []
+        if days <= EXPIRY_DAYS:
+            why.append('expires in {} d'.format(days))
+        if pct is not None and pct >= USAGE_PERCENT:
+            why.append('{} weekly usage at {:.0f}%'.format(r['provider'], pct))
+        if why:
+            out.append('reset\t{} {}\tunused, expires {}; {}; use it: {}'.format(
+                r['provider'], r['kind'], r['expires'], ', '.join(why), r.get('how_to_use', '?')))
+        if days <= NOTIFY_DAYS:
+            notify.append(r)
+    return out, notify
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--dry', action='store_true')
+    ap.add_argument('--mark-used', nargs=2, metavar=('PROVIDER', 'KIND'))
+    a = ap.parse_args(argv)
+    reg = registry_path()
+    data = json.loads(reg.read_text())
+    resets = data.get('resets', [])
+    if a.mark_used:
+        hit = [r for r in resets if (r['provider'], r['kind']) == tuple(a.mark_used)]
+        if not hit:
+            print('no reset {} {} in {}'.format(*a.mark_used, reg), file=sys.stderr)
+            return 1
+        for r in hit:
+            r['used'] = True
+            r['used_on'] = date.today().isoformat()
+        tmp = reg.with_suffix('.tmp')
+        tmp.write_text(json.dumps(data, indent=1) + '\n')
+        tmp.replace(reg)
+        print('marked used: {} {}'.format(*a.mark_used))
+        return 0
+    now = time.time()
+    percents = {p: usage(p, now) for p in {r['provider'] for r in resets if not r.get('used')}}
+    out, notify = rows(resets, date.today(), percents)
+    for line in out:
+        print(line)
+    if a.dry:
+        for r in notify:
+            print('would notify Ricardo: {} {} expires {}'.format(r['provider'], r['kind'], r['expires']))
+        return 0
+    path = state_dir() / 'asks-waiting' / (host_label() + '-resets.tsv')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix('.tmp')
+    tmp.write_text(''.join(l + '\n' for l in out))
+    tmp.replace(path)
+    seen_file = state_dir() / 'resets' / 'notified.json'
+    seen_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        seen = set(json.loads(seen_file.read_text()))
+    except (OSError, ValueError):
+        seen = set()
+    cmd = os.environ.get('RESETS_NOTIFY', os.path.expanduser('~/.local/bin/notify-ricardo'))
+    for r in notify:
+        key = '{}|{}|{}'.format(r['provider'], r['kind'], r['expires'])
+        if key in seen:
+            continue
+        msg = 'Unused {} {} expires {}. Use it before then: {} [his-only: judgment]'.format(
+            r['provider'], r['kind'], r['expires'], r.get('how_to_use', '?'))
+        if subprocess.run([cmd, msg, 'Reset expiring'], capture_output=True, timeout=60).returncode == 0:
+            seen.add(key)
+    seen_file.write_text(json.dumps(sorted(seen)))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
