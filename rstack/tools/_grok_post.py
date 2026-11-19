@@ -141,20 +141,26 @@ def card_js(action, arg=None):
     ("Allow <bot> to send from X ...?") may follow. These read and press them; nothing here composes."""
     data = json.dumps(dict(action=action, arg=arg))
     return '/* grok-ask:card_' + action + ' */\n(() => { const data = ' + data + ''';
-      const cards = [...document.querySelectorAll('section[data-x-card]')];
+      // 11-19 live: the transcript is virtualized, so counting cards is meaningless. A card is ours only
+      // when it follows our own prompt, found by its unique marker.
+      const arg = data.arg || {};
+      const users = [...document.querySelectorAll(arg.user || "[data-role='user']")]
+        .filter(e => (e.innerText || e.textContent || '').includes(arg.marker || '\u0000'));
+      const anchor = users[users.length - 1];
+      const after = el => !!anchor && !!(anchor.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const cards = [...document.querySelectorAll('section[data-x-card]')].filter(after);
       const props = el => { const k = Object.keys(el).find(x => x.startsWith('__reactFiber'));
         let f = k && el[k];
         for (let i = 0; i < 10 && f; i++, f = f.return) { const p = f.memoizedProps;
           if (p && typeof p === 'object' && p.draft && typeof p.draft === 'object') return p; }
         return null; };
       const live = [...document.querySelectorAll('section[role=region]')].filter(s =>
-        /^Allow /.test(s.getAttribute('aria-label') || ''));
-      if (data.action === 'count') return cards.length;
+        /^Allow /.test(s.getAttribute('aria-label') || '') && after(s));
       if (data.action === 'read') {
-        const out = {cards: cards.length, permission: live.length ? live[live.length - 1].getAttribute('aria-label') : null};
-        const mine = cards.slice(data.arg);
-        if (!mine.length) return out;
-        const card = mine[mine.length - 1], p = props(card);
+        const out = {anchor: !!anchor, cards: cards.length,
+                     permission: live.length ? live[live.length - 1].getAttribute('aria-label') : null};
+        if (!cards.length) return out;
+        const card = cards[cards.length - 1], p = props(card);
         if (!p) return Object.assign(out, {card: card.getAttribute('data-x-card'), unreadable: true});
         const d = p.draft, media = ['media', 'mediaIds', 'media_ids', 'attachments', 'images', 'video']
           .filter(k => d[k] && (!Array.isArray(d[k]) || d[k].length));
@@ -165,11 +171,11 @@ def card_js(action, arg=None):
       }
       if (data.action === 'press') {
         const card = cards[cards.length - 1];
-        if (!card || cards.length <= data.arg.index) throw Error('draft card missing');
+        if (!card) throw Error('draft card missing');
         const buttons = [...card.querySelectorAll('button')];
-        const b = data.arg.which === 'discard' ? buttons.find(x => (x.innerText || '').trim() === 'Discard')
+        const b = arg.which === 'discard' ? buttons.find(x => (x.innerText || '').trim() === 'Discard')
           : buttons.find(x => x.getAttribute('data-variant') === 'primary');
-        if (!b || b.disabled) throw Error('draft card button not ready: ' + data.arg.which);
+        if (!b || b.disabled) throw Error('draft card button not ready: ' + arg.which);
         b.click(); return (b.innerText || '').trim();
       }
       if (data.action === 'allow') {
@@ -181,8 +187,8 @@ def card_js(action, arg=None):
         b.click(); return 'allowed: ' + (b.innerText || '').trim();
       }
       if (data.action === 'after') {
-        const a = [...document.querySelectorAll(data.arg.selector)].slice(data.arg.from);
-        return a.map(el => el.innerText || el.textContent || '').join('\\n');
+        return [...document.querySelectorAll(arg.assistant)].filter(after)
+          .map(el => el.innerText || el.textContent || '').join('\\n');
       }
       throw Error('unknown card action');
     })()'''
@@ -209,8 +215,8 @@ def card_check(card, text, account, target):
 def card_flow(cdp, config, args, text, target, deadline, record, send_gate):
     """Draft card path for public posts. Returns the posted ID (after send_gate()); raises Refused (code
     in record['code']) before any press of the send button, ValueError after it."""
-    start = cdp.evaluate(card_js('count'))
     marker = 'EXACT_' + uuid.uuid4().hex
+    mine = dict(marker=marker, user=config['user_message'], assistant=config['assistant_message'])
     where = (' as a reply to post ' + target) if target else ' as an original post (no reply, no quote)'
     prompt = ('Call create_posts once now, from @' + config['post_account'] + where + ', with exactly the text '
               'below. Do not compose, rewrite, correct, trim or change a character; no media and no other X '
@@ -220,11 +226,18 @@ def card_flow(cdp, config, args, text, target, deadline, record, send_gate):
               '\n' + marker + '_BEGIN\n' + text + '\n' + marker + '_END')
     insert(cdp, config, prompt)
     card = {}
-    while True:
-        card = cdp.evaluate(card_js('read', start)) or {}
-        if card.get('card') or card.get('permission'):
-            break
-        ask.pause(deadline, config['poll_seconds'])
+    try:
+        while True:
+            card = cdp.evaluate(card_js('read', mine)) or {}
+            if card.get('card') or card.get('permission'):
+                break
+            ask.pause(deadline, config['poll_seconds'])
+    except ask.AskError:
+        # A card that shows up late must not sit there for someone to press: discard it if it is there.
+        cdp.deadline = time.monotonic() + 5
+        with contextlib.suppress(ask.AskError, OSError, ValueError):
+            cdp.evaluate(card_js('press', dict(mine, which='discard')))
+        raise
     if not card.get('card'):
         record['code'] = 3
         raise Refused('Grok asked for send permission before showing a draft card; left unanswered, nothing sent')
@@ -234,25 +247,23 @@ def card_flow(cdp, config, args, text, target, deadline, record, send_gate):
         record['diff'] = ''.join(difflib.unified_diff(
             normal(text).splitlines(keepends=True), normal(str(card.get('text'))).splitlines(keepends=True),
             fromfile='approved', tofile='grok'))
-        cdp.evaluate(card_js('press', dict(index=start, which='discard')))
+        cdp.evaluate(card_js('press', dict(mine, which='discard')))
         record['code'] = 4
         raise Refused('draft card is not the approved action (' + '; '.join(problems) + '); discarded')
     if args.dry_run:
-        cdp.evaluate(card_js('press', dict(index=start, which='discard')))
+        cdp.evaluate(card_js('press', dict(mine, which='discard')))
         record['code'] = 0
         return None
     send_gate()
-    before = cdp.evaluate('/* grok-ask:card_n */ document.querySelectorAll(' +
-                          json.dumps(config['assistant_message']) + ').length') or 0
-    record['pressed'] = cdp.evaluate(card_js('press', dict(index=start, which='send')))
+    record['pressed'] = cdp.evaluate(card_js('press', dict(mine, which='send')))
     found, allowed = None, False
     pattern = re.compile(r'(?:x|twitter)\.com/' + re.escape(config['post_account']) + r'/status/(\d+)', re.I)
     while not found:
-        if not allowed and cdp.evaluate(card_js('read', start)).get('permission'):
-            record['permission'] = cdp.evaluate(card_js('allow'))
+        if not allowed and (cdp.evaluate(card_js('read', mine)) or {}).get('permission'):
+            record['permission'] = cdp.evaluate(card_js('allow', mine))
             allowed = True
-        said = cdp.evaluate(card_js('after', {'selector': config['assistant_message'], 'from': before})) or ''
-        ids = set(pattern.findall(said))
+        said = cdp.evaluate(card_js('after', mine)) or ''
+        ids = set(pattern.findall(said)) - {target}   # Grok may quote the post we answer
         if len(ids) > 1:
             raise ValueError('Grok reported more than one posted ID')
         found = ids.pop() if ids else None
