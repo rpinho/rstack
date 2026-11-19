@@ -268,25 +268,65 @@ def test_agy_command_is_print_mode_with_the_prompt_as_its_argument():
     assert cmd[:5] == ['agy', '-p', 'Referee this.', '--output-format', 'json']
     assert cmd[cmd.index('--model') + 1] == 'gemini-fixture' and cmd[cmd.index('--effort') + 1] == 'high'
     assert '--model' not in command('agy', 'agy', 'default', 'none', '/w', '/o', prompt='x')
+    assert '--settings' not in command('agy', 'agy', 'm', 'low', '/w', '/o', prompt='x')
+    shell = command('agy', 'agy', 'm', 'low', '/w', '/o', tools='Read,Write,Edit,Bash', prompt='x')
+    assert json.loads(shell[shell.index('--settings') + 1]) == {'permissions': {'allow': ['command(*)']}}
 
 
-def agy_run(tmp_path, body, timeout='0'):
+FAKE_TMUX = (
+    'import os, subprocess, sys\n'
+    'a = sys.argv[1:]\n'
+    'if a[0] == "has-session":\n'
+    '    sys.exit(0 if os.environ.get("FAKE_TMUX_SESSION") == "1" else 1)\n'
+    'if a[0] == "new-window":\n'
+    '    w = subprocess.Popen(a[-1], shell=True, start_new_session=True, stdin=subprocess.DEVNULL,\n'
+    '                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=dict(os.environ, IN_TMUX_WINDOW="1"))\n'
+    '    open(sys.argv[0] + ".pid", "w").write(str(w.pid))\n'
+    '    print("@9")\n'
+    'if a[0] == "kill-window":\n'
+    '    import signal\n'
+    '    os.killpg(int(open(sys.argv[0] + ".pid").read()), signal.SIGKILL)\n'
+    'sys.exit(0)\n')
+# Signed in, but only a tmux window can read the Keychain (the m5 on 11-19); SIGNED_OUT=1 means signed out everywhere.
+KEYCHAIN_AGY = (
+    'import json, os, sys, time\n'
+    'if os.environ.get("IN_TMUX_WINDOW") != "1" or os.environ.get("SIGNED_OUT") == "1":\n'
+    '    sys.stderr.write("Authentication required. Please visit the URL to log in:\\n")\n'
+    '    sys.stderr.flush(); time.sleep(60)\n'
+    'print(json.dumps({"status": "SUCCESS", "response": "via tmux: " + sys.argv[2], "error": ""}))\n')
+
+
+def agy_run(tmp_path, body, timeout='0', **env):
     import os
     repo = Path(__file__).resolve().parents[1]
     fake = tmp_path / 'fake-agy'
     fake.write_text('#!' + sys.executable + '\n' + body)
     fake.chmod(0o755)
+    tmux = tmp_path / 'fake-tmux'
+    tmux.write_text('#!' + sys.executable + '\n' + FAKE_TMUX)
+    tmux.chmod(0o755)
     return subprocess.run([sys.executable, str(repo/'harness/agent_executor.py'), '--backend', 'agy',
         '--executable', str(fake), '--model', 'gemini-fixture', '--effort', 'low',
         '--directory', str(tmp_path), '--output', str(tmp_path/'last'), '--timeout-seconds', timeout],
-        input='the prompt', env=dict(os.environ, HOME=str(tmp_path)), capture_output=True, text=True, timeout=20)
+        input='the prompt', env=dict(os.environ, HOME=str(tmp_path), RH_AGY_TMUX=str(tmux), **env),
+        capture_output=True, text=True, timeout=30)
+
+
+def test_without_the_keychain_and_no_tmux_session_agy_says_where_to_run_it(tmp_path):
+    proc = agy_run(tmp_path, KEYCHAIN_AGY)
+    assert proc.returncode == 76
+    assert 'no keychain access' in proc.stderr and "Ricardo's" not in proc.stderr
+
+
+def test_agy_is_relayed_through_the_tmux_session_that_holds_the_keychain(tmp_path):
+    proc = agy_run(tmp_path, KEYCHAIN_AGY, FAKE_TMUX_SESSION='1')
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads((tmp_path/'last').read_text())['response'] == 'via tmux: the prompt'
 
 
 def test_a_signed_out_agy_stops_at_once_and_names_ricardos_sign_in(tmp_path):
     # The real CLI prints an OAuth URL and then waits 60 s for a code nobody will paste.
-    proc = agy_run(tmp_path, 'import sys, time\n'
-                   'sys.stderr.write("Authentication required. Please visit the URL to log in:\\n")\n'
-                   'sys.stderr.flush()\ntime.sleep(60)\n')
+    proc = agy_run(tmp_path, KEYCHAIN_AGY, FAKE_TMUX_SESSION='1', SIGNED_OUT='1')
     assert proc.returncode == 77
     assert "agy needs Ricardo's one-time interactive sign-in" in proc.stderr
 

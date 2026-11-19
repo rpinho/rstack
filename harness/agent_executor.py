@@ -76,7 +76,11 @@ def command(backend, executable, model, effort, directory, output, budget='1.00'
         return [executable, '-p', prompt, '--output-format', 'json',
                 *(['--model', model] if model and model != 'default' else []),
                 *(['--effort', effort] if effort in AGY_EFFORTS else []),
-                '--mode', 'accept-edits', '--disable-slash-commands']
+                '--mode', 'accept-edits', '--disable-slash-commands',
+                # Headless agy auto-denies shell commands. A job whose tools include Bash (the same
+                # --allowed-tools a Claude job widens) gets them through a session-only allow rule.
+                *(['--settings', json.dumps({'permissions': {'allow': ['command(*)']}})]
+                  if 'Bash' in str(tools).split(',') else [])]
     if backend == 'codex':
         mode = codex_sandbox(sandbox)
         # `bypass` is the single flag that turns off approvals AND the sandbox together; the other
@@ -144,12 +148,14 @@ def shim_first(home=None, which=None):
             'sound. Put ~/.local/bin first on PATH.'.format(found, shim))
 
 
-def run_agy(cmd, directory, output, timeout_seconds=0):
-    """Run agy print mode; its JSON result goes to `output`.
+AGY_NO_KEYCHAIN = ('agy has no keychain access here: its sign-in lives in the login Keychain, which an ssh or '
+                   'launchd-daemon context cannot read. Run it from the m5 tmux or GUI session '
+                   '(RH_AGY_TMUX_SESSION names the tmux session the executor relays through)')
 
-    Signed out, agy prints an OAuth URL and waits 60 s for a pasted code. Nobody answers a headless
-    job, and signing in is Ricardo's, so the first "Authentication required" line ends the run.
-    """
+
+def _agy_direct(cmd, directory, timeout_seconds):
+    """(stdout bytes, exit code, saw "Authentication required", hit the clock). Ends at the first auth line:
+    signed out (or without the Keychain), agy prints an OAuth URL and waits 60 s for a code nobody pastes."""
     signed_out, expired = threading.Event(), threading.Event()
     proc = subprocess.Popen(cmd, cwd=directory, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, start_new_session=True,
@@ -181,6 +187,100 @@ def run_agy(cmd, directory, output, timeout_seconds=0):
         if timer:
             timer.cancel()
     watcher.join(timeout=5)
+    return data, code, signed_out.is_set(), expired.is_set()
+
+
+def _tmux():
+    import shutil
+    for candidate in (os.environ.get('RH_AGY_TMUX'), shutil.which('tmux'),
+                      str(Path.home() / '.local/bin/tmux'), '/opt/homebrew/bin/tmux'):
+        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _agy_tmux(cmd, directory, timeout_seconds, poll=0.5):
+    """Run agy in a new window of the host's tmux session, which holds the Keychain the GUI login
+    unlocked, and read its result from files. None when there is no such session to relay through.
+
+    11-19: signed in on the m5, agy answered from the tmux server and from a gui/ LaunchAgent, and said
+    "authentication required" over plain ssh. A --host job and this executor's own sandbox are both
+    ssh-like, so the call goes where the Keychain is instead. Only this job's window is added; it closes
+    when agy exits and is killed on the clock or when this executor is stopped."""
+    import shlex
+    import shutil
+    import tempfile
+    import time
+    tmux = _tmux()
+    session = os.environ.get('RH_AGY_TMUX_SESSION', 'base')
+    if not tmux or subprocess.run([tmux, 'has-session', '-t', session], capture_output=True).returncode:
+        return None
+    exe = shutil.which(cmd[0]) or cmd[0]
+    with tempfile.TemporaryDirectory(prefix='rh-agy-') as box:
+        box = Path(box)
+        prompt_at = cmd.index('-p') + 1
+        (box / 'prompt').write_text(cmd[prompt_at])
+        args = ' '.join(shlex.quote(a) for a in [exe, *cmd[1:prompt_at]]) + ' "$(cat {})" '.format(
+            shlex.quote(str(box / 'prompt'))) + ' '.join(shlex.quote(a) for a in cmd[prompt_at + 1:])
+        (box / 'run.sh').write_text(
+            'cd {d} || {{ echo 2 > {b}/rc.tmp; mv {b}/rc.tmp {b}/rc; exit; }}\n'
+            'RSTACK_UNATTENDED=1 {a} < /dev/null > {b}/out 2> {b}/err\n'
+            'echo $? > {b}/rc.tmp && mv {b}/rc.tmp {b}/rc\n'.format(d=shlex.quote(str(directory)), a=args,
+                                                                    b=shlex.quote(str(box))))
+        made = subprocess.run([tmux, 'new-window', '-d', '-P', '-F', '#{window_id}', '-t', session + ':',
+                               '-n', 'rh-agy-{}'.format(os.getpid()), '/bin/sh ' + shlex.quote(str(box / 'run.sh'))],
+                              capture_output=True, text=True)
+        if made.returncode:
+            return None
+        window = made.stdout.strip()
+
+        def close():
+            subprocess.run([tmux, 'kill-window', '-t', window], capture_output=True)
+
+        previous = signal.signal(signal.SIGTERM, lambda *_: (close(), sys.exit(143)))
+        signed_out = expired = False
+        began, seen = time.monotonic(), 0
+        try:
+            while not (box / 'rc').exists():
+                err = (box / 'err').read_bytes() if (box / 'err').exists() else b''
+                if len(err) > seen:
+                    chunk, seen = err[seen:], len(err)
+                    if b'authentication required' in err.lower():
+                        signed_out = True
+                        close()
+                        break
+                    sys.stderr.buffer.write(chunk)
+                    sys.stderr.buffer.flush()
+                if timeout_seconds > 0 and time.monotonic() - began > timeout_seconds:
+                    expired = True
+                    close()
+                    break
+                time.sleep(poll)
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+        data = (box / 'out').read_bytes() if (box / 'out').exists() else b''
+        try:
+            code = int((box / 'rc').read_text())
+        except (OSError, ValueError):
+            code = 1
+        return data, code, signed_out, expired
+
+
+def run_agy(cmd, directory, output, timeout_seconds=0):
+    """Run agy print mode; its JSON result goes to `output`.
+
+    Direct first; if agy asks to authenticate, again through the tmux session that can read the Keychain.
+    That relay is the same call in another place, never another model. The two failures stay apart:
+    no session to relay through means no keychain access here; asked again there means signed out."""
+    data, code, signed_out, expired = _agy_direct(cmd, directory, timeout_seconds)
+    relayed = False
+    if signed_out:
+        again = _agy_tmux(cmd, directory, timeout_seconds)
+        if again is None:
+            print('agent_executor: ' + AGY_NO_KEYCHAIN, file=sys.stderr)
+            return 76
+        relayed = True
+        data, code, signed_out, expired = again
     Path(output).write_bytes(data)
     sys.stdout.buffer.write(data)
     sys.stdout.buffer.flush()
@@ -189,10 +289,10 @@ def run_agy(cmd, directory, output, timeout_seconds=0):
     except ValueError:
         result = None
     error = str(result.get('error') or '') if isinstance(result, dict) else ''
-    if signed_out.is_set() or 'authentication' in error.lower():
-        print('agent_executor: ' + AGY_SIGN_IN, file=sys.stderr)
-        return 77
-    if expired.is_set():
+    if signed_out or 'authentication' in error.lower():
+        print('agent_executor: ' + (AGY_SIGN_IN if relayed or not signed_out else AGY_NO_KEYCHAIN), file=sys.stderr)
+        return 77 if relayed or not signed_out else 76
+    if expired:
         print('wall-clock cap of {:g}s reached; stopped'.format(timeout_seconds), file=sys.stderr)
         return 124
     if code == 0 and (not isinstance(result, dict) or result.get('status') == 'ERROR' or error):

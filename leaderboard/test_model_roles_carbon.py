@@ -1,4 +1,4 @@
-"""Google scores stay in history; no served role may resolve to Google."""
+"""Google API scores stay in history; no served role may resolve to the Google API (11-19: agy is allowed)."""
 import importlib.util
 from pathlib import Path
 
@@ -20,7 +20,7 @@ def test_google_routes_and_aliases_remain_for_history():
 @pytest.mark.parametrize('role', mr.ROLES)
 def test_no_served_role_resolves_to_google_even_with_winning_evidence(role, tmp_path, monkeypatch):
     # Exercise seeds, candidates, observed models, and an exclusion that would be lifted.
-    google = [m for m in mr.MODELS if m.startswith('google/')]
+    google = [m for m in mr.MODELS if m.startswith('google/') and mr.MODELS[m][0] != 'agy']
     google.append(mr.canon('google/gemini-future'))
     monkeypatch.setattr(mr, 'LEDGER', tmp_path / 'absent.jsonl')
     monkeypatch.delenv('RH_LAUNCH_RECEIPTS', raising=False)
@@ -32,13 +32,13 @@ def test_no_served_role_resolves_to_google_even_with_winning_evidence(role, tmp_
     data = mr.recompute(write=False)
     for order in data['roles'].values():
         assert order
-        assert all(not data['routes'][m]['canonical'].startswith('google/') for m in order)
+        assert all(data['routes'][m]['canonical'] not in google for m in order)
     assert set(google).issubset(data['evidence'][role])
     page = tmp_path / 'LEADERBOARD.md'
     mr.public(data, page)
     assert '| ' + role + ' | google/gemini-4-carbon | - | 1.0 |' in page.read_text()
     restored = mr.bootstrap(page)
-    assert all(not restored['routes'][m]['canonical'].startswith('google/')
+    assert all(restored['routes'][m]['canonical'] not in google
                for order in restored['roles'].values() for m in order)
 
 

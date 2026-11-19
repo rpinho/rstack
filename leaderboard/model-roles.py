@@ -52,7 +52,11 @@ MODELS = {'anthropic/claude-opus-5.5': ('claude', 'claude-opus-5-5'),
  'x-ai/grok-4.6': ('openrouter', 'x-ai/grok-4.6'),
  'google/gemini-4-argon': ('gemini', 'google/gemini-4-argon'),
  'google/gemini-4-carbon': ('gemini', 'google/gemini-4-carbon'),
- 'google/gemini-4-hydrogen': ('gemini', 'google/gemini-4-hydrogen')}
+ 'google/gemini-4-hydrogen': ('gemini', 'google/gemini-4-hydrogen'),
+ # 11-19: Gemini on the Antigravity subscription (agy). `agy models` on the m5 lists these three tiers.
+ 'google/gemini-3.8-flash-high': ('agy', 'gemini-3.8-flash-high'),
+ 'google/gemini-3.8-flash-medium': ('agy', 'gemini-3.8-flash-medium'),
+ 'google/gemini-3.8-flash-low': ('agy', 'gemini-3.8-flash-low')}
 
 ALIASES = [('opus[- ]?5[.-]5', 'anthropic/claude-opus-5.5'),
  ('fable[- ]?5[.-]1|fable-5-1', 'anthropic/claude-fable-5.1'),
@@ -102,9 +106,12 @@ FIELD_ROLE = {'scientific-verification': 'mechanical',
 SEED['design'] = list(SEED['taste'])
 SEED['judge'] = list(SEED['review'])
 ROLES = tuple(SEED)
-# Google routes and observations remain readable for historical tables only.
+# Google API routes and observations remain readable for historical tables only.
 # Owner, 2026-11-18: "Spending OpenRouter money on Google is a waste".
-CANDIDATES = {}
+# 11-19: Google on the agy subscription is not metered, so its Flash tiers enter as candidates: after every
+# seed, with no evidence, and moved only by the same Wilson rule as any other model. No winner is picked here.
+AGY_FLASH = ['google/gemini-3.8-flash-high', 'google/gemini-3.8-flash-medium', 'google/gemini-3.8-flash-low']
+CANDIDATES = {role: list(AGY_FLASH) for role in ROLES if role != 'writing'}
 # Owner, 2026-11-18: "Astra 6.2 should replace Astra on the leaderboard. Sol 6.2 should/could replace Sol 6.1."
 # Laptop leaderboard 2026-11-18 (owner call after measurement): the old versions are FALLBACKS, not history.
 # A superseded version is served only last, in roles where its successor is served, and evidence never lifts it.

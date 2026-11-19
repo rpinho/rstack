@@ -17,6 +17,8 @@ To route an eligible OpenRouter model, register its canonical `provider/model` I
 
 As of 2026-11-18, Google models are excluded from every served role, including candidates introduced by new evidence and routes recovered by bootstrap. The owner's reason: "Spending OpenRouter money on Google is a waste". This routing preference cannot be lifted by a high score. Existing Google route metadata, observations and dated ranking rows remain available as history. The Gemini transport remains available for explicit comparisons; it does not make a Google model eligible for a served role.
 
+Since 2026-11-19 only subscription routes are served (`claude`, `codex`, `agy`); OpenRouter and Gemini API models are history only. The exclusion above applies to the Google API routes. Gemini 3.8 Flash on the Antigravity subscription (`agy`, tiers high, medium and low) enters every role except writing as a candidate after the seeds, and moves only by the Wilson rule like any other model.
+
 The Astra seed slot for review, judge and ideation is `gpt-6.2-astra`. This is the requested routing preference, not a claim of general superiority: the 11-17 v3.1 calibration has five overall winners, and GPT-6.2 Astra completed none of three ideation calls within 480 seconds. Existing Anthropic first picks remain in place.
 
 ## Local scoring
