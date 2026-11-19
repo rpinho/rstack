@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """x-handle-guard: no X action from a browser that is not logged in as the posting account.
 
-A Claude Code hook (PreToolUse and PostToolUse) for the Claude in Chrome tools, loaded only by
-the X executor's own `claude -p` run through `--settings` (see `x-reply-review-remote`).
+A Claude Code hook (PreToolUse and PostToolUse) for the Claude in Chrome tools. It acts only on
+tabs whose URL is x.com or twitter.com (11-19, general: global registration must not refuse non-X
+work); every other tab, and a tab whose URL it has not seen, passes untouched. PostToolUse learns
+each tab's URL from the "Tab Context" every Chrome tool returns, and from navigate.
 
 Why (11-19): two Chrome browsers are paired with the same Claude login on the project host.
 One is the project account; the other is the owner's private account and must never like,
@@ -20,8 +22,8 @@ navigation, tab management) are always allowed, so the agent can open x.com and 
   X_HANDLE_GUARD_TTL      seconds a probe stays valid (default 2700, the reviewer's alarm)
   RSTACK_STATE_DIR        state root (default ~/.local/state/rstack)
 
-Fails closed: an unreadable event or state denies the acting call. Exit 0 always, with the
-decision as hook JSON on stdout.
+An unreadable event denies the call; unreadable state is treated as empty (URLs unknown, so
+only tabs seen again as X are guarded). Exit 0 always, with the decision as hook JSON on stdout.
 """
 import json
 import os
@@ -37,6 +39,19 @@ PROBE = ("(() => { const a = document.querySelector('a[data-testid=AppTabBar_Pro
          "if (location.hostname !== 'x.com') return 'XHANDLE=off-x'; "
          "return 'XHANDLE=' + (a ? a.pathname.split('/')[1] : m ? m[1] : 'none'); })()")
 ANSWER = re.compile(r'XHANDLE=([A-Za-z0-9_-]+)')
+# Every Chrome tool result carries 'tabId N: "title" ("url")' lines, and tabs_context also JSON rows.
+TAB_LINE = re.compile(r'tabId (\d+): .*\("([^"\s]+)"\)\s*$', re.M)
+TAB_JSON = re.compile(r'"tabId"\s*:\s*(\d+)\s*,\s*"title"\s*:\s*"(?:[^"\\]|\\.)*"\s*,\s*"url"\s*:\s*"([^"]+)"')
+
+
+def is_x(url):
+    m = re.match(r'https?://([^/:?#]+)', str(url or ''), re.I)
+    host = m[1].casefold() if m else ''
+    return host in ('x.com', 'twitter.com') or host.endswith(('.x.com', '.twitter.com'))
+
+
+def tab_url(state, tab):
+    return (state.get('urls') or {}).get(str(tab))
 # Computer actions that only look. Everything else (clicks, typing, keys, drags) acts.
 LOOK = {'screenshot', 'scroll', 'scroll_to', 'wait', 'zoom', 'hover', 'mouse_move', 'cursor_position'}
 # Tools that never act on a page.
@@ -64,11 +79,14 @@ def state_path(event):
 
 def load(event):
     path = state_path(event)
-    if not path.exists():
-        return dict(device=None, tabs={})
-    data = json.loads(path.read_text())
+    try:
+        data = json.loads(path.read_text()) if path.exists() else {}
+    except (OSError, ValueError):
+        data = {}
     if not isinstance(data, dict) or not isinstance(data.get('tabs'), dict):
-        raise ValueError('bad guard state')
+        data = dict(device=None, tabs={})
+    if not isinstance(data.get('urls'), dict):
+        data['urls'] = {}
     return data
 
 
@@ -142,8 +160,8 @@ def pre(event, name):
         if not acting(tool, inp):
             continue
         tab = inp.get('tabId')
-        if tab is None:
-            return deny(reason('?', 'the call names no tabId, so its account cannot be checked'))
+        if tab is None or not is_x(tab_url(state, tab)):
+            continue    # not an X tab (or one it has not seen): not this guard's business
         if not verified(state, tab):
             row = state['tabs'].get(str(tab))
             seen = row.get('handle') if isinstance(row, dict) else None
@@ -167,10 +185,19 @@ def post(event, name):
     inp = event.get('tool_input')
     state = load(event)
     if name in ('select_browser', 'switch_browser'):
-        # A different browser may be a different account: forget every earlier probe.
-        state = dict(device=str((inp or {}).get('deviceId') or (inp or {}).get('device_id') or 'switched'), tabs={})
+        # A different browser may be a different account: forget every earlier probe and tab.
+        state = dict(device=str((inp or {}).get('deviceId') or (inp or {}).get('device_id') or 'switched'),
+                     tabs={}, urls={})
         save(event, state)
         return
+    text = response_text(event.get('tool_response'))
+    seen = dict(TAB_JSON.findall(text))
+    seen.update(TAB_LINE.findall(text))
+    if name == 'navigate' and isinstance(inp, dict) and inp.get('tabId') is not None and inp.get('url'):
+        seen.setdefault(str(inp['tabId']), str(inp['url']))
+    if seen and seen != {k: state['urls'].get(k) for k in seen}:
+        state['urls'].update(seen)
+        save(event, state)
     if name == 'javascript_tool' and is_probe(inp) and inp.get('tabId') is not None:
         found = ANSWER.findall(response_text(event.get('tool_response')))
         seen = found[-1] if len(set(found)) == 1 else 'unclear'

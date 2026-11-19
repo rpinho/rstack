@@ -27,7 +27,9 @@ def probe(env, session='s1', tab=7, device=GOOD_DEVICE, handle='example_sci', ag
     path = Path(env['RSTACK_STATE_DIR']) / 'x-handle-guard' / (session + '.json')
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(dict(device=device, tabs={str(tab): dict(handle=handle, device=device,
-                                                                      utc=time.time() - age)})))
+                                                                      utc=time.time() - age)},
+                                    urls={str(tab): 'https://x.com/home', '7': 'https://x.com/home', '8': 'https://x.com/home',
+                                          '1': 'https://mail.google.com/mail/u/0/'})))
 
 
 def ledger(env, *rows):
@@ -96,6 +98,9 @@ def test_private_browser_is_always_denied(env):
 
 def test_handle_probe_must_pass_in_that_tab(env):
     ledger(env, dict(utc=ago(1), kind='reply', target='1234567', route='grok', ok=False))
+    probe(env, tab=99)      # tab 7 is on X but has no probe
+    Path(env['RSTACK_STATE_DIR'], 'x-handle-guard', 's1.json').write_text(json.dumps(dict(
+        device=GOOD_DEVICE, tabs={}, urls={'7': 'https://x.com/home'})))
     assert 'no passing x-handle-guard probe' in gate(env, REPLY)
     probe(env, handle='someone_else')
     assert 'no passing x-handle-guard probe' in gate(env, REPLY)
@@ -116,6 +121,9 @@ def test_reads_and_non_x_clicks_pass(env):
 
 
 def test_repost_has_no_route_but_still_needs_the_checks(env):
+    Path(env['RSTACK_STATE_DIR'], 'x-handle-guard').mkdir(parents=True)
+    Path(env['RSTACK_STATE_DIR'], 'x-handle-guard', 's1.json').write_text(json.dumps(dict(
+        device=GOOD_DEVICE, tabs={}, urls={'7': 'https://x.com/home'})))
     assert 'probe' in gate(env, 'Reposts @someone on X 1234567')
     probe(env)
     assert gate(env, 'Reposts @someone on X 1234567') is None
@@ -212,3 +220,19 @@ def test_follow_looks_up_the_id_through_grok_then_follows(env, tmp_path):
     assert out.returncode == 0 and rows[-1] == dict(rows[-1], kind='follow', target='someone', ok=True)
     out, rows = route(env, tmp_path, 'follow', '@other', ask='print("[]")')
     assert out.returncode == 10 and 'lookup failed' in rows[-1]['detail']
+
+
+
+def test_non_x_browser_work_passes(env):
+    """11-19, general: registered globally, the gate must never refuse non-X work."""
+    probe(env)
+    assert gate(env, 'Sends the reply to hugo@example.com in Gmail', tab=1) is None
+    assert gate(env, 'Sends the reply to hugo@example.com in Gmail', tab=42) is None   # a tab never seen
+    assert gate(env, 'Clicks Send in Gmail', tab=1) is None
+    assert gate(env, 'Submits the form', tool='form_input', tab=1) is None
+    assert gate(env, 'Posts the reply on X to @someone (1234567)', tab=1) is None     # words alone are not X
+
+
+def test_an_email_address_is_not_an_x_handle(env):
+    probe(env)    # even on an X tab, an e-mail reply summary is not an X submit
+    assert gate(env, 'Sends the reply to hugo@example.com in Gmail') is None

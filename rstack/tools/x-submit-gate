@@ -10,7 +10,7 @@ that submits an X action (reply, post, like, follow, repost) unless all three ho
   2. the tab passed x-handle-guard's probe for the expected handle in the selected browser;
   3. the selected browser is not a denied device (the owner's private account), ever.
 
-A submit is recognised by its action_summary, which X actions here already must carry
+It acts only on tabs whose URL is x.com or twitter.com. A submit is recognised by its action_summary, which X actions here already must carry
 ("Posts the reply on X to @HANDLE", "Likes ...", "Follows @HANDLE"), and the summary must name the
 target: a post URL or ID, or the @handle. Anything that is not an X submit passes untouched.
 
@@ -31,7 +31,9 @@ import x_route  # noqa: E402
 
 PREFIX = 'mcp__claude-in-chrome__'
 ACTING = {'left_click', 'right_click', 'double_click', 'triple_click', 'key', 'type', 'left_click_drag'}
-X_CONTEXT = re.compile(r'\bon X\b|\bx\.com\b|\btweet\b|\bX post\b|@[A-Za-z0-9_]{1,15}|/status/\d+', re.I)
+# An @handle is not part of an e-mail address: no word character before it, no '.domain' after it.
+X_CONTEXT = re.compile(r'\bon X\b|\bx\.com\b|\btweet\b|\bX post\b|(?<![\w.])@[A-Za-z0-9_]{1,15}(?![\w.@-])|'
+                       r'/status/\d+', re.I)
 KINDS = (('reply', re.compile(r'\b(?:posts?|sends?|submits?)\s+(?:the|a|our|my)?\s*repl(?:y|ies)\b|\brepl(?:y|ies) (?:to|on)\b'
                                r'|\bclicks? (?:the )?reply button\b', re.I)),
          ('like', re.compile(r'\blikes?\b|\bheart\b', re.I)),
@@ -63,6 +65,20 @@ def guard_state(event):
     return json.loads(path.read_text()) if path.exists() else dict(device=None, tabs={})
 
 
+def is_x(url):
+    m = re.match(r'https?://([^/:?#]+)', str(url or ''), re.I)
+    host = m[1].casefold() if m else ''
+    return host in ('x.com', 'twitter.com') or host.endswith(('.x.com', '.twitter.com'))
+
+
+def guard_state_or_empty(event):
+    try:
+        data = guard_state(event)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def submits(event):
     """(kind, summary, tabId) for every X submit in the call."""
     name = str(event.get('tool_name', ''))[len(PREFIX):]
@@ -73,6 +89,7 @@ def submits(event):
     if name == 'browser_batch':
         steps = [(str(a.get('name', '')).replace(PREFIX, ''), a.get('input') or {})
                  for a in inp.get('actions') or [] if isinstance(a, dict)]
+    urls = guard_state_or_empty(event).get('urls') or {}
     out = []
     for tool, step in steps:
         if not isinstance(step, dict):
@@ -80,6 +97,10 @@ def submits(event):
         if tool == 'computer' and step.get('action') not in ACTING:
             continue
         if tool not in ('computer', 'form_input'):
+            continue
+        # 11-19 (general): only X tabs. x-handle-guard's PostToolUse learns each tab's URL from the
+        # Tab Context every Chrome tool returns; any other tab, or one not seen yet, passes.
+        if not is_x(urls.get(str(step.get('tabId')))):
             continue
         summary = str(step.get('action_summary', ''))
         if not X_CONTEXT.search(summary) or NOT_SUBMIT.match(summary.strip()):
