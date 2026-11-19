@@ -12,6 +12,8 @@ python3 harness/rh.py prior-art receipt toy PRIOR_ART.md \
 
 That command uses the network and GitHub CLI. Configure capture storage first. Review sources, dates, competing results and competition data rules yourself. A hash proves which local bytes were referenced; it does not prove a search was complete or a novelty claim correct. No receipt overrides a lane's data restrictions.
 
+`rh lane new` runs the same GitHub, paper and leaderboard searches once on the lane's problem and writes `OVERLAP.json` (query, per-source hits with title, url and date, time) beside the frozen files. A failed source is recorded `unavailable` with its reason; the lane is created either way. `RH_OVERLAP=off` skips it.
+
 Code: [idea_policy.py](../harness/idea_policy.py), [prior_art_receipt.py](../harness/tools/prior_art_receipt.py). Tests: [test_prior_art_shared.py](../harness/tests/test_prior_art_shared.py).
 
 ## A baseline you can run

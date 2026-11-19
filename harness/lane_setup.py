@@ -1,7 +1,9 @@
 """Create isolated lanes with frozen v2 declarations; never invent research evidence."""
 import datetime as dt
 import hashlib
+import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import selection_policy
@@ -32,6 +34,37 @@ def arguments(sub):
     new.add_argument('--test', default='paired exact-match accuracy on development folds held out by the declared split')
     new.add_argument('--bar', default='strictly beat the last-value baseline under the frozen v2 confidence and backtest checks')
     new.add_argument('--final-fit', choices=('fixed_steps', 'fold_ensemble'), default='fixed_steps')
+
+
+PRIOR_ART = []
+
+
+def prior_art():
+    """The one prior-art search (tools/prior_art_receipt.py), loaded once."""
+    if not PRIOR_ART:
+        spec = importlib.util.spec_from_file_location('prior_art_receipt', Path(__file__).resolve().parent / 'tools/prior_art_receipt.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        PRIOR_ART.append(module)
+    return PRIOR_ART[0]
+
+
+def overlap(lane, problem):
+    """11-19: before a lane starts, is anyone else already working on this problem? Write the answer to
+    OVERLAP.json, outside the frozen files so it can be re-run. It records and never refuses."""
+    if os.environ.get('RH_OVERLAP', '').lower() in ('0', 'off', 'no'):
+        receipt = dict(schema=1, check='overlap', query=problem, status='skipped', reason='RH_OVERLAP=off', sources={})
+    else:
+        try:
+            receipt = prior_art().overlap(problem)
+        except Exception as exc:
+            receipt = dict(schema=1, check='overlap', query=problem, status='unavailable',
+                           reason=f'{type(exc).__name__}: {str(exc)[:200]}', sources={})
+    receipt.setdefault('searched_at', dt.datetime.now(UTC).replace(microsecond=0).isoformat())
+    (lane / 'OVERLAP.json').write_text(json.dumps(receipt, indent=1) + '\n')
+    found = sum(len(v.get('hits', [])) for v in receipt['sources'].values())
+    print('Overlap check: {} ({} hits) in {}'.format(receipt['status'], found, lane / 'OVERLAP.json'))
+    return receipt
 
 
 def stamp(value):
@@ -123,6 +156,7 @@ Keep workers bounded by SWEEP.toml. Send deletions to Trash.
         raise ValueError('; '.join(problems))
     print('Created {}: frozen v2 declarations; workers disabled; no results or external reads claimed'.format(lane))
     print('Frozen declarations are immutable; changed assumptions require a new lane.')
+    overlap(lane, args.problem)
     lessons.record_read(lane, rh)
     print('Next: rh --root {} lint {}'.format(root, args.name))
     return 0

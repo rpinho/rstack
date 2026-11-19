@@ -30,6 +30,8 @@ sequence toys the default development test and baseline bar apply; supply
 `--test` and `--bar` for other problems. Defaults declare no augmentation, fold-local
 preprocessing, fixed-step final fit, ten measurements, and zero trials.
 
+Creation writes the overlap check (prior-art search on `--problem`) to `lanes/NAME/OVERLAP.json`, unfrozen; offline it records `unavailable` and the lane is still created.
+
 Run `.venv/bin/rh --root .runtime lint NAME`. Do not create fake trials, reading
 receipts or scores to satisfy lint. Inspect the generated `LANE.json` and
 `SELECTION.json`; report assumptions and leave workers disabled.

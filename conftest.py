@@ -18,6 +18,9 @@ os.environ['XDG_CONFIG_HOME'] = str(Path(_TEST_HOME.name) / '.config')
 os.environ['XDG_STATE_HOME'] = str(Path(_TEST_HOME.name) / '.local/state')
 os.environ['RH_POD_LANES'] = 'team,theory,orbits,toy-evolution'
 os.environ['RH_POLICY_EXCLUDED'] = 'restricted-a,restricted-b'
+# `rh lane new` runs a live overlap search; child interpreters have no socket guard, and gh is a
+# subprocess. Tests that exercise the search clear this and stub it.
+os.environ['RH_OVERLAP'] = 'off'
 os.environ['RH_REAP_EXCLUDED'] = 'restricted-a,restricted-b'
 for key in ('RH_ROLES_FILE', 'RH_MODEL_OVERRIDE_LOG', 'MODEL_OVERRIDE_REASON', 'LAUNCH_MADE_BY',
             'RH_CONTACTS', 'RH_DECIDED_BY', 'CLAUDE_CODE_SESSION_ID', 'RH_EVIDENCE_ROOT',

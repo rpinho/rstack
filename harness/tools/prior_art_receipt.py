@@ -42,7 +42,8 @@ NO_GH = re.compile(r'gh auth login|not logged in|authentication|GH_TOKEN|GITHUB_
 def github_public(q, n):
     """Repository search through GitHub's public API, no token (about 10 requests a minute)."""
     url = 'https://api.github.com/search/repositories?' + urllib.parse.urlencode({'q': q, 'per_page': n})
-    return [item['html_url'] for item in get(url).get('items', []) if str(item.get('html_url', '')).startswith('http')]
+    return [paper_search._meta(item['html_url'], item.get('full_name'), item.get('pushed_at'))
+            for item in get(url).get('items', []) if str(item.get('html_url', '')).startswith('http')]
 
 
 def github(q, n=5, tries=4):
@@ -64,12 +65,17 @@ def github(q, n=5, tries=4):
         time.sleep(35)
     if out.returncode:
         raise RuntimeError('github search failed: ' + out.stderr[:200])
+    for line in out.stdout.splitlines():  # url, name, last push
+        cols = line.split('\t')
+        if len(cols) == 3 and cols[0].startswith('http'):
+            paper_search._meta(*cols)
     return [u for u in out.stdout.split() if u.startswith('http')]
 
 
 def _gh(q, n):
     return subprocess.run([GH, 'api', '-X', 'GET', 'search/repositories', '-f', f'q={q}', '-f', f'per_page={n}',
-                          '--jq', '.items[].html_url'], capture_output=True, text=True, timeout=60)
+                          '--jq', '.items[] | [.html_url, .full_name, .pushed_at] | @tsv'],
+                          capture_output=True, text=True, timeout=60)
 
 
 PAPER_SRC = ['OpenAlex']   # which source actually answered; it goes into the receipt
@@ -90,7 +96,8 @@ def boards(q, n=4):
     hits = []
     for kind in ('spaces', 'datasets'):
         d = get(f'https://huggingface.co/api/{kind}?limit={n}&search=' + urllib.parse.quote(q))
-        hits += [f'https://huggingface.co/{kind}/{x["id"]}' for x in d]
+        hits += [paper_search._meta(f'https://huggingface.co/{kind}/{x["id"]}', x['id'], x.get('lastModified'))
+                 for x in d]
     hits += github(q + ' benchmark', 3)
     return hits
 
@@ -131,6 +138,29 @@ def x_entry(key):
               capture_path=str(stable), capture_sha256=hashlib.sha256(stable.read_bytes()).hexdigest())
     e['searched_at'] = when
     return e
+
+
+def overlap(query):
+    """Lane overlap check: is anyone already working on this problem? The same GitHub, paper and
+    leaderboard searches as an idea receipt, run once on the lane's problem statement. A source that
+    fails is recorded as unavailable with its reason; this never raises for a failed search."""
+    runs = (('github', lambda: github(query, 5, tries=1), 'GitHub repository search; date = last push.'),
+            ('papers', lambda: papers(query), None),
+            ('leaderboards', lambda: boards(query), 'Hugging Face spaces/datasets and GitHub "<q> benchmark" repos.'))
+    sources = {}
+    for name, run, note in runs:
+        try:
+            urls = run()
+        except Exception as exc:  # offline, rate-limited, signed out: record it, never block the lane
+            sources[name] = dict(status='unavailable', reason=f'{type(exc).__name__}: {str(exc)[:200]}', hits=[])
+            continue
+        hits = [dict(title=paper_search.META.get(u, {}).get('title'), url=u,
+                     date=paper_search.META.get(u, {}).get('date')) for u in dict.fromkeys(urls)]
+        sources[name] = dict(status='hits' if hits else 'none', hits=hits,
+                             note=note or PAPER_NOTE[0])
+    states = {v['status'] for v in sources.values()}
+    status = 'unavailable' if states == {'unavailable'} else 'hits' if 'hits' in states else 'none'
+    return dict(schema=1, check='overlap', query=query, searched_at=now(), status=status, sources=sources)
 
 
 def main(argv=None):

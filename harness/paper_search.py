@@ -152,6 +152,17 @@ def _polite(params):
     return params
 
 
+# Title and date of each hit, by URL, as the answering source gave them. Hits stay plain URLs (the
+# cache and the per-idea receipt use them); the lane overlap receipt reads titles from here.
+META = {}
+
+
+def _meta(url, title, date):
+    if url:
+        META[url] = dict(title=(title or '').strip() or None, date=str(date)[:10] if date else None)
+    return url
+
+
 def _doi_url(doi):
     doi = (doi or '').strip()
     if not doi:
@@ -165,7 +176,8 @@ def openalex(query, n):
     if key:
         params['api_key'] = key
     d = get('https://api.openalex.org/works?' + urllib.parse.urlencode(params))
-    return [w.get('doi') or w['id'] for w in d['results']]
+    return [_meta(w.get('doi') or w['id'], w.get('display_name') or w.get('title'), w.get('publication_date'))
+            for w in d['results']]
 
 
 def semanticscholar(query, n):
@@ -177,11 +189,14 @@ def semanticscholar(query, n):
     for p in d.get('data') or []:
         ids = p.get('externalIds') or {}
         if ids.get('DOI'):
-            hits.append(_doi_url(ids['DOI']))
+            url = _doi_url(ids['DOI'])
         elif ids.get('ArXiv'):
-            hits.append('https://arxiv.org/abs/' + ids['ArXiv'])
+            url = 'https://arxiv.org/abs/' + ids['ArXiv']
         elif p.get('paperId'):
-            hits.append('https://www.semanticscholar.org/paper/' + p['paperId'])
+            url = 'https://www.semanticscholar.org/paper/' + p['paperId']
+        else:
+            continue
+        hits.append(_meta(url, p.get('title'), p.get('year')))
     return hits
 
 
@@ -191,9 +206,12 @@ def europepmc(query, n):
     hits = []
     for r in (d.get('resultList') or {}).get('result') or []:
         if r.get('doi'):
-            hits.append(_doi_url(r['doi']))
+            url = _doi_url(r['doi'])
         elif r.get('id') and r.get('source'):
-            hits.append('https://europepmc.org/article/%s/%s' % (r['source'], r['id']))
+            url = 'https://europepmc.org/article/%s/%s' % (r['source'], r['id'])
+        else:
+            continue
+        hits.append(_meta(url, r.get('title'), r.get('firstPublicationDate') or r.get('pubYear')))
     return hits
 
 
@@ -203,14 +221,17 @@ def arxiv(query, n):
         {'search_query': 'all:"%s"' % query.replace('"', ' '), 'max_results': n})
     feed = get(url, parse=lambda r: ET.fromstring(r.read()))
     ns = {'a': 'http://www.w3.org/2005/Atom'}
-    return [e.findtext('a:id', '', ns).strip() for e in feed.findall('a:entry', ns)
+    return [_meta(e.findtext('a:id', '', ns).strip(), ' '.join(e.findtext('a:title', '', ns).split()),
+                  e.findtext('a:published', '', ns)) for e in feed.findall('a:entry', ns)
             if e.findtext('a:id', '', ns).strip()]
 
 
 def crossref(query, n):
     params = _polite({'rows': n, 'query.bibliographic': query})
     d = get('https://api.crossref.org/works?' + urllib.parse.urlencode(params))
-    return [_doi_url(w['DOI']) for w in d['message']['items'] if w.get('DOI')]
+    return [_meta(_doi_url(w['DOI']), (w.get('title') or [''])[0],
+                  '-'.join('%02d' % x for x in ((w.get('issued') or {}).get('date-parts') or [[]])[0] if x))
+            for w in d['message']['items'] if w.get('DOI')]
 
 
 ADAPTERS = {'openalex': openalex, 'semanticscholar': semanticscholar, 'europepmc': europepmc,
