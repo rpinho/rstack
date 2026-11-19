@@ -36,5 +36,10 @@ a patch, or a speedup that gives the same answers. Not a code review, and not a 
    lint; read; approve; send; then `sent`. Lint enforces the target check, the verified speedup,
    their own speed work, the contact's address and scrutiny, and the lane's required questions.
 
+A published paper can be the target instead of code (lane `paper-audit`): target `arxiv/ID`, commit
+the PDF's sha256, each claim's observed and expected the printed and the recomputed value as bare
+values, and `referee-prompt ... --pdf FILE`, which gives the referee the PDF and the paper template.
+There is no target check for a paper.
+
 The rules and their codes are in docs/outreach.md, "Bug-hunt lane". A finding lint refuses is fixed
 or dropped, never argued around.

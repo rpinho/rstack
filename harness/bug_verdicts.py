@@ -16,10 +16,16 @@ Three upgrades adopted 11-08 from published skill sets, compared against our own
    of 528 claims; this is how that shows up the same day.)
 3. What was already hunted is in bug_coverage.py.
 
+A published paper is a target too (11-19 pilot: 4 refereed errors in 2 arXiv papers, one CONFIRMED).
+Its target is arxiv/ID, its commit is the PDF's sha256, and each claim's observed and expected are the
+value the paper prints and the value recomputation gives, written as bare values so a swapped plant
+reads the same. The referee gets templates/paper_referee.md and the PDF itself (--pdf), never a clone.
+
 Commands:
     rh bughunt claims-check LANE CLAIMS.json         refuse claims refuted before
     rh bughunt referee-prompt LANE CLAIMS.json DIR   plant, shuffle, write DIR/claims.json + PROMPT.md
                                                      (needs the hunter's family: "hunter" in the file or --hunter-family)
+        [--pdf FILE]                                 a paper target: the PDF, copied to DIR/paper/paper.pdf
     rh bughunt verdicts LANE DIR/verdict.json        validate, check the plants, record
         [--receipt FILE]                             the launcher's model receipt; found by job name under
                                                      RH_LAUNCH_RECEIPTS when not given
@@ -46,7 +52,10 @@ VERDICT_OPTIONAL = {'repro', 'reason', 'needs', 'check', 'file_sha256', 'maintai
 TOP_REQUIRED = {'schema', 'batch', 'target', 'commit', 'referee', 'claims'}
 SCHEMA = 'bug-verdicts/1'
 TEMPLATE = Path(__file__).resolve().parent / 'templates' / 'bug_referee.md'
+PAPER_TEMPLATE = TEMPLATE.with_name('paper_referee.md')
 SHA = re.compile(r'^[0-9a-f]{7,40}$')
+SHA256 = re.compile(r'^[0-9a-f]{64}$')
+PAPER = re.compile(r'^arxiv/[0-9]{4}\.[0-9]{4,5}(v[0-9]+)?$')
 TARGET = re.compile(r'^[a-z0-9_.-]+/[a-z0-9_.-]+$')
 # A referee from the hunter's own family shares its blind spots, so it does not count (11-09: a GPT-6 Codex
 # hunter was refereed by GPT-6 and the verdicts were accepted). Family is compared by maker, so GPT-5 vs GPT-6
@@ -78,6 +87,18 @@ def fingerprint(target, file, function):
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
+def is_paper(target):
+    return bool(PAPER.match(str(target or '').strip().casefold()))
+
+
+def commit_errors(doc):
+    """A repository's commit is a git sha; a paper's is the sha256 of its PDF."""
+    commit = str(doc.get('commit', ''))
+    if is_paper(doc.get('target')):
+        return [] if SHA256.match(commit) else ['commit must be the sha256 of the paper\'s PDF']
+    return [] if SHA.match(commit) else ['commit must be a git sha']
+
+
 def text_field(value, words=1):
     return isinstance(value, str) and len(value.split()) >= words
 
@@ -88,8 +109,7 @@ def validate_claims(doc):
         return ['claims file is not a JSON object']
     if not TARGET.match(str(doc.get('target', '')).casefold()):
         errors.append('target must be owner/repo')
-    if not SHA.match(str(doc.get('commit', ''))):
-        errors.append('commit must be a git sha')
+    errors += commit_errors(doc)
     claims = doc.get('claims')
     if not isinstance(claims, list) or not claims:
         return errors + ['claims must be a nonempty list']
@@ -109,6 +129,8 @@ def validate_claims(doc):
             errors.append('{}: unknown fields {}'.format(where, ', '.join(sorted(extra))))
         if c.get('id') in seen:
             errors.append(where + ': duplicate id')
+        if is_paper(doc.get('target')) and c.get('file_sha256') not in (None, doc.get('commit')):
+            errors.append(where + ': file_sha256 must be the PDF sha256, the same as commit')
         seen.add(c.get('id'))
     return errors
 
@@ -127,8 +149,7 @@ def validate(doc):
         errors.append('schema must be "{}"'.format(SCHEMA))
     if not TARGET.match(str(doc.get('target', '')).casefold()):
         errors.append('target must be owner/repo')
-    if not SHA.match(str(doc.get('commit', ''))):
-        errors.append('commit must be a git sha')
+    errors += commit_errors(doc)
     referee = doc.get('referee')
     if not (isinstance(referee, dict) and text_field(referee.get('model')) and text_field(referee.get('family'))):
         errors.append('referee needs model and family')
@@ -231,9 +252,10 @@ def plants_for(claims, n, rng):
     return out[:n]
 
 
-def referee_prompt(lane, doc, workdir, plants=(), n_plants=1, rng=None, extra='', hunter_family=None):
+def referee_prompt(lane, doc, workdir, plants=(), n_plants=1, rng=None, extra='', hunter_family=None, pdf=None):
     """Write WORKDIR/claims.json (real and planted, shuffled, renumbered) and WORKDIR/PROMPT.md.
-    The key (which ids are planted) and the hunter's family go to the lane's PLANTS.jsonl, never to WORKDIR."""
+    The key (which ids are planted) and the hunter's family go to the lane's PLANTS.jsonl, never to WORKDIR.
+    A paper target gets the paper template and its PDF at WORKDIR/paper/paper.pdf, checked against commit."""
     rng = rng or random.Random(secrets.randbits(64))
     hunter = doc.get('hunter') if isinstance(doc.get('hunter'), dict) else {}
     family = hunter_family or hunter.get('family')
@@ -243,6 +265,15 @@ def referee_prompt(lane, doc, workdir, plants=(), n_plants=1, rng=None, extra=''
     refused = claims_check(lane, doc)
     if refused:
         raise ValueError('; '.join(refused))
+    paper = is_paper(doc['target'])
+    if paper:
+        data = Path(pdf).read_bytes() if pdf else None
+        if data is None and (Path(workdir) / 'paper' / 'paper.pdf').exists():
+            data = (Path(workdir) / 'paper' / 'paper.pdf').read_bytes()
+        if data is None:
+            raise ValueError('PAPER_PDF_MISSING: a paper target needs its PDF (--pdf FILE)')
+        if hashlib.sha256(data).hexdigest() != doc['commit']:
+            raise ValueError('PAPER_PDF_MISMATCH: the PDF\'s sha256 is not the claims\' commit')
     real = [dict(c) for c in doc['claims']]
     planted = [dict(p) for p in plants] + plants_for(real, n_plants, rng)
     if not planted:
@@ -259,8 +290,11 @@ def referee_prompt(lane, doc, workdir, plants=(), n_plants=1, rng=None, extra=''
         out.append(dict(c, id=ident))
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
+    if paper:
+        (workdir / 'paper').mkdir(exist_ok=True)
+        (workdir / 'paper' / 'paper.pdf').write_bytes(data)
     (workdir / 'claims.json').write_text(json.dumps(dict(target=doc['target'], commit=doc['commit'], claims=out), indent=2))
-    prompt = TEMPLATE.read_text().format(target=doc['target'], commit=doc['commit'], batch=batch,
+    prompt = (PAPER_TEMPLATE if paper else TEMPLATE).read_text().format(target=doc['target'], commit=doc['commit'], batch=batch,
                                          workdir=workdir, claims=workdir / 'claims.json', schema=SCHEMA,
                                          verdicts=', '.join(VERDICTS), extra=extra)
     (workdir / 'PROMPT.md').write_text(prompt)

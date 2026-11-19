@@ -216,6 +216,45 @@ def test_no_plant_possible_is_refused(ln, tmp_path):
     assert bug_verdicts.referee_prompt(ln, one, tmp_path / 'w', plants=plant)[2] == 1
 
 
+def test_a_paper_is_refereed_from_its_pdf_not_a_clone(ln, tmp_path):
+    """11-19 pilot: a paper target is arxiv/ID, its commit is the PDF sha256, and the referee gets the PDF."""
+    import hashlib
+    pdf = tmp_path / 'p.pdf'
+    pdf.write_bytes(b'%PDF-1.7 eq 7 prints 1.5e-3')
+    sha = hashlib.sha256(pdf.read_bytes()).hexdigest()
+    paper = dict(target='arxiv/2610.26454v1', commit=sha, hunter=dict(model='h-1', family='hunterfam'), claims=[
+        dict(id='E7', file='paper.pdf page 3', function='Eq. (7)', root_cause='the numerical line is 719 times the symbolic one',
+             observed='q = 1.5e-3 StatC', expected='q = 2.1e-6 StatC', file_sha256=sha)])
+    assert bug_verdicts.validate_claims(paper) == []
+    assert 'PDF' in bug_verdicts.validate_claims(dict(paper, commit='a' * 40))[0]
+    assert bug_verdicts.validate_claims(dict(CLAIMS, commit=sha))  # a repository still needs a git sha
+    wrong = dict(paper, claims=[dict(paper['claims'][0], file_sha256='b' * 64)])
+    assert 'file_sha256' in bug_verdicts.validate_claims(wrong)[0]
+    with pytest.raises(ValueError, match='PAPER_PDF_MISSING'):
+        bug_verdicts.referee_prompt(ln, paper, tmp_path / 'none')
+    other = tmp_path / 'other.pdf'
+    other.write_bytes(b'%PDF-1.7 another paper')
+    with pytest.raises(ValueError, match='PAPER_PDF_MISMATCH'):
+        bug_verdicts.referee_prompt(ln, paper, tmp_path / 'bad', pdf=other)
+    work = tmp_path / 'ref'
+    batch, real, planted = bug_verdicts.referee_prompt(ln, paper, work, pdf=pdf, rng=random.Random(3))
+    assert (real, planted) == (1, 1)
+    prompt = (work / 'PROMPT.md').read_text()
+    assert 'fresh clone' not in prompt.casefold() and str(work / 'paper' / 'paper.pdf') in prompt and sha in prompt
+    assert (work / 'paper' / 'paper.pdf').read_bytes() == pdf.read_bytes()
+    assert not any(p.name == 'PLANTS.jsonl' for p in work.rglob('*'))
+    claims = json.loads((work / 'claims.json').read_text())['claims']
+    out = [dict(id=c['id'], file=c['file'], function=c['function'], root_cause=c['root_cause'], effect='x',
+                **(dict(verdict='CONFIRMED', repro='repro/e7.py') if c['observed'] == 'q = 1.5e-3 StatC'
+                   else dict(verdict='REFUTED', reason='the paper prints 1.5e-3, not 2.1e-6')))
+           for c in claims]
+    path = work / 'verdict.json'
+    path.write_text(json.dumps(dict(schema=bug_verdicts.SCHEMA, batch=batch, target=paper['target'], commit=sha,
+                                    referee=dict(model='m', family='f'), claims=out)))
+    ok, msgs = bug_verdicts.record(ln, path)
+    assert ok and '1 of 1 planted caught' in msgs[-1], msgs
+
+
 def test_coverage_refuses_a_round_with_nothing_new(ln):
     r1 = dict(target='org/tool', commit=COMMIT, round='r1', units=[
         dict(unit='src/fit.py', bug_class='off-by-one', status='candidate'),
