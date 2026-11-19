@@ -115,6 +115,39 @@ def assigns_judgment_model(text):
                                          for args, piped in shell_commands(text))
 
 
+# 11-19 Ricardo: agy serves Opus 5.5 and Sonnet 5.5 on a quota apart from the Claude Max weekly limit, to be
+# used as overflow when that limit is tight. Explicit, never silent: only above RH_CLAUDE_OVERFLOW_PERCENT
+# (unset = off), read from the allowance reader, and the receipt and the log both say so.
+AGY_CLAUDE = {'claude-opus-5-5', 'claude-sonnet-5-5'}
+
+
+def _allowance():
+    from importlib.machinery import SourceFileLoader
+    from importlib.util import module_from_spec, spec_from_loader
+    here = Path(__file__).resolve().parent
+    for tool in (here / 'rstack/tools/allowance', here.parent / 'rstack/tools/allowance'):
+        if tool.is_file():
+            spec = spec_from_loader('allowance', SourceFileLoader('allowance', str(tool)))
+            module = module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    return None
+
+
+def claude_overflow(executor, model):
+    """(agy model, note) when a Claude job should overflow to agy's Claude; None leaves it unchanged."""
+    limit = os.environ.get('RH_CLAUDE_OVERFLOW_PERCENT', '').strip()
+    if executor != 'claude' or model not in AGY_CLAUDE or not limit:
+        return None
+    allowance = _allowance()
+    weekly = allowance.claude_weekly() if allowance else None
+    if not weekly or weekly['weekly_used_percent'] < float(limit):
+        return None
+    effort = os.environ.get('LAUNCH_EFFORT', '')
+    tier = effort if effort in ('low', 'medium', 'high') else 'high'
+    return model + '-' + tier, 'claude overflow via agy (weekly at {:g}%)'.format(weekly['weekly_used_percent'])
+
+
 def select(role, executor, model='', override='', path=None, made_by='', job='', lane='', explore=''):
     judgment_hint = ''
     if role == 'batch' and JUDGMENT_JOB.search(job):
@@ -177,10 +210,14 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         raise ValueError(judgment_hint + 'role {} requires a different model family from {}'.format(role, made_by))
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9/_.:-]*', chosen):
         raise ValueError('invalid native model id')
+    overflow = claude_overflow(executor, chosen)
     receipt = dict(schema=1, selection_id=uuid.uuid4().hex, utc=dt.datetime.now(dt.timezone.utc).isoformat(),
         role=role, model=chosen, canonical=route['canonical'], executor=executor,
         roles_sha256=hashlib.sha256(raw).hexdigest(), roles_updated=data.get('updated'),
         model_override=override, source='explore' if explore else 'override' if model else 'leaderboard', job=job, lane=lane, made_by=made_by)
+    if overflow:
+        # Same model, other route: evidence still credits the canonical model; the receipt shows the route.
+        receipt.update(executor='agy', route_model=overflow[0], overflow=overflow[1])
     if model:
         override_log = Path(os.environ.get('RH_MODEL_OVERRIDE_LOG') or Path(path).with_name('model-overrides.jsonl'))
         with override_log.open('a') as stream:
@@ -235,7 +272,12 @@ def main(argv=None):
             return 2
         args.receipt.write_text(json.dumps(receipt, sort_keys=True) + '\n')
         log_record(args.log, 'MODEL_SELECTION', receipt)
-        print(receipt['model'])
+        if receipt.get('overflow'):
+            with Path(args.log).open('a') as stream:
+                stream.write('{} job={} model={} route={}\n'.format(receipt['overflow'], args.job, receipt['model'],
+                                                                     receipt['route_model']))
+            print('worker model: ' + receipt['overflow'], file=sys.stderr)
+        print(receipt.get('route_model') or receipt['model'])
         if args.print_route:
             print(receipt['executor'])
         return 0

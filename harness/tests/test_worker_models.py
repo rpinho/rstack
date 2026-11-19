@@ -483,3 +483,53 @@ def test_judgment_spec_reports_and_questions_pass(tmp_path, text):
                         '--roles-file', str(path), '--spec', str(spec),
                         '--log', str(tmp_path / 'launch.log'),
                         '--receipt', str(tmp_path / 'receipt.json')]) == 0
+
+
+def overflow_setup(tmp_path, monkeypatch, percent, limit='85'):
+    import time
+    state = tmp_path / 'state'
+    (state / 'usage').mkdir(parents=True)
+    (state / 'usage/claude.json').write_text(json.dumps({'weekly_percent': percent, 'at': time.time() - 60}))
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(state))
+    monkeypatch.delenv('RESETS_USAGE_DIR', raising=False)
+    monkeypatch.delenv('LAUNCH_EFFORT', raising=False)
+    if limit is None:
+        monkeypatch.delenv('RH_CLAUDE_OVERFLOW_PERCENT', raising=False)
+    else:
+        monkeypatch.setenv('RH_CLAUDE_OVERFLOW_PERCENT', limit)
+    p = tmp_path / 'roles.json'
+    p.write_text(json.dumps({'roles': {'batch': ['claude-opus-5-5'], 'cheap': ['claude-haiku-5-5']},
+                             'routes': {'claude-opus-5-5': {'cli': 'claude', 'canonical': 'anthropic/claude-opus-5.5'},
+                                        'claude-haiku-5-5': {'cli': 'claude', 'canonical': 'anthropic/claude-haiku-5.5'}}}))
+    return p
+
+
+def test_above_the_threshold_a_claude_job_overflows_to_agys_claude_and_says_so(tmp_path, monkeypatch):
+    p = overflow_setup(tmp_path, monkeypatch, 91)
+    got = wm.select('batch', 'claude', path=p)
+    assert (got['model'], got['canonical']) == ('claude-opus-5-5', 'anthropic/claude-opus-5.5')
+    assert (got['executor'], got['route_model']) == ('agy', 'claude-opus-5-5-high')
+    assert got['overflow'] == 'claude overflow via agy (weekly at 91%)'
+    log, receipt = tmp_path / 'job.log', tmp_path / 'r.json'
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert wm.main(['--role', 'batch', '--executor', 'claude', '--roles-file', str(p), '--print-route',
+                        '--job', 'fixture-job', '--log', str(log), '--receipt', str(receipt)]) == 0
+    assert out.getvalue().split() == ['claude-opus-5-5-high', 'agy']
+    assert 'claude overflow via agy (weekly at 91%) job=fixture-job' in log.read_text()
+    assert json.loads(receipt.read_text())['overflow'] == 'claude overflow via agy (weekly at 91%)'
+    # agy serves only Opus and Sonnet; any other Claude model stays where it is.
+    assert wm.select('cheap', 'claude', path=p)['executor'] == 'claude'
+
+
+@pytest.mark.parametrize('percent,limit', [(84, '85'), (99, None)])
+def test_below_the_threshold_or_with_none_set_nothing_changes(tmp_path, monkeypatch, percent, limit):
+    p = overflow_setup(tmp_path, monkeypatch, percent, limit)
+    got = wm.select('batch', 'claude', path=p)
+    assert got['executor'] == 'claude' and 'overflow' not in got and 'route_model' not in got
+
+
+def test_a_stale_weekly_reading_does_not_overflow(tmp_path, monkeypatch):
+    p = overflow_setup(tmp_path, monkeypatch, 95)
+    (tmp_path / 'state/usage/claude.json').write_text(json.dumps({'weekly_percent': 95, 'at': 1000.0}))
+    assert wm.select('batch', 'claude', path=p)['executor'] == 'claude'

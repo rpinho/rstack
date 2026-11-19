@@ -138,10 +138,57 @@ def read_allowance(roots, now=None):
         read_finished = time.time() if now is None else now
         stamp = datetime.fromisoformat(newest['snapshot_at']).timestamp()
         newest['snapshot_age_seconds'] = max(0, read_finished - stamp)
-    return dict(codex=newest or 'unavailable', claude='unavailable',
-                claude_note='No local allowance snapshot found; a fresh authenticated Claude usage '
-                            'read (CLI usage screen or usage endpoint) would be needed. Token totals '
-                            'and policy-limits.json are not allowance percentages.')
+    claude = claude_weekly(read_started)
+    return dict(codex=newest or 'unavailable', claude=claude or 'unavailable',
+                claude_note=None if claude else (
+                    'No fresh Claude weekly reading: nothing headless can read claude.ai, so a session writes '
+                    '{"weekly_percent": N, "at": <unix s>} to ' + str(usage_dir() / 'claude.json') + ' (at most '
+                    '24 h old, the file resets-check reads). Token totals and policy-limits.json are not '
+                    'allowance percentages.'),
+                agy_quota=agy_quota_latest() or 'none recorded')
+
+
+def state_dir():
+    return Path(os.environ.get('RSTACK_STATE_DIR') or
+                str(Path(os.environ.get('XDG_STATE_HOME') or str(Path.home() / '.local/state')) / 'rstack')).expanduser()
+
+
+def usage_dir():
+    return Path(os.environ.get('RESETS_USAGE_DIR') or str(state_dir() / 'usage')).expanduser()
+
+
+CLAUDE_USAGE_MAX_AGE_S = 24 * 3600
+
+
+def claude_weekly(now=None):
+    """{'weekly_used_percent', 'snapshot_at', 'source'} from the session-written usage file, or None
+    when it is missing, unreadable or over 24 h old. Same file and age limit as resets-check."""
+    now = time.time() if now is None else now
+    try:
+        rec = json.loads((usage_dir() / 'claude.json').read_text())
+        pct, at = float(rec['weekly_percent']), float(rec['at'])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not (finite(pct) and finite(at)) or now - at > CLAUDE_USAGE_MAX_AGE_S or now < at - 300:
+        return None
+    return dict(weekly_used_percent=pct, snapshot_at=datetime.fromtimestamp(at, timezone.utc).isoformat(),
+                snapshot_age_seconds=max(0, now - at), source=str(rec.get('source') or 'usage file'))
+
+
+def agy_quota_latest():
+    """The newest agy 429/quota row the executor logged (state_dir/agy-quota.jsonl), or None."""
+    try:
+        lines = (state_dir() / 'agy-quota.jsonl').read_text().splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            return row
+    return None
 
 
 def message(text, log=None):

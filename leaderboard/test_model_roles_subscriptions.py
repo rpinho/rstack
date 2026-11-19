@@ -39,12 +39,13 @@ def test_the_public_roles_contract_names_no_openrouter_model():
         assert all(m.split('/')[0] in ('anthropic', 'openai', 'google') for m in models), (role, models)
 
 
-def test_the_agy_flash_tiers_are_candidates_after_every_seed_until_evidence_moves_them(tmp_path, monkeypatch):
+def test_the_agy_gemini_models_are_candidates_after_every_seed_until_evidence_moves_them(tmp_path, monkeypatch):
     monkeypatch.setattr(mr, 'LEDGER', tmp_path / 'absent.jsonl')
     monkeypatch.delenv('RH_LAUNCH_RECEIPTS', raising=False)
     monkeypatch.setattr(mr, 'evidence', lambda: {})
     data = mr.recompute(write=False)
-    flash = [mr.MODELS[m][1] for m in mr.AGY_FLASH]
+    flash = [mr.MODELS[m][1] for m in mr.AGY_CANDIDATES]
+    assert 'gemini-4-argon-medium' in flash and len(flash) == 6
     for role, order in data['roles'].items():
         seeds = [mr.MODELS[m][1] for m in mr.SEED[role]]
         if role == 'writing':

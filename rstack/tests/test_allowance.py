@@ -405,3 +405,18 @@ def test_cybersecurity_policy_flag_keeps_exit_prefix_and_stops_retry(env, tmp_pa
     assert len(exits) == 1 and exits[0].startswith('exit {} codex-policy-flag '.format(rc))
     status = (tmp_path / 'STATUS.md').read_text().splitlines()
     assert len(status) == 1 and 'Codex policy flag' in status[0]
+
+
+def test_the_claude_weekly_reading_and_the_latest_agy_quota_error_are_reported(tmp_path, monkeypatch):
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
+    monkeypatch.delenv('RESETS_USAGE_DIR', raising=False)
+    assert allowance.claude_weekly() is None and allowance.agy_quota_latest() is None
+    (tmp_path / 'usage').mkdir()
+    (tmp_path / 'usage/claude.json').write_text(json.dumps({'weekly_percent': 86, 'at': NOW - 600, 'source': 'footer'}))
+    got = allowance.claude_weekly(NOW)
+    assert got['weekly_used_percent'] == 86 and got['source'] == 'footer'
+    assert allowance.claude_weekly(NOW + 2 * 86400) is None  # over 24 h old
+    (tmp_path / 'agy-quota.jsonl').write_text('{"utc": "a", "model": "m1"}\n{"utc": "b", "model": "m2", "tier": "medium"}\n')
+    assert allowance.agy_quota_latest()['model'] == 'm2'
+    data = allowance.read_allowance([], now=NOW)
+    assert data['claude']['weekly_used_percent'] == 86 and data['agy_quota']['tier'] == 'medium'

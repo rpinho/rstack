@@ -56,7 +56,12 @@ MODELS = {'anthropic/claude-opus-5.5': ('claude', 'claude-opus-5-5'),
  # 11-19: Gemini on the Antigravity subscription (agy). `agy models` on the m5 lists these three tiers.
  'google/gemini-3.8-flash-high': ('agy', 'gemini-3.8-flash-high'),
  'google/gemini-3.8-flash-medium': ('agy', 'gemini-3.8-flash-medium'),
- 'google/gemini-3.8-flash-low': ('agy', 'gemini-3.8-flash-low')}
+ 'google/gemini-3.8-flash-low': ('agy', 'gemini-3.8-flash-low'),
+ # 11-19 later: Google AI Pro adds Gemini 4 to agy. Medium tier, the one general's test calls used; Carbon is
+ # Ultra-only. Distinct canonical IDs from the Gemini API routes above, whose history stays as it is.
+ 'google/gemini-4-neon-medium': ('agy', 'gemini-4-neon-medium'),
+ 'google/gemini-4-argon-medium': ('agy', 'gemini-4-argon-medium'),
+ 'google/gemini-4-hydrogen-medium': ('agy', 'gemini-4-hydrogen-medium')}
 
 ALIASES = [('opus[- ]?5[.-]5', 'anthropic/claude-opus-5.5'),
  ('fable[- ]?5[.-]1|fable-5-1', 'anthropic/claude-fable-5.1'),
@@ -111,7 +116,9 @@ ROLES = tuple(SEED)
 # 11-19: Google on the agy subscription is not metered, so its Flash tiers enter as candidates: after every
 # seed, with no evidence, and moved only by the same Wilson rule as any other model. No winner is picked here.
 AGY_FLASH = ['google/gemini-3.8-flash-high', 'google/gemini-3.8-flash-medium', 'google/gemini-3.8-flash-low']
-CANDIDATES = {role: list(AGY_FLASH) for role in ROLES if role != 'writing'}
+AGY_GEMINI4 = ['google/gemini-4-neon-medium', 'google/gemini-4-argon-medium', 'google/gemini-4-hydrogen-medium']
+AGY_CANDIDATES = AGY_FLASH + AGY_GEMINI4
+CANDIDATES = {role: list(AGY_CANDIDATES) for role in ROLES if role != 'writing'}
 # Owner, 2026-11-18: "Astra 6.2 should replace Astra on the leaderboard. Sol 6.2 should/could replace Sol 6.1."
 # Laptop leaderboard 2026-11-18 (owner call after measurement): the old versions are FALLBACKS, not history.
 # A superseded version is served only last, in roles where its successor is served, and evidence never lifts it.

@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -159,7 +160,7 @@ AGY_NO_KEYCHAIN = ('agy has no keychain access here: its sign-in lives in the lo
 def _agy_direct(cmd, directory, timeout_seconds):
     """(stdout bytes, exit code, saw "Authentication required", hit the clock). Ends at the first auth line:
     signed out (or without the Keychain), agy prints an OAuth URL and waits 60 s for a code nobody pastes."""
-    signed_out, expired = threading.Event(), threading.Event()
+    signed_out, expired, said = threading.Event(), threading.Event(), []
     proc = subprocess.Popen(cmd, cwd=directory, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, start_new_session=True,
                             env=dict(os.environ, RSTACK_UNATTENDED='1'))
@@ -170,6 +171,7 @@ def _agy_direct(cmd, directory, timeout_seconds):
                 signed_out.set()
                 _kill_tree(proc)
                 return
+            said.append(line)
             sys.stderr.buffer.write(line)
             sys.stderr.buffer.flush()
 
@@ -190,7 +192,7 @@ def _agy_direct(cmd, directory, timeout_seconds):
         if timer:
             timer.cancel()
     watcher.join(timeout=5)
-    return data, code, signed_out.is_set(), expired.is_set()
+    return data, code, signed_out.is_set(), expired.is_set(), b''.join(said)
 
 
 def _tmux():
@@ -266,7 +268,31 @@ def _agy_tmux(cmd, directory, timeout_seconds, poll=0.5):
             code = int((box / 'rc').read_text())
         except (OSError, ValueError):
             code = 1
-        return data, code, signed_out, expired
+        err = (box / 'err').read_bytes() if (box / 'err').exists() else b''
+        return data, code, signed_out, expired, err
+
+
+# 11-19: agy has a 5-hour refresh and a weekly cap with no published numbers, so every 429 or quota error
+# is kept, to learn the real limits. AI Credit Overages stays "Never": nothing here buys more.
+QUOTA = re.compile(r'\b429\b|quota|rate.?limit|resource.?exhausted|too many requests|usage limit', re.I)
+
+
+def log_agy_quota(cmd, text):
+    import datetime as dt
+    model = cmd[cmd.index('--model') + 1] if '--model' in cmd else 'default'
+    tier = next((t for t in AGY_EFFORTS if model.endswith('-' + t)), None)
+    if not tier and '--effort' in cmd:
+        tier = cmd[cmd.index('--effort') + 1]
+    base = Path(os.environ.get('RSTACK_STATE_DIR') or
+                Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'rstack').expanduser()
+    row = dict(utc=dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'), model=model, tier=tier,
+               job=os.environ.get('RH_JOB') or os.environ.get('RSTACK_LANE') or '', error=' '.join(text.split())[:500])
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        with (base / 'agy-quota.jsonl').open('a') as stream:
+            stream.write(json.dumps(row, sort_keys=True) + '\n')
+    except OSError as exc:
+        print('agent_executor: could not log the agy quota error: {}'.format(exc), file=sys.stderr)
 
 
 def run_agy(cmd, directory, output, timeout_seconds=0):
@@ -275,7 +301,7 @@ def run_agy(cmd, directory, output, timeout_seconds=0):
     Direct first; if agy asks to authenticate, again through the tmux session that can read the Keychain.
     That relay is the same call in another place, never another model. The two failures stay apart:
     no session to relay through means no keychain access here; asked again there means signed out."""
-    data, code, signed_out, expired = _agy_direct(cmd, directory, timeout_seconds)
+    data, code, signed_out, expired, err = _agy_direct(cmd, directory, timeout_seconds)
     relayed = False
     if signed_out:
         again = _agy_tmux(cmd, directory, timeout_seconds)
@@ -283,7 +309,7 @@ def run_agy(cmd, directory, output, timeout_seconds=0):
             print('agent_executor: ' + AGY_NO_KEYCHAIN, file=sys.stderr)
             return 76
         relayed = True
-        data, code, signed_out, expired = again
+        data, code, signed_out, expired, err = again
     Path(output).write_bytes(data)
     sys.stdout.buffer.write(data)
     sys.stdout.buffer.flush()
@@ -292,6 +318,9 @@ def run_agy(cmd, directory, output, timeout_seconds=0):
     except ValueError:
         result = None
     error = str(result.get('error') or '') if isinstance(result, dict) else ''
+    quota = QUOTA.search(error) or QUOTA.search(err.decode(errors='replace'))
+    if quota:
+        log_agy_quota(cmd, error or err.decode(errors='replace'))
     if signed_out or 'authentication' in error.lower():
         print('agent_executor: ' + (AGY_SIGN_IN if relayed or not signed_out else AGY_NO_KEYCHAIN), file=sys.stderr)
         return 77 if relayed or not signed_out else 76

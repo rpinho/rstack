@@ -343,3 +343,45 @@ def test_an_agy_result_is_saved_and_an_error_result_fails(tmp_path):
     assert bad.returncode == 1 and 'quota' in bad.stderr
     denied = agy_run(tmp_path, 'print(\'{"status":"SUCCESS","response":"","denied_actions":[{"action":"read_file"}]}\')\n')
     assert denied.returncode == 1 and 'denied: read_file' in denied.stderr
+
+
+def test_an_agy_quota_error_is_logged_with_its_model_and_tier(tmp_path):
+    state = tmp_path / 'state'
+    proc = agy_run(tmp_path, 'import sys\nsys.stderr.write("HTTP 429: RESOURCE_EXHAUSTED, try again in 5h\\n")\n'
+                   'print(\'{"status":"ERROR","response":"","error":"429 quota exceeded"}\')\nsys.exit(1)\n',
+                   RSTACK_STATE_DIR=str(state), RH_JOB='fixture-job')
+    assert proc.returncode == 1
+    row = json.loads((state / 'agy-quota.jsonl').read_text().splitlines()[-1])
+    assert (row['model'], row['tier'], row['job']) == ('gemini-fixture', 'low', 'fixture-job')
+    assert '429' in row['error'] and row['utc']
+    ok = agy_run(tmp_path, 'print(\'{"status":"SUCCESS","response":"fine"}\')\n', RSTACK_STATE_DIR=str(state))
+    assert ok.returncode == 0 and len((state / 'agy-quota.jsonl').read_text().splitlines()) == 1
+
+
+def test_the_launcher_runs_a_claude_overflow_on_agy_and_logs_why(tmp_path):
+    import os, time
+    repo = Path(__file__).resolve().parents[1]
+    jobs = tmp_path/'jobs'; jobs.mkdir()
+    (jobs/'fixture.md').write_text('synthetic fixture')
+    roles = tmp_path/'roles.json'
+    roles.write_text(json.dumps(dict(roles={'batch': ['claude-opus-5-5']}, routes={
+        'claude-opus-5-5': {'canonical': 'anthropic/claude-opus-5.5', 'cli': 'claude'}})))
+    state = tmp_path/'state'; (state/'usage').mkdir(parents=True)
+    (state/'usage/claude.json').write_text(json.dumps({'weekly_percent': 90, 'at': time.time()}))
+    fake = tmp_path/'fake-agy'
+    fake.write_text('#!'+sys.executable+'\nimport json, sys\nfrom pathlib import Path\n'
+                    'Path(sys.argv[0] + ".argv").write_text(json.dumps(sys.argv))\n'
+                    'print(json.dumps({"status": "SUCCESS", "response": "ok"}))\n')
+    fake.chmod(0o755)
+    env = dict(os.environ, AGENT_BACKEND='claude', LAUNCH_AGY=str(fake), LAUNCH_CLAUDE='/nonexistent-claude',
+               LAUNCH_ARTIFACT_DIR=str(jobs), LAUNCH_STATE=str(tmp_path/'registry'), RH_ROLES_FILE=str(roles),
+               FORCE_LAUNCH='1', RSTACK_STATE_DIR=str(state), RH_CLAUDE_OVERFLOW_PERCENT='85')
+    proc = subprocess.run(['zsh', str(repo/'tools/launch.sh'), 'fixture', str(tmp_path)],
+                          env=env, capture_output=True, text=True, timeout=20)
+    assert proc.returncode == 0, proc.stderr
+    argv = json.loads(Path(str(fake) + '.argv').read_text())
+    assert argv[argv.index('--model') + 1] == 'claude-opus-5-5-high'
+    log = (jobs/'fixture.log').read_text()
+    assert 'claude overflow via agy (weekly at 90%)' in log
+    receipt = json.loads((jobs/'fixture.log.selection.json').read_text())
+    assert receipt['executor'] == 'agy' and receipt['model'] == 'claude-opus-5-5'
