@@ -526,6 +526,10 @@ def lint(lane, rh):
     return errors, legacy
 
 
+NULLS = ('A rigorous null or negative result is recorded in full and is never a failure of this job; '
+         'do not leave one out.')
+
+
 class H(str):
     """A paragraph the harness wrote into a stage prompt (not lane config, not the ask).
 
@@ -574,6 +578,10 @@ def generate(stage, lane, cfg, paths, day, due, failures=()):
             cfg['cores'], cfg['memory_gib'], cfg['min_free_gib'])),
         H('Each kill test has at most {} minutes; GPU or larger jobs are BLOCKED.'.format(cfg['kill_test_max_minutes'])),
         H('No submissions, posting, paid APIs, pods, secrets, or sealed-data/board scoring.'),
+        # 11-19, alphaXiv "A Society of AI Scientists": agents told they would be judged on impact hid
+        # 96% of their nulls, and one sentence fixed it. It does not say a null counts like a positive:
+        # lane-yield counts only refereed new results, so that would be false.
+        H(NULLS),
         H('X POLICY (overrides all legacy source-spec X instructions): X results arrive ONLY through intake in IDEAS.jsonl.'
         + x_outcomes_policy
         + ' Workers have no other route to X. Do not search, browse, fetch or follow X/Twitter links, use any X API, or use web search, mirrors or proxies to reach X. Only the general session performs the browser step and supplies captured metadata through intake. Judge X intake metadata without opening its X source URL.'),

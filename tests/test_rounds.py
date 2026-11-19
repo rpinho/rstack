@@ -138,3 +138,108 @@ def test_a_corrupt_ledger_line_does_not_blind_the_gate(tmp_path):
         json.dumps(dict(utc='2026-11-02T00:00:00Z', round='R%d' % i, family='boltzgen',
                         outcome='dry', spend_usd=1.0)) for i in range(3)) + '\n')
     assert errors(d, 'boltzgen') == ['DRY_FAMILY']
+
+
+# 11-19: a round must not build on a baseline that no longer reproduces. baseline.py `check` existed
+# and nothing called it (planets and c5, see its docstring); the gate now runs it when stale.
+DAY = 86400.0
+
+
+@pytest.fixture(autouse=True)
+def _no_launch_host(monkeypatch):
+    monkeypatch.delenv('LAUNCH_HOST', raising=False)
+
+
+def baselines(d, published=1.0, value='1.0', cmd='cat value.txt'):
+    """A one-baseline synthetic lane: the baseline reproduces while value.txt holds `published`."""
+    (d / 'value.txt').write_text(value + '\n')
+    rd.append(d / rd.BASELINES, dict(name='toy-2020', source='fixture', published=published,
+                                     cmd=cmd, tolerance=1e-9, timeout=60))
+
+
+def cached(d, age_days):
+    import time as _t
+    (d / rd.BASELINE_CACHE).write_text(json.dumps(dict(last_ok_epoch=_t.time() - age_days * DAY)))
+
+
+def no_subprocess(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError('the baseline check must not run')
+    monkeypatch.setattr(rd.subprocess, 'Popen', boom)
+
+
+def test_a_lane_without_baselines_runs_no_check(tmp_path, monkeypatch):
+    d = lane(tmp_path)
+    consult(d)
+    no_subprocess(monkeypatch)
+    assert errors(d, 'boltzgen') == []
+    assert not (d / rd.BASELINE_CACHE).exists()
+
+
+def test_a_fresh_baseline_check_is_not_rerun(tmp_path, monkeypatch):
+    d = lane(tmp_path)
+    consult(d)
+    baselines(d, value='9.9')   # would drift, so passing proves the check did not run
+    cached(d, 6)
+    no_subprocess(monkeypatch)
+    assert errors(d, 'boltzgen') == []
+
+
+def test_a_stale_check_that_passes_allows_the_round_and_refreshes_the_cache(tmp_path):
+    d = lane(tmp_path)
+    consult(d)
+    baselines(d)
+    cached(d, 8)
+    before = json.loads((d / rd.BASELINE_CACHE).read_text())['last_ok_epoch']
+    assert errors(d, 'boltzgen') == []
+    after = json.loads((d / rd.BASELINE_CACHE).read_text())
+    assert after['last_ok_epoch'] > before + 7 * DAY and after['last_ok_utc']
+
+
+def test_a_stale_check_that_drifts_refuses_the_round_and_names_the_baseline(tmp_path):
+    d = lane(tmp_path)
+    consult(d)
+    baselines(d, value='1.5')   # the published number no longer comes out
+    assert not (d / rd.BASELINE_CACHE).exists(), 'missing counts as stale'
+    errs = rd.gate(d, 'boltzgen')[0]
+    assert [e.split(':')[0] for e in errs] == ['BASELINE_DRIFT']
+    assert 'toy-2020' in errs[0]
+    assert not (d / rd.BASELINE_CACHE).exists(), 'a failed check is never cached as a pass'
+
+
+def test_a_check_that_cannot_finish_refuses_rather_than_passes(tmp_path):
+    d = lane(tmp_path)
+    baselines(d, cmd='sleep 30; echo 1.0')
+    errs = rd.baseline_errors(d, timeout=1)
+    assert len(errs) == 1 and 'baseline check could not run' in errs[0]
+    assert not (d / rd.BASELINE_CACHE).exists()
+
+
+def test_the_cli_start_is_refused_on_drift(tmp_path):
+    import subprocess, sys
+    d = lane(tmp_path)
+    consult(d)
+    baselines(d, value='3.0')
+    r = subprocess.run([sys.executable, str(ROOT / 'harness/tools/rounds.py'), '--lane', str(d),
+                        'start', '--round', 'R1', '--family', 'boltzgen'],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 2 and 'BASELINE_DRIFT' in r.stderr and 'toy-2020' in r.stderr
+    assert not (d / rd.ROUNDS).exists(), 'a refused round writes no row'
+
+
+def test_a_lane_with_a_host_runs_its_baseline_check_there(tmp_path, monkeypatch):
+    """math declares host = "m5" and its checkers take minutes; the controller is the 16 GB M4."""
+    d = lane(tmp_path)
+    consult(d)
+    baselines(d)
+    (d / 'SWEEP.toml').write_text('host = "m5"\n')
+    log = tmp_path / 'ssh.log'
+    ssh = tmp_path / 'fake-ssh'
+    ssh.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "{}"\nfor last; do :; done\nexec sh -c "$last"\n'
+                   .format(log))
+    ssh.chmod(0o755)
+    monkeypatch.setenv('LAUNCH_SSH', str(ssh))
+    assert errors(d, 'boltzgen') == []
+    argv = log.read_text().splitlines()
+    assert 'm5' in argv and 'baseline.py' in argv[-1] and str(d) in argv[-1]
+    assert (d / rd.BASELINE_CACHE).exists(), 'the cache stays with the lane on the controller'

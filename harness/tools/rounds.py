@@ -46,11 +46,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import shlex
+import subprocess
 import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import settings
+import toml_subset
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import spec
 
@@ -61,6 +65,34 @@ OUTCOMES = ('selective', 'dry', 'failed')
 DRY_LIMIT = 3
 REPEAT_WINDOW = 5   # how far back an identical (generator, params, scorer) still counts as a repeat
 STARTED = 'started'  # written by `start`; replaced when the lane records the real outcome
+
+# 11-19. baseline.py `check` re-runs every registered baseline and fails on drift, and nothing called
+# it, which is how planets compared against prior art it had never run and how a quoted number can rot
+# for a month (see baseline.py's docstring). The round gate now runs it when the last pass is stale.
+BASELINES = 'BASELINES.jsonl'
+BASELINE_CACHE = '.baseline-check.json'
+BASELINE_MAX_AGE_S = 7 * 86400
+BASELINE_TIMEOUT_S = 3600
+BASELINE_TOOL = Path(__file__).resolve().parent / 'baseline.py'
+HOST_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z')   # an ssh alias, as launch.sh checks it
+
+
+def lane_host(lane):
+    """Where this lane's work runs: LAUNCH_HOST, else `host` in its SWEEP.toml, else here.
+
+    The baseline commands are the lane's own checkers (math's take minutes), and the controller
+    is the 16 GB M4 that a local python run reset on 11-07, so they run where the lane runs.
+    """
+    host = os.environ.get('LAUNCH_HOST', '').strip()
+    if host:
+        return host
+    sweep = Path(lane) / 'SWEEP.toml'
+    if not sweep.exists():
+        return ''
+    try:
+        return str(toml_subset.config(sweep).get('host') or '').strip()
+    except Exception:  # a malformed SWEEP.toml is the sweep's error to report, not this gate's
+        return ''
 
 
 def fingerprint(generator='', params='', scorer=''):
@@ -163,6 +195,73 @@ def consulted_since(lane, rounds_rows):
     return bool(last_receipt) and last_receipt >= last_round
 
 
+def baseline_errors(lane, now=None, timeout=None):
+    """Errors that refuse a round because a registered baseline no longer reproduces.
+
+    A lane without BASELINES.jsonl is untouched. Otherwise, when the last passing check cached in
+    .baseline-check.json is missing or more than seven days old, `baseline.py check` runs with this
+    interpreter (over ssh when the lane runs on a host) and a bounded timeout. The cache stays here,
+    with the lane's other ledgers. A pass refreshes it; drift refuses the round and names
+    what drifted. A check that times out or crashes also refuses: a check that could not run has
+    shown nothing, and passing on it is how a baseline rots unseen.
+    """
+    lane = Path(lane)
+    if not (lane / BASELINES).exists():
+        return []
+    now = time.time() if now is None else now
+    cache = lane / BASELINE_CACHE
+    try:
+        last = json.loads(cache.read_text()).get('last_ok_epoch')
+    except (OSError, ValueError, AttributeError):
+        last = None
+    if isinstance(last, (int, float)) and 0 <= now - last <= BASELINE_MAX_AGE_S:
+        return []
+    timeout = BASELINE_TIMEOUT_S if timeout is None else timeout
+    cmd = [sys.executable, str(BASELINE_TOOL), '--lane', str(lane), 'check']
+    host = lane_host(lane)
+    if host:
+        if not HOST_RE.fullmatch(host):
+            return ['BASELINE_CHECK: baseline check could not run: host must be an ssh alias, got '
+                    '{!r}'.format(host)]
+        # Same absolute paths there, as launch.sh --host assumes; $HOME is expanded by that shell.
+        remote = 'PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH" python3 ' + ' '.join(
+            shlex.quote(c) for c in cmd[1:])
+        cmd = (shlex.split(os.environ.get('LAUNCH_SSH') or 'ssh')
+               + ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=20', host, remote])
+    where = 'baseline.py --lane {} check'.format(lane)
+    try:
+        # Its own process group, so a timeout ends the baseline commands too, not only the checker.
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                cwd=str(lane), start_new_session=True)
+    except OSError as exc:
+        return ['BASELINE_CHECK: baseline check could not run: {}'.format(exc)]
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, 9)
+        except OSError:
+            proc.kill()
+        proc.communicate()
+        return ['BASELINE_CHECK: baseline check could not run: `{}` timed out after {}s{}. Run it '
+                'by hand and fix what hangs; the round waits until it passes.'
+                .format(where, timeout, ' on ' + host if host else '')]
+    if proc.returncode == 0:
+        cache.write_text(json.dumps(dict(
+            last_ok_epoch=now,
+            last_ok_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))), sort_keys=True) + '\n')
+        return []
+    drifted = re.findall(r'^(\S+)\s+(?:DRIFT|SOURCE)\b', out or '', re.M)
+    if drifted:
+        return ['BASELINE_DRIFT: {} stopped reproducing (`{}`). Every comparison against it since the '
+                'last check is against a number nothing here can produce. Fix the command or '
+                're-register it with `baseline.py add`, and say which in the lane log.'
+                .format(', '.join(dict.fromkeys(drifted)), where)]
+    tail = ((err or '') + (out or '')).strip()[-300:]
+    return ['BASELINE_CHECK: baseline check could not run{} (exit {}): {}'
+            .format(' on ' + host if host else '', proc.returncode, tail)]
+
+
 def gate(lane, family, new_evidence='', limit=DRY_LIMIT, fp='', hypothesis='',
          window=REPEAT_WINDOW):
     """Return (errors, warnings) for starting a round in `family`.
@@ -221,6 +320,10 @@ def gate(lane, family, new_evidence='', limit=DRY_LIMIT, fp='', hypothesis='',
     if 0 < overall < limit:
         warnings.append('{} dry round(s) in a row; {} more closes this family'
                         .format(overall, limit - overall))
+    # Last, and only when nothing else refused: a check can take minutes, and a round already
+    # refused for something else would spend them for nothing.
+    if not errors:
+        errors.extend(baseline_errors(lane))
     return errors, warnings
 
 

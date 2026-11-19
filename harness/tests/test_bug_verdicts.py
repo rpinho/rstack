@@ -83,6 +83,14 @@ def test_a_honest_referee_is_recorded_and_its_refutations_remembered(ln, tmp_pat
     assert bug_verdicts.accepted(path, ln) and len(bug_verdicts.confirmed(path)) == 4 - 2
 
 
+def test_the_referee_prompt_says_a_rigorous_null_is_recorded_not_dropped(ln, tmp_path):
+    """11-19, alphaXiv "A Society of AI Scientists": agents judged on impact hid 96% of nulls."""
+    work = tmp_path / 'nulls'
+    bug_verdicts.referee_prompt(ln, CLAIMS, work, rng=random.Random(5))
+    assert ('A rigorous null or negative result is recorded in full and is never a failure of this '
+            'job; do not leave one out.') in (work / 'PROMPT.md').read_text()
+
+
 def test_a_referee_that_confirms_everything_is_rejected_whole(ln, tmp_path):
     work = tmp_path / 'ref'
     bug_verdicts.referee_prompt(ln, CLAIMS, work, n_plants=1, rng=random.Random(2))

@@ -150,6 +150,15 @@ class SweepTests(unittest.TestCase):
             self.assertLess(len(sw.job_specific(text).split()), 400, stage + ': the lane-controlled part is what counts')
             self.assertIn('X POLICY', text, 'marked, not removed')
 
+    def test_every_stage_prompt_says_a_rigorous_null_is_recorded_not_dropped(self):
+        """11-19, alphaXiv "A Society of AI Scientists": agents told they would be judged on impact
+        hid 96% of their nulls, and one sentence fixed it. Each stage carries that sentence."""
+        cfg = self.loaded()
+        for stage in ('search', 'read', 'kill'):
+            text = sweep.generate(stage, self.lane, cfg, self.paths(), '2026-11-01', ['B-1'])
+            self.assertIn('A rigorous null or negative result is recorded in full and is never a '
+                          'failure of this job; do not leave one out.', text, stage)
+
     def test_github_sources_generate_read_only_commands_in_every_stage(self):
         self.cfg.update(github_repo_queries=['"fixture library"'],
                         github_code_queries=['fixture language:Python'],

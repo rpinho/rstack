@@ -9,6 +9,8 @@ one on its own evidence.
 
 Working dir: {workdir} (write only here).
 
+A rigorous null or negative result is recorded in full and is never a failure of this job; do not leave one out.
+
 For every claim:
 1. Fresh clone of {target} at {commit} into this folder. Open the cited file and function and check
    that the code says what the claim says. Record the file's sha256 at that commit (`file_sha256`).
