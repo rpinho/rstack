@@ -690,6 +690,24 @@ def test_post_reply_verified(posting):
     assert posting.records()[-1]['verified_fields']['in_reply_to_status_id_str'] == '12'
 
 
+def test_link_self_reply_row_posts_with_reply_to_its_own_post(posting):
+    posting.row.update(channel='x_post', self_reply_to='12')
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        fake.syndication['in_reply_to_status_id_str'] = '12'
+        result = posting.run('--reply-to', 'https://x.com/fixture_account/status/12')
+    assert result.returncode == 0, result.stderr
+    assert posting.records()[-1]['verified_fields']['in_reply_to_status_id_str'] == '12'
+
+
+def test_link_self_reply_row_refuses_another_target(posting):
+    posting.row.update(channel='x_post', self_reply_to='12')
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        result = posting.run('--reply-to', 'https://x.com/fixture_account/status/13')
+    assert result.returncode == 2 and not fake.sent_prompts
+
+
 def test_post_dry_run_cancels_without_send_or_receipt(posting):
     with FakeCDP() as fake:
         posting.setup(fake)

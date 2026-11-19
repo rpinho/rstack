@@ -88,7 +88,10 @@ def approved(config, lane_name, ident, data, channel, target):
             outreach.body(row).encode('utf-8') != data or
             outreach.sha(row['draft_path']) != digest):
         raise Refused('rh draft, approval and lint must match text-file bytes (SHA-256)')
-    if row.get('channel') != channel:
+    # A link self-reply under our own post is an x_post row with self_reply_to (x-post-ready's shape);
+    # it is sent with --reply-to like any reply, and its target must be that same post.
+    self_reply = channel == 'x_reply' and row.get('channel') == 'x_post' and bool(row.get('self_reply_to'))
+    if row.get('channel') != channel and not self_reply:
         raise Refused('rh channel does not match the requested action')
     if channel in outreach.X_PUBLIC:
         if (outreach.reply_target(row) or '') != (target if channel == 'x_reply' else ''):
