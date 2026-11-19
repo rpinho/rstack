@@ -621,15 +621,19 @@ def returned_delegate(receipts, job, lane, hours_ago):
     return receipts / (job + '.log.selection.json')
 
 
-def test_a_lane_cannot_launch_while_a_returned_delegated_job_is_ungraded(tmp_path, capsys):
+def test_a_returned_delegated_job_is_recorded_ungraded_at_once_and_a_grade_replaces_it(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
     receipts = tmp_path / 'receipts'; receipts.mkdir()
-    receipt = returned_delegate(receipts, 'lane-a-job1', 'lane-a', 2)
-    assert wm.main(['--pending-grades', str(receipts), '--lane', 'lane-b', '--job', 'x']) == 0
-    assert wm.main(['--pending-grades', str(receipts), '--lane', 'lane-a', '--job', 'lane-a-job2']) == 3
-    err = capsys.readouterr().err
-    assert 'lane-a-job1' in err and '--grade pass|partial|fail' in err and str(receipt) in err
+    receipt = returned_delegate(receipts, 'lane-a-job1', 'lane-a', 0)
+    assert wm.main(['--record-ungraded', '--receipt', str(receipt), '--log', str(receipts / 'lane-a-job1.log')]) == 0
+    rows = [json.loads(l) for l in (receipts / 'everyday-grades.jsonl').read_text().splitlines()]
+    assert [(r['grade'], r['job']) for r in rows] == [('ungraded', 'lane-a-job1')]
+    assert 'lane-a-job1' in next((tmp_path / 'state/asks-waiting').glob('*-ungraded.tsv')).read_text()
     assert wm.main(['--grade', 'pass', '--receipt', str(receipt), '--log', str(receipts / 'lane-a-job1.log')]) == 0
-    assert wm.main(['--pending-grades', str(receipts), '--lane', 'lane-a', '--job', 'lane-a-job2']) == 0
+    rows = [json.loads(l) for l in (receipts / 'everyday-grades.jsonl').read_text().splitlines()]
+    assert rows[-1]['grade'] == 'pass' and rows[-1]['id'] == rows[0]['id']   # same selection: the grade replaces it
+    assert wm.main(['--record-ungraded', '--receipt', str(receipt), '--log', str(receipts / 'lane-a-job1.log')]) == 0
+    assert len((receipts / 'everyday-grades.jsonl').read_text().splitlines()) == 2
 
 
 def test_after_24_hours_an_ungraded_job_is_recorded_and_listed_for_the_morning(tmp_path, monkeypatch, capsys):
@@ -643,14 +647,14 @@ def test_after_24_hours_an_ungraded_job_is_recorded_and_listed_for_the_morning(t
     assert (row['grade'], row['job']) == ('ungraded', 'lane-a-old')
     listed = list((tmp_path / 'state/asks-waiting').glob('*-ungraded.tsv'))
     assert listed and 'lane-a-old' in listed[0].read_text()
-    assert wm.main(['--pending-grades', str(receipts), '--lane', 'lane-a', '--job', 'next']) == 0
 
 
-def test_the_launcher_refuses_the_next_job_and_names_the_grade_command(fake_home):
+def test_a_lane_with_an_ungraded_returned_job_still_launches(fake_home):
+    # 11-19 (general): grading never blocks a lane.
     home, c, work, env = fake_home
     assert run_launcher(fake_home).returncode == 0
     lane = json.loads((c / 'fixture-job.log.selection.json').read_text())['lane']
     returned_delegate(c, 'earlier-job', lane, 1)
     result = run_launcher(fake_home)
-    assert result.returncode == 3
-    assert 'earlier-job' in result.stderr and '--grade' in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert 'refused' not in result.stderr

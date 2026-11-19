@@ -205,14 +205,6 @@ selector=${LAUNCH_SELECTOR:-${self:h:h}/harness/worker_models.py}
 # an unavailable `rh` is not fatal: a job that cannot read its goal still runs, and the gap shows
 # up in the prompt's absence rather than as a dead lane.
 lessons=$(rh --root "${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-${RH_ROOT:-$PWD/.runtime}}}" lessons for "$lane" -n "${LAUNCH_LESSONS:-12}" 2>/dev/null)
-# 11-19 (owner via general): the lane session that reads a returned delegated job's REPORT grades it in the
-# same step, and the next job from a spec waits until it has. After 24 h an ungraded job is recorded
-# "ungraded" and listed for the morning report, so a lane is never held longer than that.
-if ! python3 "$selector" --pending-grades "$artifacts" --lane "$lane" --job "$job" 2>> "$log.grade"; then
-  tail -1 "$log.grade" >&2
-  print -- "exit 3 ungraded-delegated-job $(date)" >> "$log"
-  exit 3
-fi
 start=1; [[ -n $LAUNCH_RESUME ]] && start=2
 for (( i = start; i <= 5; i++ )); do
   sel_exec=$backend
@@ -421,6 +413,9 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
   fi
   python3 "$selector" --log "$log" --receipt "$log.selection.json" --outcome "$rc" || exit 2
   print -r -- "GRADE ON RETURN: python3 ${selector:A} --grade pass|partial|fail --note WHY --receipt ${log:A}.selection.json --log ${log:A}" >> "$log"
+  # 11-19 (general): grading never blocks a lane. A returned delegated job nobody has graded yet is recorded
+  # "ungraded" at once (counted, outside the rate) and listed for the morning report; a later grade replaces it.
+  python3 "$selector" --record-ungraded --receipt "$log.selection.json" --log "$log" >/dev/null 2>&1 || true
   (( policy_flag == 0 && rc != 0 && i < 5 )) || break
   [[ $backend == codex ]] || break  # A Claude retry must not reset its spend cap.
   # A quota response ends this model's attempt even if it also says 'at capacity'.

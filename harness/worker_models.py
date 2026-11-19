@@ -297,9 +297,9 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     return receipt
 
 
-# 11-19 (owner via general): a returned delegated job is graded by the lane session that reads its REPORT, in
-# the same step. Architecture, not prose: the lane cannot launch its next job while one is ungraded, and after
-# UNGRADED_HOURS the job is recorded "ungraded" (counted, outside the rate) and listed for the morning report.
+# 11-19 (general): grading never blocks a lane ("lanes never stop") and never depends on anyone remembering.
+# A returned delegated job without a grade is recorded "ungraded" at once (counted, outside the rate) and listed
+# for the morning report; a later grade for the same selection replaces it.
 UNGRADED_HOURS = 24
 
 
@@ -412,8 +412,8 @@ def main(argv=None):
     parser.add_argument('--roles-file', type=Path, default=ROLES_FILE)
     parser.add_argument('--log', type=Path)
     parser.add_argument('--receipt', type=Path)
-    parser.add_argument('--pending-grades', type=Path, metavar='RECEIPTS_DIR',
-                        help='admission: refuse (exit 3) while a returned delegated job of --lane is ungraded')
+    parser.add_argument('--record-ungraded', action='store_true',
+                        help='at return: record a delegated job with no grade as "ungraded" and list it for the morning')
     parser.add_argument('--sweep-ungraded', type=Path, metavar='RECEIPTS_DIR',
                         help='record jobs ungraded for 24 h as "ungraded" and list them for the morning report')
     parser.add_argument('--outcome', type=int)
@@ -430,16 +430,16 @@ def main(argv=None):
                     print('ungraded after {} h: {} ({}, lane {})'.format(UNGRADED_HOURS, job, model, lane))
                 print('listed in ' + str(where))
             return 0
-        if args.pending_grades:
-            waiting = ungraded(args.pending_grades, args.lane, args.job)
-            if UNGRADED_TODAY:
-                morning_report(UNGRADED_TODAY)
-            if waiting:
-                job, model, path, _ = waiting[0]
-                print('launch.sh refused {}: lane {} has a returned delegated job that is not graded: {} ({}). '
-                      'Read its REPORT and grade it first: {}'.format(args.job, args.lane, job, model,
-                                                                       grade_command(path)), file=sys.stderr)
-                return 3
+        if args.record_ungraded:
+            receipt = json.loads(args.receipt.read_text())
+            if receipt.get('source') == 'delegate' and 'grade-' + str(receipt.get('selection_id')) not in _grades(args.receipt.parent):
+                row = dict(id='grade-' + receipt['selection_id'], date=dt.date.today().isoformat(),
+                           source_kind='everyday', job=receipt.get('job'), grade='ungraded',
+                           model=receipt.get('route_model') or receipt['model'], role=receipt.get('role'),
+                           note='returned without a grade')
+                log_record(args.receipt.with_name('everyday-grades.jsonl'), '', row)
+                morning_report([(row['job'], receipt.get('lane'), row['model'])])
+                print('recorded ungraded: ' + row['job'])
             return 0
         if not args.log or not args.receipt:
             raise ValueError('--log and --receipt are required')
