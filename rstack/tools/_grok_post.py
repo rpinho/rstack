@@ -257,7 +257,8 @@ def card_flow(cdp, config, args, text, target, deadline, record, send_gate):
     send_gate()
     record['pressed'] = cdp.evaluate(card_js('press', dict(mine, which='send')))
     found, allowed = None, False
-    pattern = re.compile(r'(?:x|twitter)\.com/' + re.escape(config['post_account']) + r'/status/(\d+)', re.I)
+    # 11-19 live: Grok answered with https://x.com/i/status/ID, not the account path.
+    pattern = re.compile(r'(?:x|twitter)\.com/(?:' + re.escape(config['post_account']) + r'|i)/status/(\d+)', re.I)
     while not found:
         if not allowed and (cdp.evaluate(card_js('read', mine)) or {}).get('permission'):
             record['permission'] = cdp.evaluate(card_js('allow', mine))
@@ -346,7 +347,12 @@ def verify(config, ident, text, target, deadline):
         if len(raw) > ask.MAX_BYTES:
             raise ValueError('oversized syndication response')
     tweet = json.loads(raw)
-    fields = dict(id=str(tweet.get('id_str', '')), text=tweet.get('text'),
+    shown = tweet.get('text')
+    # 11-19 live: the public text carries t.co links; put back each entity's expanded_url to compare.
+    for entity in sorted((tweet.get('entities') or {}).get('urls') or [], key=lambda e: -len(e.get('url', ''))):
+        if isinstance(shown, str) and entity.get('url') and entity.get('expanded_url'):
+            shown = shown.replace(entity['url'], entity['expanded_url'])
+    fields = dict(id=str(tweet.get('id_str', '')), text=shown,
                   author_screen_name=tweet.get('user', {}).get('screen_name'),
                   in_reply_to_status_id_str=tweet.get('in_reply_to_status_id_str'))
     if fields['id'] != ident:

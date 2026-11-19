@@ -943,3 +943,36 @@ def test_card_path_no_posted_url_is_uncertain_and_pages(posting):
     assert result.returncode == 5, result.stderr
     assert posting.page_log.exists()
     assert json.loads(posting.ledger_path.read_text().splitlines()[-1])['gate_attempt']['path'] == 'grok-post'
+
+
+def test_card_path_accepts_the_i_status_url_form(posting):
+    posting.options['draft_card'] = True
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        fake.card = card(posting)
+        fake.after_text = '[{"status": "sent", "posted_url": "https://x.com/i/status/9001"}]'
+        result = posting.run('--post')
+    assert result.returncode == 0, result.stderr
+
+
+def test_public_check_expands_tco_links_and_still_refuses_a_different_link(monkeypatch):
+    sys.path.insert(0, str(TOOLS))
+    sys.path.insert(0, str(TOOLS.parents[1] / 'harness'))
+    import _grok_post as gp
+    tweet = dict(id_str='7', text='More here: https://t.co/abc', user=dict(screen_name='fixture_account'),
+                 in_reply_to_status_id_str='12',
+                 entities=dict(urls=[dict(url='https://t.co/abc', expanded_url='https://example.org/repo')]))
+
+    class Reply:
+        status = 200
+        def __init__(self, url): self.url = url
+        def geturl(self): return self.url
+        def read(self, n): return json.dumps(tweet).encode()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(gp.urllib.request, 'urlopen', lambda url, timeout: Reply(url))
+    config = dict(syndication_url='https://cdn.syndication.twimg.com/tweet-result', post_account='fixture_account')
+    fields = gp.verify(config, '7', 'More here: https://example.org/repo', '12', time.monotonic() + 5)
+    assert fields['text'] == 'More here: https://example.org/repo'
+    with pytest.raises(ValueError):
+        gp.verify(config, '7', 'More here: https://example.org/other', '12', time.monotonic() + 5)
