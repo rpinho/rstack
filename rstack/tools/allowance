@@ -228,11 +228,11 @@ def running_jobs(backend, provider):
         if not name.startswith('job-') or name == current or dead == '1':
             continue
         if not selected:
-            match = re.search(r'\bLAUNCH_BACKEND=[\'\"]?(codex|claude)\b', command)
+            match = re.search(r'\bLAUNCH_BACKEND=[\'\"]?(codex|claude|agy)\b', command)
             selected = match.group(1) if match else ''
             match = re.search(r'\bLAUNCH_PROVIDER=[\'\"]?(openrouter|gemini)\b', command)
             route = match.group(1) if match else ''
-        if selected == 'claude' or route in ('openrouter', 'gemini'):
+        if selected in ('claude', 'agy') or route in ('openrouter', 'gemini'):
             continue
         jobs.add(name)
     return len(jobs)

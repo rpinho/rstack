@@ -18,6 +18,7 @@ from gemini_transport import bridge, chat_request, response_events
 
 def test_gemini_provider_argv_contains_only_environment_key_name(monkeypatch):
     monkeypatch.setenv('LAUNCH_PROVIDER', 'gemini')
+    monkeypatch.setenv('RH_ALLOW_GEMINI_API', '1')  # metered: in-flight work only, since 11-19
     monkeypatch.setenv('GEMINI_API_KEY', 'fixture-secret-never-in-argv')
     argv = command('codex', 'codex', 'google/gemini-4-carbon', 'low', '/w', '/o')
     assert 'model_provider="gemini"' in argv
@@ -158,7 +159,7 @@ def test_launcher_gemini_exploration_keeps_key_out_of_receipts(tmp_path, role):
     env = {k: v for k, v in os.environ.items() if not k.startswith(('LAUNCH_', 'AGENT_', 'RH_'))}
     env.update(HOME=str(home), AGENT_BACKEND='codex', LAUNCH_CODEX=str(fake),
         LAUNCH_ARTIFACT_DIR=str(jobs), LAUNCH_STATE=str(tmp_path / 'registry'),
-        RH_ROLES_FILE=str(roles), FORCE_LAUNCH='1')
+        RH_ROLES_FILE=str(roles), FORCE_LAUNCH='1', RH_ALLOW_GEMINI_API='1')
     proc = subprocess.run(['zsh', str(repo / 'tools/launch.sh'), 'fixture', str(tmp_path),
         '--role', role, '--made-by', 'openai/fixture', '--explore', model],
         env=env, capture_output=True, text=True, timeout=20)

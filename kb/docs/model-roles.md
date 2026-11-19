@@ -4,15 +4,17 @@
 
 Which model to use for which job, ranked from outcomes in our own agent harnesses, not from public benchmarks. Harnesses read this list instead of hard-coding model names, and their results feed back into it.
 
+Since 2026-11-19 every role routes to a subscription (claude -p, codex exec, or agy for Gemini). OpenRouter and the Gemini API are pay-as-you-go, so their models keep their history and prices below and are routed to no role.
+
 | Role | What it judges | Ranked models |
 |---|---|---|
 | taste | novelty, priority, whether the author would care, whether it is worth filing | anthropic/claude-opus-5.5, anthropic/claude-fable-5.1 |
 | review | adversarial review: finding the false step | anthropic/claude-opus-5.5, openai/gpt-6-astra, anthropic/claude-fable-5.1, openai/gpt-6.1-sol |
-| mechanical | rebuild, reproduce, run controls | openai/gpt-6.1-sol, deepseek/deepseek-v4.1-flash-1017 |
+| mechanical | rebuild, reproduce, run controls | openai/gpt-6.1-sol, anthropic/claude-sonnet-5.5 |
 | builder | long multi-step build work | anthropic/claude-opus-5.5, openai/gpt-6.1-sol |
-| cheap | bounded work behind deterministic tests | deepseek/deepseek-v4.1-flash-1017, z-ai/glm-5.3-flash |
-| biology | computational biology review, modeling and literature | moonshotai/kimi-k3.1-pro |
-| batch | unattended spec-driven jobs, judged on delivering the required report | openai/gpt-6.1-sol, deepseek/deepseek-v4.1-flash-1017 |
+| cheap | bounded work behind deterministic tests | openai/gpt-6-luna, anthropic/claude-haiku-5.5 |
+| biology | computational biology review, modeling and literature | anthropic/claude-opus-5.5, openai/gpt-6-astra |
+| batch | unattended spec-driven jobs, judged on delivering the required report | openai/gpt-6.1-sol, anthropic/claude-sonnet-5.5 |
 | writing | text sent in the owner's name, judged by whether he sent it as drafted | anthropic/claude-opus-5.5 |
 
 ## What each model is for
@@ -21,11 +23,11 @@ Which model to use for which job, ranked from outcomes in our own agent harnesse
 |---|---|---|
 | anthropic/claude-fable-5.1 | escalation, root-causing | taste, review |
 | anthropic/claude-opus-5.5 | daily driver, anything long | taste, review, builder, writing |
-| deepseek/deepseek-v4.1-flash-1017 | cheap tier behind tests | mechanical, cheap, batch |
-| moonshotai/kimi-k3.1-pro | biology advisor; targeted critique | biology |
+| deepseek/deepseek-v4.1-flash-1017 | history only (OpenRouter, pay-as-you-go) | - |
+| moonshotai/kimi-k3.1-pro | history only (OpenRouter, pay-as-you-go) | - |
 | openai/gpt-6-astra | hard reviews | review |
 | openai/gpt-6.1-sol | Codex side, debugging you can check | review, mechanical, builder, batch |
-| z-ai/glm-5.3-flash | cheap tier behind tests | cheap |
+| z-ai/glm-5.3-flash | history only (OpenRouter, pay-as-you-go) | - |
 | anthropic/claude-haiku-5.5 | untested cheap candidate | - |
 | anthropic/claude-opus-4.6 | fallback on the Claude side | - |
 | anthropic/claude-sonnet-5.5 | sub-agents and read-heavy work | - |

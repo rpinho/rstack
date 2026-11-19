@@ -17,6 +17,7 @@ from shell_commands import shell_commands, command_argv
 import sys
 import uuid
 from bug_verdicts import maker
+from agent_executor import metered_refusal
 
 ROLES_FILE = settings.path('RH_ROLES_FILE', Path('.runtime/roles.json'))
 JUDGMENT = frozenset(('review', 'judge', 'audit', 'taste', 'design', 'ideation'))
@@ -161,8 +162,13 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     route = data['routes'].get(chosen)
     if isinstance(route, dict) and (role in JUDGMENT or (not model and route.get('cli') in ('openrouter', 'gemini'))):
         executor = route.get('cli')
-        if executor not in ('codex', 'claude', 'openrouter', 'gemini'):
+        if executor not in ('codex', 'claude', 'agy', 'openrouter', 'gemini'):
             raise ValueError('role {} selected {}; unsupported executor route'.format(role, chosen))
+    # 11-19: refused here, before any receipt, as well as in the executor. Not a fallback: the
+    # leaderboard names a subscription route, or this job does not run.
+    why = metered_refusal(executor)
+    if why:
+        raise ValueError('role {} selected {}: {}'.format(role, chosen, why))
     if not isinstance(route, dict) or not route.get('canonical') or route.get('cli') != executor:
         raise ValueError('role {} selected {}; no compatible {} route (no silent fallback)'.format(role, chosen, executor))
     if chosen in excluded or route['canonical'] in excluded:
@@ -197,9 +203,9 @@ def log_record(path, event, record):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--role', default='batch')
-    # openrouter: a model routed through OpenRouter (run by codex with LAUNCH_PROVIDER=openrouter), e.g. a
-    # third-family referee when the GPT referees fail their plants (11-09: 3 of 12 caught).
-    parser.add_argument('--executor', choices=('codex','claude','openrouter','gemini'), default='codex')
+    # agy: Gemini on the Antigravity subscription (`agy -p`). openrouter and gemini are metered API routes,
+    # refused since 11-19 unless RH_ALLOW_OPENROUTER=1 / RH_ALLOW_GEMINI_API=1 (work already in flight).
+    parser.add_argument('--executor', choices=('codex','claude','agy','openrouter','gemini'), default='codex')
     parser.add_argument('--model', default='')
     parser.add_argument('--explore', default='', help='select a candidate from this role pool without an override')
     parser.add_argument('--model-override', default='')

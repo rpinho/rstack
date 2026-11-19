@@ -27,6 +27,24 @@ def _kill_tree(proc):
 
 DEFAULT_TOOLS = 'Read,Write,Edit'
 
+# 11-19 Ricardo: "No pay-as-you-go. Do NOT top up OpenRouter. Route Theorizer, referee and
+# model-scoring calls to the subscriptions." claude -p, codex exec and agy need no override; a
+# metered API route runs only when the caller sets its flag, which exists to let work already in
+# flight finish. There is no automatic failover from one to the other.
+METERED = {'openrouter': 'RH_ALLOW_OPENROUTER', 'gemini': 'RH_ALLOW_GEMINI_API'}
+AGY_EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
+AGY_SIGN_IN = "agy needs Ricardo's one-time interactive sign-in (run `agy` with no arguments, in a terminal)"
+
+
+def metered_refusal(provider, env=None):
+    """None when the route may run; else why not. Subscriptions are never metered here."""
+    env = os.environ if env is None else env
+    flag = METERED.get(provider)
+    if not flag or env.get(flag) == '1':
+        return None
+    return ('{} is pay-as-you-go and refused (Ricardo 11-19: subscriptions only, i.e. claude, codex or agy). '
+            'Set {}=1 only to finish work already in flight.'.format(provider, flag))
+
 
 CODEX_SANDBOXES = ('read-only', 'workspace-write', 'danger-full-access')
 
@@ -50,7 +68,15 @@ def codex_sandbox(mode=None):
 
 
 def command(backend, executable, model, effort, directory, output, budget='1.00',
-            tools=DEFAULT_TOOLS, sandbox=None):
+            tools=DEFAULT_TOOLS, sandbox=None, prompt=None):
+    if backend == 'agy':
+        # Gemini on the Antigravity subscription. The prompt is an argument: `agy -p PROMPT`.
+        if prompt is None:
+            raise ValueError('agy needs the prompt')
+        return [executable, '-p', prompt, '--output-format', 'json',
+                *(['--model', model] if model and model != 'default' else []),
+                *(['--effort', effort] if effort in AGY_EFFORTS else []),
+                '--mode', 'accept-edits', '--disable-slash-commands']
     if backend == 'codex':
         mode = codex_sandbox(sandbox)
         # `bypass` is the single flag that turns off approvals AND the sandbox together; the other
@@ -65,6 +91,9 @@ def command(backend, executable, model, effort, directory, output, budget='1.00'
         provider = os.environ.get('LAUNCH_PROVIDER', '')
         if provider not in ('', 'openrouter', 'gemini'):
             raise ValueError('unsupported LAUNCH_PROVIDER')
+        why = metered_refusal(provider)
+        if why:
+            raise ValueError(why)
         provider_args = (['-c', 'model_provider="openrouter"',
                          '-c', 'model_providers.openrouter.name="OpenRouter"',
                          '-c', 'model_providers.openrouter.base_url="https://openrouter.ai/api/v1"',
@@ -97,7 +126,7 @@ def command(backend, executable, model, effort, directory, output, budget='1.00'
                 '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
                 '--setting-sources', '', '--disable-slash-commands',
                 '--no-session-persistence']
-    raise ValueError('AGENT_BACKEND must be codex or claude')
+    raise ValueError('AGENT_BACKEND must be codex, claude or agy')
 
 
 def shim_first(home=None, which=None):
@@ -115,9 +144,66 @@ def shim_first(home=None, which=None):
             'sound. Put ~/.local/bin first on PATH.'.format(found, shim))
 
 
+def run_agy(cmd, directory, output, timeout_seconds=0):
+    """Run agy print mode; its JSON result goes to `output`.
+
+    Signed out, agy prints an OAuth URL and waits 60 s for a pasted code. Nobody answers a headless
+    job, and signing in is Ricardo's, so the first "Authentication required" line ends the run.
+    """
+    signed_out, expired = threading.Event(), threading.Event()
+    proc = subprocess.Popen(cmd, cwd=directory, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, start_new_session=True,
+                            env=dict(os.environ, RSTACK_UNATTENDED='1'))
+
+    def watch_stderr():
+        for line in iter(proc.stderr.readline, b''):
+            if b'authentication required' in line.lower():
+                signed_out.set()
+                _kill_tree(proc)
+                return
+            sys.stderr.buffer.write(line)
+            sys.stderr.buffer.flush()
+
+    watcher = threading.Thread(target=watch_stderr, daemon=True)
+    watcher.start()
+    timer = None
+    if timeout_seconds > 0:
+        def stop():
+            expired.set()
+            _kill_tree(proc)
+        timer = threading.Timer(timeout_seconds, stop)
+        timer.daemon = True
+        timer.start()
+    try:
+        data = proc.stdout.read()
+        code = proc.wait()
+    finally:
+        if timer:
+            timer.cancel()
+    watcher.join(timeout=5)
+    Path(output).write_bytes(data)
+    sys.stdout.buffer.write(data)
+    sys.stdout.buffer.flush()
+    try:
+        result = json.loads(data.decode() or 'null')
+    except ValueError:
+        result = None
+    error = str(result.get('error') or '') if isinstance(result, dict) else ''
+    if signed_out.is_set() or 'authentication' in error.lower():
+        print('agent_executor: ' + AGY_SIGN_IN, file=sys.stderr)
+        return 77
+    if expired.is_set():
+        print('wall-clock cap of {:g}s reached; stopped'.format(timeout_seconds), file=sys.stderr)
+        return 124
+    if code == 0 and (not isinstance(result, dict) or result.get('status') == 'ERROR' or error):
+        print('agy returned an error result' + (': ' + error if error else ''), file=sys.stderr)
+        return 1
+    return code
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--backend', choices=('codex', 'claude'), required=True)
+    p.add_argument('--backend', choices=('codex', 'claude', 'agy'), required=True)
     p.add_argument('--executable', required=True)
     p.add_argument('--model', required=True)
     p.add_argument('--effort', required=True)
@@ -135,8 +221,14 @@ def main(argv=None):
     if why:
         print('agent_executor refused: ' + why, file=sys.stderr)
         return 78
-    cmd = command(a.backend, a.executable, a.model, a.effort, a.directory, a.output, a.budget,
-                  a.allowed_tools)
+    try:
+        cmd = command(a.backend, a.executable, a.model, a.effort, a.directory, a.output, a.budget,
+                      a.allowed_tools, prompt=sys.stdin.read() if a.backend == 'agy' else None)
+    except ValueError as exc:
+        print('agent_executor refused: ' + str(exc), file=sys.stderr)
+        return 78
+    if a.backend == 'agy':
+        return run_agy(cmd, a.directory, a.output, a.timeout_seconds)
     if a.backend == 'codex':
         if os.environ.get('LAUNCH_PROVIDER') == 'gemini':
             from gemini_transport import bridge

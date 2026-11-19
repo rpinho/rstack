@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""subs-llm-shim: a local OpenAI-compatible endpoint that answers through a subscription CLI.
+
+Ricardo, 11-19: "No pay-as-you-go. Do NOT top up OpenRouter. Route Theorizer, referee and
+model-scoring calls to the subscriptions." Theorizer (asta-theorizer) and anything else built on
+litellm or the OpenAI client can point at this instead of an API: each chat completion becomes one
+`claude -p`, `codex exec` or `agy -p` call, so it spends the subscription and never a metered key.
+
+  subs-llm-shim --port 8765 &
+  LITELLM_BASE_URL=http://127.0.0.1:8765/v1 LITELLM_USER_KEY=local python run_theorizer.py ...
+  # with model names like claude-sonnet-5-5, gpt-6.2-sol or gemini-... (no provider prefix)
+
+The backend comes from the model name: claude-* -> claude, gpt-*/o* -> codex, gemini-* -> agy;
+--backend sets it for every other name. Text only: no tools, no streaming, no images. A request for
+response_format json_object gets a "JSON only" instruction and its reply has code fences stripped.
+Listens on 127.0.0.1 only. There is no fallback between backends: a failed call is an HTTP error.
+"""
+import argparse
+import http.server
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import uuid
+
+AGY_SIGN_IN = "agy needs Ricardo's one-time interactive sign-in (run `agy` with no arguments, in a terminal)"
+JSON_ONLY = ('\n\nReply with exactly one JSON object and nothing else: no prose before or after it, '
+             'no code fences.')
+
+
+class CallError(Exception):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+
+
+def backend_for(model, default):
+    name = (model or '').split('/')[-1].lower()
+    if name.startswith('claude-') or name in ('opus', 'sonnet', 'haiku', 'fable'):
+        return 'claude'
+    if name.startswith(('gpt-', 'o1', 'o3', 'o4', 'codex')):
+        return 'codex'
+    if name.startswith('gemini'):
+        return 'agy'
+    return default
+
+
+def flatten(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get('type') == 'text':
+                parts.append(part.get('text', ''))
+            elif isinstance(part, dict):
+                raise CallError(400, 'only text content is supported, not ' + str(part.get('type')))
+        return ''.join(parts)
+    return '' if content is None else str(content)
+
+
+def to_prompt(messages, want_json):
+    """One transcript the CLI reads as a single prompt. A lone user turn is passed through as is."""
+    if not isinstance(messages, list) or not messages:
+        raise CallError(400, 'messages must be a non-empty list')
+    turns = [(m.get('role', 'user'), flatten(m.get('content'))) for m in messages]
+    if len(turns) == 1 and turns[0][0] == 'user':
+        prompt = turns[0][1]
+    else:
+        prompt = '\n\n'.join('[{}]\n{}'.format(role.upper(), text) for role, text in turns)
+        prompt += '\n\n[ASSISTANT]\n'
+    return prompt + (JSON_ONLY if want_json else '')
+
+
+def strip_fences(text):
+    m = re.fullmatch(r'\s*```[A-Za-z]*\s*\n(.*?)\n?```\s*', text, re.S)
+    return m.group(1) if m else text.strip()
+
+
+def run(cmd, prompt, timeout, cwd, stdin=True):
+    try:
+        proc = subprocess.run(cmd, input=prompt.encode() if stdin else None,
+                              stdin=None if stdin else subprocess.DEVNULL,
+                              capture_output=True, timeout=timeout, cwd=cwd,
+                              env=dict(os.environ, RSTACK_UNATTENDED='1'))
+    except subprocess.TimeoutExpired:
+        raise CallError(504, '{} timed out after {}s'.format(Path(cmd[0]).name, timeout))
+    except OSError as exc:
+        raise CallError(502, 'cannot run {}: {}'.format(cmd[0], exc))
+    return proc
+
+
+def call(backend, model, prompt, args):
+    """(text, prompt_tokens, completion_tokens) from one subscription CLI call."""
+    with tempfile.TemporaryDirectory(prefix='subs-llm-') as work:
+        if backend == 'claude':
+            cmd = [args.claude, '-p', '--output-format', 'json', '--tools', '',
+                   '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '',
+                   '--disable-slash-commands', '--no-session-persistence',
+                   *(['--model', model] if model else [])]
+            proc = run(cmd, prompt, args.timeout, work)
+            try:
+                result = json.loads(proc.stdout.decode())
+            except ValueError:
+                raise CallError(502, 'claude returned no JSON: ' + proc.stderr.decode()[-300:])
+            if proc.returncode or result.get('is_error'):
+                raise CallError(502, 'claude failed: ' + str(result.get('result') or result.get('subtype'))[:300])
+            usage = result.get('usage') or {}
+            prompt_tokens = sum(int(usage.get(k) or 0) for k in
+                                ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'))
+            return str(result.get('result') or ''), prompt_tokens, int(usage.get('output_tokens') or 0)
+        if backend == 'codex':
+            out = Path(work) / 'last.md'
+            cmd = [args.codex, 'exec', '--ignore-user-config', '--skip-git-repo-check', '--sandbox', 'read-only',
+                   '--cd', work, *(['-m', model] if model else []), '-o', str(out), '-']
+            proc = run(cmd, prompt, args.timeout, work)
+            if proc.returncode or not out.exists():
+                raise CallError(502, 'codex failed (exit {}): {}'.format(proc.returncode, proc.stderr.decode()[-300:]))
+            return out.read_text(), 0, 0
+        if backend == 'agy':
+            cmd = [args.agy, '-p', prompt, '--output-format', 'json', '--disable-slash-commands',
+                   *(['--model', model] if model else [])]
+            # Signed out, agy waits 60 s for a pasted code; the time limit here keeps that short.
+            proc = run(cmd, prompt, args.timeout, work, stdin=False)
+            err = proc.stderr.decode()
+            try:
+                result = json.loads(proc.stdout.decode() or 'null')
+            except ValueError:
+                result = None
+            error = str(result.get('error') or '') if isinstance(result, dict) else ''
+            if 'authentication required' in err.lower() or 'authentication' in error.lower():
+                raise CallError(503, AGY_SIGN_IN)
+            if proc.returncode or not isinstance(result, dict) or result.get('status') == 'ERROR' or error:
+                raise CallError(502, 'agy failed: ' + (error or err[-300:]))
+            usage = result.get('usage') or {}
+            return (str(result.get('response') or ''), int(usage.get('input_tokens') or 0),
+                    int(usage.get('output_tokens') or 0))
+    raise CallError(400, 'unknown backend ' + str(backend))
+
+
+def completion(body, args):
+    model = str(body.get('model') or '')
+    backend = backend_for(model, args.backend)
+    native = model.split('/', 1)[1] if model.startswith('openai/') else model
+    if native in ('', 'default'):
+        native = ''
+    fmt = body.get('response_format') or {}
+    want_json = isinstance(fmt, dict) and fmt.get('type') in ('json_object', 'json_schema')
+    prompt = to_prompt(body.get('messages'), want_json)
+    if body.get('stream'):
+        raise CallError(400, 'streaming is not supported')
+    text, prompt_tokens, completion_tokens = call(backend, native, prompt, args)
+    if want_json:
+        text = strip_fences(text)
+    return {'id': 'chatcmpl-' + uuid.uuid4().hex, 'object': 'chat.completion', 'created': int(time.time()),
+            'model': model, 'system_fingerprint': 'subs-llm-shim:' + backend,
+            'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': text},
+                         'finish_reason': 'stop'}],
+            'usage': {'prompt_tokens': prompt_tokens, 'completion_tokens': completion_tokens,
+                      'total_tokens': prompt_tokens + completion_tokens}}
+
+
+def make_handler(args):
+    gate = threading.BoundedSemaphore(args.max_concurrent)
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def send(self, status, payload):
+            data = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            if self.path.rstrip('/').endswith('/models'):
+                return self.send(200, {'object': 'list', 'data': []})
+            self.send(404, {'error': {'message': 'not found'}})
+
+        def do_POST(self):
+            if not self.path.rstrip('/').endswith('/chat/completions'):
+                return self.send(404, {'error': {'message': 'only /v1/chat/completions is served'}})
+            if args.key and self.headers.get('Authorization', '') != 'Bearer ' + args.key:
+                return self.send(401, {'error': {'message': 'bad key'}})
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
+                with gate:
+                    return self.send(200, completion(body, args))
+            except CallError as exc:
+                self.send(exc.status, {'error': {'message': str(exc), 'type': 'subs_llm_shim'}})
+            except ValueError as exc:
+                self.send(400, {'error': {'message': 'bad request: ' + str(exc)}})
+
+        def log_message(self, fmt, *a):
+            if args.verbose:
+                sys.stderr.write('subs-llm-shim: ' + fmt % a + '\n')
+
+    return Handler
+
+
+def parser():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--port', type=int, default=8765, help='0 picks a free port (printed on start)')
+    p.add_argument('--backend', choices=('claude', 'codex', 'agy'), default='claude',
+                   help='backend for model names that do not name one')
+    p.add_argument('--key', default=os.environ.get('SUBS_SHIM_KEY', ''),
+                   help='require this bearer key; empty accepts any (it listens on 127.0.0.1 only)')
+    p.add_argument('--timeout', type=float, default=900, help='seconds per call')
+    p.add_argument('--max-concurrent', type=int, default=3)
+    p.add_argument('--claude', default=os.environ.get('SUBS_SHIM_CLAUDE', 'claude'))
+    p.add_argument('--codex', default=os.environ.get('SUBS_SHIM_CODEX', 'codex'))
+    p.add_argument('--agy', default=os.environ.get('SUBS_SHIM_AGY', 'agy'))
+    p.add_argument('--verbose', action='store_true')
+    return p
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(args))
+    print('subs-llm-shim: http://127.0.0.1:{}/v1 (default backend {})'.format(server.server_port, args.backend),
+          flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -196,7 +196,8 @@ def test_a_lane_with_no_host_sends_an_empty_one(tmp_path):
     assert popen.call_args.kwargs['env']['LAUNCH_HOST']==''
 
 
-def test_an_openrouter_model_is_selected_only_on_its_own_route(tmp_path):
+def test_an_openrouter_model_is_selected_only_on_its_own_route(tmp_path, monkeypatch):
+    monkeypatch.setenv('RH_ALLOW_OPENROUTER', '1')  # in-flight work only, since 11-19
     p=roles(tmp_path/'roles.json')
     data=json.loads(p.read_text())
     data['routes']['vendor/fixture-third']={'cli':'openrouter','canonical':'vendor/fixture-third'}
@@ -214,7 +215,8 @@ def test_an_openrouter_model_is_selected_only_on_its_own_route(tmp_path):
 
 
 @pytest.mark.parametrize('role', ['batch', 'mechanical', 'review', 'judge', 'ideation', 'design'])
-def test_openrouter_candidate_selection_and_exploration(tmp_path, role):
+def test_openrouter_candidate_selection_and_exploration(tmp_path, role, monkeypatch):
+    monkeypatch.setenv('RH_ALLOW_OPENROUTER', '1')  # in-flight work only, since 11-19
     p = roles(tmp_path / 'roles.json')
     data = json.loads(p.read_text())
     carbon, hydrogen = 'google/gemini-4-carbon', 'google/gemini-4-hydrogen'
@@ -244,6 +246,7 @@ def test_openrouter_candidate_selection_and_exploration(tmp_path, role):
 @pytest.mark.parametrize('explore', [False, True])
 def test_launcher_runs_openrouter_through_codex_with_private_auth(fake_home, explore):
     home, artifacts, _, env = fake_home
+    env['RH_ALLOW_OPENROUTER'] = '1'  # in-flight work only, since 11-19
     p = Path(env['RH_ROLES_FILE'])
     data = json.loads(p.read_text())
     model = 'google/gemini-4-hydrogen'
@@ -268,6 +271,31 @@ def test_launcher_runs_openrouter_through_codex_with_private_auth(fake_home, exp
     assert receipt['executor'] == 'openrouter'
     assert receipt['source'] == ('explore' if explore else 'leaderboard')
     assert 'synthetic-secret-never-log' not in (artifacts / 'fixture-job.log').read_text()
+
+
+@pytest.mark.parametrize('role', ['batch', 'review', 'mechanical'])
+def test_an_openrouter_route_is_refused_without_the_in_flight_override(tmp_path, role, monkeypatch):
+    # 11-19 Ricardo: "No pay-as-you-go. Do NOT top up OpenRouter." Refused, not swapped for another model.
+    monkeypatch.delenv('RH_ALLOW_OPENROUTER', raising=False)
+    p = roles(tmp_path / 'roles.json')
+    data = json.loads(p.read_text())
+    data['roles'][role] = ['vendor/fixture-third', 'fixture-fast']
+    data['routes']['vendor/fixture-third'] = dict(cli='openrouter', canonical='vendor/fixture-third')
+    p.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match='pay-as-you-go.*RH_ALLOW_OPENROUTER=1'):
+        wm.select(role, 'codex', path=p, made_by='claude-fixture')
+    monkeypatch.setenv('RH_ALLOW_OPENROUTER', '1')
+    assert wm.select(role, 'codex', path=p, made_by='claude-fixture')['executor'] == 'openrouter'
+
+
+def test_an_agy_route_is_selected_for_gemini_on_its_own_executor(tmp_path):
+    p = roles(tmp_path / 'roles.json')
+    data = json.loads(p.read_text())
+    data['roles']['review'] = ['gemini-fixture']
+    data['routes']['gemini-fixture'] = dict(cli='agy', canonical='google/gemini-fixture')
+    p.write_text(json.dumps(data))
+    got = wm.select('review', 'codex', path=p, made_by='claude-fixture')
+    assert (got['model'], got['executor']) == ('gemini-fixture', 'agy')
 
 
 def judgment_roles(path):

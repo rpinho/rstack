@@ -1,5 +1,6 @@
 {
- "updated": "2026-11-02",
+ "updated": "2026-11-19",
+ "routing": "Subscriptions only since 2026-11-19 (claude -p, codex exec, agy for Gemini). OpenRouter and the Gemini API are pay-as-you-go: their models keep their history and prices here and are routed to no role.",
  "rule": "min 5 outcomes over 2 days; pass only when Wilson low > rate above (seed rate 0.75); exclusion lift needs 20+",
  "scope": {
   "biology": "Computational analysis, modeling and literature only. No wet-lab protocols, and nothing that modifies, enhances or cultures an organism."
@@ -10,7 +11,7 @@
     "review",
     "taste"
    ],
-   "enters": "the day it is on OpenRouter or the Gemini API",
+   "enters": "the day agy (Antigravity, Gemini subscription) lists it after sign-in",
    "status": "announced 2026-10-28, cyber-defender access only, reported $2/$10; absent from Google's pricing page and from the OpenRouter catalog when both were checked on 2026-11-02"
   },
   "deep-principle/hydrogen-1.0": {
@@ -18,7 +19,7 @@
     "biology",
     "review"
    ],
-   "enters": "the day it has a hosted route, or runs on one of our own pods",
+   "enters": "the day it runs on one of our own pods (no metered hosted route)",
    "status": "open weights (MIT) on Hugging Face as deep-principle/Hydrogen-1.0, GLM-5.3 post-trained on lab records and discovery trajectories; 753B parameters in BF16, with MXFP4 and NVFP4 quantizations, so self-hosting means roughly 380 GB of VRAM in 4-bit (estimate) and a multi-GPU pod. No OpenRouter route and no hosted price when checked 2026-11-02. Its 38.3% FrontierScience-Research against Astra's 33.3% and 93.0% GPQA-Diamond are VENDOR-REPORTED and count for nothing here until our own matched tasks run"
   }
  },
@@ -127,22 +128,23 @@
   ],
   "mechanical": [
    "openai/gpt-6.1-sol",
-   "deepseek/deepseek-v4.1-flash-1017"
+   "anthropic/claude-sonnet-5.5"
   ],
   "builder": [
    "anthropic/claude-opus-5.5",
    "openai/gpt-6.1-sol"
   ],
   "cheap": [
-   "deepseek/deepseek-v4.1-flash-1017",
-   "z-ai/glm-5.3-flash"
+   "openai/gpt-6-luna",
+   "anthropic/claude-haiku-5.5"
   ],
   "biology": [
-   "moonshotai/kimi-k3.1-pro"
+   "anthropic/claude-opus-5.5",
+   "openai/gpt-6-astra"
   ],
   "batch": [
    "openai/gpt-6.1-sol",
-   "deepseek/deepseek-v4.1-flash-1017"
+   "anthropic/claude-sonnet-5.5"
   ],
   "writing": [
    "anthropic/claude-opus-5.5"

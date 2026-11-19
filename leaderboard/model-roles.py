@@ -74,18 +74,20 @@ ALIASES = [('opus[- ]?5[.-]5', 'anthropic/claude-opus-5.5'),
  ('carbon', 'google/gemini-4-carbon'),
  ('hydrogen', 'google/gemini-4-hydrogen')]
 
+# 11-19 Ricardo: "No pay-as-you-go. Do NOT top up OpenRouter." Every seed is a subscription route
+# (claude -p, codex exec, agy); the OpenRouter seeds (DeepSeek, GLM, Kimi) are history-only below.
 SEED = {'taste': ['anthropic/claude-opus-5.5', 'anthropic/claude-fable-5.2'],
  'review': ['anthropic/claude-opus-5.5',
             'openai/gpt-6.2-astra',
             'anthropic/claude-fable-5.2',
             'openai/gpt-6.2-sol'],
- 'mechanical': ['openai/gpt-6.2-sol', 'deepseek/deepseek-v4.1-flash-1017'],
+ 'mechanical': ['openai/gpt-6.2-sol', 'anthropic/claude-sonnet-5.5'],
  'builder': ['anthropic/claude-opus-5.5', 'openai/gpt-6.2-sol'],
- 'cheap': ['deepseek/deepseek-v4.1-flash-1017', 'z-ai/glm-5.3-flash'],
- 'biology': ['moonshotai/kimi-k3.1-pro'],
- 'batch': ['openai/gpt-6.2-sol', 'deepseek/deepseek-v4.1-flash-1017'],
+ 'cheap': ['openai/gpt-6-luna', 'anthropic/claude-haiku-5.5'],
+ 'biology': ['anthropic/claude-opus-5.5', 'openai/gpt-6.2-astra'],
+ 'batch': ['openai/gpt-6.2-sol', 'anthropic/claude-sonnet-5.5'],
  'writing': ['anthropic/claude-opus-5.5'],
- 'ideation': ['anthropic/claude-opus-5.5', 'openai/gpt-6.2-astra', 'moonshotai/kimi-k3.1-pro']}
+ 'ideation': ['anthropic/claude-opus-5.5', 'openai/gpt-6.2-astra']}
 
 FIELD_ROLE = {'scientific-verification': 'mechanical',
  'independent-review': 'review',
@@ -342,11 +344,16 @@ def spread_labs(order, min_labs):
     return out + rest
 
 
+# Executors that run on a subscription. 11-19: only these are served; OpenRouter and the Gemini API
+# are pay-as-you-go, so their models stay readable for history and are never routed.
+SUBSCRIPTION = ('claude', 'codex', 'agy')
+
+
 def served_model(model):
-    """Google is history-only, including newly observed model versions."""
+    """Only subscription routes are served; metered ones (OpenRouter, Gemini API) are history-only,
+    including newly observed model versions."""
     canonical = canon(model)
-    return bool(canonical and not canonical.startswith('google/')
-                and MODELS[canonical][0] != 'gemini')
+    return bool(canonical and MODELS[canonical][0] in SUBSCRIPTION)
 
 
 def fallback_tail(order):

@@ -239,3 +239,62 @@ def test_launch_timeout_reaches_the_executor(tmp_path):
     proc = subprocess.run(['zsh', str(repo / 'tools/launch.sh'), 'fixture', str(tmp_path)],
                           env=env, capture_output=True, text=True, timeout=120)
     assert proc.returncode == 124, proc.stderr
+
+
+@pytest.mark.parametrize('provider,flag', [('openrouter', 'RH_ALLOW_OPENROUTER'), ('gemini', 'RH_ALLOW_GEMINI_API')])
+def test_a_metered_route_is_refused_unless_its_in_flight_override_is_set(tmp_path, monkeypatch, provider, flag):
+    # 11-19 Ricardo: "No pay-as-you-go. Do NOT top up OpenRouter."
+    import os
+    monkeypatch.setenv('LAUNCH_PROVIDER', provider)
+    monkeypatch.delenv(flag, raising=False)
+    with pytest.raises(ValueError, match='pay-as-you-go.*' + flag + '=1'):
+        command('codex', 'codex', 'vendor/model', 'low', '/w', '/o')
+    repo = Path(__file__).resolve().parents[1]
+    fake = tmp_path / 'fake-codex'
+    fake.write_text('#!' + sys.executable + '\nraise SystemExit("must not run")\n')
+    fake.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k != flag}
+    proc = subprocess.run([sys.executable, str(repo/'harness/agent_executor.py'), '--backend', 'codex',
+        '--executable', str(fake), '--model', 'vendor/model', '--effort', 'low',
+        '--directory', str(tmp_path), '--output', str(tmp_path/'last')],
+        input='', env=dict(env, LAUNCH_PROVIDER=provider), capture_output=True, text=True, timeout=10)
+    assert proc.returncode == 78 and 'pay-as-you-go' in proc.stderr and 'must not run' not in proc.stderr
+    monkeypatch.setenv(flag, '1')
+    assert 'model_provider="{}"'.format(provider) in command('codex', 'codex', 'm', 'low', '/w', '/o')
+
+
+def test_agy_command_is_print_mode_with_the_prompt_as_its_argument():
+    cmd = command('agy', 'agy', 'gemini-fixture', 'high', '/w', '/o', prompt='Referee this.')
+    assert cmd[:5] == ['agy', '-p', 'Referee this.', '--output-format', 'json']
+    assert cmd[cmd.index('--model') + 1] == 'gemini-fixture' and cmd[cmd.index('--effort') + 1] == 'high'
+    assert '--model' not in command('agy', 'agy', 'default', 'none', '/w', '/o', prompt='x')
+
+
+def agy_run(tmp_path, body, timeout='0'):
+    import os
+    repo = Path(__file__).resolve().parents[1]
+    fake = tmp_path / 'fake-agy'
+    fake.write_text('#!' + sys.executable + '\n' + body)
+    fake.chmod(0o755)
+    return subprocess.run([sys.executable, str(repo/'harness/agent_executor.py'), '--backend', 'agy',
+        '--executable', str(fake), '--model', 'gemini-fixture', '--effort', 'low',
+        '--directory', str(tmp_path), '--output', str(tmp_path/'last'), '--timeout-seconds', timeout],
+        input='the prompt', env=dict(os.environ, HOME=str(tmp_path)), capture_output=True, text=True, timeout=20)
+
+
+def test_a_signed_out_agy_stops_at_once_and_names_ricardos_sign_in(tmp_path):
+    # The real CLI prints an OAuth URL and then waits 60 s for a code nobody will paste.
+    proc = agy_run(tmp_path, 'import sys, time\n'
+                   'sys.stderr.write("Authentication required. Please visit the URL to log in:\\n")\n'
+                   'sys.stderr.flush()\ntime.sleep(60)\n')
+    assert proc.returncode == 77
+    assert "agy needs Ricardo's one-time interactive sign-in" in proc.stderr
+
+
+def test_an_agy_result_is_saved_and_an_error_result_fails(tmp_path):
+    ok = agy_run(tmp_path, 'import json, sys\nassert sys.argv[2] == "the prompt"\n'
+                 'print(json.dumps({"status": "SUCCESS", "response": "fine", "error": ""}))\n')
+    assert ok.returncode == 0, ok.stderr
+    assert json.loads((tmp_path/'last').read_text())['response'] == 'fine'
+    bad = agy_run(tmp_path, 'print(\'{"status":"ERROR","response":"","error":"quota"}\')\n')
+    assert bad.returncode == 1 and 'quota' in bad.stderr

@@ -39,7 +39,7 @@ if [[ -n $AGENT_BACKEND && -n $LAUNCH_BACKEND && $AGENT_BACKEND != $LAUNCH_BACKE
   print -u2 -- "launch.sh: AGENT_BACKEND=$AGENT_BACKEND and LAUNCH_BACKEND=$LAUNCH_BACKEND disagree"; exit 2
 fi
 backend=${AGENT_BACKEND:-${LAUNCH_BACKEND:-codex}}
-[[ $backend == (codex|claude) ]] || { print -u2 -- 'AGENT_BACKEND must be codex or claude'; exit 2; }
+[[ $backend == (codex|claude|agy) ]] || { print -u2 -- 'AGENT_BACKEND must be codex, claude or agy'; exit 2; }
 # A Claude job is bounded by spend (LAUNCH_CLAUDE_BUDGET) and by the clock: that CLI has no
 # --max-turns. LAUNCH_TIMEOUT_SECONDS is the clock (default 90 minutes; 0 means none) and
 # LAUNCH_CLAUDE_TOOLS widens the executor's read/write/edit default for a job that runs its own code.
@@ -216,6 +216,7 @@ for (( i = start; i <= 5; i++ )); do
     codex) cx=${LAUNCH_CODEX:-codex};;
     openrouter|gemini) export LAUNCH_PROVIDER=$backend; backend=codex; cx=${LAUNCH_CODEX:-codex};;
     claude) cx=${LAUNCH_CLAUDE:-claude};;
+    agy) cx=${LAUNCH_AGY:-agy};;
     *) print -u2 -- "launch.sh refused $job: unsupported executor route $backend"; exit 2;;
   esac
   # Allowance/call limits belong to the Codex wrapper. Only tmux concurrency is local here.
@@ -318,6 +319,8 @@ for (( i = start; i <= 5; i++ )); do
     remote="cd ${(q)dir} 2>/dev/null || { echo ${(q)missing} >&2; exit 2; }
 export PATH=\$HOME/.local/bin:/opt/homebrew/bin:\$PATH
 ${LAUNCH_PROVIDER:+export LAUNCH_PROVIDER=${(q)LAUNCH_PROVIDER}}
+${RH_ALLOW_OPENROUTER:+export RH_ALLOW_OPENROUTER=${(q)RH_ALLOW_OPENROUTER}}
+${RH_ALLOW_GEMINI_API:+export RH_ALLOW_GEMINI_API=${(q)RH_ALLOW_GEMINI_API}}
 ${LAUNCH_CODEX_SANDBOX:+export LAUNCH_CODEX_SANDBOX=${(q)LAUNCH_CODEX_SANDBOX}}
 ${LAUNCH_CODEX_NETWORK:+export LAUNCH_CODEX_NETWORK=${(q)LAUNCH_CODEX_NETWORK}}
 export RSTACK_LANE=${(q)lane} LAUNCH_URGENT=${(q)LAUNCH_URGENT}
