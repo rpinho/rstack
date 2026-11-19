@@ -18,10 +18,11 @@ import uuid
 BLOCK = 86
 ENV = {'owner_id': 'XURL_OWNER_ID', 'ledger_path': 'XURL_LEDGER',
        'real_binary': 'XURL_REAL_BINARY', 'sync_command': 'XURL_SYNC_COMMAND',
-       'auth_file': 'XURL_AUTH_FILE', 'sync_lock': 'XURL_SYNC_LOCK'}
+       'auth_file': 'XURL_AUTH_FILE', 'sync_lock': 'XURL_SYNC_LOCK', 'engage_id': 'XURL_ENGAGE_ID'}
 LOCAL = ('auth', 'version', '--help', '-h', 'help')
-REASON = ('X API is bookmarks-only. Find posts with Grok Bot; read exact text, like, follow and '
-          'reply in the browser. One-off override: XURL_ALLOW_REASON=<why>')
+REASON = ('X API is bookmarks, own posts, and likes/follows as the posting account only. Find posts with '
+          'Grok Bot; post and reply through grok-post; like and follow through x-route. One-off override: '
+          'XURL_ALLOW_REASON=<why>')
 
 
 
@@ -69,6 +70,8 @@ def load_config():
         error = error or 'missing config: owner_id, ledger_path and real_binary are required'
     elif not cfg['owner_id'].isdigit():
         error = error or 'owner_id must be numeric'
+    elif cfg.get('engage_id') not in (None, '') and not str(cfg['engage_id']).isdigit():
+        error = error or 'engage_id must be numeric'
     sync = cfg.get('sync_command') or []
     if isinstance(sync, str):
         try:
@@ -173,6 +176,12 @@ def decide(args, cfg, config_error):
             allow, why = True, 'bookmark pull'
         elif method == 'GET' and (p == '/2/usage' or p.startswith('/2/usage/')):
             allow, why = True, 'usage (free)'
+        elif (method == 'POST' and str(cfg.get('engage_id') or '').isdigit() and
+              p in ('/2/users/{}/likes'.format(cfg['engage_id']), '/2/users/{}/following'.format(cfg['engage_id']))):
+            # 11-19 (Ricardo: "How can we make them use it?"): Grok's X tools cannot like or follow, so the
+            # route order is Grok for posts, then this API for likes and follows, then the browser.
+            # Only as the configured posting account; X's own cycle spend cap still applies.
+            allow, why = True, 'like/follow as the posting account'
         elif method == 'POST' and p == '/2/tweets':
             allow, why = True, 'own post (x_gate applies)'
         elif method == 'DELETE' and re.fullmatch(r'/2/tweets/\d+', p):

@@ -492,6 +492,30 @@ events, so other browser sessions are unaffected.
 python3 -m pytest -q rstack/tests/test_x_handle_guard.py
 ```
 
+## x-route and x-submit-gate
+
+Route order for X actions (11-19), in code: replies and posts go through `grok-post`; likes
+and follows through the API as the posting account (`xurl-policy` allows exactly
+`POST /2/users/<engage_id>/likes` and `/following`, with `engage_id` configured); the browser
+is last. `x-route reply|post|like|follow` tries the first route, writes every attempt to
+`$RSTACK_STATE_DIR/x-route.jsonl` (`harness/x_route.py`), and exits 10 with
+`BROWSER ALLOWED: <reason>` only when nothing was sent. Exit 5 means it may have gone out
+unverified and must not be retried by any route; exit 11 means wait (reply spacing).
+`xr` tries `grok-post` first for a text-only approved post or reply when `RH_X_GROK_POST`
+names it, and falls back to the API only when grok-post sent nothing.
+
+`x-submit-gate` is a PreToolUse hook for the Claude in Chrome tools. A click, key or form
+input whose `action_summary` submits an X reply, post, like, follow or repost is refused
+unless the kind has no Grok or API route or its route failed for the same target (post ID
+or `@handle`, named in the summary) in the last 15 minutes; the tab passed the
+`x-handle-guard` probe in the selected browser; and that browser is not in `deny_devices`.
+Config `~/.config/rstack/x-submit-gate.json`: `{"deny_devices": [...], "handle": "..."}`;
+no config refuses every X submit.
+
+```sh
+python3 -m pytest -q rstack/tests/test_x_submit_gate.py harness/tests/test_x_posting_gate.py
+```
+
 - [`ask_lint.py`](ask-lint.md): refuses mechanical steps addressed to the owner; shared by the question hook and private review/notification wrappers. His-only reasons use `--his-only class` or `[his-only: class]`.
 - [`release-protect`](release-protect.md): checks a private protected-path registry before cleanup; registered sources are reread on every call. `sync --from-deploy ROOT` refreshes release entries from the deploy CLI's retention function; `--dry-run` prints the diff without writes. The optional job-health `release_protection` check alerts after an hour of drift. The Finder shim and harness Trash adapter share the check.
 

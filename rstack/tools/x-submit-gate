@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""x-submit-gate: a Chrome submit on X needs a reason the browser may do it (PreToolUse, 11-19).
+
+Ricardo, 11-19: "How can we make them use it?" Replies and posts go through Grok; likes and follows
+through the API; the browser is last. This hook refuses a Claude in Chrome click, key or form input
+that submits an X action (reply, post, like, follow, repost) unless all three hold:
+
+  1. the action kind has no Grok or API route, or that route failed for the same target in the
+     last 15 minutes (x-route writes the route ledger; harness/x_route.py reads it);
+  2. the tab passed x-handle-guard's probe for the expected handle in the selected browser;
+  3. the selected browser is not a denied device (the owner's private account), ever.
+
+A submit is recognised by its action_summary, which X actions here already must carry
+("Posts the reply on X to @HANDLE", "Likes ...", "Follows @HANDLE"), and the summary must name the
+target: a post URL or ID, or the @handle. Anything that is not an X submit passes untouched.
+
+Config ~/.config/rstack/x-submit-gate.json (or X_SUBMIT_GATE_CONFIG):
+  {"deny_devices": ["<device id>"], "handle": "<screen_name>"}
+No config, or an unreadable one, refuses every X submit. Exit 0 always; the decision is hook JSON.
+"""
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'harness' if (ROOT / 'harness/x_route.py').exists() else ROOT))
+import x_route  # noqa: E402
+
+PREFIX = 'mcp__claude-in-chrome__'
+ACTING = {'left_click', 'right_click', 'double_click', 'triple_click', 'key', 'type', 'left_click_drag'}
+X_CONTEXT = re.compile(r'\bon X\b|\bx\.com\b|\btweet\b|\bX post\b|@[A-Za-z0-9_]{1,15}|/status/\d+', re.I)
+KINDS = (('reply', re.compile(r'\b(?:posts?|sends?|submits?)\s+(?:the|a|our|my)?\s*repl(?:y|ies)\b|\brepl(?:y|ies) (?:to|on)\b'
+                               r'|\bclicks? (?:the )?reply button\b', re.I)),
+         ('like', re.compile(r'\blikes?\b|\bheart\b', re.I)),
+         ('follow', re.compile(r'\bfollows?\b(?! back list)|\bfollow button\b', re.I)),
+         ('repost', re.compile(r'\b(?:re-?posts?|retweets?|quotes?)\b', re.I)),
+         ('post', re.compile(r'\b(?:posts?|publish(?:es)?|tweets?)\b(?! (?:text|thread|page|replies))', re.I)))
+NOT_SUBMIT = re.compile(r'\b(?:opens?|reads?|scrolls?|views?|expands?|shows?|navigates?|closes?|checks?|looks?)\b', re.I)
+
+
+def deny(reason):
+    print(json.dumps(dict(hookSpecificOutput=dict(hookEventName='PreToolUse', permissionDecision='deny',
+                                                  permissionDecisionReason='x-submit-gate: ' + reason))))
+
+
+def load_config():
+    path = Path(os.environ.get('X_SUBMIT_GATE_CONFIG') or '~/.config/rstack/x-submit-gate.json').expanduser()
+    cfg = json.loads(path.read_text())
+    if not isinstance(cfg, dict) or not isinstance(cfg.get('deny_devices', []), list):
+        raise ValueError('config must be an object with a deny_devices list')
+    if not re.fullmatch(r'[A-Za-z0-9_]{1,15}', str(cfg.get('handle', '')).lstrip('@')):
+        raise ValueError('config needs the expected handle')
+    return cfg
+
+
+def guard_state(event):
+    root = Path(os.environ.get('RSTACK_STATE_DIR') or Path.home() / '.local/state/rstack').expanduser()
+    sid = re.sub(r'[^A-Za-z0-9_-]', '', str(event.get('session_id', '')))[:64] or 'none'
+    path = root / 'x-handle-guard' / (sid + '.json')
+    return json.loads(path.read_text()) if path.exists() else dict(device=None, tabs={})
+
+
+def submits(event):
+    """(kind, summary, tabId) for every X submit in the call."""
+    name = str(event.get('tool_name', ''))[len(PREFIX):]
+    inp = event.get('tool_input')
+    if not isinstance(inp, dict):
+        raise ValueError('tool_input is not an object')
+    steps = [(name, inp)]
+    if name == 'browser_batch':
+        steps = [(str(a.get('name', '')).replace(PREFIX, ''), a.get('input') or {})
+                 for a in inp.get('actions') or [] if isinstance(a, dict)]
+    out = []
+    for tool, step in steps:
+        if not isinstance(step, dict):
+            raise ValueError('batch action input is not an object')
+        if tool == 'computer' and step.get('action') not in ACTING:
+            continue
+        if tool not in ('computer', 'form_input'):
+            continue
+        summary = str(step.get('action_summary', ''))
+        if not X_CONTEXT.search(summary) or NOT_SUBMIT.match(summary.strip()):
+            continue
+        for kind, pattern in KINDS:
+            if pattern.search(summary):
+                out.append((kind, summary, step.get('tabId')))
+                break
+    return out
+
+
+def target_of(kind, summary):
+    if kind == 'follow':
+        m = re.search(r'@([A-Za-z0-9_]{1,15})', summary)
+        return m[1] if m else ''
+    m = re.search(r'(?:/status/)?(\d{5,25})', summary)
+    return m[1] if m else ''
+
+
+def check(event, cfg):
+    found = submits(event)
+    if not found:
+        return None
+    state = guard_state(event)
+    handle = str(cfg['handle']).lstrip('@')
+    for kind, summary, tab in found:
+        device = state.get('device')
+        if device and device in cfg.get('deny_devices', []):
+            return 'browser {} is a denied device (the owner\'s private account); never use it for X'.format(device)
+        row = (state.get('tabs') or {}).get(str(tab)) if tab is not None else None
+        if not (isinstance(row, dict) and row.get('handle', '').casefold() == handle.casefold()
+                and row.get('device') == device and time.time() - float(row.get('utc', 0)) <= 2700):
+            return ('tab {} has no passing x-handle-guard probe for @{} in the selected browser; run the probe '
+                    'first'.format(tab, handle))
+        if kind == 'repost':
+            continue   # no Grok or API route for reposts here; the handle and device checks still apply
+        allowed, reason = x_route.browser_allowed(kind, target_of(kind, summary))
+        if not allowed:
+            return 'browser {} refused: {}'.format(kind, reason)
+    return None
+
+
+def main():
+    try:
+        event = json.load(sys.stdin)
+    except ValueError:
+        deny('unreadable hook event; refusing')
+        return 0
+    if not str(event.get('tool_name', '')).startswith(PREFIX):
+        return 0
+    try:
+        found = submits(event)
+    except (ValueError, TypeError) as exc:
+        deny('cannot read the browser call ({}); refusing'.format(exc))
+        return 0
+    if not found:
+        return 0
+    try:
+        cfg = load_config()
+        why = check(event, cfg)
+    except (OSError, ValueError, TypeError) as exc:
+        why = 'no readable config or state ({}); refusing every X submit'.format(exc)
+    if why:
+        deny(why)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

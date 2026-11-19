@@ -272,3 +272,14 @@ def test_installed_wrapper_with_symlinked_policy_refuses_self_execution(gate):
     result = subprocess.run([str(wrapper), '/2/usage/tweets'], capture_output=True, text=True, timeout=10)
     assert result.returncode == 86 and 'refused execution' in result.stderr
     assert len(rows(ledger)) == 1
+
+
+
+@pytest.mark.parametrize('path', ['/2/users/00009/likes', '/2/users/00009/following'])
+def test_likes_and_follows_only_as_the_configured_posting_account(gate, monkeypatch, path):
+    cfg, ledger, data = gate
+    cfg.write_text(json.dumps(dict(data, engage_id='00009')))
+    assert invoke('-u', 'fixture_acct', '-X', 'POST', path, '-d', '{"tweet_id":"1"}').returncode == 0
+    other = path.replace('00009', '00000')
+    assert invoke('-u', 'fixture_acct', '-X', 'POST', other, '-d', '{"tweet_id":"1"}').returncode == 86
+    assert invoke('-u', 'fixture_acct', path).returncode == 86     # a read of that path stays refused

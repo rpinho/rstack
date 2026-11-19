@@ -277,6 +277,54 @@ def hook_decision(event, segments):
     return None
 
 
+def route_log(payload, route, ok, detail, **extra):
+    try:
+        import x_route
+        target = (payload.get('reply') or {}).get('in_reply_to_tweet_id')
+        x_route.log('reply' if target else 'post', target or 'post', route, ok, detail, **extra)
+    except (ImportError, OSError, TypeError, AttributeError):
+        print('xr: could not write the route ledger', file=sys.stderr)
+
+
+def grok_first(payload):
+    """11-19 route order: a text-only post or reply goes through grok-post before the API.
+
+    Set RH_X_GROK_POST to the grok-post command to turn it on (X_ROUTE_NO_GROK=1 skips it, for a
+    caller that already tried Grok). Returns an exit code when Grok settled it, or None to go on to
+    the API: only when grok-post says nothing was sent (exit 2, 3 or 4).
+    """
+    command = os.environ.get('RH_X_GROK_POST', '').strip()
+    if not command or os.environ.get('X_ROUTE_NO_GROK') == '1' or not isinstance(payload, dict):
+        return None
+    if payload.get('media') or set(payload) - {'text', 'reply'}:
+        return None   # Grok has no media path; quotes, polls and the rest stay on the API
+    row, message = check(root_path(), 'xr-grok', payload, claim=False)
+    if not row:
+        return None   # the API path reports the refusal
+    target = str((payload.get('reply') or {}).get('in_reply_to_tweet_id') or '')
+    argv = [command, '--rh', '{}/{}'.format(row['lane'], row['id']), '--text-file', row['draft_path']]
+    argv += ['--reply-to', 'https://x.com/i/status/' + target] if target else ['--post']
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=420, stdin=subprocess.DEVNULL)
+        rc, said = result.returncode, result.stdout + result.stderr
+    except (OSError, subprocess.SubprocessError) as exc:
+        rc, said = 3, 'grok-post did not run: ' + str(exc)
+    found = re.search(r'Verified: https://x\.com/\S+/status/(\d+)', said)
+    if rc == 0 and found:
+        route_log(payload, 'grok', True, found.group(0), rh='{}/{}'.format(row['lane'], row['id']))
+        # Same shape as the API's answer, so callers that parse data.id keep working.
+        print(json.dumps({'data': {'id': found.group(1), 'text': payload.get('text')}, 'via': 'grok'}))
+        return 0
+    if rc in (2, 3, 4):
+        route_log(payload, 'grok', False, 'grok-post exit {}: {}'.format(rc, said[-300:]))
+        print('xr: grok-post sent nothing (exit {}); posting through the API'.format(rc), file=sys.stderr)
+        return None
+    route_log(payload, 'grok', False, 'grok-post exit {}: {}'.format(rc, said[-300:]), uncertain=True)
+    print('xr: grok-post may have posted without a public check (exit {}); not retried: {}'.format(
+        rc, said[-300:]), file=sys.stderr)
+    return 5
+
+
 def wrapper(words):
     """Preserve xr account pinning and existing forbidden-operation policy."""
     command = ' '.join(words)
@@ -290,6 +338,9 @@ def wrapper(words):
             if any(v in ('-', '@-') for v in values):
                 piped = sys.stdin.read()
             payload = payload_of(words, Path.cwd(), stdin=piped)
+            done = grok_first(payload)
+            if done is not None:
+                return done
             row, message = check(root_path(), 'xr', payload)
         except Exception:
             message = log_block('xr', 'X gate could not extract payload or validate local ledger', payload)
@@ -322,6 +373,9 @@ def wrapper(words):
     result = subprocess.run(['xurl', '-u', account, *words], input=piped, text=True, capture_output=True)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
+    if payload is not None:
+        route_log(payload, 'api', result.returncode == 0 and '"id"' in result.stdout,
+                  (result.stdout + result.stderr)[-300:])
     if result.returncode == 0 and row:
         try:
             response = json.loads(result.stdout)

@@ -52,6 +52,9 @@ def local(tmp_path, monkeypatch):
     monkeypatch.setenv('RH_X_REPLIED', str(replied))
     monkeypatch.setenv('RH_OUTREACH_ROOT', str(root))
     monkeypatch.setenv('RH_X_GATE_LOG', str(tmp_path / 'x-gate.jsonl'))
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.delenv('RH_X_GROK_POST', raising=False)
+    monkeypatch.delenv('X_ROUTE_NO_GROK', raising=False)
     monkeypatch.delenv('RH_X_GATE', raising=False)
     binpath = tmp_path / 'bin'
     binpath.mkdir()
@@ -508,3 +511,58 @@ def test_replied_json_still_binds_without_proof_of_a_like_only(local, rows):
     assert not outreach.only_liked('123')
     result = lint_reply(local)
     assert result[0] != 0 and 'already replied to this post' in ''.join(map(str, result)), result
+
+
+
+def grok_stub(tmp_path, monkeypatch, rc, output='Verified: https://x.com/test_account/status/555'):
+    stub = tmp_path / 'grok-post'
+    stub.write_text('#!' + sys.executable + '\nimport json, os, sys\nfrom pathlib import Path\n'
+                    'Path(os.environ["GROK_TEST_RECORD"]).write_text(json.dumps(sys.argv[1:]))\n'
+                    'print(' + repr(output) + ')\nsys.exit(' + str(rc) + ')\n')
+    stub.chmod(0o700)
+    monkeypatch.setenv('RH_X_GROK_POST', str(stub))
+    monkeypatch.setenv('GROK_TEST_RECORD', str(tmp_path / 'grok.json'))
+    return tmp_path / 'grok.json'
+
+
+def route_rows(tmp_path):
+    p = tmp_path / 'state/x-route.jsonl'
+    return [json.loads(l) for l in p.read_text().splitlines()] if p.exists() else []
+
+
+def test_xr_sends_a_text_reply_through_grok_first(local, tmp_path, monkeypatch):
+    """11-19 route order: Grok before the API; the API is not called when Grok posted and verified."""
+    row = approve(local)
+    record = grok_stub(tmp_path, monkeypatch, 0)
+    run = xr_pipe(local, payload(), 'enforce')
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout)['data']['id'] == '555'
+    argv = json.loads(record.read_text())
+    assert argv[:2] == ['--rh', 'test/' + row['id']] and argv[-2:] == ['--reply-to', 'https://x.com/i/status/123']
+    assert not Path(os.environ['XURL_TEST_RECORD']).exists()
+    assert [(r['route'], r['ok']) for r in route_rows(tmp_path)] == [('grok', True)]
+
+
+def test_xr_falls_back_to_the_api_only_when_grok_sent_nothing(local, tmp_path, monkeypatch):
+    approve(local)
+    grok_stub(tmp_path, monkeypatch, 3, 'grok-post: timeout')
+    run = xr_pipe(local, payload(), 'enforce')
+    assert run.returncode == 0, run.stderr
+    assert Path(os.environ['XURL_TEST_RECORD']).exists()
+    assert [(r['route'], r['ok']) for r in route_rows(tmp_path)] == [('grok', False), ('api', True)]
+
+
+def test_xr_never_retries_an_uncertain_grok_post(local, tmp_path, monkeypatch):
+    approve(local)
+    grok_stub(tmp_path, monkeypatch, 5, 'grok-post: verification failed')
+    run = xr_pipe(local, payload(), 'enforce')
+    assert run.returncode == 5
+    assert not Path(os.environ['XURL_TEST_RECORD']).exists()
+    assert route_rows(tmp_path)[-1]['uncertain'] is True
+
+
+def test_xr_keeps_media_posts_on_the_api(local, tmp_path, monkeypatch):
+    record = grok_stub(tmp_path, monkeypatch, 0)
+    value = dict(payload(), media={'media_ids': ['1']})
+    xr_pipe(local, value, 'enforce')
+    assert not record.exists()

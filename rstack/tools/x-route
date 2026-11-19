@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""x-route: do one X action by the first route that exists, log every attempt, browser last (11-19).
+
+  x-route reply  --rh LANE/ID --reply-to URL --text-file FILE   grok-post
+  x-route post   --rh LANE/ID --text-file FILE                  grok-post
+  x-route like   URL_OR_ID                                      API, as the posting account
+  x-route follow @HANDLE                                        API, as the posting account
+  x-route browser-ok KIND TARGET                                may the browser do it now?
+
+Exit 0: done (the URL or result is printed). Exit 10: the first route failed and nothing was sent;
+"BROWSER ALLOWED: <reason>" is printed and the browser may do this one action within 15 minutes.
+Exit 11: wait (reply spacing); not a browser case. Exit 5: it may have gone out unverified; never
+retry it by any route. Exit 2: refused before any route (bad arguments, missing config).
+
+Config ~/.config/rstack/x-route.json (or X_ROUTE_CONFIG): {"account_id": "<numeric id of the posting
+account>", "grok_host": "local" or an ssh alias for follow's user-ID lookup}. Every attempt is a line in
+$RSTACK_STATE_DIR/x-route.jsonl (harness/x_route.py), which x-submit-gate reads.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'harness' if (ROOT / 'harness/x_route.py').exists() else ROOT))
+import x_route  # noqa: E402
+
+HERE = Path(__file__).resolve().parent
+BROWSER, WAIT, UNCERTAIN, REFUSED = 10, 11, 5, 2
+
+
+def config():
+    path = Path(os.environ.get('X_ROUTE_CONFIG') or '~/.config/rstack/x-route.json').expanduser()
+    cfg = json.loads(path.read_text()) if path.exists() else {}
+    cfg['account_id'] = str(os.environ.get('X_ROUTE_ACCOUNT_ID') or cfg.get('account_id') or '')
+    cfg.setdefault('grok_host', 'local')
+    cfg.setdefault('xr', os.environ.get('X_ROUTE_XR') or 'xr')
+    cfg.setdefault('grok_post', os.environ.get('X_ROUTE_GROK_POST') or str(HERE / 'grok-post'))
+    cfg.setdefault('grok_ask', os.environ.get('X_ROUTE_GROK_ASK') or str(HERE / 'grok-ask'))
+    return cfg
+
+
+def browser(kind, target, route, detail, **extra):
+    x_route.log(kind, target, route, False, detail, **extra)
+    print('BROWSER ALLOWED: {} via {} failed: {}'.format(kind, route, detail.strip()[-300:]))
+    return BROWSER
+
+
+def run(argv, timeout):
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        return r.returncode, r.stdout, r.stderr
+    except subprocess.TimeoutExpired:
+        return None, '', 'timed out after {} s'.format(timeout)
+    except OSError as exc:
+        return 127, '', str(exc)
+
+
+def grok(kind, args, cfg):
+    target = args.reply_to or 'post'
+    argv = [cfg['grok_post'], '--rh', args.rh, '--text-file', str(args.text_file)]
+    argv += ['--reply-to', args.reply_to] if args.reply_to else ['--post']
+    rc, out, err = run(argv, 420)
+    said = ((out or '') + (err or '')).replace('SyntaxWarning', '')
+    m = re.search(r'Verified: (https://x\.com/\S+/status/\d+)', out or '')
+    if rc == 0 and m:
+        x_route.log(kind, target, 'grok', True, m[1], rh=args.rh)
+        print(m[1])
+        return 0
+    if rc in (2, 3, 4, 127):
+        if re.search(r'within \d+ min of another reply', said):
+            x_route.log(kind, target, 'grok', False, said, rh=args.rh, wait=True)
+            print('WAIT: ' + said.strip()[-300:])
+            return WAIT
+        return browser(kind, target, 'grok', 'grok-post exit {}: {}'.format(rc, said), rh=args.rh)
+    # 5, a timeout, or anything else after a possible send: never again by any route.
+    x_route.log(kind, target, 'grok', False, 'grok-post exit {}: {}'.format(rc, said), rh=args.rh, uncertain=True)
+    print('UNCERTAIN: grok-post exit {}; it may have gone out. Do not retry. {}'.format(rc, said.strip()[-300:]))
+    return UNCERTAIN
+
+
+def api(kind, target, path, body, ok_keys, cfg):
+    rc, out, err = run([cfg['xr'], '-X', 'POST', path, '-d', json.dumps(body)], 60)
+    try:
+        data = json.loads(out).get('data') or {}
+    except (ValueError, AttributeError):
+        data = {}
+    if rc == 0 and any(data.get(k) is True for k in ok_keys):
+        x_route.log(kind, target, 'api', True, json.dumps(data))
+        print(json.dumps(data))
+        return 0
+    # The API answered without the success flag, or refused (403 spend cap, 86 policy): nothing was done.
+    return browser(kind, target, 'api', 'xr exit {}: {} {}'.format(rc, (out or '')[-200:], (err or '')[-200:]))
+
+
+def user_id(handle, cfg):
+    query = ('Call the X tool get_users_by_username for the username {} and report only what it returns. '
+             'Take no other action.'.format(handle))
+    argv = [cfg['grok_ask'], '--schema', json.dumps(['id', 'username'])]
+    argv += [] if cfg['grok_host'] == 'local' else ['--host', cfg['grok_host']]
+    rc, out, err = run(argv + [query], 150)
+    try:
+        found = [r for r in json.loads(out) if str(r.get('username', '')).casefold() == handle.casefold()]
+    except (ValueError, TypeError, AttributeError):
+        found = []
+    ids = {str(r.get('id')) for r in found if str(r.get('id', '')).isdigit()}
+    return (ids.pop(), '') if len(ids) == 1 else (None, 'grok-ask lookup failed: {} {}'.format(rc, (err or out)[-200:]))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest='kind', required=True)
+    for kind in ('reply', 'post'):
+        p = sub.add_parser(kind)
+        p.add_argument('--rh', required=True)
+        p.add_argument('--text-file', required=True, type=Path)
+        if kind == 'reply':
+            p.add_argument('--reply-to', required=True)
+    sub.add_parser('like').add_argument('target')
+    sub.add_parser('follow').add_argument('target')
+    ok = sub.add_parser('browser-ok')
+    ok.add_argument('action')
+    ok.add_argument('target')
+    args = parser.parse_args(argv)
+    if args.kind == 'browser-ok':
+        allowed, reason = x_route.browser_allowed(args.action, args.target)
+        print(('BROWSER ALLOWED: ' if allowed else 'BROWSER REFUSED: ') + reason)
+        return 0 if allowed else 1
+    try:
+        cfg = config()
+    except (OSError, ValueError) as exc:
+        print('x-route: unreadable config: ' + str(exc), file=sys.stderr)
+        return REFUSED
+    if args.kind in ('reply', 'post'):
+        if args.kind == 'post':
+            args.reply_to = None
+        return grok(args.kind, args, cfg)
+    if not cfg['account_id'].isdigit():
+        print('x-route: configure account_id (the posting account\'s numeric X id)', file=sys.stderr)
+        return REFUSED
+    key = x_route.target_key(args.kind, args.target)
+    if not key:
+        print('x-route: cannot read a {} target from {!r}'.format(args.kind, args.target), file=sys.stderr)
+        return REFUSED
+    done, reason = x_route.browser_allowed(args.kind, args.target)
+    if not done and reason.startswith(args.kind + ' already done'):
+        print('x-route: ' + reason)
+        return 0
+    if args.kind == 'like':
+        return api('like', key, '/2/users/{}/likes'.format(cfg['account_id']), {'tweet_id': key}, ('liked',), cfg)
+    ident, why = user_id(key, cfg)
+    if not ident:
+        return browser('follow', key, 'api', why)
+    return api('follow', key, '/2/users/{}/following'.format(cfg['account_id']), {'target_user_id': ident},
+               ('following', 'pending_follow'), cfg)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
