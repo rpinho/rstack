@@ -135,7 +135,7 @@ def test_a_line_he_dictated_or_approved_is_added_and_can_be_cut_from(tmp_path):
             voice_cuts.add_line(*bad, banks)
     draft = tmp_path / 'reply.txt'
     draft.write_text(line + '\n')
-    (tmp_path / 'reply.txt.cuts').write_text('dicten:1\n')
+    (tmp_path / 'reply.txt.cuts').write_text('dicten:1\nWE-OK: family, the kids and I\n')
     fails, _ = voice_cuts.check(draft.read_text(), voice_cuts.cuts_for(draft), '', banks)
     assert fails == []
 
@@ -154,3 +154,99 @@ def test_names_and_addresses_are_facts_not_phrasing():
         vc.bank_line = orig
     assert not [f for f in ok if f.startswith('VOICE_CUTS_WORDS')]
     assert [f for f in bad if f.startswith('VOICE_CUTS_WORDS')]
+
+
+# 11-19 (Ricardo: "We don't say 'we'. We always say 'I'."): a maintainer read the plural ask as a company.
+OLD_ASK = "Thanks! We would be glad to help in any way we can. What would be helpful for you? What's a hard problem?"
+NEW_ASK = "Thanks! I'd be glad to help in any way I can. What would be helpful for you? What's a hard problem?"
+
+
+@pytest.fixture
+def dicten(tmp_path, monkeypatch):
+    """A synthetic dictation bank with the real line numbers: 105-107 the ask, 106 retired for 113."""
+    lines = ['filler line {}'.format(n) for n in range(1, 113)] + ["I'd be glad to help in any way I can."]
+    lines[104] = 'Hey, I understand this is not helpful. What would be helpful?'
+    lines[105] = 'We would be glad to help in any way we can.'
+    lines[106] = "What would be helpful for you? What's a hard problem?"
+    lines[110] = 'We moved to Florida for the kids and we like it here.'
+    (tmp_path / 'dict_en.jsonl').write_text(''.join(json.dumps({'text': t}) + '\n' for t in lines))
+    (tmp_path / 'dict_pt.jsonl').write_text(json.dumps({'text': 'obrigado, faz sentido e acho que vale a pena'}) + '\n')
+    spec = tmp_path / 'voice-banks.json'
+    spec.write_text(json.dumps({'dicten': {'path': 'dict_en.jsonl', 'lang': 'en'},
+                                'dictpt': {'path': 'dict_pt.jsonl', 'lang': 'pt'}}))
+    (tmp_path / 'voice-retired.json').write_text(json.dumps(
+        {'dicten:106': {'reason': 'we, not I (2026-11-19)', 'use': 'dicten:113'}}))
+    monkeypatch.setenv('RH_VOICE_BANKS', str(spec))
+    monkeypatch.setenv('RH_VOICE_CUTS_STATE', str(tmp_path / 'state'))
+    return voice_cuts.load_banks()
+
+
+def run(tmp_path, text, cuts, capsys):
+    draft = tmp_path / 'ask.txt'
+    draft.write_text(text + '\n')
+    (tmp_path / 'ask.txt.cuts').write_text(cuts)
+    rc = voice_cuts.main([str(draft)])
+    return rc, capsys.readouterr().out
+
+
+def test_the_old_plural_ask_fails_and_names_the_line_and_word(dicten, tmp_path, capsys):
+    rc, out = run(tmp_path, 'Hi,\n' + OLD_ASK, 'dicten:105\ndicten:107\ndicten:113\n', capsys)
+    assert rc == 1 and 'VOICE_PLURAL: line 2 "We", line 2 "we"' in out
+    for word in ("we'd", "we're", "we've", "we'll", 'our', 'ours', 'us', 'OUR', 'We’ll'):
+        fails = voice_cuts.plural_failures('That helps {} a lot.'.format(word))
+        assert fails and '"{}"'.format(word) in fails[0]
+    assert voice_cuts.plural_failures('They answered weekly, in their house, with jokes about fuses.') == []
+
+
+def test_the_new_ask_passes(dicten, tmp_path, capsys):
+    rc, out = run(tmp_path, NEW_ASK, 'dicten:105\ndicten:107\ndicten:113\n', capsys)
+    assert rc == 0 and 'PASS' in out, out
+
+
+def test_retired_dicten_106_fails(dicten, tmp_path, capsys):
+    rc, out = run(tmp_path, NEW_ASK, 'dicten:106\ndicten:107\ndicten:113\n', capsys)
+    assert rc == 1 and 'VOICE_CUTS_RETIRED: dicten:106 is retired' in out and 'dicten:113 instead' in out
+    assert voice_cuts.load_retired() == {'dicten:106': {'reason': 'we, not I (2026-11-19)', 'use': 'dicten:113'}}
+
+
+def test_a_we_ok_family_line_passes_and_xlint_honours_exactly_that_text(dicten, tmp_path, capsys):
+    family = 'We moved to Florida for the kids and we like it here.'
+    rc, out = run(tmp_path, family, 'dicten:111\n', capsys)
+    assert rc == 1 and 'VOICE_PLURAL' in out
+    assert voice_cuts.main(['plural', family]) == 1          # xlint's check: no WE-OK pass yet
+    capsys.readouterr()
+    rc, out = run(tmp_path, family, 'dicten:111\nWE-OK: family, the kids and I\n', capsys)
+    assert rc == 0 and 'we_ok' in out, out
+    assert voice_cuts.plural_lint(family) == [] and voice_cuts.main(['plural', family]) == 0
+    assert voice_cuts.plural_lint('We moved to Florida for the kids.')   # a different text is not covered
+    rc, out = run(tmp_path, family, 'dicten:111\nWE-OK:\n', capsys)
+    assert rc == 1 and 'WE-OK needs a reason' in out
+
+
+def test_a_portuguese_draft_passes(dicten, tmp_path, capsys):
+    rc, out = run(tmp_path, 'Obrigado, faz sentido e acho que vale a pena.', 'dictpt:1\n', capsys)
+    assert rc == 0, out
+    assert voice_cuts.plural_failures('Obrigado, acho que vale a pena para nós e para a nossa casa.') == []
+
+
+def test_us_the_country_passes():
+    assert voice_cuts.plural_failures('I moved to the US in 2019 and I work on US data.') == []
+    assert voice_cuts.plural_failures('Send it to us.')
+
+
+def test_xlint_check_for_x_replies(dicten, capsys, monkeypatch):
+    """xlint imports voice_cuts.plural_lint (`voice-cuts plural`, stdin as xlint reads it)."""
+    import io
+    monkeypatch.setattr('sys.stdin', io.StringIO('@someone ' + OLD_ASK))
+    assert voice_cuts.main(['plural']) == 1 and 'VOICE_PLURAL' in capsys.readouterr().out
+    monkeypatch.setattr('sys.stdin', io.StringIO('@someone ' + NEW_ASK))
+    assert voice_cuts.main(['plural']) == 0
+
+
+def test_outreach_lint_refuses_plural_even_with_cuts_off(env, banks, tmp_path):
+    root, lane = env
+    ident, path = draft(env, OLD_ASK, to='@someone', channel='x_reply')
+    (lane / 'OUTREACH.toml').write_text('voice_cuts = "off"\n')
+    assert 'VOICE_PLURAL' in cli(root, 'lint', 'test', ident)[1]
+    ident, path = draft(env, NEW_ASK, to='@someone', channel='x_reply')
+    assert 'VOICE_PLURAL' not in cli(root, 'lint', 'test', ident)[1]

@@ -430,7 +430,7 @@ def test_only_a_sent_x_post_can_be_retracted(state, monkeypatch):
 def test_a_sent_reply_whose_draft_file_is_gone_is_still_compared(state, monkeypatch):
     """general, 11-09: three sent replies of 11-07 had drafts in /private/tmp; it was wiped, and every
     new reply failed lint with "reply comparison draft unreadable"."""
-    text = 'That matches what we saw on the second estimator, the bound holds.'
+    text = 'That matches what I saw on the second estimator, the bound holds.'
     first, path = approved(state, text=text, channel='x_reply', in_reply_to='https://x.com/a/status/1')
     assert cli(state[0], 'sent', 'a', first, '--message-id', '11', '--via', 'browser')[0] == 0
     near, _ = draft(state, text=text + ' Thanks.', channel='x_reply', in_reply_to='https://x.com/b/status/2')

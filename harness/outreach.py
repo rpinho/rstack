@@ -346,14 +346,21 @@ def awaiting_reply(row, text, everyone, lane):
 def cut_check(row, text, cfg, checks):
     """Paper-cut (voice_cuts.py): the draft is built from the author's own messages, listed in
     DRAFT.cuts. On whenever banks are configured, unless the lane says voice_cuts = "off"."""
-    if cfg['voice_cuts'] == 'off' or row.get('owner_wrote'):
+    if row.get('owner_wrote'):
+        return []
+    cuts = voice_cuts.cuts_for(row['draft_path']) if row.get('draft_path') else None
+    # 11-19 (Ricardo: "We don't say 'we'. We always say 'I'."): I, never we, even where paper-cut is off.
+    plural = voice_cuts.plural_failures(text, voice_cuts.we_ok_reason(cuts))
+    if cfg['voice_cuts'] == 'off':
+        checks['cuts'] += plural
         return []
     try:
         banks = voice_cuts.load_banks()
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        checks['cuts'].append('VOICE_BANKS_MISSING: the banks file is unreadable ({})'.format(type(exc).__name__))
+        checks['cuts'] += plural + ['VOICE_BANKS_MISSING: the banks file is unreadable ({})'.format(type(exc).__name__)]
         return []
     if not banks:
+        checks['cuts'] += plural
         if cfg['voice_cuts'] == 'on':
             checks['cuts'].append('VOICE_BANKS_MISSING: the lane requires paper-cut drafts and RH_VOICE_BANKS is unset')
         return []
@@ -364,10 +371,11 @@ def cut_check(row, text, cfg, checks):
         except (OSError, UnicodeError):
             pass
     names = [n.strip() for n in os.environ.get('RH_SIGNATURE_NAMES', '').split(',') if n.strip()]
-    found, stats = voice_cuts.check(text, voice_cuts.cuts_for(row['draft_path']) if row.get('draft_path') else None,
-                                    incoming, banks,
-                                    {k: cfg[k] for k in voice_cuts.defaults()}, names)
+    found, stats = voice_cuts.check(text, cuts, incoming, banks, {k: cfg[k] for k in voice_cuts.defaults()}, names)
     checks['cuts'] += found
+    if not found and stats.get('we_ok'):
+        # xlint (here and in the email gate) has no .cuts file; it lets plural through only for a recorded WE-OK pass.
+        voice_cuts.record_pass(row['draft_path'], text, stats)
     return ['cuts: {} lines, {:.0%} of words and {:.0%} of pairs from them'.format(
         stats['cuts'], stats['word_cover'], stats['pair_cover'])] if stats else []
 
@@ -717,8 +725,8 @@ def lint_rows(lane, selected, rh, allow_collision=None):
         except (OSError, UnicodeError):
             results[row['id']] = dict(ok=False, utc=rh.now(), checks={'draft': ['draft unreadable']})
             continue
-        checks['voice'] = voice(text, row['channel'])
         cut_stats = cut_check(row, text, cfg, checks)
+        checks['voice'] = voice(text, row['channel'])
         limit = cfg['question_limit'] if row['channel'] in ('email', 'linkedin') else cfg['x_question_limit']
         questions = URL.sub('', text).count('?')
         if questions > limit:

@@ -390,7 +390,7 @@ def test_outreach_only_lane_skips_research_checks(tmp_path):
 
 PT_GREETING = 'Olá Beta, tudo bem? Espero que o trabalho esteja a correr bem por aí.'
 PT_SIGNOFF = 'Obrigado pelo teu tempo e um abraço, até breve.'
-EN_SCIENCE = ('We measured a correlation of 0.68 between length and the mean score, so the '
+EN_SCIENCE = ('I measured a correlation of 0.68 between length and the mean score, so the '
               'ranking tracks length. The control run gives 0.11 on the same dataset.')
 PT_SCIENCE = ('Medimos uma correlação de 0.68 entre o comprimento e a média, portanto a '
               'ordenação segue o comprimento. O controlo dá 0.11 com os mesmos dados.')

@@ -22,6 +22,19 @@ name to its JSONL file (one {"text": ...} per line) and its language:
 
 Relative paths are read from the JSON file's directory. With no banks configured the check is off.
 
+Banks are append-only, so a line is withdrawn by retiring it, not deleting it: `voice-retired.json` next
+to the banks file (or `RH_VOICE_RETIRED`) maps BANK:LINE to why and what to cut from instead, and citing a
+retired line fails VOICE_CUTS_RETIRED:
+
+    {"dicten:106": {"reason": "we, not I", "use": "dicten:113"}}
+
+He says I, never we (Ricardo, 11-19: "We don't say 'we'. We always say 'I'."). A maintainer read "We
+would be glad to help" as a company. An English draft with we, we'd, we're, we've, we'll, our, ours,
+ourselves or us fails VOICE_PLURAL, naming the line and the word. "US" in capitals is the country and is
+allowed. Portuguese drafts are exempt. Family English ("we moved to Florida for the kids") passes with a
+line `WE-OK: <reason>` in DRAFT.cuts; the pass then records the reason, so xlint, which has no .cuts
+file, lets exactly that text through (`voice-cuts plural TEXT`, or stdin).
+
 A pass is recorded in `RH_VOICE_CUTS_STATE` (pass.json, the latest, and passes.jsonl) with a hash of
 the normalized text, so a send gate can ask whether exactly this text passed.
 
@@ -50,6 +63,8 @@ CUT = re.compile(r'^(\w+):(\d+)$')
 # A link (with a scheme, www., or a domain followed by a path) or an @handle.
 REF = re.compile(r"(?:https?://|www\.)\S+|\b[\w-]+(?:\.[\w-]+)+/\S*|(?<![\w@])@\w+", re.I)
 QUOTE_START = re.compile(r'^\s*(on .+ wrote:|em .+ escreveu:|-----original message-----)', re.I)
+PLURAL = {"we", "we'd", "we're", "we've", "we'll", "our", "ours", "ourselves", "us"}
+WE_OK = re.compile(r'^\s*WE-OK:(.*)$')
 
 
 def defaults():
@@ -72,6 +87,23 @@ def load_banks(path=None):
         bank = Path(entry['path']).expanduser()
         out[name] = (bank if bank.is_absolute() else path.parent / bank, entry.get('lang', 'en'))
     return out
+
+
+def retired_file(banks_path=None):
+    value = os.environ.get('RH_VOICE_RETIRED', '')
+    if value:
+        return Path(value).expanduser()
+    spec = Path(banks_path).expanduser() if banks_path else banks_file()
+    return spec.parent / 'voice-retired.json' if spec else None
+
+
+def load_retired(banks_path=None):
+    """{"BANK:LINE": {"reason": ..., "use": ...}} for lines that may no longer be cut from, or {}."""
+    path = retired_file(banks_path)
+    if not path or not path.is_file():
+        return {}
+    spec = json.loads(path.read_text())
+    return {k: (v if isinstance(v, dict) else {'reason': str(v)}) for k, v in spec.items()}
 
 
 def state_dir():
@@ -110,6 +142,50 @@ def body(text, signature_names=()):
     return REF.sub(' ', kept)
 
 
+def plural_hits(text):
+    """[(line number, word)] for first-person plural in the author's own lines (not quoted history)."""
+    hits = []
+    for n, line in enumerate(text.replace('\r', '').split('\n'), 1):
+        if QUOTE_START.match(line):
+            break
+        if line.lstrip().startswith('>'):
+            continue
+        for w in WORD.findall(REF.sub(' ', line)):
+            if w != 'US' and w.lower().replace('\u2019', "'") in PLURAL:
+                hits.append((n, w))
+    return hits
+
+
+def plural_failures(text, we_ok=None):
+    """VOICE_PLURAL for an English draft that says we/our/us, unless WE_OK gives a reason."""
+    if we_ok or language(body(text)) == 'pt':
+        return []
+    hits = plural_hits(text)
+    if not hits:
+        return []
+    return ['VOICE_PLURAL: {}. He says I, never we (11-19: a maintainer read "We would be glad to help" as a '
+            'company). Rewrite with I/my/me; for family English add "WE-OK: <reason>" to DRAFT.cuts'.format(
+                ', '.join('line {} "{}"'.format(n, w) for n, w in hits))]
+
+
+def we_ok_reason(cuts):
+    """The reason on a `WE-OK: <reason>` line of a .cuts text, or None."""
+    for raw in (cuts or '').splitlines():
+        m = WE_OK.match(raw)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+    return None
+
+
+def plural_lint(text, state=None):
+    """For checkers with no .cuts file (xlint): VOICE_PLURAL unless exactly this text passed voice-cuts
+    with a WE-OK reason."""
+    fails = plural_failures(text)
+    if fails and passed(text, state=state, we_ok=True):
+        return []
+    return fails
+
+
 def text_sha(text):
     """Hash of the text as a reader sees it: no quoted history, whitespace collapsed."""
     return hashlib.sha256(' '.join(own_text(text).split()).encode('utf-8')).hexdigest()
@@ -130,21 +206,34 @@ def bank_line(banks, name, n):
     return None, '{}:{} is past the end of the bank'.format(name, n)
 
 
-def check(draft, cuts, incoming='', banks=None, cfg=None, signature_names=()):
+def check(draft, cuts, incoming='', banks=None, cfg=None, signature_names=(), retired=None):
     """(failures, stats). DRAFT and CUTS are text; CUTS is None when there is no .cuts file."""
     cfg = dict(defaults(), **(cfg or {}))
     banks = load_banks() if banks is None else banks
+    retired = load_retired() if retired is None else retired
+    we_ok = we_ok_reason(cuts)
+    plural = plural_failures(draft, we_ok)
     if cuts is None:
         return ['VOICE_CUTS_MISSING: no .cuts file, so the draft was composed, not cut. Build it from the '
-                "author's own messages and list the bank lines in DRAFT.cuts"], {}
-    fails, cited, langs = [], [], set()
+                "author's own messages and list the bank lines in DRAFT.cuts"] + plural, {}
+    fails, cited, langs = list(plural), [], set()
     for raw in cuts.splitlines():
+        if WE_OK.match(raw):
+            if not we_ok_reason(raw):
+                fails.append('VOICE_CUTS_BAD: WE-OK needs a reason, e.g. "WE-OK: family, the kids and I"')
+            continue
         raw = raw.split('#', 1)[0].strip()
         if not raw:
             continue
         m = CUT.match(raw)
         if not m or m.group(1) not in banks:
             fails.append('VOICE_CUTS_BAD: "{}" (use BANK:LINE; banks: {})'.format(raw, ', '.join(sorted(banks))))
+            continue
+        if raw in retired:
+            gone = retired[raw]
+            fails.append('VOICE_CUTS_RETIRED: {} is retired ({}){}'.format(
+                raw, gone.get('reason', 'no reason given'),
+                '; cut from {} instead'.format(gone['use']) if gone.get('use') else ''))
             continue
         text, err = bank_line(banks, m.group(1), int(m.group(2)))
         if err:
@@ -175,6 +264,8 @@ def check(draft, cuts, incoming='', banks=None, cfg=None, signature_names=()):
     wcov = sum(w in src_words for w in counted) / max(1, len(counted))
     pcov = sum(p in src_pairs for p in pairs) / max(1, len(pairs))
     stats = dict(lang=want, cuts=len(cited), word_cover=round(wcov, 2), pair_cover=round(pcov, 2))
+    if we_ok:
+        stats['we_ok'] = we_ok
     if wcov < cfg['voice_cuts_min_words']:
         missing = sorted({w for w in counted if w not in src_words})[:15]
         fails.append('VOICE_CUTS_WORDS: {:.0%} of the words come from the cited messages (need {:.0%}); not from '
@@ -201,8 +292,8 @@ def record_pass(draft_path, text, stats, state=None):
     return row
 
 
-def passed(text, within=dt.timedelta(hours=24), state=None, clock=None):
-    """True when exactly this text (normalized) passed within WITHIN."""
+def passed(text, within=dt.timedelta(hours=24), state=None, clock=None, we_ok=False):
+    """True when exactly this text (normalized) passed within WITHIN (and, with WE_OK, with a WE-OK reason)."""
     state = Path(state) if state else state_dir()
     clock = clock or dt.datetime.now(dt.timezone.utc)
     want = text_sha(text)
@@ -213,7 +304,8 @@ def passed(text, within=dt.timedelta(hours=24), state=None, clock=None):
     for line in reversed(lines):
         try:
             row = json.loads(line)
-            if row.get('text_sha') == want and clock - dt.datetime.fromisoformat(row['utc']) <= within:
+            if (row.get('text_sha') == want and clock - dt.datetime.fromisoformat(row['utc']) <= within
+                    and (row.get('we_ok') or not we_ok)):
                 return True
         except (ValueError, KeyError, TypeError):
             continue
@@ -258,6 +350,12 @@ def add_line(bank, text, source, banks=None, clock=None):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ['plural']:
+        text = ' '.join(argv[1:]) if argv[1:] else sys.stdin.read()
+        fails = plural_lint(text)
+        for f in fails:
+            print('FAIL: ' + f)
+        return 1 if fails else 0
     if argv[:1] == ['add']:
         ap = argparse.ArgumentParser(prog='voice-cuts add', description=add_line.__doc__)
         ap.add_argument('text', help='the line, exactly as he said or approved it')
@@ -284,7 +382,7 @@ def main(argv=None):
     text = a.draft.read_text()
     names = [n.strip() for n in os.environ.get('RH_SIGNATURE_NAMES', '').split(',') if n.strip()]
     fails, stats = check(text, cuts_for(a.draft), a.incoming.read_text() if a.incoming else '', banks,
-                         signature_names=names)
+                         signature_names=names, retired=load_retired(a.banks))
     if stats:
         print('cuts: ' + json.dumps(stats))
     for f in fails:
