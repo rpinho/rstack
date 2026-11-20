@@ -1,77 +1,35 @@
 # Beginner: your first week with AI on your research
 
-**What rstack is.** Claude itself is a harness. It's the thing around the model. But you, for your own work, end up building your own harness, which is the way you like to work. The harness is just text files, Python scripts, shell scripts and hooks, and you build it over time. rstack is mine.
-
-You will not trust the AI from day one. So you have to build the trust in it, and that's why you have to start small. At first, you don't trust it. It does stuff bad, and then it starts doing stuff better. That's when you get comfortable giving it more stuff, because your trust meter goes up. If you cannot build a system of trust, then you will never scale.
-
-So I built a bunch of safeguards and guardrails around how I work: a lot of scripts, a lot of instructions, a lot of gates. A gate is a yes or no for a lot of stuff that I do. I have a gate for emails that tries to stop the email from going if it doesn't sound like me, and one for analysis: if it didn't do all the steps, it stops it from going out and redoes it. They're not perfect. But you teach the AI how to catch itself and how to do things the way you like it.
-
-And I have a very low activation energy to give it a task, and also a low barrier to just throw everything away and start over.
-
-You don't need most of this repo yet. If you do research, start with Claude Science. It's really
-easy, and it's a great first step for your research. The first step is the hardest; after that
-it's fun.
+Start with a small task whose answer you can check. Build up to more work as you learn what the agent gets right and where you need to intervene.
 
 ![Three tracks: beginner, intermediate, advanced, and you move up by what you can do](../../assets/onboarding-tracks.png)
 
 ## 1. Try Claude Science with one of your papers
 
-[Claude Science](https://support.claude.com/en/articles/16563838-get-started-with-claude-science) is
-Anthropic's desktop app for research (macOS and Linux, on a paid Claude plan). Install it, start a
-project, and give it two things: one of your own papers, and one question about it you never had
-time for. A check you always meant to run, an extension you sketched in the discussion, a dataset
-you wanted to try it on. Then read what it did, ask it to show the code, and push back where it's
-wrong.
+In [Claude Science](https://support.claude.com/en/articles/16563838-get-started-with-claude-science), start a project with one of your papers and a question you never had time for. Try a check you always meant to run or an extension you sketched in the discussion. Read the result, ask for the code and check it.
 
-That's the whole first step. If it gives you something useful, you're ready for step 2.
+The first step is the hardest. Move on when you've used the result to answer a real question.
 
 ## 2. Install a coding agent
 
-When you want an agent working in your own files and code, install Claude Code with one command
-(macOS or Linux), then check it runs:
+For work in your own files, install Claude Code and check the version. Sign in when prompted. Use `CLAUDE.md` for project instructions in Claude Code or `AGENTS.md` in Codex.
 
 ```sh
 curl -fsSL https://claude.ai/install.sh | bash
 claude --version
-```
-
-It needs a Claude account; the first run asks you to log in. If you use Codex instead, everything
-below works the same way, with `AGENTS.md` where it says `CLAUDE.md`.
-
-## 3. Give it a real task
-
-Open a terminal in a folder you actually work in, and start it there:
-
-```sh
 cd ~/my-project
 claude
 ```
 
-Ask for something small and real: "read this folder and tell me what it does", or "this script
-fails with this error, find out why". Watch what it does before you ask for more.
+## 3. Give it a real task
 
-## 4. The ten things that matter
+Try “this script fails with this error, find out why.” Point to a file with `@analysis.py`. Ask for a plan on a larger change (Shift+Tab cycles modes), read permission prompts, and ask the agent to run the script or tests and show the output.
 
-These cover most of what you'll use. Everything else can wait.
+Esc stops a turn. Esc twice opens rewind. Use `/clear` when changing tasks and `/help` to find commands. Commit before a big change so you have a known state to return to.
 
-1. Start it in the folder you're working on. It reads what's there.
-2. Say what you want and why. "Make this faster because the nightly run times out" beats "optimize".
-3. Ask for a plan first on anything bigger than a small fix. Shift+Tab cycles the modes; one of them is plan mode.
-4. Point at files with `@`, like `@analysis.py`, instead of describing them.
-5. Esc stops it. Esc twice lets you go back to an earlier point in the conversation.
-6. Read what it asks permission for before you say yes. That is where mistakes get caught.
-7. Ask it to check its own work: run the tests, run the script, show you the output.
-8. Use `/clear` when you switch to a different task, so the old one doesn't confuse the new one.
-9. Commit with git before a big change, so you can always undo.
-10. When you're stuck on the tool itself, ask it. It knows how it works, and `/help` lists the commands.
+## 4. Your first skill: write like you
 
-## 5. Your first skill: write like you
-
-A skill is a folder with one file, `SKILL.md`, that teaches the agent how to do one thing your way.
-A voice skill is a good first one, because it's useful on day one and you can tell right away if
-it works.
-
-Create `~/.claude/skills/my-voice/SKILL.md`:
+Create `~/.claude/skills/my-voice/SKILL.md` and replace the three placeholders with messages you wrote:
 
 ```markdown
 ---
@@ -90,15 +48,8 @@ Three things I actually wrote:
 - (another one)
 ```
 
-Start a new session and ask: "use my-voice to answer this email: ...". If it doesn't sound like you,
-edit the rules and try again. That loop is most of what working with skills is.
+Start a new session and ask “use my-voice to answer this email.” Edit the skill after reading the draft.
 
 ## Ready for the next one?
 
-Move on to [intermediate](intermediate.md) when you can say yes to all three:
-
-- I've used Claude Science or a coding agent on my own research several times, not only tried it.
-- I've asked for a plan first, and changed the plan before it ran.
-- My voice skill gets used, and I've edited it at least once after seeing what it wrote.
-
-If not yet, keep using it for a week. That's normal, and it's the part that matters.
+Move on to [intermediate](intermediate.md) when you've used Claude Science or a coding agent on real research several times, changed the agent's plan before it ran, and revised a voice skill after seeing its output.
