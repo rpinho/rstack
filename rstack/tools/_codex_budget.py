@@ -852,10 +852,13 @@ def supervise(native, args, cfg, lane, cwd, interactive, batch):
                                                urgent, role))
             if stripped:
                 append(base, lane, dict(event='priority_stripped', ts=started, cwd=cwd))
-            if reason:
+            if reason and _gate('codex-budget.limit', reason, lane=lane,
+                                fix='LAUNCH_URGENT=<reason> for an urgent job, or run it on another route (AGENT_BACKEND=claude|agy)'):
                 append(base, lane, dict(event='refused', ts=started, reason=reason, cwd=cwd, role=role))
                 print('codex: REFUSED ' + reason, file=sys.stderr)
                 return REFUSED
+            if reason:
+                append(base, lane, dict(event='warned', ts=started, reason=reason, cwd=cwd, role=role))
             if bucket == 'referee':
                 print('codex: ' + note, file=sys.stderr)
             # Remember explicit homes for job-health even after this environment disappears.
@@ -910,13 +913,38 @@ def supervise(native, args, cfg, lane, cwd, interactive, batch):
                 if final_weekly and final_weekly['resets_at'] > time.time():
                     account_alerts(cfg, base, lane, final_weekly, time.time())
         except (OSError, ValueError, TypeError, KeyError) as exc:
-            print('codex: completion accounting failed ({})'.format(type(exc).__name__), file=sys.stderr)
-            if not interactive:
-                return REFUSED
+            # RULE #1: the run already happened; the harness failing to account for it is not the job's failure.
+            _gate('codex-budget.accounting', 'completion accounting failed ({}); the run\'s own exit code stands'.format(
+                type(exc).__name__), lane=lane)
         return code if code >= 0 else 128 - code
     finally:
         if stream:
             stream.close()
+
+
+def _hb():
+    """harness_blocks.py (RULE #1), from the repo (rstack/tools -> harness/) or the installed root. None if
+    neither imports; callers then keep their old behaviour."""
+    for cand in (TOOLS.parents[1] / 'harness', TOOLS.parents[1]):
+        if (cand / 'harness_blocks.py').is_file():
+            sys.path.insert(0, str(cand))
+            try:
+                import harness_blocks
+                return harness_blocks
+            except Exception:
+                return None
+    return None
+
+
+def _gate(name, reason, lane='', fix=''):
+    """True when the registry lets this refusal stand (rstack/gates.json); never raises."""
+    hb = _hb()
+    if hb is None:
+        return True
+    try:
+        return hb.gate(name, reason, fix=fix, lane=lane)
+    except Exception:
+        return True
 
 
 def wrapper_main(argv=None):
@@ -940,9 +968,12 @@ def wrapper_main(argv=None):
             os.execv(str(native), [str(native)] + args)
         return supervise(native, args, cfg, lane_for(cwd, cfg, warn=not interactive), cwd, interactive, batch)
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as exc:
-        print('codex: {} accounting/config unavailable ({})'.format('WARNING' if interactive else 'REFUSED',
+        refuse = not interactive and _gate('codex-budget.unavailable', 'codex accounting/config unavailable ({}); '
+                                           'running without the spend wrapper\'s accounting'.format(type(exc).__name__),
+                                           fix='codex-budget health')
+        print('codex: {} accounting/config unavailable ({})'.format('REFUSED' if refuse else 'WARNING',
                                                                  type(exc).__name__), file=sys.stderr)
-        if interactive:
+        if not refuse:
             # Interactive availability is unconditional, even with damaged accounting/config.
             fallback = native if 'native' in locals() else native_binary({})
             fallback_args = args if 'args' in locals() else [a for a in raw if a not in ('--personal', '--clean')]

@@ -429,7 +429,11 @@ def test_unavailable_weekly_refuses_batch_and_invalid_config_is_one_line(isolate
     assert r.returncode == 75 and 'allowance unavailable' in r.stderr
     isolated[3].write_text('{broken')
     r = run_wrapper('exec', 'hello')
-    assert r.returncode == 75 and len(r.stderr.splitlines()) == 1
+    # RULE #1 (11-20): a config the wrapper cannot read is its own error, never a refusal: the native codex
+    # runs, and the warning is logged to harness-blocks.jsonl.
+    assert r.returncode != 75 and 'WARNING accounting/config unavailable' in r.stderr
+    rows = (isolated[0] / 'state/harness-blocks.jsonl').read_text().splitlines()
+    assert '"gate": "codex-budget.unavailable"' in rows[-1] and '"outcome": "warn"' in rows[-1]
 
 
 def test_call_reservations_close_parallel_hourly_race(isolated):

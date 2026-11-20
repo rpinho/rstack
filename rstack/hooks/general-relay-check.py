@@ -80,9 +80,9 @@ def body(event):
     missing = [s for s in sessions
                if not any(a.lower() in low for a in [s, s.replace('-', ' ')] + list(aliases.get(s, [])))]
     if missing:
-        print(json.dumps({'decision': 'block', 'reason': 'Session reports not relayed to the owner yet: '
-                          + ', '.join(missing) + '. Relay the substance of each (results, decisions for him, '
-                          'anything blocked), naming the session, then finish.'}))
+        _hookfail.block_stop('Session reports not relayed to the owner yet: ' + ', '.join(missing) +
+                             '. Relay the substance of each (results, decisions for him, anything blocked), naming '
+                             'the session, then finish.')
         return 0
     with open(check, 'w') as stream:
         stream.write(str(hi))

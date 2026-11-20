@@ -60,6 +60,48 @@ def exit_code(log, selection_id):
     return None
 
 
+# RULE #1 (11-20): a run the harness refused never reached the model, so it is never pass, partial or fail.
+# math_huntfree_1120 was graded 'fail' for the Codex wrapper's per-lane cap (exit 75). Exit 75 (tempfail) and
+# 78 (config) are the wrapper's and the launcher's refusal codes; the patterns are their refusal lines.
+HARNESS_EXITS = (75, 78)
+HARNESS_LINES = re.compile(r'^(?:codex: REFUSED .*|codex-budget: REFUSED.*|launch\.sh (?:REFUSED|refused).*|'
+                           r'launch-guard: REFUSED.*|\[[\w.-]+\] REFUSED \(.*|agent_executor refused: .*|'
+                           r'npx: REFUSED .*)$', re.M)
+
+
+def selection_text(log, selection_id):
+    """The log between this selection's MODEL_SELECTION and its MODEL_OUTCOME (the attempt's own output)."""
+    try:
+        lines = Path(log).read_text(errors='replace').splitlines()
+    except OSError:
+        return ''
+    inside, part = False, []
+    for line in lines:
+        if line.startswith(('MODEL_SELECTION ', 'MODEL_OUTCOME ')):
+            try:
+                mine = json.loads(line.split(' ', 1)[1]).get('selection_id') == selection_id
+            except (ValueError, AttributeError):
+                mine = False
+            if mine and line.startswith('MODEL_SELECTION '):
+                inside = True
+            elif mine:
+                break
+            continue
+        if inside:
+            part.append(line)
+    return '\n'.join(part)
+
+
+def harness_refusal(log, receipt, rc):
+    """'harness: <reason>' when the wrapper or the launcher refused this run, else None."""
+    found = HARNESS_LINES.findall(selection_text(log, receipt.get('selection_id')))
+    if found:
+        return 'harness: ' + ' '.join(found[-1].split())[:300]
+    if rc in HARNESS_EXITS:
+        return 'harness: exit {} (a wrapper or launcher refusal code; the model did not run to completion)'.format(rc)
+    return None
+
+
 def run_checks(spec_text, workdir, host=''):
     """(command, passed) per Check: line. A --host job's outputs stay on the host (only STATUS.md, REPORT.md and
     a few small files come back), so its checks run there, in the same work dir, over ssh. 11-20: three jobs
@@ -129,6 +171,15 @@ def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, ho
                    job=receipt.get('job'), grade='ungraded', model=receipt.get('route_model') or receipt['model'],
                    producer=receipt.get('route_model') or receipt['model'], grader='quota', role=receipt.get('role'),
                    auto=True, note=quota[:500])
+        wm.log_record(log, 'MODEL_GRADE', row)
+        wm.log_record(Path(receipt_path).with_name('everyday-grades.jsonl'), '', row)
+        return row
+    refused = harness_refusal(log, receipt, rc)
+    if refused:
+        row = dict(id='grade-' + receipt['selection_id'], date=dt.date.today().isoformat(), source_kind='everyday',
+                   job=receipt.get('job'), grade='ungraded', model=receipt.get('route_model') or receipt['model'],
+                   producer=receipt.get('route_model') or receipt['model'], grader='harness', role=receipt.get('role'),
+                   auto=True, note=refused[:500])
         wm.log_record(log, 'MODEL_GRADE', row)
         wm.log_record(Path(receipt_path).with_name('everyday-grades.jsonl'), '', row)
         return row

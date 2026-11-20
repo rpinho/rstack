@@ -244,7 +244,14 @@ def load(lane, rh):
     if not isinstance(cfg['worker_role'], str) or not cfg['worker_role'].strip():
         raise ValueError('SWEEP worker_role must be a nonempty leaderboard role')
     if cfg.get('worker_model') and not str(cfg.get('model_override', '')).strip():
-        raise ValueError('hard-coded worker_model refused: needs model_override reason')
+        # RULE #1 (11-20): an unexplained pin is dropped for the leaderboard pick, with a warning.
+        import harness_blocks
+        if harness_blocks.gate('sweep.worker-model-pin', 'hard-coded worker_model {} has no model_override reason; '
+                               'the leaderboard pick runs instead'.format(cfg['worker_model']),
+                               fix='add model_override = "<reason>" to SWEEP.toml, or remove worker_model',
+                               lane=lane.name):
+            raise ValueError('hard-coded worker_model refused: needs model_override reason')
+        cfg.pop('worker_model', None)
     required = ('start_date', 'working_directory', 'rules_files', 'search_targets',
                 'sources', 'banned_sources', 'allowed_tests', 'allowed_writes',
                 'search_report', 'read_report', 'kill_report', 'launcher', 'run_directory')
@@ -1223,8 +1230,15 @@ def guard(cfg):
         if host:
             probe = host_probe(host)
             if probe is None:
-                raise ValueError('sweep refused: cannot read memory or CPU on {} (workers run '
-                                 'there); not assuming it has headroom'.format(host))
+                # RULE #1: a probe the harness cannot make is its own error; the workers' memory guard and
+                # time limits still bound them, so the sweep runs with a warning.
+                import harness_blocks
+                if harness_blocks.gate('sweep.host-probe', 'cannot read memory or CPU on {} (workers run there); '
+                                       'running without the headroom check'.format(host),
+                                       fix='ssh {} vm_stat'.format(host)):
+                    raise ValueError('sweep refused: cannot read memory or CPU on {} (workers run '
+                                     'there); not assuming it has headroom'.format(host))
+                return
             memory, busy, cores = probe['free_gib'], probe['busy'], probe['cores']
         else:
             memory = free_memory_gib()
@@ -1276,7 +1290,15 @@ def run_worker(spec, cfg):
         # read by an older executor is still the wrong run.
         drift = host_harness_mismatch(host)
         if drift:
-            raise ValueError('sweep refused: ' + drift)
+            # RULE #1: drift is repaired (harness-sync --host), then the sweep runs, warned if it did not take.
+            import harness_blocks
+            try:
+                subprocess.run(['harness-sync', '--host', host], capture_output=True, text=True, timeout=600)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            drift = host_harness_mismatch(host)
+            if drift and harness_blocks.gate('sweep.host-drift', drift, fix='harness-sync --host ' + host):
+                raise ValueError('sweep refused: ' + drift)
         if not host_sync(cfg, host):
             raise ValueError('sweep refused: cannot refresh {} onto {} (workers read it there); '
                              'not running against a stale copy'.format(cfg['cwd'], host))

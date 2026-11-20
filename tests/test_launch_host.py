@@ -413,8 +413,8 @@ def test_a_host_job_is_refused_when_the_host_is_the_busy_one(tmp_path):
     env['FAKE_SSH_LOAD'] = '94.20'
     proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path), '--host', 'm5'],
                           env=env, capture_output=True, text=True, timeout=120)
-    assert proc.returncode == 75
-    assert 'load 94 on m5' in proc.stderr
+    assert proc.returncode == 0, proc.stderr          # RULE #1: warned, and it runs
+    assert 'load 94 on m5' in proc.stderr and '[launch.load] WARNING' in proc.stderr
 
 
 def test_a_host_whose_load_cannot_be_read_is_refused_not_measured_here(tmp_path):
@@ -436,7 +436,7 @@ def test_a_local_job_still_reads_this_machine(tmp_path):
     env['LAUNCH_MAX_LOAD'] = '0'           # this machine's load is above 0 by definition
     proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path)],
                           env=env, capture_output=True, text=True, timeout=120)
-    assert proc.returncode == 75
+    assert proc.returncode == 0, proc.stderr          # RULE #1: warned, and it runs
     assert 'on this machine' in proc.stderr
     assert not Path(env['SSH_LOG']).exists(), 'a local job asked a host about its load'
 
@@ -518,9 +518,9 @@ def test_a_host_job_must_declare_its_peak_memory(tmp_path):
     jobs, env = harness(tmp_path)
     (jobs / 'fixture-job.md').write_text(ASK)
     proc = launch(tmp_path, env)
-    assert proc.returncode == 78
-    assert "'Peak RSS: N GB'" in proc.stderr and '/usr/bin/time -l' in proc.stderr
-    assert not (tmp_path / 'remote-attempts').exists()
+    # RULE #1 (11-20): a missing declaration is a warning; the host's memory guard still bounds the job.
+    assert proc.returncode == 0, proc.stderr
+    assert "'Peak RSS: N GB'" in proc.stderr and '/usr/bin/time -l' in proc.stderr and 'fail-open' in proc.stderr
 
 
 def test_a_declared_peak_over_8_gb_goes_to_a_pod(tmp_path):
@@ -556,7 +556,7 @@ def test_the_osascript_shim_is_first_even_when_local_bin_was_already_on_path(tmp
     PATH, behind /usr/bin, and the old line only added it when missing, so the shim never ran."""
     text = LAUNCH.read_text()
     start = text.index('for d in /opt/homebrew/bin $HOME/.local/bin')
-    block = text[start:text.index('\nfi\n', start) + 4]
+    block = text[start:text.index('\n', start) + 1]   # the PATH line (the osascript check is a gate now)
     home = tmp_path / 'home'
     (home / '.local/bin').mkdir(parents=True)
     shim = home / '.local/bin/osascript'

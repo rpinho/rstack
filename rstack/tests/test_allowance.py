@@ -274,17 +274,21 @@ def test_real_launcher_leaves_allowance_admission_to_wrapper(env, tmp_path, job,
 def test_route_switch_to_codex_checks_concurrency_and_claude_is_exempt(env, tmp_path):
     rollout(Path(env['CODEX_HOME']), [event(86)])
     env['PANES'] = ''.join(pane('job-' + str(i)) for i in range(4))
-    result, calls, _ = launcher(env, tmp_path, 'lane-audit', selected='codex', requested='claude')
-    assert result.returncode == 75 and not calls.exists()
+    # RULE #1 (11-20): the cap queues (LAUNCH_QUEUE_SECONDS), then runs warned; it never refuses the job.
+    result, calls, log = launcher(dict(env, LAUNCH_QUEUE_SECONDS='0'), tmp_path, 'lane-audit', selected='codex',
+                                  requested='claude')
+    assert result.returncode == 0 and calls.exists() and 'launch-guard: QUEUED' in log.read_text()
     result, calls, _ = launcher(env, tmp_path, 'lane-audit', selected='claude')
     assert result.returncode == 0 and calls.exists(), result.stderr
 
 
-def test_real_launcher_concurrency_refusal_happens_before_executor(env, tmp_path):
+def test_real_launcher_concurrency_queues_before_executor_then_runs(env, tmp_path):
     rollout(Path(env['CODEX_HOME']), [event(20)])
     env['PANES'] = ''.join(pane('job-' + str(i)) for i in range(4))
-    result, calls, log = launcher(env, tmp_path, 'lane-deliver')
-    assert result.returncode == 75 and not calls.exists() and 'LAUNCH_MAX_CONCURRENT=4' in log.read_text()
+    result, calls, log = launcher(dict(env, LAUNCH_QUEUE_SECONDS='0'), tmp_path, 'lane-deliver')
+    text = log.read_text()
+    assert result.returncode == 0 and calls.exists() and 'LAUNCH_MAX_CONCURRENT=4' in text
+    assert text.index('launch-guard: QUEUED') < text.index('=== attempt 1')
 
 
 def test_real_launcher_capacity_retries_do_not_read_allowance(env, tmp_path):
@@ -385,8 +389,8 @@ def test_launcher_cap_excludes_exempt_sessions_and_counts_unknown_routes_once(en
 
 def test_urgency_does_not_override_concurrency(env, tmp_path):
     env['PANES'] = ''.join(pane('job-' + str(i)) for i in range(4))
-    result, calls, _ = launcher(dict(env, LAUNCH_URGENT='deadline'), tmp_path, 'lane-deliver')
-    assert result.returncode == 75 and not calls.exists()
+    result, calls, log = launcher(dict(env, LAUNCH_URGENT='deadline', LAUNCH_QUEUE_SECONDS='0'), tmp_path, 'lane-deliver')
+    assert 'launch-guard: QUEUED' in log.read_text()   # urgent or not, it waits its turn first
 
 
 def test_no_urgent_reason_leaves_service_tier_unset(env, tmp_path):

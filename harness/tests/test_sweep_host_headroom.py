@@ -117,15 +117,17 @@ def test_busy_is_scaled_by_the_hosts_cores_not_this_machines(cfg, tmp_path, monk
     "printf 'cores=0\\nfree_gib=1\\nbusy_pcpu=1\\n'",        # a machine with no cores
     "printf 'cores=x\\nfree_gib=1\\nbusy_pcpu=1\\n'",        # not a number
 ])
-def test_an_unreadable_host_refuses_rather_than_assuming_headroom(cfg, tmp_path, monkeypatch, body):
-    """A guard that passes when it cannot read the machine is not a guard. It must also not fall
-    back to this machine's numbers, which is the whole bug."""
-    monkeypatch.setattr(sweep, 'free_memory_gib', lambda: 64.0)
-    monkeypatch.setattr(sweep, 'cpu_busy', lambda: 0.0)
+def test_an_unreadable_host_warns_and_never_uses_this_machines_numbers(cfg, tmp_path, monkeypatch, capsys, body):
+    """It must not fall back to this machine's numbers, which is the whole bug. RULE #1 (11-20): an
+    unreadable probe is the harness's own error, so the sweep runs with a warning (the workers' memory
+    guard and time limits still bound it) instead of stopping."""
+    monkeypatch.setattr(sweep, 'free_memory_gib', lambda: pytest.fail('read this machine instead of the host'))
+    monkeypatch.setattr(sweep, 'cpu_busy', lambda: pytest.fail('read this machine instead of the host'))
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
     stub_ssh(tmp_path, monkeypatch, body)
-    with pytest.raises(ValueError) as e:
-        sweep.guard(cfg)
-    assert 'cannot read memory or CPU on m5' in str(e.value)
+    sweep.guard(cfg)
+    assert 'cannot read memory or CPU on m5' in capsys.readouterr().err
+    assert '"gate": "sweep.host-probe"' in (tmp_path / 'state/harness-blocks.jsonl').read_text()
 
 
 def test_without_a_host_nothing_is_probed(cfg, tmp_path, monkeypatch):

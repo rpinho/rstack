@@ -20,11 +20,27 @@ TOOLS = RSTACK / 'tools'
 BLOCKING = ('deny', 'ask')
 
 
+def refusing_registry():
+    """RULE #1 (11-20): a hook's class comes from rstack/gates.json, and most guards are now fail-open, so in
+    production their deny is a logged warning. These tests check what each guard DETECTS, which still matters
+    for its warning, so they run against a copy of the registry in which every gate refuses. What a fail-open
+    gate does with that detection is tested in tests/test_fail_open_gates.py, against the real registry."""
+    path = Path(os.environ.get('TMPDIR', '/tmp')) / 'rstack-test-gates-refusing-{}.json'.format(os.getpid())
+    if not path.exists():
+        reg = json.loads((RSTACK / 'gates.json').read_text())
+        for row in reg['gates']:
+            row['class'] = 'hard-line'
+            row.setdefault('hard_line', 'pending')
+        path.write_text(json.dumps(reg))
+    return str(path)
+
+
 def call(script, payload, cwd=None, env=None):
     raw = payload if isinstance(payload, str) else json.dumps(payload)
     # The ask default depends on who is answering (11-11): never inherit that from the developer's shell.
     e = {k: v for k, v in os.environ.items()
          if not k.startswith('CONDUCTOR_') and k not in ('RSTACK_ATTENDED', 'RSTACK_UNATTENDED', 'TMUX')}
+    e.setdefault('RH_GATES_REGISTRY', refusing_registry())
     e.update(env or {})
     p = subprocess.run([sys.executable, str(script)], input=raw, capture_output=True, text=True,
                        cwd=str(cwd or Path.cwd()), env=e, timeout=60)

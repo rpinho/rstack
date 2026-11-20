@@ -41,6 +41,9 @@ else
   target=$MODEL_STATE/LEADERBOARD.md
   # Returned delegated jobs ungraded for 24 h are recorded "ungraded" and listed for the morning report.
   "$PYTHON" "$REPO/harness/worker_models.py" --sweep-ungraded "$RH_LAUNCH_RECEIPTS" || true
+  # RULE #1 (11-20): yesterday's harness blocks. A block later rerun, overridden or retracted is a harness
+  # bug; general gets the count and the top three blockers (tell-general fyi). Never fails the tick.
+  "$PYTHON" "$REPO/harness/harness_blocks.py" report --tell ${=RH_BLOCKS_PEER_ARGS:-} || true
 fi
 "$PYTHON" "$HERE/model-roles.py" ingest
 "$PYTHON" "$HERE/model-roles.py" recompute

@@ -63,6 +63,14 @@ ask is kept only in the conductor (working directory ending in CONDUCTOR_CWD_SUF
 naming what to do instead. RSTACK_UNATTENDED=1 still forces a deny, the conductor included. A deny is
 stricter than an ask, so no guard gets weaker. Every ask, kept or converted, gets one line in
 $RSTACK_STATE_DIR/hook-asks.jsonl (the guard's own text, never the tool input).
+
+RULE #1 (Ricardo, 11-20: "Make sure the harness is not getting in our way"). Everything above is now
+for the hard lines only. A hook's class comes from rstack/gates.json through harness_blocks.py, not
+from the hook: a `fail-open` hook's deny or ask becomes a warning the session sees (systemMessage and
+additionalContext) and the call goes ahead, and an internal error in it allows the call with a warning.
+Only a `hard-line` hook (money, credentials, sends in Ricardo's name, permanent deletes, egress,
+unsandboxed third-party code) or one the registry does not know yet still refuses, and its refusal
+carries the registry's `fix`. Every refusal and every warning is one line in harness-blocks.jsonl.
 """
 import json
 import os
@@ -71,6 +79,73 @@ import signal
 import subprocess
 import sys
 import time
+
+
+def _blocks():
+    """harness_blocks.py (RULE #1): the repo's beside this file, else the installed harness. None if neither
+    imports, and then every hook keeps its old behaviour."""
+    if 'harness_blocks' in sys.modules:
+        return sys.modules['harness_blocks']
+    here = Path(__file__).resolve().parent
+    for cand in (here.parent.parent / 'harness', here,
+                 Path(os.environ.get('RH_HARNESS_ROOT') or Path.home() / '.local/share/research-harness').expanduser()):
+        if (cand / 'harness_blocks.py').is_file():
+            sys.path.insert(0, str(cand))
+            try:
+                import harness_blocks
+                return harness_blocks
+            except Exception:
+                return None
+            finally:
+                try:
+                    sys.path.remove(str(cand))
+                except ValueError:
+                    pass
+    return None
+
+
+def _who():
+    event = _CURRENT['event'] if isinstance(_CURRENT['event'], dict) else {}
+    job = 'session:' + str(event.get('session_id', ''))[:12] if event.get('session_id') else ''
+    lane = os.environ.get('RSTACK_LANE') or os.path.basename(str(event.get('cwd') or os.getcwd()).rstrip('/'))
+    return job, lane
+
+
+def fails_open(name=None):
+    """True when the registry says this hook may not refuse. Unknown, or no harness_blocks: False."""
+    hb = _blocks()
+    if hb is None:
+        return False
+    try:
+        return not hb.refuses(name or _CURRENT['name'])
+    except Exception:
+        return False
+
+
+def warn(reason, event_name=None):
+    """A fail-open hook's refusal: logged, shown to the session, and the call goes ahead."""
+    name = _CURRENT['name']
+    hb = _blocks()
+    job, lane = _who()
+    if hb is not None:
+        hb.record(name, 'fail-open', reason, job=job, lane=lane, outcome='warn')
+    text = '{} warning (fail-open; the call went ahead): {}'.format(name, reason)
+    out = {'systemMessage': text[:2000]}
+    if (event_name or EVENT) == 'PreToolUse':
+        out['hookSpecificOutput'] = {'hookEventName': 'PreToolUse', 'additionalContext': text[:2000]}
+    print(json.dumps(out))
+
+
+def block_stop(reason):
+    """For Stop/SubagentStop hooks: block the stop only when the registry lets this hook refuse."""
+    if fails_open():
+        warn(reason, event_name='Stop')
+        return
+    hb = _blocks()
+    if hb is not None:
+        job, lane = _who()
+        hb.record(_CURRENT['name'], hb.gate_class(_CURRENT['name']), reason, job=job, lane=lane, outcome='block')
+    print(json.dumps({'decision': 'block', 'reason': reason}))
 
 EVENT = 'PreToolUse'
 FAIL_CLOSED_ACTS = ('send', 'merge', 'push', 'delete', 'publish')
@@ -168,7 +243,20 @@ def _ledger(decision, reason):
 
 def decide(decision, reason):
     """Emit a PreToolUse decision. 'deny' refuses; 'ask' puts it to the owner, but only in an attended
-    session: anywhere else nobody can answer, so it is a deny saying what to do instead."""
+    session: anywhere else nobody can answer, so it is a deny saying what to do instead.
+
+    RULE #1: in a fail-open hook neither happens; the call goes ahead with a logged warning."""
+    if decision in ('deny', 'ask') and fails_open():
+        warn(reason)
+        return
+    hb = _blocks()
+    if decision in ('deny', 'ask') and hb is not None:
+        try:
+            fix = hb.fix_for(_CURRENT['name'])
+            if fix and fix not in reason:
+                reason = reason.rstrip() + ' Fix: ' + fix
+        except Exception:
+            pass
     if decision == 'ask':
         if not attended(_CURRENT['event']):
             decision, reason = 'deny', reason + (
@@ -176,6 +264,10 @@ def decide(decision, reason):
                 'what it needs works, or send the decision to the conductor and keep working.'.format(
                     'RSTACK_UNATTENDED=1' if unattended() else 'not the conductor'))
         _ledger(decision, reason)
+    if decision in ('deny', 'ask') and hb is not None:
+        job, lane = _who()
+        hb.record(_CURRENT['name'], hb.gate_class(_CURRENT['name']), reason, job=job, lane=lane,
+                  outcome='block')
     print(json.dumps({'hookSpecificOutput': {
         'hookEventName': EVENT,
         'permissionDecision': decision,
@@ -224,6 +316,16 @@ def run(name, body, triage=None, guards='this action', on_error='deny', fail_clo
         finally:
             if timeout:
                 signal.setitimer(signal.ITIMER_REAL, 0)
+
+    # RULE #1: a fail-open hook that broke is a warning, never a refusal, whatever it guards.
+    if fails_open(name):
+        print('[{}] internal error ({}); this hook is fail-open (rstack/gates.json), so the call was allowed. '
+              'The hook needs repair.'.format(name, why), file=sys.stderr)
+        hb = _blocks()
+        if hb is not None:
+            job, lane = _who()
+            hb.record(name, 'fail-open', 'internal error ({}); allowed'.format(why), job=job, lane=lane, outcome='warn')
+        return 0
 
     guarded = True
     if fail_closed:

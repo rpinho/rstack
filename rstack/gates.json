@@ -1,0 +1,1185 @@
+{
+ "schema": 1,
+ "rule": "RULE #1 (Ricardo, 11-20): the harness never gets in the way of the work. Only hard lines may refuse: money, credentials, send-as-ricardo, permanent-delete, egress, third-party-code. Everything else is fail-open: warn, log, continue. `pending` = general decides; old behaviour kept meanwhile.",
+ "principle": "rstack/principles/harness-never-in-the-way.md",
+ "gates": [
+  {
+   "gate": "trash-guard.py",
+   "files": [
+    "rstack/hooks/trash-guard.py"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "denies forced recursive rm and Finder deletes; protects registered paths",
+   "change": "none (hard line)",
+   "hard_line": "permanent-delete",
+   "fix": "/usr/bin/trash PATH (recoverable), never rm -rf"
+  },
+  {
+   "gate": "osascript-shim",
+   "files": [
+    "rstack/tools/osascript"
+   ],
+   "class": "hard-line",
+   "kind": "tool",
+   "old": "turns Finder deletes into /usr/bin/trash; refuses when the Trash fails",
+   "change": "none (hard line)",
+   "hard_line": "permanent-delete",
+   "fix": "/usr/bin/trash PATH"
+  },
+  {
+   "gate": "protected-paths",
+   "files": [
+    "rstack/tools/protected_paths.py",
+    "harness/protected_paths.py",
+    "harness/storage.py"
+   ],
+   "class": "hard-line",
+   "kind": "tool",
+   "old": "refuses deletes of registered release paths; storage deletes only to Trash",
+   "change": "none (hard line)",
+   "hard_line": "permanent-delete",
+   "fix": "move it to the Trash with /usr/bin/trash, or unregister the path in protected-paths.json"
+  },
+  {
+   "gate": "pod-create-gate.py",
+   "files": [
+    "rstack/hooks/pod-create-gate.py",
+    "tools/pod-create-gate.py"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "denies a RunPod create without a capacity receipt",
+   "change": "none (hard line)",
+   "hard_line": "money",
+   "fix": "record the capacity receipt the message names, then create the pod"
+  },
+  {
+   "gate": "pod-deadline-gate.py",
+   "files": [
+    "rstack/hooks/pod-deadline-gate.py",
+    "tools/pod-deadline-gate.py"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "denies a pod whose start command does not stop it within a day",
+   "change": "none (hard line)",
+   "hard_line": "money",
+   "fix": "entrypoint [\"/bin/bash\",\"-c\"] and a cmd that ends with the pod stopping itself within 24 h"
+  },
+  {
+   "gate": "selector.metered",
+   "files": [
+    "harness/worker_models.py",
+    "harness/agent_executor.py"
+   ],
+   "class": "hard-line",
+   "kind": "launcher",
+   "old": "refused pay-as-you-go routes (OpenRouter, Gemini API) as exit 2, like any selector error",
+   "change": "its own exit 4; every other selector refusal now reroutes",
+   "hard_line": "money",
+   "fix": "use a subscription route (AGENT_BACKEND=codex|claude|agy); RH_ALLOW_OPENROUTER=1 / RH_ALLOW_GEMINI_API=1 only with Ricardo's yes"
+  },
+  {
+   "gate": "read-the-thread-first.py",
+   "files": [
+    "rstack/hooks/read-the-thread-first.py"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "denies an email send click without a page-text read in the last 30 min",
+   "change": "none (hard line)",
+   "hard_line": "send-as-ricardo",
+   "fix": "read the thread first (get_page_text on the tab), then send"
+  },
+  {
+   "gate": "x-api-bypass-guard",
+   "files": [
+    "rstack/hooks/x-api-bypass-guard"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "denies direct X API calls",
+   "change": "none (hard line)",
+   "hard_line": "send-as-ricardo",
+   "fix": "post through x-route (grok-post / xurl policy), not the raw API"
+  },
+  {
+   "gate": "x-handle-guard",
+   "files": [
+    "rstack/tools/x-handle-guard"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "refuses X actions from a browser not logged in as the posting account",
+   "change": "none (hard line)",
+   "hard_line": "send-as-ricardo",
+   "fix": "log the browser into the posting account, then retry"
+  },
+  {
+   "gate": "x-submit-gate",
+   "files": [
+    "rstack/tools/x-submit-gate"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "refuses a Chrome submit on X without a browser reason",
+   "change": "none (hard line)",
+   "hard_line": "send-as-ricardo",
+   "fix": "post through x-route (Grok/API first); the browser only when x-route says BROWSER ALLOWED"
+  },
+  {
+   "gate": "x-policy",
+   "files": [
+    "harness/x_gate.py",
+    "rstack/tools/xurl-policy",
+    "rstack/tools/x-route",
+    "rstack/tools/x-reply-review",
+    "harness/lane_registry.py"
+   ],
+   "class": "hard-line",
+   "kind": "tool",
+   "old": "X posting policy: per-lane x=false, pacing, API scope",
+   "change": "none (hard line)",
+   "hard_line": "send-as-ricardo",
+   "fix": "x-route with a lane that allows X (REGISTRY.json x), after the pacing window"
+  },
+  {
+   "gate": "science-publish-gate.py",
+   "files": [
+    "~/.claude/hooks/science-publish-gate.py"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "refuses science publishing without the reading/verification/credit gates",
+   "change": "none (hard line; out-of-repo, installed only)",
+   "hard_line": "send-as-ricardo",
+   "fix": "science-publish-gate check, then follow the science-publish skill"
+  },
+  {
+   "gate": "email-voice-gate.py",
+   "files": [
+    "tools/email-voice-gate.py",
+    "kb/.claude/hooks/email-voice-gate.py"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "refuses an email in Ricardo's name that fails the voice/paper-cut rule",
+   "change": "none (hard line)",
+   "hard_line": "send-as-ricardo",
+   "fix": "load ricardo-voice, rewrite from his phrasing, run the voice lint until PASS"
+  },
+  {
+   "gate": "outreach.send",
+   "files": [
+    "harness/outreach.py",
+    "harness/friend_email.py",
+    "harness/science_email.py",
+    "harness/reciprocate.py"
+   ],
+   "class": "hard-line",
+   "kind": "tool",
+   "old": "no send without rh outreach approval",
+   "change": "none (hard line)",
+   "hard_line": "send-as-ricardo",
+   "fix": "rh outreach draft / lint / approve, then send through the gate"
+  },
+  {
+   "gate": "bug-claims-check",
+   "files": [
+    "harness/bug_verdicts.py"
+   ],
+   "class": "hard-line",
+   "kind": "tool",
+   "old": "refuses claims refuted before or refereed by the same family, before they go to a person",
+   "change": "none (hard line: what goes out under his name)",
+   "hard_line": "send-as-ricardo",
+   "fix": "drop the refuted claim or attach new evidence; use a different-family referee"
+  },
+  {
+   "gate": "no-laptop-shell.py",
+   "files": [
+    "~/.claude/hooks/no-laptop-shell.py"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "denies ssh/scp/rsync to the work laptop",
+   "change": "none (hard line; out-of-repo)",
+   "hard_line": "egress",
+   "fix": "stage the item and send it through the vetted handoff script"
+  },
+  {
+   "gate": "egress-gate",
+   "files": [
+    "rstack/tools/egress-gate",
+    "rstack/tools/egress-contacts",
+    "rstack/tools/clean-room"
+   ],
+   "class": "hard-line",
+   "kind": "tool",
+   "old": "refuses a push/upload/publish carrying private patterns",
+   "change": "none (hard line)",
+   "hard_line": "egress",
+   "fix": "remove the flagged text (egress-gate scan PATH names it), then push again; never --no-verify"
+  },
+  {
+   "gate": "contact-gate",
+   "files": [
+    "harness/contacts_ledger.py"
+   ],
+   "class": "hard-line",
+   "kind": "tool",
+   "old": "refuses address-shaped strings and contact data leaving the lane",
+   "change": "none (hard line)",
+   "hard_line": "egress",
+   "fix": "keep contact details out of the text; reference the contact by ledger id"
+  },
+  {
+   "gate": "lan-proxy.allowlist",
+   "files": [
+    "rstack/tools/lan-proxy"
+   ],
+   "class": "hard-line",
+   "kind": "tool",
+   "old": "refuses relay peers outside the allowlist",
+   "change": "none (hard line)",
+   "hard_line": "egress",
+   "fix": "add the peer to the lan-proxy allowlist (lan-proxy.md)"
+  },
+  {
+   "gate": "third_party.run",
+   "files": [
+    "harness/tools/third_party.py",
+    "harness/speedup.py"
+   ],
+   "class": "hard-line",
+   "kind": "tool",
+   "old": "runs third-party code only under sandbox-exec (no network, writes only in the job dir); refuses without it",
+   "change": "none (hard line)",
+   "hard_line": "third-party-code",
+   "fix": "run it through third_party.py run on a machine with sandbox-exec, or set RH_SANDBOX_COMMAND"
+  },
+  {
+   "gate": "codex-budget.npx",
+   "files": [
+    "rstack/tools/npx"
+   ],
+   "class": "hard-line",
+   "kind": "tool",
+   "old": "refuses `npx @openai/codex` (a Codex outside the spend wrapper)",
+   "change": "none (credentials/account: an unwrapped Codex on his login)",
+   "hard_line": "credentials",
+   "fix": "run the installed codex (the spend wrapper) instead of a fresh npm copy"
+  },
+  {
+   "gate": "codex-budget.limit",
+   "files": [
+    "rstack/tools/_codex_budget.py",
+    "rstack/tools/allowance",
+    "rstack/tools/codex"
+   ],
+   "class": "hard-line",
+   "kind": "tool",
+   "old": "Codex per-lane/day caps and 85% weekly refusal, exit 75",
+   "change": "goes through the registry; refusals logged; refused runs are now ungraded, never fail (auto_grade)",
+   "hard_line": "pending",
+   "fix": "LAUNCH_URGENT=<reason> for an urgent job, or AGENT_BACKEND=claude|agy",
+   "pending": "Recommend fail-open-with-reroute: when the lane cap refuses, launch.sh reruns the job on claude/agy instead of exit 75. It protects a shared weekly allowance, not money."
+  },
+  {
+   "gate": "rounds.repeat",
+   "files": [
+    "harness/tools/rounds.py"
+   ],
+   "class": "hard-line",
+   "kind": "launcher",
+   "old": "refuses a round whose (generator, params, scorer) ran in the last 5 rounds without --hypothesis",
+   "change": "through the registry; logged",
+   "hard_line": "pending",
+   "fix": "change a knob, or pass --hypothesis \"<what is different and what it would show>\"",
+   "pending": "Recommend fail-open: warn and run; lane-yield already fails a lane that spends without results."
+  },
+  {
+   "gate": "rounds.dry-family",
+   "files": [
+    "harness/tools/rounds.py"
+   ],
+   "class": "hard-line",
+   "kind": "launcher",
+   "old": "refuses the next round in a family after 3 dry rounds",
+   "change": "through the registry; logged",
+   "hard_line": "pending",
+   "fix": "run a different family, or close this one: rounds.py close-family",
+   "pending": "Recommend fail-open (warn) with the streak shown in the job prompt."
+  },
+  {
+   "gate": "rounds.dead-end",
+   "files": [
+    "harness/tools/rounds.py"
+   ],
+   "class": "hard-line",
+   "kind": "launcher",
+   "old": "refuses reopening a closed family without --new-evidence",
+   "change": "through the registry; logged",
+   "hard_line": "pending",
+   "fix": "pass --new-evidence \"<what changed>\"",
+   "pending": "Recommend fail-open (warn)."
+  },
+  {
+   "gate": "rounds.wrong-target",
+   "files": [
+    "harness/tools/rounds.py",
+    "harness/tools/spec.py"
+   ],
+   "class": "hard-line",
+   "kind": "launcher",
+   "old": "refuses a round when the lane target, lengths or size cap do not match the pinned challenge capture, or the capture changed",
+   "change": "through the registry; logged",
+   "hard_line": "pending",
+   "fix": "fix SPEC.json against the capture (spec.py --lane L diff), then spec.py --lane L pin",
+   "pending": "Recommend keep: it refuses wasted spend on the wrong target (c5: 115 rounds), and names its fix."
+  },
+  {
+   "gate": "rounds.baseline-drift",
+   "files": [
+    "harness/tools/rounds.py"
+   ],
+   "class": "hard-line",
+   "kind": "launcher",
+   "old": "refuses a round when a registered baseline stopped reproducing",
+   "change": "through the registry; logged (\"could not run\" split out as fail-open)",
+   "hard_line": "pending",
+   "fix": "baseline.py --lane L check, then re-register or fix the baseline",
+   "pending": "Recommend fail-open (warn in the prompt): the round can still run; its comparison is flagged."
+  },
+  {
+   "gate": "lane-yield.hold",
+   "files": [
+    "harness/tools/lane-yield/lane_yield.py"
+   ],
+   "class": "hard-line",
+   "kind": "report",
+   "old": "lane-yield --act writes HOLD for a lane that spent 20+ job-hours with no refereed result",
+   "change": "unchanged; the HOLD is enforced by launch.lane-hold",
+   "hard_line": "pending",
+   "fix": "general removes lanes/L/HOLD",
+   "pending": "Recommend keep as a report, but make the HOLD a warning in launch.sh (fail-open) and a decision card to general."
+  },
+  {
+   "gate": "launch.lane-hold",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "hard-line",
+   "kind": "launcher",
+   "old": "refuses every job of a lane with a HOLD file (exit 78)",
+   "change": "through the registry; refusal logged with its fix",
+   "hard_line": "pending",
+   "fix": "general removes lanes/L/HOLD (tell-general decision)",
+   "pending": "Recommend keep: a HOLD is general's own decision recorded as state."
+  },
+  {
+   "gate": "launch.lane-status",
+   "files": [
+    "harness/lane_registry.py"
+   ],
+   "class": "hard-line",
+   "kind": "launcher",
+   "old": "refuses jobs of a retired/ended/held lane (exit 78)",
+   "change": "through the registry; logged",
+   "hard_line": "pending",
+   "fix": "general reactivates the lane in lanes/REGISTRY.json",
+   "pending": "Recommend keep (an owner decision recorded as state), same as HOLD."
+  },
+  {
+   "gate": "launch.host-memguard",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "hard-line",
+   "kind": "launcher",
+   "old": "refuses a --host job when the host memory guard heartbeat is missing or over 60 s old",
+   "change": "through the registry; logged",
+   "hard_line": "pending",
+   "fix": "ssh HOST launchctl kickstart gui/$(id -u)/com.ricardo.mem-guard",
+   "pending": "Recommend fail-open-with-repair: kickstart the guard over ssh, then run. A freeze (11-10) kills every lane on that host."
+  },
+  {
+   "gate": "launch.host-peak-cap",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "hard-line",
+   "kind": "launcher",
+   "old": "refuses a --host job declaring a peak over 8 GB",
+   "change": "through the registry; logged",
+   "hard_line": "pending",
+   "fix": "run it on a RunPod pod (rh pod), or stream the data and measure again",
+   "pending": "Recommend keep: the alternative it names (a pod) costs money and needs a person; the mem guard kills it anyway."
+  },
+  {
+   "gate": "sweep.disk-floor",
+   "files": [
+    "harness/sweep.py"
+   ],
+   "class": "hard-line",
+   "kind": "launcher",
+   "old": "refuses a sweep below the disk floor on the worker machine",
+   "change": "unchanged",
+   "hard_line": "pending",
+   "fix": "free disk on the worker host (move old runs to Trash) or lower min_free_gib in SWEEP.toml",
+   "pending": "Recommend keep: a full disk fails every lane on that machine."
+  },
+  {
+   "gate": "sweep.host-headroom",
+   "files": [
+    "harness/sweep.py"
+   ],
+   "class": "hard-line",
+   "kind": "launcher",
+   "old": "waits for memory/CPU headroom, then refuses at its deadline",
+   "change": "unchanged (the unreadable-probe case is now sweep.host-probe, fail-open)",
+   "hard_line": "pending",
+   "fix": "wait, or lower memory_gib / cores in SWEEP.toml",
+   "pending": "Recommend fail-open after the wait (run at nice 10 under the memory guard)."
+  },
+  {
+   "gate": "sweep.engaged-only",
+   "files": [
+    "harness/sweep.py"
+   ],
+   "class": "hard-line",
+   "kind": "launcher",
+   "old": "refuses a sweep whose search_targets name friends who have not replied (Ricardo 11-11)",
+   "change": "unchanged",
+   "hard_line": "pending",
+   "fix": "remove the people who have not replied from search_targets, or set engaged_only = false",
+   "pending": "Recommend keep: it is Ricardo's own rule about whom we work on, close to the contact gate."
+  },
+  {
+   "gate": "conductor-inbox-gate.py",
+   "files": [
+    "rstack/hooks/conductor-inbox-gate.py",
+    "harness/tools/conductor-inbox/conductor-inbox-gate.py"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "denies SendMessage to the conductor; names relay/tell-general",
+   "change": "through the registry (installed copy is general-inbox-gate.py)",
+   "hard_line": "pending",
+   "fix": "tell-general fyi|decision|break \"...\" (relay), not SendMessage",
+   "pending": "Recommend keep: a reroute, the message still arrives; a wake replays general's whole context."
+  },
+  {
+   "gate": "general-inbox-gate.py",
+   "files": [
+    "~/.claude/skills/orchestrator/scripts/conductor-inbox-gate.py"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "installed name of conductor-inbox-gate.py",
+   "change": "same as conductor-inbox-gate.py",
+   "hard_line": "pending",
+   "fix": "tell-general fyi|decision|break \"...\" (relay), not SendMessage",
+   "pending": "Same as conductor-inbox-gate.py."
+  },
+  {
+   "gate": "lane-no-questions.py",
+   "files": [
+    "rstack/hooks/lane-no-questions.py",
+    "rstack/tools/ask_lint.py"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "denies a question card outside the conductor; ask_lint refuses mechanical asks to the owner",
+   "change": "through the registry; logged",
+   "hard_line": "pending",
+   "fix": "decide it yourself, or tell-general decision \"...\" and keep working",
+   "pending": "Recommend keep: the refusal is what keeps a lane working (lanes sat for days on one card)."
+  },
+  {
+   "gate": "general-relay-check.py",
+   "files": [
+    "rstack/hooks/general-relay-check.py"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "blocks the conductor's stop once while a session report is unrelayed",
+   "change": "through the registry (block_stop); logged",
+   "hard_line": "pending",
+   "fix": "relay each named session report to the owner, then finish",
+   "pending": "Recommend keep: it blocks once, never refuses work, and it is how reports reach Ricardo."
+  },
+  {
+   "gate": "poll-guard.py",
+   "files": [
+    "rstack/hooks/poll-guard.py",
+    "tools/poll-guard.py"
+   ],
+   "class": "fail-open",
+   "kind": "hook",
+   "old": "denied the 3rd identical foreground status check in 30 min",
+   "change": "warns (systemMessage + additionalContext), logs, allows",
+   "probe": {
+    "hook": "rstack/hooks/poll-guard.py",
+    "event": {
+     "tool_name": "Bash",
+     "tool_input": {
+      "command": "tail -5 /tmp/probe.log"
+     },
+     "session_id": "probe",
+     "cwd": "/tmp/probe-lane"
+    }
+   }
+  },
+  {
+   "gate": "gate-pipe-guard.py",
+   "files": [
+    "rstack/hooks/gate-pipe-guard.py"
+   ],
+   "class": "fail-open",
+   "kind": "hook",
+   "old": "denied a test/lint piped into tail/head/grep without pipefail",
+   "change": "warns, logs, allows",
+   "fix": "set -o pipefail; before the pipe",
+   "probe": {
+    "hook": "rstack/hooks/gate-pipe-guard.py",
+    "event": {
+     "tool_name": "Bash",
+     "tool_input": {
+      "command": "python3 -m pytest -q | tail -5"
+     },
+     "session_id": "probe",
+     "cwd": "/tmp/probe-lane"
+    }
+   }
+  },
+  {
+   "gate": "agent-stdin-guard.py",
+   "files": [
+    "rstack/hooks/agent-stdin-guard.py"
+   ],
+   "class": "fail-open",
+   "kind": "hook",
+   "old": "denied codex exec / claude -p with stdin left open",
+   "change": "warns, logs, allows",
+   "fix": "add < /dev/null, or pipe the prompt in",
+   "probe": {
+    "hook": "rstack/hooks/agent-stdin-guard.py",
+    "event": {
+     "tool_name": "Bash",
+     "tool_input": {
+      "command": "codex exec \"summarize the repo\""
+     },
+     "session_id": "probe",
+     "cwd": "/tmp/probe-lane"
+    }
+   }
+  },
+  {
+   "gate": "results-brief-guard.py",
+   "files": [
+    "rstack/hooks/results-brief-guard.py"
+   ],
+   "class": "fail-open",
+   "kind": "hook",
+   "old": "denied a subagent brief without You asked/I will/Done when",
+   "change": "warns, logs, allows",
+   "probe": {
+    "hook": "rstack/hooks/results-brief-guard.py",
+    "event": {
+     "tool_name": "Agent",
+     "tool_input": {
+      "description": "fix tests",
+      "prompt": "Fix the failing tests in harness/."
+     },
+     "session_id": "probe",
+     "cwd": "/tmp/probe-lane"
+    }
+   }
+  },
+  {
+   "gate": "results-report-guard.py",
+   "files": [
+    "rstack/hooks/results-report-guard.py"
+   ],
+   "class": "fail-open",
+   "kind": "hook",
+   "old": "blocked a subagent stop once without You asked/Shipped",
+   "change": "warns (systemMessage), logs, never blocks",
+   "probe": {
+    "hook": "rstack/hooks/results-report-guard.py",
+    "event": {
+     "hook_event_name": "SubagentStop",
+     "last_assistant_message": "Done. Fixed three tests.",
+     "session_id": "probe",
+     "cwd": "/tmp/probe-lane"
+    }
+   }
+  },
+  {
+   "gate": "block-main-tree-commit.py",
+   "files": [
+    "rstack/hooks/block-main-tree-commit.py"
+   ],
+   "class": "fail-open",
+   "kind": "hook",
+   "old": "denied git commit in a protected main checkout",
+   "change": "warns, logs, allows (a commit is reversible)",
+   "fix": "commit from a worktree (git worktree add)",
+   "probe": {
+    "hook": "rstack/hooks/block-main-tree-commit.py",
+    "event": {
+     "tool_name": "Bash",
+     "tool_input": {
+      "command": "git commit -m \"probe\""
+     },
+     "session_id": "probe",
+     "cwd": "/tmp/probe-lane"
+    }
+   }
+  },
+  {
+   "gate": "review-not-open.py",
+   "files": [
+    "~/.claude/hooks/review-not-open.py"
+   ],
+   "class": "fail-open",
+   "kind": "hook",
+   "old": "denied `open FILE.md`, pointing at review-add",
+   "change": "warns, logs, allows (installed-only hook; class from this registry via _hookfail)",
+   "fix": "review-add FILE --id ID --group G --title T"
+  },
+  {
+   "gate": "model-instruction-gate",
+   "files": [
+    "rstack/tools/model-instruction-gate"
+   ],
+   "class": "fail-open",
+   "kind": "hook",
+   "old": "refused (exit 2) judgment instructions naming a model, including launch.sh --model X --model-override REASON",
+   "change": "warns, logs, allows; a sanctioned --model + --model-override (or LAUNCH_MODEL + LAUNCH_MODEL_OVERRIDE) is allowed and logged as allowed-override",
+   "fix": "name the leaderboard role, or add --model-override \"<reason>\"",
+   "probe": {
+    "hook": "rstack/tools/model-instruction-gate",
+    "event": {
+     "tool_name": "Bash",
+     "tool_input": {
+      "command": "tools/launch.sh referee-c5 lanes/c5 --role review --made-by gpt-6.2-sol --model claude-sonnet-5-5 --model-override \"general: control arm on Sonnet\""
+     },
+     "session_id": "probe",
+     "cwd": "/tmp/probe-lane"
+    }
+   }
+  },
+  {
+   "gate": "general-inbox-relay.py",
+   "files": [
+    "rstack/hooks/general-inbox-relay.py"
+   ],
+   "class": "fail-open",
+   "kind": "hook",
+   "old": "UserPromptSubmit injector; never blocked",
+   "change": "none",
+   "probe": {
+    "hook": "rstack/hooks/general-inbox-relay.py",
+    "event": {
+     "hook_event_name": "UserPromptSubmit",
+     "prompt": "status?",
+     "session_id": "probe",
+     "cwd": "/tmp/probe-lane"
+    }
+   }
+  },
+  {
+   "gate": "launch.osascript-shim",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused a job (exit 78) when osascript was not the ~/.local/bin shim",
+   "change": "warns, logs, runs",
+   "fix": "put ~/.local/bin first on PATH",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_launch_gates_warn_and_run"
+   }
+  },
+  {
+   "gate": "launch.idea-promoted",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused (exit 78) a job whose LAUNCH_IDEA was not promoted",
+   "change": "warns, logs, runs",
+   "fix": "rh ideas promote ID",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_launch_gates_warn_and_run"
+   }
+  },
+  {
+   "gate": "launch.lane-registry",
+   "files": [
+    "harness/lane_registry.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused (exit 78) when the lane registry was unreadable",
+   "change": "runs under the lane its name gives, warned",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_an_unreadable_lane_registry_is_a_warning"
+   }
+  },
+  {
+   "gate": "launch.load",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused (exit 75) at load > 30, or when a host load was unreadable",
+   "change": "warns, logs, runs",
+   "fix": "wait, or LAUNCH_MAX_LOAD=N",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_launch_gates_warn_and_run"
+   }
+  },
+  {
+   "gate": "launch.host-peak-declared",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused (exit 78) a --host job with no Peak RSS line",
+   "change": "warns, logs, runs (the host memory guard still bounds it)",
+   "fix": "add 'Peak RSS: N GB' to the spec",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_launch_gates_warn_and_run"
+   }
+  },
+  {
+   "gate": "launch.spec-word-cap",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused (exit 2) a spec over 1,000 job-specific words without SPEC_OVER_CAP",
+   "change": "warns, logs, runs",
+   "fix": "SPEC_OVER_CAP=<reason>, or cut the spec",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_launch_gates_warn_and_run"
+   }
+  },
+  {
+   "gate": "launch.duplicate-session",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused (exit 75) when the job's tmux session was already running",
+   "change": "waits for the running copy and returns its exit code",
+   "fix": "tmux attach -t job-NAME",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_a_second_launch_waits_for_the_running_copy"
+   }
+  },
+  {
+   "gate": "launch.round-gate-error",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "any rounds.py failure, crash included, refused the job (exit 78)",
+   "change": "only rounds.py exit 2 (a refusing gate) refuses; a crash is a warning",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_a_round_gate_crash_does_not_stop_the_job"
+   }
+  },
+  {
+   "gate": "launch.model-selection",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "any selector refusal of a pinned/explore/made-by model stopped the job (exit 2)",
+   "change": "reroutes to the leaderboard pick for the role, warned; exit 4 (money) still refuses",
+   "fix": "name the role, not a model",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_a_refused_pin_reroutes_to_the_leaderboard_pick"
+   }
+  },
+  {
+   "gate": "launch.concurrency",
+   "files": [
+    "tools/launch.sh",
+    "rstack/tools/launch-guard"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "launch-guard refused (exit 75) a 5th Codex job and any job when it could not count sessions",
+   "change": "queues for a slot (LAUNCH_QUEUE_SECONDS, default 2 h), then runs warned; count errors are warnings",
+   "fix": "LAUNCH_MAX_CONCURRENT=N",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_the_concurrency_cap_queues_then_runs"
+   }
+  },
+  {
+   "gate": "launch.host-drift",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused (exit 2) a --host job when the host harness differed",
+   "change": "runs harness-sync --host, then the job, warned if the repair did not take",
+   "fix": "harness-sync --host HOST"
+  },
+  {
+   "gate": "launch.outcome-receipt",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "turned a finished job into exit 2 when its outcome receipt could not be written",
+   "change": "warns, keeps the job's own exit code",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_launch_gates_warn_and_run"
+   }
+  },
+  {
+   "gate": "auto-grade",
+   "files": [
+    "harness/auto_grade.py"
+   ],
+   "class": "fail-open",
+   "kind": "grader",
+   "old": "graded a run the Codex wrapper refused (exit 75) as fail (math_huntfree_1120)",
+   "change": "a wrapper/launcher refusal (exit 75/78 or a REFUSED line) is ungraded with note \"harness: <reason>\"; never blocks",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_a_wrapper_refusal_is_ungraded_not_failed"
+   }
+  },
+  {
+   "gate": "selector.claude-ceiling",
+   "files": [
+    "harness/worker_models.py",
+    "harness/claude_cap.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "rerouted at 80%; with no Codex/agy fallback it refused the job",
+   "change": "reroutes; with nowhere to go the job stays on Claude, warned",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_the_claude_ceiling_without_a_fallback_stays_on_claude"
+   }
+  },
+  {
+   "gate": "selector.judgment-spec-model",
+   "files": [
+    "harness/worker_models.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused (exit 2) a judgment spec that names a model",
+   "change": "the leaderboard pick runs, warned",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_launch_gates_warn_and_run"
+   }
+  },
+  {
+   "gate": "rounds.lane",
+   "files": [
+    "harness/tools/rounds.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused when --lane did not resolve",
+   "change": "warns; the round runs unrecorded",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_round_gate_process_checks_warn"
+   }
+  },
+  {
+   "gate": "rounds.unclosed",
+   "files": [
+    "harness/tools/rounds.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused a round while the last one had no outcome",
+   "change": "warns, opens the round",
+   "fix": "rounds.py --lane L log --round R --family F --outcome selective|dry|failed",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_round_gate_process_checks_warn"
+   }
+  },
+  {
+   "gate": "rounds.kb-unread",
+   "files": [
+    "harness/tools/rounds.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused round 1 (and dry streaks) without a KB consult receipt",
+   "change": "warns, opens the round",
+   "fix": "rounds.py --lane L consult --source PATH --took \"...\"",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_round_gate_process_checks_warn"
+   }
+  },
+  {
+   "gate": "rounds.baseline-check",
+   "files": [
+    "harness/tools/rounds.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused when the baseline check could not run (timeout, crash, bad host)",
+   "change": "warns, opens the round",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_round_gate_process_checks_warn"
+   }
+  },
+  {
+   "gate": "rounds.spec",
+   "files": [
+    "harness/tools/rounds.py",
+    "harness/tools/spec.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused a round for a missing, unreadable or malformed SPEC.json",
+   "change": "warns, opens the round (a wrong target is rounds.wrong-target)",
+   "fix": "spec.py --lane L pin",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_round_gate_process_checks_warn"
+   }
+  },
+  {
+   "gate": "codex-budget.accounting",
+   "files": [
+    "rstack/tools/_codex_budget.py"
+   ],
+   "class": "fail-open",
+   "kind": "tool",
+   "old": "after a Codex run, an accounting error turned its exit code into 75",
+   "change": "warns; the run's own exit code stands",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_codex_wrapper_errors_fail_open"
+   }
+  },
+  {
+   "gate": "codex-budget.unavailable",
+   "files": [
+    "rstack/tools/_codex_budget.py"
+   ],
+   "class": "fail-open",
+   "kind": "tool",
+   "old": "unreadable accounting/config refused every non-interactive Codex call (exit 75)",
+   "change": "warns and runs the native codex",
+   "fix": "codex-budget health",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_codex_wrapper_errors_fail_open"
+   }
+  },
+  {
+   "gate": "cs.banned-model",
+   "files": [
+    "harness/cs.py"
+   ],
+   "class": "fail-open",
+   "kind": "tool",
+   "old": "exited when a lane named a banned Claude Science model",
+   "change": "uses the default model, warned"
+  },
+  {
+   "gate": "sweep.worker-model-pin",
+   "files": [
+    "harness/sweep.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused a sweep with a hard-coded worker_model and no reason",
+   "change": "drops the pin for the leaderboard pick, warned",
+   "fix": "model_override = \"<reason>\" in SWEEP.toml"
+  },
+  {
+   "gate": "sweep.host-probe",
+   "files": [
+    "harness/sweep.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused a sweep when the host memory/CPU probe was unreadable",
+   "change": "runs without the headroom check, warned"
+  },
+  {
+   "gate": "sweep.host-drift",
+   "files": [
+    "harness/sweep.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused a sweep when the host harness differed",
+   "change": "runs harness-sync --host, then the sweep, warned if it did not take",
+   "fix": "harness-sync --host HOST"
+  },
+  {
+   "gate": "launch.hard-rule-lines",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "fail-open",
+   "kind": "lint",
+   "old": "You asked/Shipped lint: notify only",
+   "change": "none (already fail-open)"
+  },
+  {
+   "gate": "hook-audit",
+   "files": [
+    "rstack/tools/hook-audit",
+    "rstack/tools/hook-wrap-check"
+   ],
+   "class": "fail-open",
+   "kind": "report",
+   "old": "scheduled audits of hook wiring; exit 1 is their finding, they block nothing",
+   "change": "none"
+  },
+  {
+   "gate": "voice-lint",
+   "files": [
+    "rstack/tools/voice-lint"
+   ],
+   "class": "hard-line",
+   "kind": "lint",
+   "old": "gates outbound text in his name against his measured voice",
+   "change": "none (hard line)",
+   "hard_line": "send-as-ricardo",
+   "fix": "rewrite from his own phrasing and rerun voice-lint until PASS"
+  },
+  {
+   "gate": "result-gates",
+   "files": [
+    "harness/result_gates.py"
+   ],
+   "class": "hard-line",
+   "kind": "tool",
+   "old": "outreach refuses a paper email whose claims lack an allowed, refereed result; log-result refuses a --new yes row outside the lane window",
+   "change": "none (hard line: what goes out under his name)",
+   "hard_line": "send-as-ricardo",
+   "fix": "attach the refereed result the message names, or log the row as --new no"
+  },
+  {
+   "gate": "bughunt.coverage",
+   "files": [
+    "harness/bug_coverage.py"
+   ],
+   "class": "hard-line",
+   "kind": "tool",
+   "old": "refuses recording a bug-hunt round that covers nothing new at that commit",
+   "change": "unchanged",
+   "hard_line": "pending",
+   "fix": "cover new files or a new commit, or record why with the round",
+   "pending": "Recommend fail-open (warn), same family as rounds.repeat."
+  },
+  {
+   "gate": "mem-guard",
+   "files": [
+    "harness/tools/mem_guard.py"
+   ],
+   "class": "hard-line",
+   "kind": "tool",
+   "old": "kills a user process over the memory limit before it freezes the machine",
+   "change": "unchanged",
+   "hard_line": "pending",
+   "fix": "stream the data, lower the job's peak, or run it on a pod",
+   "pending": "Recommend keep: the 11-07 M4 reset and the 11-10 m5 freeze killed every lane; it protects the work."
+  },
+  {
+   "gate": "upstream.live-claim",
+   "files": [
+    "harness/upstream.py"
+   ],
+   "class": "hard-line",
+   "kind": "tool",
+   "old": "tell-general refuses a report that calls an unmerged PR \"live\"",
+   "change": "unchanged (enforced in tell-general, KB)",
+   "hard_line": "pending",
+   "fix": "say \"open\" or \"merged\" as upstream.py reports it",
+   "pending": "Recommend fail-open (warn, the report still goes) via a KB patch to tell-general."
+  },
+  {
+   "gate": "friend-reply-gate.py",
+   "files": [
+    "kb/.claude/hooks/friend-reply-gate.py",
+    "kb/.claude/hooks/friend-reply-gate.sh",
+    "kb/.claude/hooks/_kbgate.py"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "KB template: denies a friend reply without a fresh reply-lint PASS or approval",
+   "change": "none (hard line)",
+   "hard_line": "send-as-ricardo",
+   "fix": "run the friend-reply lint on the draft until PASS, then send that text"
+  },
+  {
+   "gate": "voice-send-gate.py",
+   "files": [
+    "kb/.claude/hooks/voice-send-gate.py"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "KB template: denies a send without a voice-cuts receipt",
+   "change": "none (hard line)",
+   "hard_line": "send-as-ricardo",
+   "fix": "voice-cuts FILE, then send exactly that text"
+  },
+  {
+   "gate": "guard-main-tree.py",
+   "files": [
+    "kb/.claude/hooks/guard-main-tree.py",
+    "kb/.claude/hooks/guard-main-tree.sh"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "old": "KB template: exit 2 on an edit to a tracked file in the main KB tree",
+   "change": "unchanged (its own exit 2, not _hookfail.decide)",
+   "hard_line": "pending",
+   "fix": "edit in a session worktree, then land",
+   "pending": "Recommend fail-open (warn), like block-main-tree-commit: an edit in the main tree is reversible. A patch for the live KB copy is in the private audit."
+  }
+ ],
+ "exempt": {
+  "rstack/hooks/_hookfail.py": "the wrapper every hook decides through; its refusals are the calling gate's",
+  "harness/harness_blocks.py": "the registry client itself",
+  "harness/tools/harness-sync/harness_sync.py": "installer: refuses to overwrite hand edits or install under a running job; nothing a lane runs waits on it",
+  "harness/tools/conductor-inbox/install-conductor-inbox.sh": "installer script",
+  "harness/settings.py": "mentions a refusal in a comment only",
+  "harness/cadence.py": "reports the last sweep refusal; refuses nothing",
+  "harness/tools/lane-nudge/lane-nudge": "reports a refused sweep; refuses nothing",
+  "harness/tools/prior_art_receipt.py": "mentions refused sources in a comment only",
+  "harness/tools/spec_words.py": "word counter for launch.spec-word-cap; refuses nothing itself",
+  "harness/tools/baseline.py": "ledger validator: refuses to record a baseline that does not reproduce; no work waits on it",
+  "harness/tools/lane-yield/log_result.py": "ledger validator: refuses a malformed result row",
+  "harness/tools/inputs.py": "argument validation and a staged-input hash check (a corrupt file)",
+  "harness/tools/result_lint.py": "prints, never refuses",
+  "rstack/tools/x-log": "ledger validator: refuses a malformed X log row",
+  "rstack/tools/ui-golden": "screenshot test tool",
+  "rstack/tools/_grok_ask.py": "response parser",
+  "rstack/tools/event-watch": "mentions refusals in docs only",
+  "rstack/tools/job-health": "reports failures; refuses nothing",
+  "kb/.claude/hooks/_hookfail.py": "the KB template's copy of rstack/hooks/_hookfail.py (kept identical by test_kb_gates)",
+  "rstack/tools/x-usage-reconcile": "mentions an API refusal in a comment only",
+  "harness/lane_setup.py": "lane declaration audit: records, never refuses",
+  "rstack/tools/gates_lint.py": "this lint (exit 1 is its finding; it runs in the test suite, not in any work path)"
+ },
+ "private_gates": "Gates in the private KB and on the controller are classed in the private audit, not here."
+}

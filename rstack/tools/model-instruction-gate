@@ -12,6 +12,38 @@ REASON = ('name the leaderboard role, not a model (LEADERBOARD.md). '
           'use launch.sh --role review --made-by MODEL.')
 
 
+def sanctioned_override(args):
+    """The launcher's own logged override (worker_models: --model needs --model-override REASON): a launch
+    that pins a model WITH a non-empty reason, as flags or as LAUNCH_MODEL plus LAUNCH_MODEL_OVERRIDE.
+    11-20 (math): general decided a control arm runs on Sonnet; this hook refused the sanctioned path."""
+    model = override = ''
+    for i, arg in enumerate(args):
+        nxt = args[i + 1] if i + 1 < len(args) else ''
+        if arg == '--model':
+            model = nxt
+        elif arg.startswith('--model='):
+            model = arg.split('=', 1)[1]
+        elif arg == '--model-override':
+            override = nxt
+        elif arg.startswith('--model-override='):
+            override = arg.split('=', 1)[1]
+        elif arg.startswith('LAUNCH_MODEL='):
+            model = arg.split('=', 1)[1]
+        elif arg.startswith(('LAUNCH_MODEL_OVERRIDE=', 'MODEL_OVERRIDE_REASON=')):
+            override = arg.split('=', 1)[1]
+    return bool(model.strip() and override.strip() and not override.startswith('-'))
+
+
+def refuse(why=REASON):
+    """RULE #1 (11-20): only rstack/gates.json decides; this gate is fail-open, so a judgment instruction
+    that names a model is a logged warning and the call goes ahead."""
+    if _hookfail.fails_open('model-instruction-gate'):
+        _hookfail.warn(why)
+        return 0
+    print(why, file=sys.stderr)
+    return 2
+
+
 def triage(raw, event):
     return any(word in raw for word in ('SendMessage', 'tell-general', 'lane-briefs',
                                        'Agent', 'claude', 'codex'))
@@ -37,8 +69,7 @@ def body(event):
         if not isinstance(model, str) or any(not isinstance(t, str) for t in instructions):
             raise ValueError('Agent model and instructions must be text')
         if model and any(judgment_task(t) or assigns_judgment_model(t) for t in instructions):
-            print(REASON, file=sys.stderr)
-            return 2
+            return refuse()
     elif tool == 'SendMessage':
         texts = [payload['message']]
     elif tool == 'Bash':
@@ -48,9 +79,15 @@ def body(event):
             if argv and Path(argv[0]).name == 'tell-general':
                 texts.extend(argv[1:])
                 texts.append(' '.join(argv[2:]).lstrip('\"\x27'))
+            if sanctioned_override(args):
+                hb = _hookfail._blocks()
+                if hb is not None:
+                    job, lane = _hookfail._who()
+                    hb.record('model-instruction-gate', 'fail-open', 'launch pins a model with --model-override '
+                              '(the launcher\'s logged override): allowed', job=job, lane=lane, outcome='allowed-override')
+                continue
             if judgment_command(args, piped):
-                print(REASON, file=sys.stderr)
-                return 2
+                return refuse()
     else:
         path = payload['file_path']
         if not isinstance(path, str):
@@ -61,8 +98,7 @@ def body(event):
         if not isinstance(text, str):
             raise ValueError('outgoing text must be text')
         if assigns_judgment_model(text):
-            print(REASON, file=sys.stderr)
-            return 2
+            return refuse()
     return 0
 
 

@@ -14,6 +14,9 @@ from pathlib import Path
 import re
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _hookfail  # noqa: E402
+
 ASKED = re.compile(r'you asked\b', re.I)
 REASON = ('results-report-guard: rewrite your final report so it opens "You asked: X. Shipped: Y" (the '
           'goal, then the result delivered), followed by the count of results actually delivered, not '
@@ -48,7 +51,9 @@ def main():
         text = data.get('last_assistant_message') or last_text(
             data.get('agent_transcript_path') or data.get('transcript_path') or '')
         if text and not ASKED.search(text[:400]):
-            print(json.dumps({'decision': 'block', 'reason': REASON}))
+            # RULE #1: only the registry may let this block the stop; it is fail-open (a warning).
+            _hookfail._CURRENT['name'] = 'results-report-guard.py'
+            _hookfail.block_stop(REASON)
     except Exception as exc:
         print('[results-report-guard.py] internal error ({}); the report went through. The hook needs '
               'repair.'.format(type(exc).__name__), file=sys.stderr)

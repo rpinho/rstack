@@ -196,7 +196,12 @@ def model_for(project, opts):
             if project and cfg.get('claude_science_project', '').rstrip('/').endswith(project):
                 model = cfg.get('claude_science_model', rh.CS_DEFAULT_MODEL)
     if model in rh.CS_BANNED_MODELS:
-        sys.exit('{} is banned (configured model policy): use {} (alternate {})'.format(model, rh.CS_DEFAULT_MODEL, rh.CS_ALTERNATE_MODEL))
+        # RULE #1 (11-20): a banned model is rerouted to the default, with a warning, not refused.
+        import harness_blocks
+        why = '{} is banned (configured model policy); using {}'.format(model, rh.CS_DEFAULT_MODEL)
+        if harness_blocks.gate('cs.banned-model', why, fix='pick {} or {}'.format(rh.CS_DEFAULT_MODEL, rh.CS_ALTERNATE_MODEL)):
+            sys.exit(why)
+        model = rh.CS_DEFAULT_MODEL
     return model
 _BASE = None
 _ORIGIN = None

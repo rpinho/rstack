@@ -121,12 +121,25 @@ def test_launcher_uses_role_model_and_propagates_failure(fake_home):
     assert not (Path(env['LAUNCH_STATE'])/'fixture-job.job').exists()
 
 
-def test_launcher_refuses_fixed_model_before_executor(fake_home):
+def fake_claude(fake_home):
+    """The launcher may route a job to claude; never the real CLI in a test."""
+    home, c, work, env = fake_home
+    claude = c / 'fake-claude'
+    claude.write_text('#!' + sys.executable + '\nimport json,os,sys\nfrom pathlib import Path\n'
+                      'Path(os.environ["FAKE_CALL"]).write_text(json.dumps(sys.argv))\n'
+                      'print(json.dumps({"is_error":False,"subtype":"success","result":"fixture"}))\n')
+    claude.chmod(0o755)
+    env['LAUNCH_CLAUDE'] = str(claude)
+
+
+def test_launcher_reroutes_a_fixed_model_without_a_reason_to_the_leaderboard_pick(fake_home):
+    # RULE #1 (11-20): it used to stop the job (exit 2); now the leaderboard's pick runs, with a warning.
     home,c,work,env=fake_home
     result=run_launcher(fake_home,'--model','fixture-fast')
-    assert result.returncode==2
-    assert not Path(env['FAKE_CALL']).exists()
-    assert 'hard-coded model refused' in result.stderr
+    assert result.returncode==0,result.stderr
+    assert 'hard-coded model refused' in result.stderr and '[launch.model-selection] WARNING' in result.stderr
+    receipt=json.loads((c/'fixture-job.log.selection.json').read_text())
+    assert receipt['source']=='leaderboard' and not receipt['model_override']
 
 
 def test_launcher_explicit_override_is_logged(fake_home):
@@ -352,14 +365,17 @@ def test_owner_override_env_is_accepted_and_logged(tmp_path, monkeypatch):
                        job='fixture-review', utc=got['utc'])
 
 
-def test_review_launch_pin_refused_before_executor(fake_home):
+def test_review_launch_pin_is_rerouted_to_the_leaderboard_pick(fake_home):
+    # A judgment pin still needs `Ricardo: REASON` (left to general, see AUDIT); without it the job no longer
+    # stops: the leaderboard's pick referees it, warned (RULE #1).
     _, _, _, env = fake_home
     judgment_roles(Path(env['RH_ROLES_FILE']))
+    fake_claude(fake_home)
     result = run_launcher(fake_home, '--role', 'review', '--made-by', 'gpt-6.1-sol',
                           '--model', 'claude-sonnet-5', '--model-override', 'save budget')
-    assert result.returncode == 2
+    assert result.returncode == 0, result.stderr
     assert 'review' in result.stderr and 'leaderboard picks claude-opus-5-5' in result.stderr
-    assert not Path(env['FAKE_CALL']).exists()
+    assert 'claude-opus-5-5' in json.loads(Path(env['FAKE_CALL']).read_text())
 
 
 def test_review_pin_refusal_names_pick_even_without_maker(tmp_path):
@@ -423,10 +439,11 @@ def test_inferred_review_also_refuses_models_in_spec(fake_home):
     judgment_roles(Path(env['RH_ROLES_FILE']))
     job = 'math_c38ref_1104'
     (artifacts / (job + '.md')).write_text('Use Sonnet to referee the claim.\n')
+    fake_claude(fake_home)
     result = run_launcher(fake_home, '--made-by', 'gpt-6.1-sol', job=job)
-    assert result.returncode == 2
-    assert 'name the leaderboard role, not a model' in result.stderr
-    assert not Path(env['FAKE_CALL']).exists()
+    assert result.returncode == 0, result.stderr       # RULE #1: warned, and the leaderboard pick runs
+    assert 'the spec names a model for a judgment role' in result.stderr
+    assert 'claude-opus-5-5' in json.loads(Path(env['FAKE_CALL']).read_text())
 
 
 @pytest.mark.parametrize('name', ['sonnet', 'OPUS', 'gpt-6-astra', 'claude-fable-5-2', 'deepseek',
@@ -435,11 +452,12 @@ def test_judgment_spec_names_are_refused_before_executor(fake_home, name):
     _, artifacts, _, env = fake_home
     judgment_roles(Path(env['RH_ROLES_FILE']))
     (artifacts / 'fixture-job.md').write_text('Use {} for the next review.\n'.format(name))
+    fake_claude(fake_home)
     result = run_launcher(fake_home, '--role', 'review', '--made-by', 'gpt-6.1-sol')
-    assert result.returncode == 2
-    assert ('launch.sh refused fixture-job: name the leaderboard role, not a model (LEADERBOARD.md); '
-            'the leaderboard picks claude-opus-5-5') in result.stderr
-    assert not Path(env['FAKE_CALL']).exists()
+    assert result.returncode == 0, result.stderr       # RULE #1: warned, and the leaderboard pick runs
+    assert ('fixture-job: the spec names a model for a judgment role; the leaderboard picks claude-opus-5-5'
+            ) in result.stderr
+    assert 'claude-opus-5-5' in json.loads(Path(env['FAKE_CALL']).read_text())
 
 
 @pytest.mark.parametrize('made_by,expected', [('gpt-6.1-sol', 'claude-opus-5-5'),
@@ -1013,8 +1031,9 @@ def test_at_the_ceiling_claude_is_refused_and_the_job_takes_codex_then_agy(tmp_p
     got = wm.select('batch', 'claude', path=p)
     assert (got['executor'], got['route_model']) == ('agy', 'claude-sonnet-5-5-high')
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'claude')
-    with pytest.raises(ValueError, match='ceiling.*no Codex or agy fallback'):
-        wm.select('batch', 'claude', path=p)
+    # RULE #1 (11-20): with nowhere to reroute, the job stays on Claude with a warning instead of stopping
+    got = wm.select('batch', 'claude', path=p)
+    assert got['executor'] == 'claude' and 'no fallback route' in got['claude_cap']
     # a pinned or explicit model has no fallback either: it is refused, not swapped
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     with pytest.raises(ValueError, match='ceiling'):
@@ -1034,8 +1053,8 @@ def test_a_referee_never_falls_back_into_the_family_it_judges(tmp_path, monkeypa
     got = wm.select('review', 'claude', path=p, made_by='gpt-6.2-sol')
     assert got['executor'] == 'agy'                      # judging GPT work: agy's Claude is another family
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'claude,codex')   # Codex is the producer's family, agy absent
-    with pytest.raises(ValueError, match='no Codex or agy fallback'):
-        wm.select('review', 'claude', path=p, made_by='gpt-6.2-sol')
+    got = wm.select('review', 'claude', path=p, made_by='gpt-6.2-sol')
+    assert got['executor'] == 'claude' and 'no fallback route' in got['claude_cap']   # never into GPT
 
 
 def test_from_70_percent_the_receipt_warns(tmp_path, monkeypatch):

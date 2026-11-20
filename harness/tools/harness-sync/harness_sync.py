@@ -42,7 +42,9 @@ RSTACK_TOOLS = ('codex', 'codex-budget', '_codex_budget.py', 'codex-budget.json.
                 'x-handle-guard', 'grok-ask', 'x-route', 'x-submit-gate', 'xurl', 'xurl-policy', 'x-log')
 # The job launcher, installed at <root>/launcher/ so the lanes run committed launcher code (11-20: their
 # per-host _codex/launch.sh is now a thin exec into it). It finds the harness as the root it sits in.
-LAUNCHER = {'tools/launch.sh': 'launcher/launch.sh', 'tools/RULES.md': 'launcher/RULES.md'}
+LAUNCHER = {'tools/launch.sh': 'launcher/launch.sh', 'tools/RULES.md': 'launcher/RULES.md',
+            # RULE #1 (11-20): the gate registry every gate reads its class from at run time.
+            'rstack/gates.json': 'rstack/gates.json'}
 CODE_SUFFIXES = {'.py', '.sh'}
 SKIP_DIRS = {'lanes', '__pycache__', 'alerts', '.pytest_cache'}
 HOST_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z')

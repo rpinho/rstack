@@ -55,6 +55,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import settings
 import toml_subset
+import harness_blocks
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import spec
 
@@ -75,6 +76,25 @@ BASELINE_MAX_AGE_S = 7 * 86400
 BASELINE_TIMEOUT_S = 3600
 BASELINE_TOOL = Path(__file__).resolve().parent / 'baseline.py'
 HOST_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z')   # an ssh alias, as launch.sh checks it
+
+# RULE #1 (Ricardo, 11-20): each kind of error is its own gate in rstack/gates.json, and only the registry
+# decides whether it refuses the round or is a warning the round runs past. The checks below still find
+# everything they found; what they may stop changed.
+GATE_OF = (('UNCLOSED', 'rounds.unclosed'), ('REPEAT', 'rounds.repeat'), ('DEAD_END', 'rounds.dead-end'),
+           ('DRY_FAMILY', 'rounds.dry-family'), ('KB_UNREAD', 'rounds.kb-unread'),
+           ('BASELINE_CHECK', 'rounds.baseline-check'), ('BASELINE_DRIFT', 'rounds.baseline-drift'),
+           ('WRONG_TARGET', 'rounds.wrong-target'), ('WRONG_LENGTH', 'rounds.wrong-target'),
+           ('SPEC capture CHANGED', 'rounds.wrong-target'))
+
+
+def gate_name(error):
+    """The registry gate an error belongs to. Anything about the SPEC file itself is `rounds.spec`."""
+    if error.startswith('SPEC size_cap') and 'does not appear' in error:
+        return 'rounds.wrong-target'
+    for prefix, name in GATE_OF:
+        if error.startswith(prefix):
+            return name
+    return 'rounds.spec'
 
 
 def lane_host(lane):
@@ -387,9 +407,12 @@ def main(argv=None):
 
     except ValueError as exc:
 
-        print('REFUSED: ' + str(exc), file=sys.stderr)
-
-        return 2
+        # Not a lane the ledger can be written in: a harness or call error, never a reason to stop the
+        # round (RULE #1), so it is a warning and the round runs unrecorded.
+        if harness_blocks.gate('rounds.lane', 'cannot resolve --lane: {}'.format(exc),
+                               fix='pass the lane directory, or a name under RH_ROOT/lanes'):
+            return 2
+        return 0
     now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     if a.action == 'log':
         row = dict(utc=now, round=a.round, family=a.family, outcome=a.outcome,
@@ -413,9 +436,8 @@ def main(argv=None):
     errors, warnings = gate(a.lane, a.family, a.new_evidence, fp=fp, hypothesis=a.hypothesis)
     for w in warnings:
         print('WARN: ' + w, file=sys.stderr)
-    for e in errors:
-        print('REFUSED: ' + e, file=sys.stderr)
-    if errors:
+    refusing = [e for e in errors if harness_blocks.gate(gate_name(e), e, lane=a.lane.name)]
+    if refusing:
         return 2
     if a.action == 'start':
         # Only now, and in the same command, so a caller cannot gate and then run something else.

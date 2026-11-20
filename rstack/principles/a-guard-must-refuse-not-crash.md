@@ -30,3 +30,5 @@ denied on every internal error.
 **Test it by feeding each guard input it cannot read**, and assert the refusal. Four of the defects
 found this way were in the author's own new code, including a guard that normalised an unreadable
 payload into "not the dangerous action" and allowed it.
+
+**Since 11-20 this applies to the hard lines only.** [Rule #1](harness-never-in-the-way.md): a gate that is not a hard line fails open, so its crash is a logged warning and the call goes ahead. `_hookfail` reads the class from `rstack/gates.json`.

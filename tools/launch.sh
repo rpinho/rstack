@@ -8,10 +8,6 @@ setopt pipefail
 # turns a Finder delete into a silent /usr/bin/trash; a math Codex job deleted through Finder (the
 # owner heard it) because a PATH that already had ~/.local/bin behind /usr/bin was left alone.
 for d in /opt/homebrew/bin $HOME/.local/bin; do [[ -d $d ]] && path=($d ${path:#$d}); done; export PATH
-if [[ -x $HOME/.local/bin/osascript && $(whence -p osascript) != $HOME/.local/bin/osascript ]]; then
-  print -u2 -- "launch.sh refused: osascript resolves to $(whence -p osascript), not the shim in ~/.local/bin, so a Finder delete in this job would play the trash sound. Put ~/.local/bin first on PATH."
-  exit 78
-fi
 (( $# >= 2 )) || { print -u2 -- 'usage: launch.sh JOB WORKDIR'; exit 2; }
 self=${0:A}
 # The harness this file runs: ../harness in a checkout, .. in the installed root, where harness-sync puts
@@ -19,6 +15,23 @@ self=${0:A}
 # runs committed code; the installed root had no launcher before).
 if [[ -d ${self:h:h}/harness ]]; then H=${self:h:h}/harness; else H=${self:h:h}; fi
 job=$1; dir=$2; shift 2
+# RULE #1 (Ricardo, 11-20: "Make sure the harness is not getting in our way"). Every admission check in
+# this file asks `refuses GATE REASON FIX` instead of exiting on its own. Only a gate that rstack/gates.json
+# classes a hard line (or one it leaves to general, `pending`) refuses, naming the fix; every other check
+# logs a warning to harness-blocks.jsonl and the job runs. A helper that cannot run is a warning too.
+hblocks=${LAUNCH_HARNESS_BLOCKS:-$H/harness_blocks.py}
+refuses() {
+  python3 "$hblocks" gate --gate "$1" --reason "$2" --fix "${3:-}" --job "$job" --lane "${lane:-}"
+  local rc=$?
+  (( rc == 3 )) && return 0
+  (( rc == 0 )) || print -u2 -- "[$1] harness_blocks unavailable (exit $rc): carrying on (RULE #1)"
+  return 1
+}
+if [[ -x $HOME/.local/bin/osascript && $(whence -p osascript) != $HOME/.local/bin/osascript ]]; then
+  if refuses launch.osascript-shim "osascript resolves to $(whence -p osascript), not the shim in ~/.local/bin, so a Finder delete in this job would play the trash sound" "put ~/.local/bin first on PATH"; then
+    exit 78
+  fi
+fi
 # Optional and never fatal: a missing notifier must not turn a job into a failed one.
 notify() { [[ -z ${LAUNCH_NOTIFY_COMMAND:-} ]] || ${=LAUNCH_NOTIFY_COMMAND} "$1" >/dev/null 2>&1 || true; }
 LAUNCH_ROLE=${LAUNCH_ROLE:-batch}; LAUNCH_MODEL=${LAUNCH_MODEL:-}; LAUNCH_MODEL_OVERRIDE=${LAUNCH_MODEL_OVERRIDE:-$MODEL_OVERRIDE_REASON}
@@ -85,8 +98,9 @@ except (ValueError, TypeError):
     ok = False
 sys.exit(0 if ok else 1)
 ' "$LAUNCH_IDEA"; then
-    print -u2 -- "launch.sh REFUSED $job: idea $LAUNCH_IDEA is not promoted (status testing). Run rh ideas promote first."
-    exit 78
+    if refuses launch.idea-promoted "idea $LAUNCH_IDEA is not promoted (status testing)" "rh ideas promote $LAUNCH_IDEA"; then
+      exit 78
+    fi
   fi
 fi
 [[ $dir = /* ]] || dir=${LAUNCH_WORK_ROOT:-$PWD}/$dir
@@ -108,16 +122,16 @@ if [[ -n $LAUNCH_HOST ]]; then
   load=$(${=${LAUNCH_SSH:-ssh}} -o BatchMode=yes -o ConnectTimeout=20 "$LAUNCH_HOST" \
          "$remote_loadavg" 2>/dev/null | awk 'NF{print int($1); exit}')
   load_where=$LAUNCH_HOST
-  if [[ $load != <-> ]]; then
-    print -u2 -- "launch.sh refused: cannot read the load on $LAUNCH_HOST. The executor runs there, so that is the load that decides, and a precondition this machine cannot measure is a refusal rather than a fallback to its own number."
+  if [[ $load != <-> ]] && refuses launch.load "cannot read the load on $LAUNCH_HOST, where the executor runs" "ssh $LAUNCH_HOST uptime"; then
     exit 75
   fi
 else
   load=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print int($2)}')
   load_where='this machine'
 fi
-if [[ $load == <-> ]] && (( load > ${LAUNCH_MAX_LOAD:-30} )) && [[ -z $FORCE_LAUNCH ]]; then
-  print -u2 -- "launch.sh refused: load $load on $load_where"; exit 75
+if [[ $load == <-> ]] && (( load > ${LAUNCH_MAX_LOAD:-30} )) && [[ -z $FORCE_LAUNCH ]] &&
+   refuses launch.load "load $load on $load_where (over ${LAUNCH_MAX_LOAD:-30})" "wait for the load to fall, or LAUNCH_MAX_LOAD=N"; then
+  exit 75
 fi
 artifacts=${LAUNCH_ARTIFACT_DIR:-$PWD/.runtime/jobs}
 # Sweep passes a relative spec path; standalone jobs use the configured artifacts dir. An absolute
@@ -140,17 +154,16 @@ if [[ -n $LAUNCH_HOST ]]; then
   hbf=${LAUNCH_MEMGUARD_HEARTBEAT:-'$HOME/.local/state/mem-guard/heartbeat'}
   hb=$(${=${LAUNCH_SSH:-ssh}} -o BatchMode=yes -o ConnectTimeout=20 "$LAUNCH_HOST" \
        "f=$hbf; [ -f \"\$f\" ] && echo \$(( \$(date +%s) - \$(stat -f %m \"\$f\" 2>/dev/null || stat -c %Y \"\$f\") ))" 2>/dev/null | awk 'NF{print int($1); exit}')
-  if [[ $hb != <-> ]] || (( hb > 60 )); then
-    print -u2 -- "launch.sh refused $job: the memory guard on $LAUNCH_HOST is not running (heartbeat ${hb:+$hb s old}${hb:-missing}). No job runs there without it: launchctl kickstart gui/\$(id -u)/com.ricardo.mem-guard on $LAUNCH_HOST."
+  if { [[ $hb != <-> ]] || (( hb > 60 )); } &&
+     refuses launch.host-memguard "the memory guard on $LAUNCH_HOST is not running (heartbeat ${hb:+$hb s old}${hb:-missing})" "ssh $LAUNCH_HOST launchctl kickstart gui/\$(id -u)/com.ricardo.mem-guard"; then
     exit 75
   fi
   peak=$(grep -Eio -m1 '^[-* ]*peak rss: *[0-9]+(\.[0-9]+)? *GB' $spec 2>/dev/null | grep -Eo '[0-9]+(\.[0-9]+)?' | head -1)
-  if [[ -z $peak ]]; then
-    print -u2 -- "launch.sh refused $job: a job for $LAUNCH_HOST declares its memory. Add a line 'Peak RSS: N GB' to the spec, measured by running the heaviest step once under /usr/bin/time -l (maximum resident set size)."
+  if [[ -z $peak ]] && refuses launch.host-peak-declared "a job for $LAUNCH_HOST declares no 'Peak RSS: N GB' line; the memory guard there still kills anything over its limit" "add 'Peak RSS: N GB' to $spec, measured with /usr/bin/time -l on the heaviest step"; then
     exit 78
   fi
-  if (( peak > ${LAUNCH_MAX_PEAK_GB:-8} )); then
-    print -u2 -- "launch.sh refused $job: declared peak $peak GB is over ${LAUNCH_MAX_PEAK_GB:-8} GB, so it runs on a RunPod pod (rh pod), not on $LAUNCH_HOST. Or stream the data and measure again."
+  if [[ -n $peak ]] && (( peak > ${LAUNCH_MAX_PEAK_GB:-8} )) &&
+     refuses launch.host-peak-cap "declared peak $peak GB is over ${LAUNCH_MAX_PEAK_GB:-8} GB for $LAUNCH_HOST" "run it on a RunPod pod (rh pod), or stream the data and measure again"; then
     exit 78
   fi
 fi
@@ -168,10 +181,12 @@ zmodload -F zsh/stat b:zstat 2>/dev/null
 spec_mtime=$(zstat +mtime -- "$spec" 2>/dev/null); [[ $spec_mtime == <-> ]] || spec_mtime=0
 if [[ -z $LAUNCH_RESUME ]] && (( words > cap )) && (( spec_mtime >= ${LAUNCH_SPEC_CAP_SINCE:-0} )); then
   if [[ -z $SPEC_OVER_CAP ]]; then
-    print -u2 -- "launch.sh REFUSED $job: spec is $words job-specific words, over the $cap cap (the goal is turning into process; set SPEC_OVER_CAP=reason)"
-    print -- "exit 2 spec-over-cap $words words $(date)" >> "$log"
-    notify "launch refused $job: spec over $cap words ($words job-specific)"
-    exit 2
+    if refuses launch.spec-word-cap "spec is $words job-specific words, over the $cap cap" "SPEC_OVER_CAP=<reason>, or cut the spec"; then
+      print -- "exit 2 spec-over-cap $words words $(date)" >> "$log"
+      notify "launch refused $job: spec over $cap words ($words job-specific)"
+      exit 2
+    fi
+    print -- "spec over cap ($words words, no SPEC_OVER_CAP): warned, not refused (RULE #1) $(date)" >> "$log"
   fi
   # Once per launch: a detached job's child runs this check again and says nothing.
   if [[ -z ${LAUNCH_DETACHED:-} ]]; then
@@ -182,8 +197,8 @@ fi
 # The registry resolves lane and lane_dir above, before host checks and logs.
 # 11-10: a lane-yield HOLD stops the lane's jobs here. Until now only friends' own loops read one,
 # so a hold on any other lane was a file nobody checked. Only general removes it.
-if [[ -f $lane_dir/HOLD ]]; then
-  print -u2 -- "launch.sh refused $job: lane $lane is on hold: $(head -1 $lane_dir/HOLD) Only general removes $lane_dir/HOLD."
+if [[ -f $lane_dir/HOLD ]] &&
+   refuses launch.lane-hold "lane $lane is on hold: $(head -1 $lane_dir/HOLD)" "general removes $lane_dir/HOLD (tell-general decision)"; then
   exit 78
 fi
 # LAUNCH_DETACH=tmux: the job never lives under the caller's process tree. 11-01: the 7:25 AM memory kill
@@ -198,7 +213,12 @@ if [[ ${LAUNCH_DETACH:-} == tmux && -z ${LAUNCH_DETACHED:-} ]]; then
   s=; [[ -n $TMUX ]] && s=$($tm display-message -p '#S' 2>/dev/null)
   if [[ -z $TMUX || $s == claude-* ]]; then
     name=job-${job//[.:]/_}
-    if $tm has-session -t "=$name" 2>/dev/null; then print -u2 -- "launch.sh: $job already running in $name"; exit 75; fi
+    already=0
+    if $tm has-session -t "=$name" 2>/dev/null; then
+      # Not a second copy, and not a refusal either (RULE #1): wait for the running one and return its code.
+      refuses launch.duplicate-session "$job already running in $name; waiting for it instead of starting a second copy" "tmux attach -t $name" && exit 75
+      already=1
+    fi
     # The session gets the tmux server's environment, not this one, so what this job was given (flags
     # included, resolved above) is passed explicitly.
     export LAUNCH_ROLE LAUNCH_MODEL LAUNCH_MODEL_OVERRIDE LAUNCH_MADE_BY LAUNCH_EXPLORE LAUNCH_EFFORT LAUNCH_HOST \
@@ -211,7 +231,9 @@ if [[ ${LAUNCH_DETACH:-} == tmux && -z ${LAUNCH_DETACHED:-} ]]; then
     done
     envs+=(LAUNCH_DETACHED=1 FORCE_LAUNCH=1)
     at=0; [[ -f $log ]] && at=$(wc -c < "$log")
-    $tm new-session -d -s "$name" -c "$dir" "env ${(j: :)${(q)envs[@]}} zsh ${(q)self} ${(q)job} ${(q)dir}" || exit 1
+    if (( ! already )); then
+      $tm new-session -d -s "$name" -c "$dir" "env ${(j: :)${(q)envs[@]}} zsh ${(q)self} ${(q)job} ${(q)dir}" || exit 1
+    fi
     while $tm has-session -t "=$name" 2>/dev/null; do sleep ${LAUNCH_DETACH_POLL:-15}; done
     # The exit line the job wrote (every launcher line ends with $(date)); only this run's part of the log.
     last=$(tail -c +$(( at + 1 )) "$log" 2>/dev/null | grep -E '^exit [^ ]+ .*(Mon|Tue|Wed|Thu|Fri|Sat|Sun) ' | tail -1 | awk '{print $2}')
@@ -231,14 +253,24 @@ if [[ -n $LAUNCH_ROUND ]]; then
               --generator "$LAUNCH_GENERATOR" --params "$LAUNCH_PARAMS" --scorer "$LAUNCH_SCORER")
   [[ -z $LAUNCH_HYPOTHESIS ]] || round_args+=(--hypothesis "$LAUNCH_HYPOTHESIS")
   [[ -z $LAUNCH_NEW_EVIDENCE ]] || round_args+=(--new-evidence "$LAUNCH_NEW_EVIDENCE")
-  if ! python3 "$H/tools/rounds.py" "${round_args[@]}" >> "$log.round" 2>&1; then
+  python3 "$H/tools/rounds.py" "${round_args[@]}" >> "$log.round" 2>&1
+  round_rc=$?
+  # rounds.py exits 2 only when a gate the registry lets refuse refused (its fail-open checks print a
+  # warning and pass). Any other failure is the round gate's own error, which never stops a job (RULE #1).
+  if (( round_rc == 2 )); then
     print -u2 -- "launch.sh REFUSED $job: the round gate refused this round"
     tail -20 "$log.round" >&2
     print -- "exit 78 round-gate-refused $(date)" >> "$log"
     notify "launch refused $job: the round gate refused round $LAUNCH_ROUND (see $log.round)"
     exit 78
+  elif (( round_rc != 0 )); then
+    refuses launch.round-gate-error "rounds.py failed (exit $round_rc) before deciding; the round runs unrecorded" "read $log.round" && exit 78
   fi
+  grep -h 'WARNING (fail-open' "$log.round" 2>/dev/null | tail -5 >&2
 fi
+# Admitted. If this job was blocked in the last week, the block did not hold: the ledger records a rerun,
+# which the daily report counts as a harness bug (RULE #1).
+python3 "$hblocks" admitted --job "$job" --lane "$lane" >/dev/null 2>&1
 reg=${LAUNCH_STATE:-$PWD/.runtime/job-registry}
 mkdir -p "$reg"
 registry_name=${job//[^A-Za-z0-9_.-]/_}
@@ -269,7 +301,19 @@ for (( i = start; i <= 5; i++ )); do
   [[ ${LAUNCH_PROVIDER:-} == (openrouter|gemini) && $backend == codex ]] && sel_exec=$LAUNCH_PROVIDER
   # This launcher runs all three executors, so a delegate may be on any of them. A host without one of
   # the CLIs names the ones it has in RH_LAUNCHER_EXECUTORS.
-  selection=$(RH_LAUNCHER_EXECUTORS=${RH_LAUNCHER_EXECUTORS:-codex,claude,agy} python3 "$selector" --role "$LAUNCH_ROLE" --executor "$sel_exec" --model "$LAUNCH_MODEL" --explore "$LAUNCH_EXPLORE" --model-override "$LAUNCH_MODEL_OVERRIDE" --made-by "$LAUNCH_MADE_BY" --job "$job" --lane "$lane" --workdir "$dir" --lane-dir "$lane_dir" --spec "$spec" --print-route --log "$log" --receipt "$log.selection.json") || { print -- "exit 2 model-selection-refused $(date)" >> "$log"; exit 2; }
+  selection=$(RH_LAUNCHER_EXECUTORS=${RH_LAUNCHER_EXECUTORS:-codex,claude,agy} python3 "$selector" --role "$LAUNCH_ROLE" --executor "$sel_exec" --model "$LAUNCH_MODEL" --explore "$LAUNCH_EXPLORE" --model-override "$LAUNCH_MODEL_OVERRIDE" --made-by "$LAUNCH_MADE_BY" --job "$job" --lane "$lane" --workdir "$dir" --lane-dir "$lane_dir" --spec "$spec" --print-route --log "$log" --receipt "$log.selection.json")
+  sel_rc=$?
+  # RULE #1: the selector refusing a pinned model, an explore pick or a missing --made-by is rerouted to the
+  # leaderboard's own pick for the role, with a warning. Exit 4 is its one hard line (a pay-as-you-go route:
+  # money), already named with its fix on stderr; that, or a role with no route at all, still stops the job.
+  if (( sel_rc != 0 && sel_rc != 4 )) && [[ -n $LAUNCH_MODEL$LAUNCH_EXPLORE$LAUNCH_MADE_BY ]] &&
+     ! refuses launch.model-selection "the selector refused the pinned model/explore/made-by for $job (exit $sel_rc); rerouting to the leaderboard pick for role $LAUNCH_ROLE" "name the role, not a model (LEADERBOARD.md)"; then
+    print -- "model selection rerouted to the leaderboard pick (exit $sel_rc on the pinned route) $(date)" >> "$log"
+    LAUNCH_MODEL=; LAUNCH_EXPLORE=; LAUNCH_MODEL_OVERRIDE=
+    selection=$(RH_LAUNCHER_EXECUTORS=${RH_LAUNCHER_EXECUTORS:-codex,claude,agy} python3 "$selector" --role "$LAUNCH_ROLE" --executor "$sel_exec" --model "" --explore "" --model-override "" --made-by "$LAUNCH_MADE_BY" --job "$job" --lane "$lane" --workdir "$dir" --lane-dir "$lane_dir" --spec "$spec" --print-route --log "$log" --receipt "$log.selection.json")
+    sel_rc=$?
+  fi
+  (( sel_rc == 0 )) || { print -- "exit 2 model-selection-refused $(date)" >> "$log"; exit 2; }
   selected_route=("${(@f)selection}")
   m=$selected_route[1]; backend=$selected_route[2]
   # 11-20: the Codex wrapper charges a referee call (call_role in the selection receipt) to the lane's
@@ -295,13 +339,21 @@ for (( i = start; i <= 5; i++ )); do
     print -- "claude budget 5.00: a codex job routed to claude $(date)" >> "$log"
   fi
   # Allowance/call limits belong to the Codex wrapper. Only tmux concurrency is local here.
-  python3 "${LAUNCH_GUARD:-${self:h:h}/rstack/tools/launch-guard}" \
-    --job "$job" --lane "$lane" --backend "$backend" --provider "${LAUNCH_PROVIDER:-}" --log "$log"
-  guard_rc=$?
-  if (( guard_rc != 0 )); then
-    print -- "exit $guard_rc concurrency-refused $(date)" >> "$log"
-    exit "$guard_rc"
-  fi
+  # RULE #1: the concurrency cap queues a job, it does not refuse one. It waits for a slot (up to
+  # LAUNCH_QUEUE_SECONDS, default 2 h), then runs anyway with a warning in harness-blocks.jsonl.
+  queued=0
+  while :; do
+    python3 "${LAUNCH_GUARD:-${self:h:h}/rstack/tools/launch-guard}" \
+      --job "$job" --lane "$lane" --backend "$backend" --provider "${LAUNCH_PROVIDER:-}" --log "$log"
+    guard_rc=$?
+    (( guard_rc == 0 )) && break
+    if (( queued >= ${LAUNCH_QUEUE_SECONDS:-7200} )); then
+      refuses launch.concurrency "still over the concurrency cap after ${queued}s in the queue; running anyway" "LAUNCH_MAX_CONCURRENT=N" && { print -- "exit $guard_rc concurrency-refused $(date)" >> "$log"; exit "$guard_rc"; }
+      break
+    fi
+    (( queued == 0 )) && print -- "queued: concurrency cap (launch-guard exit $guard_rc) $(date)" >> "$log"
+    sleep ${LAUNCH_QUEUE_POLL:-60}; (( queued += ${LAUNCH_QUEUE_POLL:-60} ))
+  done
   export RSTACK_LANE="$lane" LAUNCH_URGENT
   if [[ -n ${LAUNCH_URGENT//[[:space:]]/} && $backend == codex ]]; then
     print -r -- "LAUNCH_URGENT $job: $LAUNCH_URGENT $(date)" >> "$log"
@@ -360,10 +412,14 @@ for (( i = start; i <= 5; i++ )); do
       # 11-15: stamps can differ while the files are identical (a main commit that installs nothing moves one
       # Mac's stamp, not the other's), and every m5 job was refused. Different stamps only refuse when the
       # installed files differ too: both installs matching main (harness-sync --check) means the same code.
+      # RULE #1: drift is repaired, not refused. harness-sync --host brings the host to this machine's
+      # commit, and the job runs either way, with a warning if the repair did not take.
       if [[ -n $mine && $mine != $theirs ]] && ! { harness-sync --check >/dev/null 2>&1 && harness-sync --check --host "$LAUNCH_HOST" >/dev/null 2>&1; }; then
-        print -u2 -- "launch.sh --host $LAUNCH_HOST: it runs harness ${theirs:-unreadable} and this machine runs ${mine[1,12]}. The executor runs THERE, so this job would run code this machine has already changed. Fix with: harness-sync --host $LAUNCH_HOST"
-        print -- "exit 2 harness-drift $LAUNCH_HOST ${theirs:-unreadable} vs ${mine[1,12]} $(date)" >> "$log"
-        exit 2
+        if ! harness-sync --host "$LAUNCH_HOST" >> "$log" 2>&1 &&
+           refuses launch.host-drift "$LAUNCH_HOST runs harness ${theirs:-unreadable} and this machine runs ${mine[1,12]}; harness-sync --host did not repair it" "harness-sync --host $LAUNCH_HOST"; then
+          print -- "exit 2 harness-drift $LAUNCH_HOST ${theirs:-unreadable} vs ${mine[1,12]} $(date)" >> "$log"
+          exit 2
+        fi
       fi
     fi
     rexec=${LAUNCH_REMOTE_EXECUTOR:-'$HOME/.local/share/research-harness/agent_executor.py'}
@@ -489,7 +545,10 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
   else
     print -- "exit $rc $(date)" >> "$log"
   fi
-  python3 "$selector" --log "$log" --receipt "$log.selection.json" --outcome "$rc" || exit 2
+  if ! python3 "$selector" --log "$log" --receipt "$log.selection.json" --outcome "$rc" &&
+     refuses launch.outcome-receipt "could not record the outcome of $job in its selection receipt" "python3 $selector --log $log --receipt $log.selection.json --outcome $rc"; then
+    exit 2
+  fi
   print -r -- "GRADE ON RETURN: python3 ${selector:A} --grade pass|partial|fail --note WHY --receipt ${log:A}.selection.json --log ${log:A}" >> "$log"
   (( policy_flag == 0 && rc != 0 && i < 5 )) || break
   [[ $backend == codex ]] || break  # A Claude retry must not reset its spend cap.

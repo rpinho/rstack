@@ -202,8 +202,9 @@ def test_launch_refuses_unpromoted_before_any_launch_side_effect(tmp_path, outpu
                LAUNCH_STATE=str(tmp_path/'jobs'))
     result = subprocess.run(['zsh', '-f', str(LAUNCH), 'test-job', str(tmp_path/'missing-dir')],
                             env=env, capture_output=True, text=True)
-    assert result.returncode == 78
-    assert 'not promoted' in result.stderr
+    # RULE #1 (11-20): an unpromoted idea is a warning, not a stop; this job then fails on its missing dir.
+    assert result.returncode == 1
+    assert 'not promoted' in result.stderr and 'fail-open' in result.stderr
     assert args_file.read_text().splitlines() == ['--root', str(tmp_path/'isolated root'), 'ideas', 'show', 'idea-1']
     assert not (tmp_path/'jobs').exists()
 

@@ -48,7 +48,8 @@ def test_invalid_registry_refuses_launch(tmp_path):
     path = tmp_path / 'registry.json'
     path.write_text('{')
     proc, prompt = run(tmp_path, ASK, env={'RH_LANE_REGISTRY': str(path)})
-    assert proc.returncode == 78 and 'lane registry' in proc.stderr and not prompt
+    # RULE #1 (11-20): a broken registry is the harness's error; the job runs under its own lane name.
+    assert proc.returncode == 0 and 'lane registry unreadable' in proc.stderr and prompt
 
 
 def harness(tmp_path, spec_text, lane='fixture', goal=None, lessons=None):
@@ -104,9 +105,9 @@ def test_a_sweep_generated_spec_is_not_refused_for_its_injected_policy(tmp_path)
     assert ASK in prompt
 
 
-def test_a_genuinely_long_ask_is_still_refused(tmp_path):
+def test_a_genuinely_long_ask_is_warned_and_runs(tmp_path):
     proc, _ = run(tmp_path, ' '.join(['ceremony'] * 1200))
-    assert proc.returncode == 2
+    assert proc.returncode == 0 and '[launch.spec-word-cap] WARNING' in proc.stderr   # RULE #1
     assert 'over the 1000 cap' in proc.stderr and 'job-specific words' in proc.stderr
 
 

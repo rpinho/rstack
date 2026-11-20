@@ -111,7 +111,7 @@ def claude_stub(tmp_path, body=''):
                 'print(\'{"is_error":false,"subtype":"success","result":"fixture"}\')\n')
 
 
-def test_a_detached_job_returns_its_code_and_a_second_copy_is_refused(tmp_path):
+def test_a_detached_job_returns_its_code_and_a_second_copy_waits_for_it(tmp_path):
     fake = claude_stub(tmp_path, 'import time; time.sleep(3); sys.exit(3)\n')
     tm, state = fake_tmux(tmp_path)
     jobs, env = lanes_env(tmp_path, CLAUDE_ROLES, AGENT_BACKEND='claude', LAUNCH_CLAUDE=str(fake),
@@ -125,7 +125,8 @@ def test_a_detached_job_returns_its_code_and_a_second_copy_is_refused(tmp_path):
         time.sleep(0.1)
     second = subprocess.run(['zsh', str(LAUNCH), 'fixture-x', str(tmp_path)], env=env,
                             capture_output=True, text=True, timeout=60)
-    assert second.returncode == 75 and 'already running' in second.stderr
+    # RULE #1 (11-20): no second copy and no refusal: it waits for the running one and returns its code.
+    assert second.returncode == 3 and 'already running' in second.stderr
     first.wait(timeout=120)
     assert first.returncode == 3   # the job's own exit code, read from its exit line
     # Inside a tmux session that is not a Claude session, the job runs in place.
@@ -173,8 +174,9 @@ def test_the_preamble_follows_the_rules_and_old_specs_keep_their_exemption(tmp_p
     assert subprocess.run(['zsh', str(LAUNCH), 'fixture-long', str(tmp_path)], env=env, capture_output=True).returncode == 0
     long.write_text(' '.join(['ceremony'] * 1200))   # touched now: the cap applies, and says so
     proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-long', str(tmp_path)], env=env, capture_output=True, text=True)
-    assert proc.returncode == 2 and 'over the 1000 cap' in proc.stderr
-    assert 'fyi launch refused fixture-long: spec over 1000 words' in sent.read_text()
+    # RULE #1 (11-20): the cap warns and the job runs; the log says so.
+    assert proc.returncode == 0 and 'over the 1000 cap' in proc.stderr and 'fail-open' in proc.stderr
+    assert 'warned, not refused' in (jobs / 'fixture-long.log').read_text()
 
 
 def test_a_host_job_honours_the_remote_path_and_brings_back_its_last_message(tmp_path):

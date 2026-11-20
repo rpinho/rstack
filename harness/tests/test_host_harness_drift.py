@@ -76,8 +76,9 @@ def test_a_tree_that_is_not_an_installed_harness_has_nothing_to_compare(tmp_path
     assert sweep.host_harness_mismatch('m5', tmp_path) == ''
 
 
-def test_the_sweep_refuses_before_it_refreshes_or_spends(root, tmp_path, monkeypatch):
-    """Order matters: a lane refreshed onto a host running old code is still the wrong run."""
+def test_the_sweep_repairs_drift_before_it_refreshes_or_spends(root, tmp_path, monkeypatch):
+    """Order matters: a lane refreshed onto a host running old code is still the wrong run. RULE #1 (11-20):
+    drift is repaired with harness-sync --host first, and if it persists the sweep warns and goes on."""
     launcher = tmp_path / 'launcher'
     launcher.write_text('#!/bin/sh\nexit 0\n')
     spec = tmp_path / 'worker.md'
@@ -87,13 +88,17 @@ def test_the_sweep_refuses_before_it_refreshes_or_spends(root, tmp_path, monkeyp
     monkeypatch.setattr(sweep, 'guard', lambda c: None)
     monkeypatch.setattr(sweep, 'host_harness_mismatch',
                         lambda host, *a, **k: 'm5 runs harness 906efdc and this machine runs ff47140')
-    monkeypatch.setattr(sweep, 'host_sync',
-                        lambda c, h: pytest.fail('refreshed the lane onto a drifted host'))
+    calls = []
+    monkeypatch.setattr(sweep.subprocess, 'run', lambda argv, **k: calls.append(argv))
+    monkeypatch.setattr(sweep, 'host_sync', lambda c, h: calls.append('host_sync') or False)
     monkeypatch.setattr(sweep.subprocess, 'Popen',
-                        lambda *a, **k: pytest.fail('spent money on a drifted host'))
-    with pytest.raises(ValueError) as e:
+                        lambda *a, **k: pytest.fail('spent money against a stale copy'))
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
+    with pytest.raises(ValueError, match='cannot refresh'):
         sweep.run_worker(spec, cfg)
-    assert '906efdc' in str(e.value) and 'ff47140' in str(e.value)
+    assert calls == [['harness-sync', '--host', 'm5'], 'host_sync']    # repair first, then refresh
+    row = json.loads((tmp_path / 'state/harness-blocks.jsonl').read_text().splitlines()[-1])
+    assert (row['gate'], row['outcome']) == ('sweep.host-drift', 'warn') and '906efdc' in row['reason']
 
 
 def test_a_local_run_never_asks_about_a_host(tmp_path, monkeypatch):

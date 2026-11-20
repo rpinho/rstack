@@ -184,17 +184,25 @@ def main(argv=None):
     parser.add_argument('--job', required=True)
     parser.add_argument('--lane', default='')
     args = parser.parse_args(argv)
+    import harness_blocks   # RULE #1: only rstack/gates.json decides whether this may stop a job
     try:
         registry = load(args.lanes_root)
         lane = registry.lane_of_session(args.lane) if args.lane else registry.lane_of_job(args.job)
         if registry.status(lane) in ('retired', 'ended', 'held'):
-            print('launch.sh refused {}: {}'.format(args.job, registry.reason(lane)), file=sys.stderr)
-            return 78
+            if harness_blocks.gate('launch.lane-status', '{}: {}'.format(args.job, registry.reason(lane)),
+                                   job=args.job, lane=lane):
+                return 78
         print(lane)
         return 0
     except (OSError, ValueError) as exc:
-        print('launch.sh refused {}: lane registry: {}'.format(args.job, exc), file=sys.stderr)
-        return 78
+        # An unreadable registry is a harness error, not a reason to stop the job: it runs under the
+        # lane its own name gives (the launcher's legacy fallback), with a warning in the ledger.
+        lane = args.lane or LaneRegistry({'lanes': {}}).lane_of_job(args.job)
+        if harness_blocks.gate('launch.lane-registry', 'lane registry unreadable ({}); running {} as lane {}'.format(
+                exc, args.job, lane), job=args.job, lane=lane):
+            return 78
+        print(lane)
+        return 0
 
 
 if __name__ == '__main__':

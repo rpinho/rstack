@@ -20,6 +20,12 @@ from bug_verdicts import maker
 from agent_executor import metered_refusal
 import agy_quota
 import claude_cap
+import harness_blocks
+
+
+class MeteredRefusal(ValueError):
+    """The selector's one hard line: a pay-as-you-go route (money). main() exits 4 on it, and launch.sh
+    reroutes every other selector refusal to the leaderboard pick instead of stopping (RULE #1)."""
 
 ROLES_FILE = settings.path('RH_ROLES_FILE', Path('.runtime/roles.json'))
 JUDGMENT = frozenset(('review', 'judge', 'audit', 'taste', 'design', 'ideation'))
@@ -544,17 +550,22 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
             cap_route = claude_fallback(role, data, excluded, families if judging else frozenset(), requested,
                                         follows_route, chosen)
             if not cap_route:
-                raise ValueError('role {} selected {}: {}; no Codex or agy fallback is available'.format(
-                    role, chosen, cap['leave']))
-            chosen = cap_route[0]
-            route = data['routes'][chosen]
-            executor = cap_route[1]
-            cap['notes'].append('{}; moved to {}{}'.format(cap['leave'], chosen, ' on agy' if cap_route[1] == 'agy' else ''))
+                # RULE #1: the ceiling reroutes work; with nowhere to reroute it to, the job stays on Claude.
+                if harness_blocks.gate('selector.claude-ceiling', 'role {} selected {}: {}; no Codex or agy fallback '
+                                       'is available'.format(role, chosen, cap['leave']), job=job, lane=lane):
+                    raise ValueError('role {} selected {}: {}; no Codex or agy fallback is available'.format(
+                        role, chosen, cap['leave']))
+                cap['notes'].append('{}; no fallback route, so it stays on {} (fail-open)'.format(cap['leave'], chosen))
+            else:
+                chosen = cap_route[0]
+                route = data['routes'][chosen]
+                executor = cap_route[1]
+                cap['notes'].append('{}; moved to {}{}'.format(cap['leave'], chosen, ' on agy' if cap_route[1] == 'agy' else ''))
     # 11-19: refused here, before any receipt, as well as in the executor. Not a fallback: the
     # leaderboard names a subscription route, or this job does not run.
     why = metered_refusal(executor)
     if why:
-        raise ValueError('role {} selected {}: {}'.format(role, chosen, why))
+        raise MeteredRefusal('role {} selected {}: {}'.format(role, chosen, why))
     if cap_route and cap_route[1] == 'agy':
         pass   # agy's Claude is reached through the claude route entry; the receipt names agy below
     elif not isinstance(route, dict) or not route.get('canonical') or route.get('cli') != executor:
@@ -898,9 +909,11 @@ def main(argv=None):
                          args.workdir, args.lane_dir, follows_route=args.print_route,
                          gate=spec_gate(args.spec.read_text()) if args.spec and args.spec.is_file() else '')
         if receipt['role'] in JUDGMENT and args.spec and assigns_judgment_model(args.spec.read_text()):
-            print('launch.sh refused {}: name the leaderboard role, not a model (LEADERBOARD.md); '
-                  'the leaderboard picks {}'.format(args.job, receipt['model']), file=sys.stderr)
-            return 2
+            # RULE #1: the leaderboard's pick runs anyway; the spec's named model is only a warning.
+            if harness_blocks.gate('selector.judgment-spec-model', '{}: the spec names a model for a judgment role; '
+                                   'the leaderboard picks {} and that is what runs'.format(args.job, receipt['model']),
+                                   job=args.job, lane=args.lane):
+                return 2
         args.receipt.write_text(json.dumps(receipt, sort_keys=True) + '\n')
         log_record(args.log, 'MODEL_SELECTION', receipt)
         if receipt.get('executor_choice'):
@@ -928,6 +941,9 @@ def main(argv=None):
         if args.print_route:
             print(receipt['executor'])
         return 0
+    except MeteredRefusal as exc:
+        harness_blocks.gate('selector.metered', str(exc), job=getattr(args, 'job', ''), lane=getattr(args, 'lane', ''))
+        return 4
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print('worker model: ' + str(exc), file=sys.stderr)
         return 2

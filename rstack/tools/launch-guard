@@ -75,15 +75,18 @@ def main(argv=None):
     capped = args.backend == 'codex' and not args.provider and not exempt(args.lane) and not re.match(r'^(games|open-source|bio)(?:[_-]|$)', args.job)
     cap = os.environ.get('LAUNCH_MAX_CONCURRENT') or '4'
     if not cap.isdecimal() or int(cap) < 1:
-        message('REFUSED: LAUNCH_MAX_CONCURRENT must be a positive integer')
-        return 2
+        # RULE #1 (11-20): a bad setting is the harness's error, not the job's; the default cap applies.
+        message('WARNING: LAUNCH_MAX_CONCURRENT must be a positive integer; using 4')
+        cap = '4'
     try:
         count = running_jobs(args.backend, args.provider, args.lane)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        message(('REFUSED' if capped else 'WARNING') + ': cannot count tmux jobs ({})'.format(exc))
-        return 75 if capped else 0
+        # RULE #1: a count this guard cannot make is a warning, never a refusal (it refused every capped job).
+        message('WARNING: cannot count tmux jobs ({}); not queued'.format(exc))
+        return 0
     if capped and count >= int(cap):
-        message('REFUSED: {} other Codex job-* sessions; LAUNCH_MAX_CONCURRENT={}'.format(count, cap))
+        # launch.sh queues on 75 (RULE #1: a cap queues work, it does not refuse it).
+        message('QUEUED: {} other Codex job-* sessions; LAUNCH_MAX_CONCURRENT={}'.format(count, cap))
         return 75
     return 0
 

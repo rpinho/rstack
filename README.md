@@ -4,6 +4,16 @@
 
 **The stack I run AI research agents on: the map, the principles, and the machinery, in one place.**
 
+## Rule #1: the harness never gets in the way
+
+> "Make sure the harness is not getting in our way. That should be rule number one of the harness or rstack." (Ricardo, 11-20)
+
+Every gate, hook, lint, launcher check and grader fails open: it warns, logs, and the work continues. Only six hard lines may refuse: money, sign-ins and credentials, sends or posts in my name, permanent deletes, privacy/IP egress, and unsandboxed third-party code. A refusal names the fix.
+
+- Each gate has a class in [rstack/gates.json](rstack/gates.json), and [gates_lint.py](rstack/tools/gates_lint.py) fails any gate without one.
+- Every refusal and warning is one line in `harness-blocks.jsonl` ([harness_blocks.py](harness/harness_blocks.py)). A block that was later rerun, overridden or retracted counts as a harness bug in the daily report.
+- [test_fail_open_gates.py](tests/test_fail_open_gates.py) runs each fail-open gate on real work input and on its own crash path. Principle: [harness-never-in-the-way](rstack/principles/harness-never-in-the-way.md).
+
 **Install it in Claude Code, one line:**
 
 ```

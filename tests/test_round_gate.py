@@ -107,8 +107,9 @@ def test_a_round_cannot_start_while_the_last_one_has_no_outcome(lane):
                '--params', PARAMS, '--scorer', 'ipae').returncode == 0
     blocked = cli(lane, 'start', '--round', 'R2', '--family', 'proteina',
                   '--generator', 'RFD4-Proteina', '--params', PARAMS, '--scorer', 'ipae')
-    assert blocked.returncode == 2
-    assert 'UNCLOSED' in blocked.stderr and 'R1' in blocked.stderr
+    # RULE #1 (11-20): an unlogged round is a warning now (rounds.unclosed is fail-open), not a stop.
+    assert blocked.returncode == 0
+    assert 'UNCLOSED' in blocked.stderr and 'R1' in blocked.stderr and 'fail-open' in blocked.stderr
 
 
 def test_a_different_generator_proceeds(lane):
