@@ -156,3 +156,22 @@ Lane registry entries (`RH_LANE_REGISTRY` or `lanes/REGISTRY.json`) may declare
 boolean and is independent of lifecycle status. Aliases resolve to the same policy;
 `x:true` cannot override an explicit no-X rule in the canonical or alias RULES.md.
 Encode prose restrictions with `x:false` so consumers need no natural-language inference.
+
+## Claude ceiling, pacing, Sonnet default, lane shares (11-20)
+
+Ricardo: Claude must never reach 100% (general runs on it), Sonnet is the default, MecCog sits at the bottom.
+`harness/claude_cap.py`, applied by `worker_models.select()` to every Claude pick:
+
+- Ceiling: weekly at or above `RH_CLAUDE_CEILING_PERCENT` (80) refuses Claude; the job takes Codex's default for
+  its role, else agy's Claude, else the launch is refused. A pinned or explicit model is refused, not swapped.
+  `claude_warning` in the receipt from `RH_CLAUDE_WARN_PERCENT` (70).
+- Pacing: weekly + burn %/h x hours to reset above 80 moves Opus to Sonnet; at `RH_CLAUDE_PACE_OFF_PERCENT` (100)
+  the job leaves Claude. Burn is the slope of `usage/claude-history.jsonl` (claude-usage appends a row every
+  reading, 14 days kept) over 6 h, else the week's average. The receipt's `claude_cap` says why.
+- Default model: Sonnet 5.5. Opus needs a spec line `Model: opus, REASON` (no reason refuses the launch); the
+  reason is in the receipt (`opus_reason`) and the log.
+- Lane shares: `~/.config/rstack/claude-shares.json` (`rstack/tools/claude-shares.json.example`), per lane
+  `max_week_percent` and `models`, with a `default`. Measured from Claude Code transcripts (token-weighted, Opus x5,
+  fraction of all transcripts since the week began x the weekly percent). Limits: a session in a directory not
+  named for the lane is unattributed; chat and desktop use leaves no transcript. The weekly figure stays the hard bound.
+- `RH_CLAUDE_CAP=0` turns all of it off.

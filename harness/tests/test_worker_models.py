@@ -495,6 +495,7 @@ def overflow_setup(tmp_path, monkeypatch, percent, limit='85'):
     monkeypatch.setenv('RSTACK_STATE_DIR', str(state))
     monkeypatch.delenv('RESETS_USAGE_DIR', raising=False)
     monkeypatch.delenv('LAUNCH_EFFORT', raising=False)
+    monkeypatch.setenv('RH_CLAUDE_CAP', '0')   # these test the 85% brake; the 80% ceiling has its own tests
     if limit is None:
         monkeypatch.delenv('RH_CLAUDE_OVERFLOW_PERCENT', raising=False)
     else:
@@ -559,11 +560,11 @@ def test_the_receipt_shows_everyday_rate_and_n_first_and_the_bench_apart(tmp_pat
 
 def delegate_roles(path):
     routes = {'claude-opus-5-5': ('claude', 'anthropic/claude-opus-5.5'), 'gpt-6.2-sol': ('codex', 'openai/gpt-6.2-sol'),
-              'gemini-4-argon-low': ('agy', 'google/gemini-4-argon-low'),
-              'gemini-4-neon-low': ('agy', 'google/gemini-4-neon-low')}
+              'gemini-4-hydrogen-low': ('agy', 'google/gemini-4-hydrogen-low'),
+              'gemini-4-neon-medium': ('agy', 'google/gemini-4-neon-medium')}
     path.write_text(json.dumps({'roles': {'review': ['claude-opus-5-5', 'gpt-6.2-sol'], 'batch': ['claude-opus-5-5']},
         'routes': {m: {'cli': c, 'canonical': k} for m, (c, k) in routes.items()},
-        'evidence': {'review': {'gemini-4-argon-low': {'n': 3, 'rate': 1.0}}}}))
+        'evidence': {'review': {'gemini-4-hydrogen-low': {'n': 3, 'rate': 1.0}}}}))
     return path
 
 
@@ -572,8 +573,8 @@ def test_a_delegated_share_goes_to_the_delegate_with_fewest_graded_outcomes_and_
     monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     got = wm.select('review', 'codex', path=p, made_by='gpt-6')
-    assert got['source'] == 'delegate' and got['model'] == 'gemini-4-neon-low' and got['executor'] == 'agy'
-    assert got['delegate'] == ('delegated share 1 of review: gemini-4-neon-low (everyday n=0) instead of the '
+    assert got['source'] == 'delegate' and got['model'] == 'gemini-4-neon-medium' and got['executor'] == 'agy'
+    assert got['delegate'] == ('delegated share 1 of review: gemini-4-neon-medium (everyday n=0) instead of the '
                                'leaderboard pick claude-opus-5-5')
     # Never to the job's own maker for judgment, and only in the delegated roles.
     assert wm.select('review', 'codex', path=p, made_by='gemini-3')['model'] == 'gpt-6.2-sol'
@@ -625,7 +626,7 @@ def returned_delegate(receipts, job, lane, hours_ago):
     sid = uuid_hex = job + 'sid'
     finished = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours_ago)).isoformat()
     (receipts / (job + '.log.selection.json')).write_text(json.dumps(dict(
-        selection_id=sid, job=job, lane=lane, role='batch', model='gemini-4-argon-low', source='delegate')))
+        selection_id=sid, job=job, lane=lane, role='batch', model='gemini-4-hydrogen-low', source='delegate')))
     (receipts / (job + '.log')).write_text('MODEL_OUTCOME ' + json.dumps(dict(selection_id=sid, finished=finished)) + '\n')
     return receipts / (job + '.log.selection.json')
 
@@ -672,9 +673,10 @@ def test_a_lane_with_an_ungraded_returned_job_still_launches(fake_home):
 def family_roles(path):
     routes = {'claude-opus-5-5': ('claude', 'anthropic/claude-opus-5.5'), 'claude-sonnet-5-5': ('claude', 'anthropic/claude-sonnet-5.5'),
               'gpt-6.2-sol': ('codex', 'openai/gpt-6.2-sol'), 'gpt-6.2-astra': ('codex', 'openai/gpt-6.2-astra'),
-              'gemini-4-argon-low': ('agy', 'google/gemini-4-argon-low'), 'gemini-4-neon-low': ('agy', 'google/gemini-4-neon-low')}
-    path.write_text(json.dumps({'roles': {'review': ['gemini-4-argon-low', 'claude-opus-5-5', 'gpt-6.2-astra'],
-                                          'batch': ['gemini-4-argon-low', 'gpt-6.2-sol']},
+              'gemini-4-hydrogen-low': ('agy', 'google/gemini-4-hydrogen-low'), 'gemini-4-neon-medium': ('agy', 'google/gemini-4-neon-medium'),
+              'gemini-4-hydrogen-medium': ('agy', 'google/gemini-4-hydrogen-medium')}
+    path.write_text(json.dumps({'roles': {'review': ['gemini-4-hydrogen-low', 'claude-opus-5-5', 'gpt-6.2-astra'],
+                                          'batch': ['gemini-4-hydrogen-low', 'gpt-6.2-sol']},
                                 'routes': {m: {'cli': c, 'canonical': k} for m, (c, k) in routes.items()}}))
     return path
 
@@ -697,7 +699,7 @@ def test_a_planted_referee_batch_reads_the_hunters_family_from_plants(tmp_path, 
     lane_dir, work = tmp_path / 'lane', tmp_path / 'ref-job'
     lane_dir.mkdir(); work.mkdir()
     (lane_dir / 'PLANTS.jsonl').write_text(json.dumps(dict(batch='b1', workdir=str(work), hunter_family='Google',
-                                                           hunter_model='gemini-4-argon-low', hunter_maker='google')) + '\n')
+                                                           hunter_model='gemini-4-hydrogen-low', hunter_maker='google')) + '\n')
     monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
     for _ in range(40):
         got = wm.select('review', 'codex', path=p, made_by='claude-opus-5-5', workdir=str(work), lane_dir=str(lane_dir))
@@ -801,6 +803,7 @@ def stub_allowance(monkeypatch, claude, codex):
     now_ = now
     monkeypatch.setattr(wm, '_allowance', lambda: Stub())
     monkeypatch.setenv('RH_DELEGATE_SHARE', '0')
+    monkeypatch.setenv('RH_CLAUDE_CAP', '0')   # these test the executor picker; the ceiling has its own tests
     monkeypatch.delenv('RH_HEADROOM_ROUTING', raising=False)
 
 
@@ -816,11 +819,11 @@ def test_claude_takes_codex_work_when_codex_is_tight(tmp_path, monkeypatch):
 def test_codex_takes_claude_work_when_claude_is_tight(tmp_path, monkeypatch):
     p = headroom_roles(tmp_path / 'roles.json')
     stub_allowance(monkeypatch, claude=(90, 20), codex=(10, 100))
-    got = wm.select('review', 'codex', path=p, made_by='gemini-4-argon-low')
+    got = wm.select('review', 'codex', path=p, made_by='gemini-4-hydrogen-low')
     assert (got['model'], got['executor']) == ('gpt-6.2-astra', 'codex')
     assert got['executor_choice'].startswith('executor codex: headroom 90% / 100h')
     monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
-    assert wm.select('review', 'codex', path=p, made_by='gemini-4-argon-low')['model'] == 'claude-opus-5-5'
+    assert wm.select('review', 'codex', path=p, made_by='gemini-4-hydrogen-low')['model'] == 'claude-opus-5-5'
 
 
 def test_the_85_percent_brake_still_sends_claude_to_agy(tmp_path, monkeypatch):
@@ -890,10 +893,10 @@ def science_gate(tmp_path, monkeypatch):
     gate.write_text("#!/usr/bin/env python3\nREVIEWERS = ('fable', 'claude-science', 'opus', 'astra')\nMIN_ACCEPTS = 2\n")
     monkeypatch.setenv('RH_SCIENCE_PUBLISH_GATE', str(gate))
     routes = {'claude-sonnet-5-5': ('claude', 'anthropic/claude-sonnet-5.5'), 'claude-opus-5-5': ('claude', 'anthropic/claude-opus-5.5'),
-              'gemini-4-neon-low': ('agy', 'google/gemini-4-neon-low'), 'gpt-6.2-astra': ('codex', 'openai/gpt-6.2-astra'),
+              'gemini-4-neon-medium': ('agy', 'google/gemini-4-neon-medium'), 'gpt-6.2-astra': ('codex', 'openai/gpt-6.2-astra'),
               'gpt-6.2-sol': ('codex', 'openai/gpt-6.2-sol'), 'claude-fable-5-2': ('claude', 'anthropic/claude-fable-5.2')}
     p = tmp_path / 'roles.json'
-    p.write_text(json.dumps({'roles': {'review': ['claude-sonnet-5-5', 'gemini-4-neon-low', 'claude-opus-5-5', 'gpt-6.2-astra']},
+    p.write_text(json.dumps({'roles': {'review': ['claude-sonnet-5-5', 'gemini-4-neon-medium', 'claude-opus-5-5', 'gpt-6.2-astra']},
                              'routes': {m: {'cli': c, 'canonical': k} for m, (c, k) in routes.items()}}))
     return p
 
@@ -943,3 +946,205 @@ def test_the_codex_call_is_told_whether_it_referees(fake_home, role_args, expect
     assert result.returncode == 0, result.stderr
     assert json.loads(Path(env['FAKE_CALL']).read_text()) == expected
     assert json.loads((artifacts / 'fixture-job.log.selection.json').read_text())['call_role'] == expected
+
+
+# ---- 11-20: Claude ceiling, pacing, Sonnet default, lane shares ---------------------------------------------
+
+def cap_setup(tmp_path, monkeypatch, used, hours=100, history=None, shares=None):
+    """A real allowance reader over a fake state dir: claude.json at `used`%, resetting in `hours` h."""
+    import time
+    now = time.time()
+    state = tmp_path / 'state'
+    (state / 'usage').mkdir(parents=True, exist_ok=True)
+    (state / 'usage/claude.json').write_text(json.dumps(
+        {'weekly_percent': used, 'at': now - 60, 'resets_at': dt.datetime.fromtimestamp(
+            now + hours * 3600, dt.timezone.utc).isoformat()}))
+    if history:
+        (state / 'usage/claude-history.jsonl').write_text(''.join(
+            json.dumps({'at': now - h * 3600, 'weekly_percent': pct}) + '\n' for h, pct in history))
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(state))
+    monkeypatch.delenv('RESETS_USAGE_DIR', raising=False)
+    monkeypatch.delenv('RH_CLAUDE_CAP', raising=False)
+    monkeypatch.delenv('RH_CLAUDE_OVERFLOW_PERCENT', raising=False)
+    monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
+    monkeypatch.setenv('RH_DELEGATE_SHARE', '0')
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
+    monkeypatch.setenv('RSTACK_CLAUDE_SHARES', str(tmp_path / 'shares.json'))
+    monkeypatch.setenv('RH_CLAUDE_PROJECTS', str(tmp_path / 'no-projects'))
+    if shares is not None:
+        (tmp_path / 'shares.json').write_text(json.dumps(shares))
+    p = tmp_path / 'roles.json'
+    p.write_text(json.dumps({'roles': {'batch': ['claude-opus-5-5']}, 'routes': {
+        'claude-opus-5-5': {'cli': 'claude', 'canonical': 'anthropic/claude-opus-5.5'},
+        'claude-sonnet-5-5': {'cli': 'claude', 'canonical': 'anthropic/claude-sonnet-5.5'},
+        'gpt-6.2-sol': {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'}}}))
+    return p
+
+
+def test_sonnet_is_the_default_and_opus_needs_a_reason_in_the_spec(tmp_path, monkeypatch):
+    p = cap_setup(tmp_path, monkeypatch, 10, hours=160, history=[(2, 9.5), (0, 10)])
+    got = wm.select('batch', 'claude', path=p)
+    assert got['model'] == 'claude-sonnet-5-5' and 'Sonnet 5.5' in got['claude_cap']
+    got = wm.select('batch', 'claude', path=p, opus='needs the long context')
+    assert got['model'] == 'claude-opus-5-5' and got['opus_reason'] == 'needs the long context'
+    with pytest.raises(ValueError, match='no reason'):
+        wm.claude_cap.spec_opus('Model: opus')
+    assert wm.claude_cap.spec_opus('- Model: opus, sealed referee') == 'sealed referee'
+    assert wm.claude_cap.spec_opus('nothing here') == ''
+    spec, log, receipt = tmp_path / 'spec.md', tmp_path / 'job.log', tmp_path / 'r.json'
+    spec.write_text('do it\nModel: opus, long context\n')
+    assert wm.main(['--role', 'batch', '--executor', 'claude', '--roles-file', str(p), '--spec', str(spec),
+                    '--job', 'j', '--log', str(log), '--receipt', str(receipt)]) == 0
+    assert 'opus allowed: long context job=j' in log.read_text()
+    assert json.loads(receipt.read_text())['opus_reason'] == 'long context'
+    spec.write_text('Model: opus\n')
+    assert wm.main(['--role', 'batch', '--executor', 'claude', '--roles-file', str(p), '--spec', str(spec),
+                    '--job', 'j', '--log', str(log), '--receipt', str(receipt)]) == 2
+
+
+def test_at_the_ceiling_claude_is_refused_and_the_job_takes_codex_then_agy(tmp_path, monkeypatch):
+    p = cap_setup(tmp_path, monkeypatch, 80)
+    got = wm.select('batch', 'claude', path=p)
+    assert (got['executor'], got['model']) == ('codex', 'gpt-6.2-sol')
+    assert '>= 80% ceiling' in got['claude_cap'] and 'general' in got['claude_cap']
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'claude,agy')   # no Codex on this launcher
+    got = wm.select('batch', 'claude', path=p)
+    assert (got['executor'], got['route_model']) == ('agy', 'claude-sonnet-5-5-high')
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'claude')
+    with pytest.raises(ValueError, match='ceiling.*no Codex or agy fallback'):
+        wm.select('batch', 'claude', path=p)
+    # a pinned or explicit model has no fallback either: it is refused, not swapped
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
+    with pytest.raises(ValueError, match='ceiling'):
+        wm.select('batch', 'claude', path=p, pin='sealed referee')
+    # the ceiling is a knob, and below it nothing is refused
+    monkeypatch.setenv('RH_CLAUDE_CEILING_PERCENT', '95')
+    monkeypatch.setenv('RH_CLAUDE_PACE_OFF_PERCENT', '1000')
+    assert wm.select('batch', 'claude', path=p)['executor'] == 'claude'
+
+
+def test_a_referee_never_falls_back_into_the_family_it_judges(tmp_path, monkeypatch):
+    p = cap_setup(tmp_path, monkeypatch, 85)
+    data = json.loads(p.read_text())
+    data['roles']['review'] = ['claude-opus-5-5']
+    p.write_text(json.dumps(data))
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'claude,agy')
+    got = wm.select('review', 'claude', path=p, made_by='gpt-6.2-sol')
+    assert got['executor'] == 'agy'                      # judging GPT work: agy's Claude is another family
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'claude,codex')   # Codex is the producer's family, agy absent
+    with pytest.raises(ValueError, match='no Codex or agy fallback'):
+        wm.select('review', 'claude', path=p, made_by='gpt-6.2-sol')
+
+
+def test_from_70_percent_the_receipt_warns(tmp_path, monkeypatch):
+    p = cap_setup(tmp_path, monkeypatch, 72, hours=160, history=[(2, 72), (0, 72)])
+    got = wm.select('batch', 'claude', path=p)
+    assert got['executor'] == 'claude' and 'warning from 70%' in got['claude_warning']
+    p = cap_setup(tmp_path, monkeypatch, 69, hours=160, history=[(2, 69), (0, 69)])
+    assert 'claude_warning' not in wm.select('batch', 'claude', path=p)
+
+
+def test_pacing_downshifts_opus_to_sonnet_then_claude_to_codex(tmp_path, monkeypatch):
+    # 40% now, +0.2%/h x 100 h = 60%: under 80, Opus (with a reason) stays
+    p = cap_setup(tmp_path, monkeypatch, 40, history=[(5, 39), (0, 40)])
+    assert wm.select('batch', 'claude', path=p, opus='x')['model'] == 'claude-opus-5-5'
+    # +0.5%/h x 100 h = 90%: past 80, short of the wall: Opus goes to Sonnet and the receipt says why
+    p = cap_setup(tmp_path, monkeypatch, 40, history=[(5, 37.5), (0, 40)])
+    got = wm.select('batch', 'claude', path=p, opus='x')
+    assert got['model'] == 'claude-sonnet-5-5' and got['executor'] == 'claude'
+    assert 'projects 90% > 80%' in got['claude_cap'] and 'Opus downshifted' in got['claude_cap'] and 'opus_reason' not in got
+    # +1%/h x 100 h = 140%: on course for 100%, so the job leaves Claude
+    p = cap_setup(tmp_path, monkeypatch, 40, history=[(5, 35), (0, 40)])
+    got = wm.select('batch', 'claude', path=p, opus='x')
+    assert got['executor'] == 'codex' and 'projects 140%' in got['claude_cap'] and 'leaves Claude' in got['claude_cap']
+    # no history yet: this week's average (28% over 168-100=68 h is 0.41%/h; x 100 h = 69%)
+    (tmp_path / 'state/usage/claude-history.jsonl').unlink()
+    p = cap_setup(tmp_path, monkeypatch, 28)
+    assert wm.claude_cap.burn_rate(wm._allowance(), __import__('time').time(), 28, 100)[1].startswith('week average')
+
+
+def test_burn_rate_ignores_readings_from_before_a_reset(tmp_path, monkeypatch):
+    cap_setup(tmp_path, monkeypatch, 5, history=[(5, 90), (3, 1), (0, 5)])
+    import time
+    rate, basis = wm.claude_cap.burn_rate(wm._allowance(), time.time(), 5, 100)
+    assert abs(rate - 4 / 3) < 0.01 and 'readings' in basis
+
+
+def write_transcript(root, project, model, tokens, hours_ago=1):
+    import time
+    d = root / project
+    d.mkdir(parents=True, exist_ok=True)
+    ts = dt.datetime.fromtimestamp(time.time() - hours_ago * 3600, dt.timezone.utc).isoformat()
+    with (d / 's.jsonl').open('a') as f:
+        f.write(json.dumps({'timestamp': ts, 'message': {'id': 'm' + str(len(list(d.iterdir()))) + model + str(tokens),
+                'model': model, 'usage': {'input_tokens': tokens, 'output_tokens': 0}}}) + '\n')
+
+
+def test_a_lane_over_its_share_is_refused_claude_and_falls_back(tmp_path, monkeypatch):
+    shares = {'meccog-apoe4': {'max_week_percent': 5, 'models': ['sonnet']}, 'default': {'max_week_percent': 60}}
+    p = cap_setup(tmp_path, monkeypatch, 30, hours=100, history=[(5, 29.9), (0, 30)], shares=shares)
+    proj = tmp_path / 'projects'
+    monkeypatch.setenv('RH_CLAUDE_PROJECTS', str(proj))
+    # meccog holds 600 of 1000 weighted tokens = 18% of the 30% week; other lanes hold the rest
+    write_transcript(proj, '-h-wt-kb-meccog-apoe4', 'claude-sonnet-5-5', 600)
+    write_transcript(proj, '-h-dev-tools', 'claude-sonnet-5-5', 400)
+    got = wm.select('batch', 'claude', path=p, lane='meccog-apoe4')
+    assert got['executor'] == 'codex'
+    assert 'lane meccog-apoe4 used 18.0% of 30% weekly' in got['claude_cap'] and '5% share' in got['claude_cap']
+    # the same week, a lane without an entry gets the default cap and keeps Claude
+    write_transcript(proj, '-h-share-lanes-math-j1', 'claude-sonnet-5-5', 100)
+    got = wm.select('batch', 'claude', path=p, lane='math')
+    assert got['executor'] == 'claude' and 'share' in got['claude_cap']
+    # a lane under its cap stays on Claude; its models list moves Opus to Sonnet
+    shares['meccog-apoe4']['max_week_percent'] = 50
+    (tmp_path / 'shares.json').write_text(json.dumps(shares))
+    (tmp_path / 'state/usage/claude-lanes-cache.json').unlink()
+    got = wm.select('batch', 'claude', path=p, lane='meccog-apoe4', opus='x')
+    assert (got['executor'], got['model']) == ('claude', 'claude-sonnet-5-5') and 'allows sonnet' in got['claude_cap']
+
+
+def test_opus_weighs_five_times_sonnet_in_a_lanes_share(tmp_path):
+    proj = tmp_path / 'p'
+    write_transcript(proj, '-a-lanes-x', 'claude-opus-5-5', 100)
+    write_transcript(proj, '-a-lanes-y', 'claude-sonnet-5-5', 500)
+    import time
+    w = wm.claude_cap.lane_weights(time.time() - 86400, proj)
+    assert w == {'-a-lanes-x': 500.0, '-a-lanes-y': 500.0}
+
+
+def test_claude_usage_keeps_a_history_for_pacing(tmp_path):
+    from importlib.machinery import SourceFileLoader
+    mod = SourceFileLoader('claude_usage_h', str(ROOT.parent / 'rstack/tools/claude-usage')).load_module()
+    path = tmp_path / 'claude-history.jsonl'
+    mod.append_history(path, {'at': 1000, 'weekly_percent': 5.0, 'resets_at': 'x'})
+    mod.append_history(path, {'at': 1000 + 900, 'weekly_percent': 5.5, 'resets_at': 'x', 'source': 'ignored'})
+    mod.append_history(path, {'at': 1000 + 15 * 86400, 'weekly_percent': 9.0})   # drops the two older than 14 days
+    rows = [json.loads(l) for l in path.read_text().splitlines()]
+    assert rows == [{'at': 1000 + 15 * 86400, 'weekly_percent': 9.0}]
+
+
+def test_argon_and_carbon_are_never_delegated_in_any_role(tmp_path, monkeypatch):
+    """11-20 (Ricardo): Argon is in no pool (older main model, ~3.5x Sol's cost, weekly quota exhausted); Carbon is Ultra-only.
+    Neon is a judgment-role delegate and Hydrogen a batch/mechanical one."""
+    routes = {m: {'cli': 'agy', 'canonical': 'google/' + m} for m in (
+        'gemini-4-argon-low', 'gemini-4-argon-medium', 'gemini-4-carbon-medium', 'gemini-4-neon-medium',
+        'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium')}
+    routes['gpt-6.2-sol'] = {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'}
+    roles = {r: ['gpt-6.2-sol'] for r in wm.DELEGATE_ROLES}
+    p = tmp_path / 'roles.json'
+    p.write_text(json.dumps({'roles': roles, 'routes': routes}))
+    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,agy')
+    monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
+    monkeypatch.setenv('RH_DELEGATE_CODEX_PER_DAY', '0')
+    seen = {}
+    for role in wm.DELEGATE_ROLES:
+        for _ in range(25):
+            got = wm.select(role, 'codex', path=p, made_by='claude-opus-5-5' if role in wm.INDEPENDENT else '')
+            seen.setdefault(role, set()).add(got['model'])
+    assert not any('argon' in m or 'carbon' in m for models in seen.values() for m in models), seen
+    for role in ('review', 'judge', 'audit', 'builder'):
+        assert seen[role] <= {'gemini-4-neon-medium', 'gpt-6.2-sol'}, (role, seen[role])
+    for role in ('batch', 'mechanical'):
+        assert seen[role] <= {'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium', 'gpt-6.2-sol'}, (role, seen[role])
+    assert 'gemini-4-neon-medium' in seen['review'] and 'gemini-4-hydrogen-medium' in seen['batch']

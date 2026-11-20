@@ -45,12 +45,13 @@ def test_the_agy_gemini_models_are_candidates_after_every_seed_until_evidence_mo
     monkeypatch.setattr(mr, 'evidence', lambda: {})
     data = mr.recompute(write=False)
     flash = [mr.MODELS[m][1] for m in mr.AGY_CANDIDATES]
-    assert {'gemini-4-argon-low', 'gemini-4-argon-medium'} <= set(flash) and len(flash) == 9
+    assert not any('argon' in m for m in flash) and len(flash) == 6   # 11-20: Argon out; Neon medium, Hydrogen low/medium
     for role, order in data['roles'].items():
         seeds = [mr.MODELS[m][1] for m in mr.SEED[role]]
         if role == 'writing':
             assert not set(flash) & set(order)
             continue
+        flash = [mr.MODELS[m][1] for m in mr.CANDIDATES[role]]
         assert set(flash) <= set(order), role
         assert max(order.index(m) for m in seeds) < min(order.index(m) for m in flash), (role, order)
         assert all(data['routes'][m]['cli'] == 'agy' for m in flash)

@@ -55,11 +55,26 @@ def test_bench_rows_never_rank_and_show_in_their_own_column(tmp_path, monkeypatc
     assert '| batch | gemini-3.8-flash-low | ' in text and '| n<5 | 0 | 1.0 |' in text
 
 
-def test_gemini_4_low_and_medium_are_both_candidates_until_real_work_decides():
-    for name in ('neon', 'argon', 'hydrogen'):
-        for tier in ('low', 'medium'):
-            assert mr.served_model('google/gemini-4-%s-%s' % (name, tier))
-            assert 'google/gemini-4-%s-%s' % (name, tier) in mr.CANDIDATES['review']
+def test_neon_is_the_judgment_candidate_hydrogen_the_batch_one_and_argon_is_in_no_pool():
+    # 11-20 (Ricardo): Neon main Gemini at medium for judgment roles; Hydrogen cheap/fast for batch and
+    # mechanical at low or medium; Argon dropped from every role; Carbon (Ultra only) never a candidate.
+    for role, pool in mr.CANDIDATES.items():
+        assert not any('argon' in m or 'carbon' in m for m in pool), role
+        gemini4 = [m for m in pool if 'gemini-4' in m]
+        if role in ('batch', 'mechanical', 'cheap'):
+            assert gemini4 == ['google/gemini-4-hydrogen-low', 'google/gemini-4-hydrogen-medium'], role
+        else:
+            assert gemini4 == ['google/gemini-4-neon-medium'], role
+
+
+def test_argon_is_never_ranked_in_any_role_even_with_graded_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(mr, 'LEDGER', tmp_path / 'ledger.jsonl')
+    monkeypatch.delenv('RH_LAUNCH_RECEIPTS', raising=False)
+    history = {role: {'google/gemini-4-argon-medium': {'n': 8, 'k': 8, 'days': {'a', 'b'}}} for role in mr.ROLES}
+    monkeypatch.setattr(mr, 'evidence', lambda: history)
+    data = mr.recompute(write=False)
+    for role, order in data['roles'].items():
+        assert not any('argon' in m for m in order), (role, order)
 
 
 def test_a_bench_row_cannot_move_a_rank(tmp_path, monkeypatch):

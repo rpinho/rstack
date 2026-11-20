@@ -56,14 +56,14 @@ def lanes_env(tmp_path, roles, **extra):
     return jobs, env
 
 
-AGY_ROLES = {'roles': {'batch': ['gemini-4-neon-low']},
-             'routes': {'gemini-4-neon-low': {'cli': 'agy', 'canonical': 'google/gemini-4-neon-low'}}}
+AGY_ROLES = {'roles': {'batch': ['gemini-4-hydrogen-low']},
+             'routes': {'gemini-4-hydrogen-low': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-low'}}}
 
 
 def test_an_agy_route_runs_detached_through_the_launcher_and_comes_back_graded(tmp_path):
     """The whole lane path: detached into tmux, agy executor, receipt, exit line, auto-grade row, registry."""
     agy = stub(tmp_path / 'fake-agy', 'import json, sys\n' + DONE +
-               'assert "--model" in sys.argv and "gemini-4-neon-low" in sys.argv\n'
+               'assert "--model" in sys.argv and "gemini-4-hydrogen-low" in sys.argv\n'
                'print(json.dumps({"response": "done", "status": "OK"}))\n')
     tm, state = fake_tmux(tmp_path)
     jobs, env = lanes_env(tmp_path, AGY_ROLES, AGENT_BACKEND='agy', LAUNCH_AGY=str(agy), LAUNCH_DETACH='tmux',
@@ -76,10 +76,10 @@ def test_an_agy_route_runs_detached_through_the_launcher_and_comes_back_graded(t
     assert proc.returncode == 0, proc.stderr + (state / 'job-fixture-agy.out').read_text()
     assert (state / 'job-fixture-agy.cmd').exists()   # it ran in its own session, not under the caller
     log = (jobs / 'fixture-agy.log').read_text()
-    assert '=== attempt 1 model gemini-4-neon-low' in log and '"response": "done"' in log
+    assert '=== attempt 1 model gemini-4-hydrogen-low' in log and '"response": "done"' in log
     assert any(line.startswith('exit 0 ') for line in log.splitlines())
     receipt = json.loads((jobs / 'fixture-agy.log.selection.json').read_text())
-    assert (receipt['executor'], receipt['model'], receipt['role']) == ('agy', 'gemini-4-neon-low', 'batch')
+    assert (receipt['executor'], receipt['model'], receipt['role']) == ('agy', 'gemini-4-hydrogen-low', 'batch')
     assert 'GRADE ON RETURN' in log
     entry = dict(line.split('=', 1) for line in (tmp_path / 'registry/fixture-agy.finished').read_text().splitlines())
     assert entry['restarts'] == '2' and entry['path'] and entry['dir'] == str(work)
@@ -89,7 +89,7 @@ def test_a_delegated_agy_job_is_auto_graded_at_return(tmp_path):
     agy = stub(tmp_path / 'fake-agy', 'import json\n' + DONE + 'print(json.dumps({"response": "done"}))\n')
     roles = {'roles': {'batch': ['gpt-6.2-sol']}, 'routes': {
         'gpt-6.2-sol': {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'},
-        'gemini-4-neon-low': {'cli': 'agy', 'canonical': 'google/gemini-4-neon-low'}}}
+        'gemini-4-hydrogen-low': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-low'}}}
     jobs, env = lanes_env(tmp_path, roles, LAUNCH_AGY=str(agy), RH_DELEGATE_SHARE='1',
                           RH_LAUNCHER_EXECUTORS='agy', RH_HEADROOM_ROUTING='0')
     (jobs / 'fixture-d.md').write_text('Write out.txt.\nCheck: test -f out.txt\n')
@@ -99,7 +99,7 @@ def test_a_delegated_agy_job_is_auto_graded_at_return(tmp_path):
     receipt = json.loads((jobs / 'fixture-d.log.selection.json').read_text())
     assert (receipt['source'], receipt['executor']) == ('delegate', 'agy')
     row = json.loads((jobs / 'everyday-grades.jsonl').read_text().splitlines()[-1])
-    assert (row['grade'], row['grader'], row['producer']) == ('pass', 'checks', 'gemini-4-neon-low')
+    assert (row['grade'], row['grader'], row['producer']) == ('pass', 'checks', 'gemini-4-hydrogen-low')
 
 
 CLAUDE_ROLES = {'roles': {'batch': ['fixture-claude']},

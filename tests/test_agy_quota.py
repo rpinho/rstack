@@ -1,6 +1,6 @@
 """agy quota is infrastructure: a blocked (model, tier) is not picked until its reset, and a quota hit is never a grade.
 
-11-20 (harness-m5): gemini-4-argon-medium answered "Resets in 152h14m46s" and kept being delegated, so each job
+11-20 (harness-m5): gemini-4-hydrogen-medium answered "Resets in 152h14m46s" and kept being delegated, so each job
 failed at once. Every CLI here is a stub: no model, no network, no spend.
 """
 import datetime as dt
@@ -20,9 +20,9 @@ import worker_models as wm  # noqa: E402
 
 ERROR = 'Individual quota reached. Please upgrade your subscription to increase your limits. Resets in {}.'
 NOW = dt.datetime(2026, 11, 20, 13, 0, tzinfo=dt.timezone.utc)
-ROLES = {'roles': {'batch': ['gemini-4-argon-medium', 'gpt-6.2-sol'], 'review': ['claude-opus-5-5']},
-         'routes': {'gemini-4-argon-medium': {'cli': 'agy', 'canonical': 'google/gemini-4-argon-medium'},
-                    'gemini-4-neon-low': {'cli': 'agy', 'canonical': 'google/gemini-4-neon-low'},
+ROLES = {'roles': {'batch': ['gemini-4-hydrogen-medium', 'gpt-6.2-sol'], 'review': ['claude-opus-5-5']},
+         'routes': {'gemini-4-hydrogen-medium': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-medium'},
+                    'gemini-4-hydrogen-low': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-low'},
                     'gpt-6.2-sol': {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'},
                     'claude-opus-5-5': {'cli': 'claude', 'canonical': 'anthropic/claude-opus-5.5'}}}
 
@@ -38,6 +38,7 @@ def state(tmp_path, monkeypatch):
     for k in ('RH_DELEGATE_SHARE', 'RH_CLAUDE_OVERFLOW_PERCENT', 'LAUNCH_EFFORT', 'RH_DELEGATE_ROLES'):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
+    monkeypatch.setenv('RH_CLAUDE_CAP', '0')   # these test the 85% overflow and agy quota; the 80% ceiling has its own tests
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     (tmp_path / 'roles.json').write_text(json.dumps(ROLES))
     return tmp_path
@@ -57,47 +58,47 @@ def test_the_reset_parses_into_blocked_until_and_its_window():
     assert agy_quota.reset_seconds('Resets in 2d3h') == 2 * 86400 + 3 * 3600
     assert agy_quota.reset_seconds('HTTP 429: try later') is None
     assert agy_quota.window(4 * 3600 + 52 * 60) == '5h' and agy_quota.window(152 * 3600) == 'weekly'
-    row = agy_quota.annotate(quota_row('gemini-4-argon-medium', '152h14m46s'))
+    row = agy_quota.annotate(quota_row('gemini-4-hydrogen-medium', '152h14m46s'))
     assert row['blocked_until'] == '2026-11-26T21:14:46+00:00' and row['window'] == 'weekly'
     row = agy_quota.annotate(quota_row('claude-opus-5-5-high', '4h52m1s'))
     assert row['blocked_until'] == '2026-11-20T17:52:01+00:00' and (row['window'], row['tier']) == ('5h', 'high')
 
 
 def test_only_resets_still_ahead_block_and_the_latest_wins(state):
-    write(state, quota_row('gemini-4-argon-medium', '152h14m46s'), quota_row('claude-opus-5-5-high', '4h52m1s'),
-          dict(quota_row('gemini-4-neon-low', '1h'), error='429 too many requests'))   # no reset named: not blocked
+    write(state, quota_row('gemini-4-hydrogen-medium', '152h14m46s'), quota_row('claude-opus-5-5-high', '4h52m1s'),
+          dict(quota_row('gemini-4-hydrogen-low', '1h'), error='429 too many requests'))   # no reset named: not blocked
     table = agy_quota.blocked(NOW + dt.timedelta(hours=6))
-    assert set(table) == {('gemini-4-argon-medium', 'medium')}   # the 5-hour window has passed
-    assert agy_quota.blocked_until('gemini-4-argon-medium', table=table)
-    assert agy_quota.blocked_until('gemini-4-argon-low', table=table) is None
-    assert set(agy_quota.blocked(NOW)) == {('gemini-4-argon-medium', 'medium'), ('claude-opus-5-5-high', 'high')}
+    assert set(table) == {('gemini-4-hydrogen-medium', 'medium')}   # the 5-hour window has passed
+    assert agy_quota.blocked_until('gemini-4-hydrogen-medium', table=table)
+    assert agy_quota.blocked_until('gemini-4-hydrogen-low', table=table) is None
+    assert set(agy_quota.blocked(NOW)) == {('gemini-4-hydrogen-medium', 'medium'), ('claude-opus-5-5-high', 'high')}
     assert agy_quota.blocked(NOW + dt.timedelta(days=7)) == {}
 
 
 def test_the_default_pick_skips_a_blocked_agy_model_and_the_receipt_says_until_when(state):
-    write(state, quota_row('gemini-4-argon-medium', '152h', utc=dt.datetime.now(dt.timezone.utc)))
+    write(state, quota_row('gemini-4-hydrogen-medium', '152h', utc=dt.datetime.now(dt.timezone.utc)))
     receipt = wm.select('batch', 'codex', path=state / 'roles.json', job='j')
     assert (receipt['model'], receipt['executor']) == ('gpt-6.2-sol', 'codex')
-    assert receipt['quota_skipped'][0].startswith('skipped gemini-4-argon-medium: agy quota until ')
+    assert receipt['quota_skipped'][0].startswith('skipped gemini-4-hydrogen-medium: agy quota until ')
     assert 'weekly window' in receipt['quota_skipped'][0]
     with pytest.raises(ValueError, match='agy quota until'):
-        wm.select('batch', 'agy', model='gemini-4-argon-medium', override='test', path=state / 'roles.json')
+        wm.select('batch', 'agy', model='gemini-4-hydrogen-medium', override='test', path=state / 'roles.json')
     (state / 'state/agy-quota.jsonl').write_text('')
-    assert wm.select('batch', 'agy', path=state / 'roles.json')['model'] == 'gemini-4-argon-medium'
+    assert wm.select('batch', 'agy', path=state / 'roles.json')['model'] == 'gemini-4-hydrogen-medium'
 
 
 def test_the_delegate_pool_leaves_out_a_blocked_agy_model(state, monkeypatch):
     monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
-    monkeypatch.setattr(wm, 'DELEGATE_MODELS', ('gemini-4-argon-medium', 'gemini-4-neon-low'))
-    write(state, quota_row('gemini-4-argon-medium', '152h', utc=dt.datetime.now(dt.timezone.utc)))
+    monkeypatch.setattr(wm, 'DELEGATE_MODELS', ('gemini-4-hydrogen-medium', 'gemini-4-hydrogen-low'))
+    write(state, quota_row('gemini-4-hydrogen-medium', '152h', utc=dt.datetime.now(dt.timezone.utc)))
     for _ in range(5):
         receipt = wm.select('batch', 'codex', path=state / 'roles.json', job='j')
-        assert (receipt['source'], receipt['model'], receipt['executor']) == ('delegate', 'gemini-4-neon-low', 'agy')
-        assert any(s.startswith('skipped gemini-4-argon-medium') for s in receipt['quota_skipped'])
-    write(state, quota_row('gemini-4-neon-low', '3h', utc=dt.datetime.now(dt.timezone.utc)))
+        assert (receipt['source'], receipt['model'], receipt['executor']) == ('delegate', 'gemini-4-hydrogen-low', 'agy')
+        assert any(s.startswith('skipped gemini-4-hydrogen-medium') for s in receipt['quota_skipped'])
+    write(state, quota_row('gemini-4-hydrogen-low', '3h', utc=dt.datetime.now(dt.timezone.utc)))
     receipt = wm.select('batch', 'codex', path=state / 'roles.json', job='j')
     assert (receipt['source'], receipt['model']) == ('leaderboard', 'gpt-6.2-sol')
-    assert any('gemini-4-neon-low' in s and '5h window' in s for s in receipt['quota_skipped'])
+    assert any('gemini-4-hydrogen-low' in s and '5h window' in s for s in receipt['quota_skipped'])
 
 
 def test_a_claude_job_does_not_overflow_to_an_agy_claude_out_of_quota(state, monkeypatch):
@@ -120,7 +121,7 @@ def returned(tmp_path, quota_line, executor='agy'):
     (work / 'REPORT.md').write_text('Shipped: half of it\n')
     (work / 'STATUS.md').write_text('You asked: x. I will: y.\n')
     receipt = tmp_path / 'job.log.selection.json'
-    sel = dict(selection_id='sid1', job='job', lane='l', role='batch', model='gemini-4-argon-medium',
+    sel = dict(selection_id='sid1', job='job', lane='l', role='batch', model='gemini-4-hydrogen-medium',
                executor=executor, source='delegate')
     receipt.write_text(json.dumps(sel))
     log = tmp_path / 'job.log'
@@ -131,13 +132,13 @@ def returned(tmp_path, quota_line, executor='agy'):
 
 
 def test_a_quota_hit_is_recorded_ungraded_and_never_pass_partial_or_fail(state):
-    mark = agy_quota.MARK + json.dumps(agy_quota.annotate(quota_row('gemini-4-argon-medium', '152h14m46s')))
+    mark = agy_quota.MARK + json.dumps(agy_quota.annotate(quota_row('gemini-4-hydrogen-medium', '152h14m46s')))
     receipt, log, work = returned(state, mark)
     row = auto_grade.grade(receipt, log, work, state / 'job.md')
     assert (row['grade'], row['grader']) == ('ungraded', 'quota') and row['note'].startswith('quota')
     assert 'weekly window' in row['note']
     # The controller learns the block from the job log, so a --host job's quota reaches its picker.
-    assert ('gemini-4-argon-medium', 'medium') in {(r['model'], r['tier']) for r in agy_quota.rows()}
+    assert ('gemini-4-hydrogen-medium', 'medium') in {(r['model'], r['tier']) for r in agy_quota.rows()}
     # An executor older than the AGY_QUOTA line: agy's own error text is enough.
     receipt, log, work = returned(state, 'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): ' + ERROR.format('4h') + '"}')
     assert auto_grade.grade(receipt, log, work, state / 'job.md')['grade'] == 'ungraded'

@@ -1,0 +1,4 @@
+{
+  "meccog-apoe4": {"max_week_percent": 5, "models": ["sonnet"]},
+  "default": {"max_week_percent": 30, "models": ["sonnet", "opus"]}
+}

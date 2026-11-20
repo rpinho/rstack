@@ -19,6 +19,7 @@ import uuid
 from bug_verdicts import maker
 from agent_executor import metered_refusal
 import agy_quota
+import claude_cap
 
 ROLES_FILE = settings.path('RH_ROLES_FILE', Path('.runtime/roles.json'))
 JUDGMENT = frozenset(('review', 'judge', 'audit', 'taste', 'design', 'ideation'))
@@ -155,9 +156,12 @@ def claude_overflow(executor, model):
 # silent: RH_DELEGATE_SHARE (0..1, unset = 0) turns it on, and the receipt and the log name the draw. Kimi is
 # left out: it exists only through OpenRouter, which is refused (no pay-as-you-go).
 DELEGATE_ROLES = ('review', 'judge', 'audit', 'mechanical', 'builder', 'batch')
-DELEGATE_MODELS = ('gemini-4-neon-low', 'gemini-4-neon-medium', 'gemini-4-argon-low', 'gemini-4-argon-medium',
-                   'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium', 'gpt-6.2-sol', 'gpt-6.2-astra',
-                   'claude-sonnet-5-5')
+# 11-20 (Ricardo): Neon is the main Gemini (judgment roles, medium), Hydrogen the cheap one (batch and mechanical,
+# low or medium); Argon is in no pool and Carbon (Ultra only) stays out.
+DELEGATE_MODELS = ('gemini-4-neon-medium', 'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium',
+                   'gpt-6.2-sol', 'gpt-6.2-astra', 'claude-sonnet-5-5')
+GEMINI_ROLES = {'neon': ('review', 'judge', 'audit', 'builder'), 'hydrogen': ('batch', 'mechanical')}
+NEVER_PICKED = ('gemini-4-argon', 'gemini-4-carbon')   # no role, no delegate draw, no headroom move
 
 
 # A spec that needs its model (a sealed referee, a cross-family check) says so in one line, and is never delegated:
@@ -198,6 +202,32 @@ def gate_reviewers():
 def gate_reviewer(model, reviewers):
     """True when the model id names one of the gate's reviewers as a whole part (opus, astra, fable, ...)."""
     return any('-{}-'.format(r) in '-{}-'.format(model) for r in reviewers)
+
+
+def claude_fallback(role, data, excluded, families, requested, follows_route, chosen):
+    """Where a job goes when Claude is closed to it (ceiling, pacing, lane share): (model, executor, route_model),
+    Codex's default for the role first (unless Codex is itself past 95%), then agy's Sonnet 5.5. Never a family
+    the job judges. None when neither is available."""
+    run = runnable(requested, follows_route)
+    allowance = _allowance()
+    codex_full = False
+    try:
+        row = (allowance.cached(__import__('time').time()) or {}).get('codex') if allowance else None
+        codex_full = bool(row) and float(row.get('weekly_used_percent') or 0) >= 95
+    except (AttributeError, TypeError, ValueError, OSError):
+        pass
+    pick = PROVIDER_DEFAULT['codex'].get(role) or PROVIDER_DEFAULT['codex']['*']
+    r = data['routes'].get(pick)
+    if ('codex' in run and not codex_full and isinstance(r, dict) and r.get('cli') == 'codex'
+            and pick not in excluded and r.get('canonical') not in excluded and maker(pick, r.get('canonical')) not in families):
+        return pick, 'codex', None
+    model = chosen if chosen in AGY_CLAUDE else claude_cap.SONNET
+    r = data['routes'].get(model)
+    if ('agy' in run and isinstance(r, dict) and model not in excluded
+            and maker(model, r.get('canonical')) not in families):
+        effort = os.environ.get('LAUNCH_EFFORT', '')
+        return model, 'agy', model + '-' + (effort if effort in ('low', 'medium', 'high') else 'high')
+    return None
 
 
 def spec_pin(text):
@@ -357,6 +387,9 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), exe
     pool = []
     for m in DELEGATE_MODELS:
         route = data['routes'].get(m)
+        gem = re.match(r'gemini-4-(\w+)', m)
+        if gem and role not in GEMINI_ROLES.get(gem.group(1), ()):
+            continue
         if (m == top or not isinstance(route, dict) or route.get('cli') not in executors
                 or m in excluded or route.get('canonical') in excluded):
             continue
@@ -383,7 +416,7 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), exe
 
 
 def select(role, executor, model='', override='', path=None, made_by='', job='', lane='', explore='', pin='',
-           workdir='', lane_dir='', follows_route=True, gate=''):
+           workdir='', lane_dir='', follows_route=True, gate='', opus=''):
     requested = executor
     judgment_hint = ''
     if role == 'batch' and JUDGMENT_JOB.search(job):
@@ -497,12 +530,34 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         executor = route.get('cli')
         if executor not in ('codex', 'claude', 'agy', 'openrouter', 'gemini'):
             raise ValueError('role {} selected {}; unsupported executor route'.format(role, chosen))
+    # 11-20: Claude ceiling, pacing, Sonnet default and lane share (claude_cap.py), before the route is fixed.
+    cap, cap_route = None, None
+    if executor == 'claude' and route and route.get('cli') == 'claude' and claude_cap.enabled():
+        held = bool(explore or model or pin or gate)
+        cap = claude_cap.decide(chosen, lane, opus, claude_cap.SONNET in data['routes'], _allowance(), pinned=held)
+        if cap['model'] != chosen:
+            chosen, route = cap['model'], data['routes'][cap['model']]
+        if cap['leave']:
+            if held:
+                raise ValueError('role {} selected {}: {}; a pinned or explicit model has no fallback'.format(
+                    role, chosen, cap['leave']))
+            cap_route = claude_fallback(role, data, excluded, families if judging else frozenset(), requested,
+                                        follows_route, chosen)
+            if not cap_route:
+                raise ValueError('role {} selected {}: {}; no Codex or agy fallback is available'.format(
+                    role, chosen, cap['leave']))
+            chosen = cap_route[0]
+            route = data['routes'][chosen]
+            executor = cap_route[1]
+            cap['notes'].append('{}; moved to {}{}'.format(cap['leave'], chosen, ' on agy' if cap_route[1] == 'agy' else ''))
     # 11-19: refused here, before any receipt, as well as in the executor. Not a fallback: the
     # leaderboard names a subscription route, or this job does not run.
     why = metered_refusal(executor)
     if why:
         raise ValueError('role {} selected {}: {}'.format(role, chosen, why))
-    if not isinstance(route, dict) or not route.get('canonical') or route.get('cli') != executor:
+    if cap_route and cap_route[1] == 'agy':
+        pass   # agy's Claude is reached through the claude route entry; the receipt names agy below
+    elif not isinstance(route, dict) or not route.get('canonical') or route.get('cli') != executor:
         raise ValueError('role {} selected {}; no compatible {} route (no silent fallback)'.format(role, chosen, executor))
     if chosen in excluded or route['canonical'] in excluded:
         raise ValueError('model excluded from role ' + role)
@@ -512,8 +567,13 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         raise ValueError('invalid native model id')
     # The 85% brake moves Claude work to agy's Claude, only where the launcher can run agy.
     overflow = claude_overflow(executor, chosen) if 'agy' in runnable(requested, follows_route) else None
+    if cap_route and cap_route[1] == 'agy':
+        overflow = (cap_route[2], 'claude cap: ' + cap['leave'])
     if overflow and agy_quota.blocked_until(overflow[0], effort, table=quota):
         quota_skipped.append(agy_quota.skip_note(overflow[0], agy_quota.blocked_until(overflow[0], effort, table=quota)))
+        if cap_route and cap_route[1] == 'agy':
+            raise ValueError('role {} selected {}: {}; agy\'s Claude is out of quota too ({})'.format(
+                role, chosen, cap['leave'], quota_skipped[-1]))
         overflow = None   # stays on Claude: agy's Claude is out of quota until then
     receipt = dict(schema=1, selection_id=uuid.uuid4().hex, utc=dt.datetime.now(dt.timezone.utc).isoformat(),
         role=role, model=chosen, canonical=route['canonical'], executor=executor,
@@ -531,6 +591,12 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         receipt['producer_family'] = sorted(families) or 'unknown'
         if family_sources:
             receipt['producer_family_source'] = family_sources
+    if cap and (cap['notes'] or cap['warning'] or cap['opus_reason']):
+        receipt['claude_cap'] = '; '.join(cap['notes'])
+        if cap['warning']:
+            receipt['claude_warning'] = cap['warning']
+        if cap['opus_reason']:
+            receipt['opus_reason'] = cap['opus_reason']
     if delegate_skip:
         receipt['delegate_skipped'] = delegate_skip
     if quota_skipped:
@@ -832,7 +898,8 @@ def main(argv=None):
                          args.made_by, args.job, args.lane, args.explore,
                          spec_pin(args.spec.read_text()) if args.spec and args.spec.is_file() else '',
                          args.workdir, args.lane_dir, follows_route=args.print_route,
-                         gate=spec_gate(args.spec.read_text()) if args.spec and args.spec.is_file() else '')
+                         gate=spec_gate(args.spec.read_text()) if args.spec and args.spec.is_file() else '',
+                         opus=claude_cap.spec_opus(args.spec.read_text()) if args.spec and args.spec.is_file() else '')
         if receipt['role'] in JUDGMENT and args.spec and assigns_judgment_model(args.spec.read_text()):
             print('launch.sh refused {}: name the leaderboard role, not a model (LEADERBOARD.md); '
                   'the leaderboard picks {}'.format(args.job, receipt['model']), file=sys.stderr)
@@ -850,6 +917,14 @@ def main(argv=None):
             with Path(args.log).open('a') as stream:
                 stream.write('{} job={}\n'.format(receipt['delegate'], args.job))
             print('worker model: ' + receipt['delegate'], file=sys.stderr)
+        for key in ('claude_cap', 'claude_warning'):
+            if receipt.get(key):
+                with Path(args.log).open('a') as stream:
+                    stream.write('{}: {} job={}\n'.format(key, receipt[key], args.job))
+                print('worker model: ' + receipt[key], file=sys.stderr)
+        if receipt.get('opus_reason'):
+            with Path(args.log).open('a') as stream:
+                stream.write('opus allowed: {} job={}\n'.format(receipt['opus_reason'], args.job))
         if receipt.get('overflow'):
             with Path(args.log).open('a') as stream:
                 stream.write('{} job={} model={} route={}\n'.format(receipt['overflow'], args.job, receipt['model'],

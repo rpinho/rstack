@@ -121,10 +121,18 @@ ROLES = tuple(SEED)
 # 11-19: Google on the agy subscription is not metered, so its Flash tiers enter as candidates: after every
 # seed, with no evidence, and moved only by the same Wilson rule as any other model. No winner is picked here.
 AGY_FLASH = ['google/gemini-3.8-flash-high', 'google/gemini-3.8-flash-medium', 'google/gemini-3.8-flash-low']
-AGY_GEMINI4 = ['google/gemini-4-neon-low', 'google/gemini-4-neon-medium', 'google/gemini-4-argon-low',
-               'google/gemini-4-argon-medium', 'google/gemini-4-hydrogen-low', 'google/gemini-4-hydrogen-medium']
+# 11-20 (Ricardo: "yes, of course"): Neon is the main Gemini, so it is the candidate for judgment roles, at
+# medium; Hydrogen is the cheap, fast one, for batch and mechanical work, at low or medium. Argon (the older main
+# model, ~3.5x Sol's cost per task, weekly quota exhausted) is out of every pool, and Carbon (Ultra only) stays
+# out. This changes who is a candidate, never the rank: ranks still come only from graded everyday work.
+AGY_NEON = ['google/gemini-4-neon-medium']
+AGY_HYDROGEN = ['google/gemini-4-hydrogen-low', 'google/gemini-4-hydrogen-medium']
+GEMINI4_DROPPED = ('google/gemini-4-argon', 'google/gemini-4-argon-low', 'google/gemini-4-argon-medium')
+HYDROGEN_ROLES = ('batch', 'mechanical', 'cheap')
+AGY_GEMINI4 = AGY_NEON + AGY_HYDROGEN
 AGY_CANDIDATES = AGY_FLASH + AGY_GEMINI4
-CANDIDATES = {role: list(AGY_CANDIDATES) for role in ROLES if role != 'writing'}
+CANDIDATES = {role: AGY_FLASH + (AGY_HYDROGEN if role in HYDROGEN_ROLES else AGY_NEON)
+              for role in ROLES if role != 'writing'}
 # Owner, 2026-11-18: "Astra 6.2 should replace Astra on the leaderboard. Sol 6.2 should/could replace Sol 6.1."
 # 11-19 (general): a superseded version is history, not a fallback: shown with its own everyday record, never
 # routed, and its successor earns its own n from zero.
@@ -448,7 +456,7 @@ def rank(role, ev):
         return wilson_low(k, n) if graded(m) else -1
     pool = list(SEED[role]) + CANDIDATES.get(role, [])
     order = [m for m in pool + sorted((m for m in e if m not in pool), key=low, reverse=True)
-             if served_model(m)]
+             if served_model(m) and m not in GEMINI4_DROPPED]
     data = sorted((m for m in order if graded(m)), key=lambda m: (low(m), rate(m)), reverse=True)
     order = data + [m for m in order if not graded(m)]
     order = spread_labs(order, MIN_LABS.get(role, 1))

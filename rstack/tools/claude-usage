@@ -139,6 +139,30 @@ def write(path, text):
     os.replace(tmp, path)
 
 
+HISTORY_KEEP_S = 14 * 86400
+
+
+def append_history(path, rec):
+    """One row per reading in usage/claude-history.jsonl, for the launcher's burn-rate pacing; rows older than
+    14 days are dropped. Never fails the reading."""
+    try:
+        keep = []
+        try:
+            for line in path.read_text().splitlines():
+                try:
+                    if rec['at'] - json.loads(line)['at'] <= HISTORY_KEEP_S:
+                        keep.append(line)
+                except (ValueError, KeyError, TypeError):
+                    continue
+        except OSError:
+            pass
+        row = {k: rec[k] for k in ('at', 'weekly_percent', 'resets_at', 'five_hour_percent') if k in rec}
+        keep.append(json.dumps(row, sort_keys=True))
+        write(path, '\n'.join(keep) + '\n')
+    except OSError as exc:
+        print('claude-usage: WARNING history not written ({})'.format(exc), file=sys.stderr)
+
+
 def push(host, paths):
     """Copy each file to the same absolute path on host, keeping its mtime so newer-wins mirrors agree."""
     ok = True
@@ -176,9 +200,10 @@ def main(argv=None):
     usage = state_dir() / 'usage' / 'claude.json'
     if rec:
         write(usage, json.dumps(rec) + '\n')
+        append_history(usage.with_name('claude-history.jsonl'), rec)
     write(alert_path(), (row + '\n') if row else '')
     if a.push:
-        push(a.push, ([usage] if rec else []) + [alert_path()])
+        push(a.push, ([usage, usage.with_name('claude-history.jsonl')] if rec else []) + [alert_path()])
     print(json.dumps(rec, sort_keys=True) if rec else row, file=sys.stdout if rec else sys.stderr)
     return 0 if rec else 1
 
