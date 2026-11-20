@@ -44,6 +44,9 @@ else
   # RULE #1 (11-20): yesterday's harness blocks. A block later rerun, overridden or retracted is a harness
   # bug; general gets the count and the top three blockers (tell-general fyi). Never fails the tick.
   "$PYTHON" "$REPO/harness/harness_blocks.py" report --tell ${=RH_BLOCKS_PEER_ARGS:-} || true
+  # 11-20: the grades are every Mac's (RH_EVERYDAY_GRADES, grade_ledgers.py). A missing or stale mirror warns
+  # once here (harness-blocks ledger) and the scorer reads what it has; it never fails the tick.
+  "$PYTHON" "$HERE/grade_ledgers.py" check || true
 fi
 "$PYTHON" "$HERE/model-roles.py" ingest
 "$PYTHON" "$HERE/model-roles.py" recompute

@@ -13,13 +13,29 @@ cost. Every failure here degrades to "no cost" and is never raised: the harness 
 
 cost per passed task = total attributed cost / number of PASS grades, shown once a model has MIN_COSTED
 graded everyday tasks with a cost. It never ranks: it breaks ties and informs routing, nothing else. Bench rows
-never enter (only everyday-grades.jsonl is read).
+never enter (only the everyday grade ledgers are read).
+
+The grades are every ledger grade_ledgers.py lists (RH_EVERYDAY_GRADES; unset, the one beside the receipts).
+A job's window comes from the receipts beside its own ledger first: another Mac's mirrored receipts carry a
+log-mtimes.tsv manifest in place of the logs. Overlap ("shared") is checked across every Mac's jobs, since
+the weekly allowance is the account's.
 """
 import collections
 import datetime as dt
+import importlib.util
 import json
 import os
 from pathlib import Path
+
+
+def _grade_ledgers():
+    spec = importlib.util.spec_from_file_location('grade_ledgers', Path(__file__).with_name('grade_ledgers.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+grade_ledgers = _grade_ledgers()
 
 MIN_COSTED = 5
 SLACK = 1800          # seconds a reading may sit from the window edge
@@ -49,6 +65,14 @@ def _lines(path):
             yield row
 
 
+def _window(resets_at):
+    """The weekly window a reading belongs to: its reset time to the minute. The Claude reader stamps resets_at
+    with the microseconds of each reading (11-20: two readings of one week differed at .757226 and .524538), so
+    the raw string never matched and no Claude job got a cost."""
+    t = _ts(resets_at)
+    return str(round(t / 60)) if t is not None else str(resets_at)
+
+
 def series(state=None):
     """{'claude': [(ts, percent, window)], 'codex': [...]} sorted by time; window names the weekly reset."""
     state = Path(state) if state else STATE
@@ -56,7 +80,7 @@ def series(state=None):
     for r in _lines(state / 'usage' / 'claude-history.jsonl'):
         t, p = _ts(r.get('at')), r.get('weekly_percent')
         if t is not None and isinstance(p, (int, float)):
-            out['claude'].append((t, float(p), str(r.get('resets_at'))))
+            out['claude'].append((t, float(p), _window(r.get('resets_at'))))
     seen = set()
     for path in sorted((state / 'codex-ledger').glob('*.jsonl')) if (state / 'codex-ledger').is_dir() else ():
         for r in _lines(path):
@@ -67,7 +91,7 @@ def series(state=None):
                 t, p = _ts(w.get('snapshot_at')), w.get('weekly_used_percent')
                 if t is None or not isinstance(p, (int, float)):
                     continue
-                item = (t, float(p), str(w.get('resets_at')))
+                item = (t, float(p), _window(w.get('resets_at')))
                 if item not in seen:
                     seen.add(item)
                     out['codex'].append(item)
@@ -94,6 +118,7 @@ def windows(receipts):
     root = Path(receipts) if receipts else None
     if not root or not root.is_dir():
         return out
+    manifest = None
     for path in root.glob('*.selection.json'):
         try:
             row = json.loads(path.read_text())
@@ -116,30 +141,55 @@ def windows(receipts):
                 end = candidate.stat().st_mtime
                 break
             except OSError:
-                continue
+                if manifest is None:     # a mirror: the logs stay on their own Mac
+                    manifest = grade_ledgers.log_mtimes(root)
+                if candidate.name in manifest:
+                    end = manifest[candidate.name]
+                    break
         if end is not None and end >= start:
             out[job] = (row.get('executor'), start, end)
     return out
 
 
-def grades(receipts):
-    """{job: row} of the final everyday grade per job; retracted ids are dropped, ungraded rows ignored."""
-    rows = list(_lines(Path(receipts) / 'everyday-grades.jsonl')) if receipts else []
-    retracted = {r.get('id') for r in rows
-                 if r.get('source_kind') == 'everyday' and str(r.get('grade')).lower() == 'retracted'}
+def _graded(receipts, ledgers=None):
+    """{job: (row, ledger)} of the final everyday grade per job across every ledger."""
+    paths = grade_ledgers.ledgers(receipts) if ledgers is None else ledgers
     out = {}
-    for r in rows:
-        if r.get('source_kind') != 'everyday' or r.get('id') in retracted:
-            continue
+    for r, path, _ in grade_ledgers.rows(paths):
         if str(r.get('grade')).lower() in ('pass', 'partial', 'fail') and r.get('job'):
-            out[r['job']] = r
+            out[r['job']] = (r, path)
     return out
 
 
-def job_costs(receipts, state=None):
+def grades(receipts, ledgers=None):
+    """{job: row} of the final everyday grade per job; retracted ids are dropped, ungraded rows ignored."""
+    return {job: row for job, (row, _) in _graded(receipts, ledgers).items()}
+
+
+def all_windows(receipts, graded=None):
+    """{job: window} across the receipts and every graded job's own ledger directory. A job graded from a
+    ledger takes its window from that ledger's receipts; any other job name keeps the first one found."""
+    dirs = [Path(receipts)] if receipts else []
+    for _, path in (graded or {}).values():
+        directory = grade_ledgers.receipts_dir(path)
+        if directory not in dirs:
+            dirs.append(directory)
+    found = {d: windows(d) for d in dirs}
+    wins = {}
+    for d in dirs:
+        for job, w in found[d].items():
+            wins.setdefault(job, w)
+    for job, (_, path) in (graded or {}).items():
+        own = found.get(grade_ledgers.receipts_dir(path), {}).get(job)
+        if own:
+            wins[job] = own
+    return wins
+
+
+def job_costs(receipts, state=None, graded=None):
     """{job: percent | 'shared' | None} for every windowed job."""
     try:
-        wins, data = windows(receipts), series(state)
+        wins, data = all_windows(receipts, graded), series(state)
     except Exception:           # never in the way
         return {}
     costs = {}
@@ -153,12 +203,13 @@ def job_costs(receipts, state=None):
     return costs
 
 
-def per_pass(receipts, canon, state=None):
+def per_pass(receipts, canon, state=None, ledgers=None):
     """{(role, canonical model): {'n': costed graded tasks, 'passes': n, 'pct': total, 'per_pass': x | None}}.
 
     per_pass is None until MIN_COSTED costed graded tasks exist and at least one passed."""
     try:
-        costs, graded = job_costs(receipts, state), grades(receipts)
+        found = _graded(receipts, ledgers)
+        costs, graded = job_costs(receipts, state, found), {job: row for job, (row, _) in found.items()}
     except Exception:
         return {}
     acc = collections.defaultdict(lambda: {'n': 0, 'passes': 0, 'pct': 0.0})

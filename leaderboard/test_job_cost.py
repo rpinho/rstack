@@ -116,3 +116,13 @@ def test_the_leaderboard_shows_the_cost_column_and_a_dash_without_it(tmp_path):
     page.write_text(text.replace('2026-11-20', '2026-11-19'))
     mr.public(dict(data, cost={}), page)                       # a rerun keeps the older day's rows
     assert '| 1.23% wk | 2026-11-19 |' in page.read_text()
+
+
+def test_one_weekly_window_matches_whatever_the_microseconds_of_its_reset_stamp(tmp_path):
+    receipts, state = five_jobs(tmp_path, ['pass'] * 5)
+    path = state / 'usage' / 'claude-history.jsonl'
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    for i, r in enumerate(rows):
+        r['resets_at'] = '2026-11-23T02:59:59.%06d+00:00' % (i * 7919)
+    path.write_text(''.join(json.dumps(r) + '\n' for r in rows))
+    assert jc.per_pass(receipts, mr.canon, state)[('batch', mr.canon(SONNET))]['per_pass'] == 1.0

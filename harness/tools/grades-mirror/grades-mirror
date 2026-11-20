@@ -1,0 +1,54 @@
+#!/bin/zsh
+# grades-mirror: a one-way, read-only copy of another Mac's everyday grade ledgers for the model scorer (11-20).
+#
+#   grades-mirror HOST DEST DIR...
+#
+# Each Mac owns its ledgers: worker_models.py --grade writes everyday-grades.jsonl beside the launch receipt.
+# The scorer runs on one Mac, so it reads the others' through this mirror (RH_EVERYDAY_GRADES lists them,
+# leaderboard/grade_ledgers.py). Nothing here writes to a ledger on HOST or merges into a local ledger.
+# For each DIR on HOST (relative to its home, or absolute) that holds everyday-grades.jsonl:
+#   DEST/<slug>.jsonl                            the ledger, as HOST has it
+#   DEST/<slug>.receipts/*.selection.json        its launch receipts, which the grades name (small)
+#   DEST/<slug>.receipts/log-mtimes.tsv          "<mtime>\t<name>" of each job log, for job_cost's windows;
+#                                                the logs themselves are not copied
+# <slug> is DIR with "/" as "-" and leading dots dropped. DEST/.synced is touched once every DIR copied.
+# Run from launchd every 600 s, like the usage mirror. A failed copy keeps the last one and exits 1; the
+# scorer warns about a mirror older than 2 h and reads what it has (RULE #1: never in its way).
+set -uo pipefail
+if (( $# < 3 )); then
+  print -u2 -- 'usage: grades-mirror HOST DEST DIR...'
+  exit 2
+fi
+host=$1 dest=$2
+shift 2
+ssh_cmd=${GRADES_MIRROR_SSH:-/usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=10}
+rsync_bin=${GRADES_MIRROR_RSYNC:-/usr/bin/rsync}
+mkdir -p -- "$dest" || exit 1
+failed=0
+for dir in "$@"; do
+  dir=${dir%/}
+  slug=$(print -r -- "$dir" | sed -e 's|/|-|g' -e 's|^[.-]*||' -e 's|-\.|-|g')
+  print -- "$(date -u +%FT%TZ) $host:$dir -> $dest/$slug"
+  if ! $rsync_bin -t -e "$ssh_cmd" "$host:$dir/everyday-grades.jsonl" "$dest/$slug.jsonl"; then
+    print -u2 -- "grades-mirror: could not copy $host:$dir/everyday-grades.jsonl; the last copy stays"
+    failed=1
+    continue
+  fi
+  mkdir -p -- "$dest/$slug.receipts"
+  if ! $rsync_bin -r -t --include='*.selection.json' --exclude='*' -e "$ssh_cmd" "$host:$dir/" "$dest/$slug.receipts/"; then
+    print -u2 -- "grades-mirror: could not copy the receipts in $host:$dir"
+    failed=1
+  fi
+  tmp=$dest/$slug.receipts/.log-mtimes.tsv.tmp
+  # BSD stat on HOST: %m is the mtime in seconds, %t a tab, %N the name ("./JOB.log"). find runs the same under
+  # any login shell. The manifest is replaced whole, never left half written.
+  if ${=ssh_cmd} "$host" "cd ${(q)dir} && find . -maxdepth 1 -type f \\( -name '*.log' -o -name '*.last.md' \\) -exec stat -f '%m%t%N' {} +" \
+      > "$tmp"; then
+    mv -f -- "$tmp" "$dest/$slug.receipts/log-mtimes.tsv"
+  else
+    print -u2 -- "grades-mirror: could not list the job logs in $host:$dir; the last list stays"
+    failed=1
+  fi
+done
+(( failed )) || touch -- "$dest/.synced"
+exit $failed

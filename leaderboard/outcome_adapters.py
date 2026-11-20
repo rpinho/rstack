@@ -1,15 +1,27 @@
 """Receipt-linked outcome readers. Inputs are private; only observations reach the ranker.
 
 No model is inferred from prose, job naming conventions, or a worker exit status.
-JSONL is streamed and malformed input fails the run with its file and line number.
+JSONL is streamed and malformed input fails the run with its file and line number; the everyday
+grade ledgers are the exception: a malformed line there is skipped (grade_ledgers.py, RULE #1).
 """
 import collections
 import functools
 import datetime as dt
+import importlib.util
 import json
 from pathlib import Path
 import re
 import shlex
+
+
+def _grade_ledgers():
+    spec = importlib.util.spec_from_file_location('grade_ledgers', Path(__file__).with_name('grade_ledgers.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+grade_ledgers = _grade_ledgers()
 
 
 def rows(path):
@@ -66,6 +78,7 @@ class Receipts:
         self.references = collections.defaultdict(set)
         self._roles = {}
         root = Path(root)
+        self.root = root
         self.artifact_root = root.parent
         if not root.is_dir():
             raise ValueError(f'launch receipts root is not a directory: {root}')
@@ -300,17 +313,20 @@ class Outcomes:
         self.observations = {}
         self.links = collections.defaultdict(collections.Counter)
         self.diagnostics = []
+        self.mirrored = {}
 
-    def producer(self, row, *keys, role=None):
-        return self.receipts.resolve(*(row.get(k) for k in (*keys, 'job', 'job_id', 'source_job', 'round', 'round_id', 'run_dir', 'path')), role=role)
+    def producer(self, row, *keys, role=None, receipts=None):
+        receipts = receipts or self.receipts
+        return receipts.resolve(*(row.get(k) for k in (*keys, 'job', 'job_id', 'source_job', 'round', 'round_id', 'run_dir', 'path')), role=role)
 
-    def emit(self, kind, item, job, outcome, row, path, role=None):
+    def emit(self, kind, item, job, outcome, row, path, role=None, receipts=None):
+        receipts = receipts or self.receipts
         stats = self.stats[kind]
         if outcome is None:
             stats['pending'] += 1
             return
-        job = self.receipts.resolve(job)
-        receipt = self.receipts.get(job)
+        job = receipts.resolve(job)
+        receipt = receipts.get(job)
         model = self.canon(receipt.get('canonical') or receipt.get('model')) if receipt else None
         if not receipt or not model or not (role or receipt.get('role')):
             stats['unlinked'] += 1
@@ -406,6 +422,37 @@ class Outcomes:
             paths = [r.get('result_path') for r in history[index:]]
             job = self.producer(decision, 'decider_job', 'decision_job', 'decided_by', role='taste') or self.receipts.resolve(*paths, role='taste')
             self.emit('taste', f"{item}/{decision['event']}/{index}", job, outcome, decision, path, 'taste')
+
+    def everyday(self, row, path, item, receipts=None):
+        # pass / partial / fail of a returned delegated job, credited to the model its receipt ran.
+        grade = {'pass': 'held', 'partial': 'partial', 'fail': 'overturned', 'ungraded': 'ungraded'}.get(str(row.get('grade')).lower())
+        self.emit('everyday', item, self.producer(row, receipts=receipts), grade, row, str(path), receipts=receipts)
+
+    def grade_receipts(self, ledger):
+        """The receipts a ledger's grades name: this reader's own when they sit beside it, else the ledger's
+        receipt directory (a mirror of another Mac's), read once. None when that directory is missing."""
+        directory = grade_ledgers.receipts_dir(ledger)
+        try:
+            if directory.resolve() == Path(self.receipts.root).resolve():
+                return None
+        except OSError:
+            pass
+        if directory not in self.mirrored:
+            try:
+                self.mirrored[directory] = Receipts(directory) if directory.is_dir() else None
+            except (OSError, ValueError):
+                self.mirrored[directory] = None
+        return self.mirrored[directory]
+
+    def read_grades(self, ledgers):
+        """Everyday grades from every ledger, as one record: one row per grade id, a retraction in any ledger
+        applies in all (grade_ledgers.rows). A grade links to the receipt beside its own ledger first."""
+        for row, path, number in grade_ledgers.rows(ledgers):
+            item = row.get('id') or f'{path}:{number}'
+            own = self.grade_receipts(path)
+            if own is not None and not own.get(self.producer(row, receipts=own) or ''):
+                own = None      # not in its own directory's receipts: try this reader's
+            self.everyday(row, path, item, receipts=own)
 
     def read_markdown(self, path):
         text = path.read_text()
@@ -532,9 +579,7 @@ class Outcomes:
             if kind == 'everyday':
                 if row.get('id') in retracted:
                     continue
-                # pass / partial / fail of a returned delegated job, credited to the model its receipt ran.
-                grade = {'pass': 'held', 'partial': 'partial', 'fail': 'overturned', 'ungraded': 'ungraded'}.get(str(row.get('grade')).lower())
-                self.emit('everyday', item, self.producer(row), grade, row, str(path))
+                self.everyday(row, path, item)
                 continue
             if path.name == 'REFEREE.jsonl':
                 self.referee_batch(row, str(path), row.get('batch') or item)
@@ -557,7 +602,7 @@ class Outcomes:
 
 
 def collect(evidence_root, receipts_root, canon, make_observation, outcomes_root=None, upstream_root=None,
-            launch_root=None, transcript_root=None):
+            launch_root=None, transcript_root=None, grades=None):
     reader = Outcomes(Receipts(receipts_root, launch_root, transcript_root), canon, make_observation)
     paths = set()
     if evidence_root:
@@ -566,10 +611,10 @@ def collect(evidence_root, receipts_root, canon, make_observation, outcomes_root
             raise ValueError(f'evidence root has no lanes directory: {evidence_root}')
         for name in ('IDEAS.jsonl', 'RESULTS.jsonl', 'REFEREE.jsonl', '.upstream-prs.json'):
             paths.update(lanes.glob('*/' + name))
-    # Grades of returned delegated jobs (worker_models.py --grade) sit beside the receipts they name.
-    grades = Path(receipts_root) / 'everyday-grades.jsonl' if receipts_root else None
-    if grades and grades.is_file():
-        paths.add(grades)
+    # Grades of returned delegated jobs (worker_models.py --grade) sit beside the receipts they name;
+    # RH_EVERYDAY_GRADES adds other Macs' ledgers, mirrored read-only (grade_ledgers.py).
+    if grades is None:
+        grades = grade_ledgers.ledgers(receipts_root)
     if outcomes_root:
         root = Path(outcomes_root)
         if not root.is_dir():
@@ -588,6 +633,7 @@ def collect(evidence_root, receipts_root, canon, make_observation, outcomes_root
         paths.update(root.rglob('*.jsonl'))
     for path in sorted(paths):
         reader.read(path)
+    reader.read_grades(grades)
     reader.admissions()
     stats = dict(reader.stats)
     # Counts describe active observations, not repeated reads of one verdict.
