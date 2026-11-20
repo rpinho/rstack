@@ -638,3 +638,19 @@ def test_graded_returned_jobs_beside_the_receipts_are_everyday_outcomes(setup_re
     assert {r['pick_role'] for r in rows} == {'builder'} and not any(roles.is_bench(r) for r in rows)
     e = roles.evidence()['builder']['anthropic/claude-fable-5.2']
     assert (e['n'], e['k']) == (3, 1.5)
+
+
+def test_a_retracted_grade_never_counts_against_the_model(setup_reader, tmp_path, monkeypatch):
+    """11-20: a 'fail' caused by the launcher (agy started without Bash) was counted against the model."""
+    _, roles, receipts = setup_reader
+    write_rows(receipts / 'everyday-grades.jsonl', [
+        dict(id='g1', source_kind='everyday', job='author', grade='pass', date='2026-01-02'),
+        dict(id='g3', source_kind='everyday', job='author', grade='fail', date='2026-01-03'),
+        dict(id='g3', source_kind='everyday', job='author', grade='retracted', retracted='fail',
+             note='launcher error', date='2026-01-03')])
+    monkeypatch.setenv('RH_LAUNCH_RECEIPTS', str(receipts))
+    monkeypatch.delenv('MODEL_OUTCOMES_ROOT', raising=False)
+    monkeypatch.delenv('RH_EVIDENCE_ROOT', raising=False)
+    monkeypatch.setattr(roles, 'LEDGER', tmp_path / 'ledger.jsonl')
+    rows, _ = roles.ingest()
+    assert sorted(r['outcome'] for r in rows) == ['held']

@@ -736,3 +736,16 @@ def test_a_delegate_runs_only_on_an_executor_the_launcher_can_run(tmp_path, monk
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     seen = {wm.select('batch', 'codex', path=p)['executor'] for _ in range(60)}
     assert 'agy' in seen or 'claude' in seen
+
+
+def test_retract_marks_a_job_grade_retracted_and_needs_a_reason(tmp_path, capsys):
+    import json as _json
+    import worker_models as wm
+    grades = tmp_path / 'everyday-grades.jsonl'
+    grades.write_text(_json.dumps(dict(id='grade-s1', source_kind='everyday', job='job-a', grade='fail',
+                                       model='model-1', role='review')) + '\n')
+    assert wm.main(['--retract', 'job-a', '--receipt-dir', str(tmp_path)]) != 0
+    assert wm.main(['--retract', 'job-a', '--receipt-dir', str(tmp_path), '--reason', 'launcher started agy without Bash']) == 0
+    rows = [_json.loads(l) for l in grades.read_text().splitlines()]
+    assert rows[-1]['grade'] == 'retracted' and rows[-1]['retracted'] == 'fail' and rows[-1]['id'] == 'grade-s1'
+    assert 'launcher' in rows[-1]['note']

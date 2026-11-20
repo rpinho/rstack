@@ -517,8 +517,12 @@ class Outcomes:
             data = json.loads(path.read_text())
             source_rows = [dict(r, date=r.get('date') or data.get('fetched')) for r in data['prs']] if isinstance(data, dict) and 'prs' in data else [data]
         else:
-            source_rows = rows(path)
+            source_rows = list(rows(path))
         ideas = collections.defaultdict(list)
+        # 11-20: a grade caused by a harness or launcher error is retracted by an appended row
+        # (worker_models.py --retract); every everyday row for that job id is then left out.
+        retracted = {r.get('id') for r in source_rows if isinstance(r, dict)
+                     and r.get('source_kind') == 'everyday' and str(r.get('grade')).lower() == 'retracted'}
         for number, row in enumerate(source_rows, 1):
             item = row.get('id') or row.get('url') or f'{path}:{number}'
             kind = row.get('source_kind') or row.get('outcome_kind')
@@ -526,6 +530,8 @@ class Outcomes:
                 ideas[row['id']].append(row)
                 continue
             if kind == 'everyday':
+                if row.get('id') in retracted:
+                    continue
                 # pass / partial / fail of a returned delegated job, credited to the model its receipt ran.
                 grade = {'pass': 'held', 'partial': 'partial', 'fail': 'overturned', 'ungraded': 'ungraded'}.get(str(row.get('grade')).lower())
                 self.emit('everyday', item, self.producer(row), grade, row, str(path))

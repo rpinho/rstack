@@ -503,8 +503,37 @@ def main(argv=None):
     parser.add_argument('--grade', choices=('pass', 'partial', 'fail'),
                         help='grade a returned job: credited to the model its --receipt ran, as everyday work')
     parser.add_argument('--note', default='')
+    parser.add_argument('--retract', metavar='JOB',
+                        help='retract every grade of JOB (with --receipt-dir or --receipt, and --reason): a harness or '
+                             'launcher error never counts against a model; the grade stays in the file, marked retracted')
+    parser.add_argument('--reason', default='')
+    parser.add_argument('--receipt-dir', type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.retract:
+            if not args.reason.strip():
+                raise ValueError('--retract needs --reason (why the grade is not the model\'s)')
+            where = args.receipt_dir or (args.receipt.parent if args.receipt else None)
+            if not where:
+                raise ValueError('--retract needs --receipt-dir or --receipt')
+            path = Path(where) / 'everyday-grades.jsonl'
+            hits = []
+            for line in path.read_text().splitlines():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and row.get('job') == args.retract and row.get('grade') != 'retracted':
+                    hits.append(row)
+            if not hits:
+                raise ValueError('no grade for job {} in {}'.format(args.retract, path))
+            for row in {r['id']: r for r in hits}.values():
+                log_record(path, '', dict(id=row['id'], date=dt.date.today().isoformat(), source_kind='everyday',
+                                          job=row['job'], grade='retracted', model=row.get('model'), role=row.get('role'),
+                                          retracted=row.get('grade'), note=' '.join(args.reason.split())[:300]))
+                print('retracted {} {} ({}): {}'.format(row['job'], row.get('grade'), row.get('model'), args.reason))
+            clear_ungraded(args.retract)
+            return 0
         if args.sweep_ungraded:
             ungraded(args.sweep_ungraded)
             if UNGRADED_TODAY:
