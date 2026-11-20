@@ -158,3 +158,32 @@ def test_noise_is_a_note_not_a_fail(tmp_path):
     assert noise_notes(tmp_path) == []
     (tmp_path / 'BASELINES.json').write_text(json.dumps(_row('AUROC', 0.5, 0.84, 0.8556, noise=-1)))
     assert any('noise must be' in e for e in lint(tmp_path))
+
+
+def test_gain_on_one_harness_only_is_a_note_not_a_fail(tmp_path):
+    # 11-20, Illumina CellularAI: an idea was kept only if it gained on all three of their harnesses.
+    from result_lint import harness_notes
+    (tmp_path / 'CLAIM.md').write_text(GOOD + 'AUROC 0.86 on VCC2025 and 0.80 on Replogle. SBS 0.9.\n')
+    rows = [_row('AUROC', 0.5, 0.80, 0.86, harness='VCC2025'), _row('AUROC', 0.5, 0.80, 0.80, harness='Replogle')]
+    (tmp_path / 'BASELINES.json').write_text(json.dumps(rows))
+    assert lint(tmp_path) == []
+    notes = harness_notes(tmp_path)
+    assert len(notes) == 1 and 'on Replogle' in notes[0]
+    rows[1] = _row('AUROC', 0.5, 0.80, 0.84, harness='Replogle')
+    (tmp_path / 'BASELINES.json').write_text(json.dumps(rows))
+    assert harness_notes(tmp_path) == []
+
+
+def test_pooling_baselines_mean_inverse_variance_stouffer():
+    from pool import mean, inverse_variance, stouffer
+    effects, ses = [1.0, 1.0, -2.0], [0.5, 0.5, 4.0]
+    assert mean(effects) == pytest.approx(0.0)
+    assert inverse_variance([1.0, 3.0], [1.0, 1.0]) == pytest.approx(2.0)
+    assert inverse_variance(effects, ses) > 0.9  # the noisy outlier barely counts
+    assert stouffer(effects, ses) == pytest.approx((2 + 2 - 0.5) / 3 ** 0.5)
+    assert stouffer([1.0, 1.0], [1.0, 1.0], weights=[1.0, 0.0]) == pytest.approx(1.0)
+    with pytest.raises(ValueError):
+        stouffer([1.0], [0.0])
+    out = subprocess.run([sys.executable, str(ROOT / 'harness' / 'tools' / 'pool.py'), '--effect', '1',
+                          '--se', '0.5', '--effect', '1', '--se', '0.5'], capture_output=True, text=True)
+    assert out.returncode == 0 and json.loads(out.stdout)['stouffer_z'] == pytest.approx(2 * 2 / 2 ** 0.5)

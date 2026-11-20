@@ -29,6 +29,12 @@ Keep these eight field sections:
 - credits and thanks, by name with links;
 - how hard open science with AI is in that field.
 
+Optional, when a complex method held: distill it into its few main steps and add
+an ablation table, the baseline, then each step added in turn with its score on
+the same split, so the retro says which step carries the gain (CellularAI's
+VCC 2026 retro: five steps, Stouffer-z the biggest share). Skip it
+when there is no such method.
+
 The public retro is about the field. Explain scientific methods, limits,
 negative results, data gaps and unanswered questions. Agent work, leaks and ops
 belong in `LESSONS.jsonl`, never in the public narrative. The local source

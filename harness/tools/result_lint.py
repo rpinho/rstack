@@ -12,6 +12,7 @@ A claim directory holds CLAIM.md (or RESULT.md). The lint enforces three rules (
    Each metric the `Ours:` line reports needs its own row (its `metric` field), since beating the mean on one
    metric says nothing about another. A row may give `noise`, the run-to-run spread of the method at a fixed
    step on that split; a gap over the simple baseline no larger than it is printed as noise (a note, not a FAIL).
+   A row may name its `harness` (benchmark); a row where the method does not beat simple is printed (a note).
 4. Scooped and scale. A `yes` needs a `Cited by:` line from the forward-citation check (tools/cited-by): the
    citing-paper count, the paper's year and the closest citing paper or `none`. Old, well-cited papers are where
    someone else got there first. And a `Kind:` line from a fixed scale, so nobody has to guess how big it is:
@@ -146,6 +147,33 @@ def noise_notes(d):
     return out
 
 
+def harness_notes(d):
+    """Rows where the method does not beat the simple baseline (SBS >= 1), named by their optional `harness`.
+
+    11-20, Illumina CellularAI (Arc Virtual Cell Challenge 2026 winner): they kept an idea only if it gained on all three of their
+    evaluation harnesses (VCC2025, Replogle 2022, held-out 1BCA) and dropped regressions. Two of our gains held on
+    one scorer or split and not on another: c5 R9 (selectivity +0.666, then -0.049 under opendde-abag, 11-05) and
+    virtual-embryo P3 (the x2-proxy gain refuted on held-out test, 11-03). Both were caught by a re-score or the
+    sealed test before anything was claimed, so a refusing gate would have changed nothing; this is printed, never
+    a FAIL. Give each benchmark its own BASELINES.json row with a `harness` name, and a gain that holds on only
+    some of them shows here."""
+    try:
+        rows = baseline_rows(json.loads((Path(d) / 'BASELINES.json').read_text()))
+    except (OSError, ValueError):
+        return []
+    out = []
+    for r in rows:
+        try:
+            v = sbs(r['trivial'], r['simple'], r['method'], r.get('higher_is_better', True))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if v >= 1:
+            where = r.get('harness') or r.get('metric') or 'a row'
+            out.append(f'HARNESS: on {where} the method ({r["method"]}) does not beat the simple baseline '
+                       f'({r["simple"]}), SBS {v:.3g}: the gain does not hold there')
+    return out
+
+
 def baseline_rows(data):
     """Flatten BASELINES.json: one sbs.py record, a list of them, or a dict of
     named records (one per metric). A named record may hold sbs.py's JSON in
@@ -176,7 +204,7 @@ def main(argv=None):
         bad += bool(errs)
         if not a.quiet:
             print(f'{"FAIL" if errs else "PASS"} {d}' + ''.join(f'\n  - {e}' for e in errs)
-                  + ''.join(f'\n  ~ {n}' for n in noise_notes(d)))
+                  + ''.join(f'\n  ~ {n}' for n in noise_notes(d) + harness_notes(d)))
     return 1 if bad else 0
 
 
