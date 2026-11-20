@@ -305,3 +305,23 @@ def test_a_bundle_that_also_carries_other_patches_is_checked_whole(lane, tmp_pat
     out = lint(lane, ident)[1]
     assert 'is the verified speedup patch' not in out
     assert 'fixture attachment needs useful or slop question' in out
+
+
+def test_a_repo_url_reaches_fetch_intact(project, monkeypatch):
+    """11-20 (open-source, CellularAI): Path('https://github.com/x/y') became 'https:/github.com/x/y'."""
+    repo, base, make, trashed = project
+    d = make('url')
+    seen = []
+
+    def fake_fetch(job, url, commit, subdir=None):
+        seen.append(url)
+        raise RuntimeError('stop after recording')
+    real = speedup.third_party()
+    monkeypatch.setattr(real, 'fetch', fake_fetch)
+    monkeypatch.setattr(speedup, 'third_party', lambda: real)
+    manifest = next(p for p in d.iterdir() if p.suffix == '.json' and 'repo' in json.loads(p.read_text()))
+    m = json.loads(manifest.read_text())
+    m['repo'] = 'https://github.com/example-org/example-repo'
+    manifest.write_text(json.dumps(m))
+    speedup.verify(d, CFG)
+    assert seen and seen[0] == 'https://github.com/example-org/example-repo'

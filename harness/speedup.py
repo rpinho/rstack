@@ -162,7 +162,8 @@ def verify(directory, cfg=None, clock=None, timeout=6 * 3600):
     work = Path(tempfile.mkdtemp(prefix='rh-speedup-'))
     job = work / 'job'
     job.mkdir()
-    repo = str(Path(data['repo']).expanduser())
+    # 11-20: Path() collapses 'https://' to 'https:/', so a URL failed tp.fetch before any run (open-source, CellularAI).
+    repo = data['repo'] if '://' in str(data['repo']) else str(Path(data['repo']).expanduser())
     try:
         trees = {}
         try:

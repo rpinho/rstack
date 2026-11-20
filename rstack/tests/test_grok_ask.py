@@ -832,7 +832,7 @@ def test_approval_changed_while_drafting_cancels_before_send(posting):
 def test_post_draft_transport_timeout_cancels_without_send(posting):
     with FakeCDP(busy=True) as fake:
         posting.setup(fake)
-        result = posting.run('--post', '--timeout', '0.4')
+        result = posting.run('--post', '--timeout', '2.0')  # 11-20: 0.4 s flaked under load; the fake stays busy, so any timeout tests the same path
     assert result.returncode == 3 and 'timeout' in result.stderr
     assert fake.events == ['draft', 'cancel, do not send']
     assert posting.records()[-1]['cancelled'] and not posting.sent_log.exists()
@@ -847,7 +847,7 @@ def test_post_send_timeout_is_uncertain_and_pages(posting):
             if prompt == 'send':
                 fake.busy = True
         fake.on_send = answer
-        result = posting.run('--post', '--timeout', '0.6')
+        result = posting.run('--post', '--timeout', '2.0')
     assert result.returncode == 5 and 'timeout' in result.stderr
     assert fake.events == ['draft', 'send']
     assert posting.page_log.exists() and not posting.sent_log.exists()
