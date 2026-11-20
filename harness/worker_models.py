@@ -424,17 +424,35 @@ def ungraded(receipts_dir, lane='', skip_job='', now=None):
 UNGRADED_TODAY = []
 
 
-def morning_report(rows, state=None, host=None):
-    """Write the jobs that timed out ungraded to the asks-waiting queue the morning report reads."""
+def _ungraded_tsv(state=None, host=None):
     import socket
     base = Path(state or os.environ.get('RSTACK_STATE_DIR') or
                 Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'rstack').expanduser()
-    target = base / 'asks-waiting' / '{}-ungraded.tsv'.format(host or socket.gethostname().split('.')[0])
+    return base / 'asks-waiting' / '{}-ungraded.tsv'.format(host or socket.gethostname().split('.')[0])
+
+
+def clear_ungraded(job, state=None, host=None):
+    """A grade recorded later removes the job's morning-report row (11-19: a graded pass still showed)."""
+    target = _ungraded_tsv(state, host)
+    try:
+        lines = target.read_text().splitlines(keepends=True)
+    except OSError:
+        return
+    keep = [line for line in lines if line.split('\t', 1)[0] != job]
+    if len(keep) != len(lines):
+        target.write_text(''.join(keep))
+
+
+def morning_report(rows, state=None, host=None, reason=None):
+    """Write ungraded delegated jobs to the asks-waiting queue the morning report reads."""
+    target = _ungraded_tsv(state, host)
     target.parent.mkdir(parents=True, exist_ok=True)
+    # 11-19: a job recorded at return said 'not graded within 24 h' hours after launch; say which case it is.
+    reason = reason or 'not graded within {} h'.format(UNGRADED_HOURS)
     with target.open('a') as stream:
         for job, lane, model in rows:
-            stream.write('{}\tungraded delegated job {} ({}, lane {})\tgrade: not graded within {} h; '
-                         'counted, outside the rate\n'.format(job, job, model, lane, UNGRADED_HOURS))
+            stream.write('{}\tungraded delegated job {} ({}, lane {})\tgrade: {}; '
+                         'counted, outside the rate until graded\n'.format(job, job, model, lane, reason))
     return target
 
 
@@ -491,7 +509,7 @@ def main(argv=None):
                            model=receipt.get('route_model') or receipt['model'], role=receipt.get('role'),
                            note='returned without a grade')
                 log_record(args.receipt.with_name('everyday-grades.jsonl'), '', row)
-                morning_report([(row['job'], receipt.get('lane'), row['model'])])
+                morning_report([(row['job'], receipt.get('lane'), row['model'])], reason='returned without a grade')
                 print('recorded ungraded: ' + row['job'])
             return 0
         if not args.log or not args.receipt:
@@ -506,6 +524,7 @@ def main(argv=None):
             # beside its receipt, which the daily model scorer reads.
             log_record(args.log, 'MODEL_GRADE', row)
             log_record(args.receipt.with_name('everyday-grades.jsonl'), '', row)
+            clear_ungraded(row['job'])
             print('graded {} {} ({})'.format(row['job'], args.grade, row['model']))
             return 0
         if args.outcome is not None:
