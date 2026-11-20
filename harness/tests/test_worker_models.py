@@ -658,3 +658,18 @@ def test_a_lane_with_an_ungraded_returned_job_still_launches(fake_home):
     result = run_launcher(fake_home)
     assert result.returncode == 0, result.stderr
     assert 'refused' not in result.stderr
+
+
+def test_a_job_recorded_at_return_says_so_and_a_later_grade_clears_its_row(tmp_path):
+    """11-19: rows recorded at return said 'not graded within 24 h' hours after launch, and a graded
+    pass still showed in the morning report."""
+    import worker_models as wm
+    state = tmp_path / 'state'
+    wm.morning_report([('job-a', 'lane-x', 'model-1'), ('job-b', 'lane-x', 'model-2')], state=state, host='h',
+                      reason='returned without a grade')
+    target = state / 'asks-waiting' / 'h-ungraded.tsv'
+    text = target.read_text()
+    assert 'returned without a grade' in text and 'within 24 h' not in text
+    wm.clear_ungraded('job-a', state=state, host='h')
+    rows = target.read_text().splitlines()
+    assert [r.split('\t')[0] for r in rows] == ['job-b']
