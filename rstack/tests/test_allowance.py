@@ -421,3 +421,12 @@ def test_the_claude_weekly_reading_and_the_latest_agy_quota_error_are_reported(t
     assert allowance.agy_quota_latest()['model'] == 'm2'
     data = allowance.read_allowance([], now=NOW)
     assert data['claude']['weekly_used_percent'] == 86 and data['agy_quota']['tier'] == 'medium'
+    # 11-20: the reader says which window agy named (5h or weekly) and what is blocked until when.
+    from datetime import datetime, timezone
+    at = datetime.now(timezone.utc).isoformat(timespec='seconds')
+    with (tmp_path / 'agy-quota.jsonl').open('a') as stream:
+        stream.write(json.dumps({'utc': at, 'model': 'gemini-4-argon-medium', 'tier': 'medium',
+                                 'error': 'Individual quota reached. Resets in 152h14m46s.'}) + '\n')
+    latest = allowance.agy_quota_latest()
+    assert latest['window'] == 'weekly' and latest['blocked_until']
+    assert allowance.agy_blocked() == ['gemini-4-argon-medium (medium): weekly window until ' + latest['blocked_until']]

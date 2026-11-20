@@ -18,6 +18,7 @@ import sys
 import uuid
 from bug_verdicts import maker
 from agent_executor import metered_refusal
+import agy_quota
 
 ROLES_FILE = settings.path('RH_ROLES_FILE', Path('.runtime/roles.json'))
 JUDGMENT = frozenset(('review', 'judge', 'audit', 'taste', 'design', 'ideation'))
@@ -341,8 +342,10 @@ def runnable(executor, follows_route=True):
     return {'codex', 'claude', 'agy'} if follows_route else {executor, 'claude'}
 
 
-def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), executors=('codex', 'claude', 'agy')):
-    """(model, note) when this selection is one of the delegated share, else None."""
+def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), executors=('codex', 'claude', 'agy'),
+             quota=None, skipped=None):
+    """(model, note) when this selection is one of the delegated share, else None. An agy model whose logged quota
+    reset has not passed is left out of the pool (quota: agy_quota.blocked()), and `skipped` gets a line for it."""
     try:
         share = float(os.environ.get('RH_DELEGATE_SHARE') or 0)
     except ValueError:
@@ -358,6 +361,12 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), exe
                 or m in excluded or route.get('canonical') in excluded):
             continue
         if maker(m, route.get('canonical')) in families:
+            continue
+        held = agy_quota.blocked_until(m, os.environ.get('LAUNCH_EFFORT'), table=quota) if (
+            route.get('cli') == 'agy' and quota) else None
+        if held:
+            if skipped is not None:
+                skipped.append(agy_quota.skip_note(m, held))
             continue
         if route.get('cli') == 'codex' and codex_delegates_today() >= int(os.environ.get('RH_DELEGATE_CODEX_PER_DAY') or 6):
             continue   # Sol and Astra draw on the Codex budget: at most this many delegate picks a day
@@ -439,6 +448,28 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         raise ValueError('--model-override requires --model')
     if explore and explore not in ranked:
         raise ValueError('--explore model is not in the role {} pool: {}'.format(role, explore))
+    # 11-20: an agy model whose quota reset (agy-quota.jsonl) has not passed fails at once, so it is not picked.
+    # The default pick moves to the next leaderboard model, the receipt says why; a named model is refused.
+    quota, quota_skipped = agy_quota.blocked(), []
+    effort = os.environ.get('LAUNCH_EFFORT')
+
+    def held(m):
+        route = data['routes'].get(m)
+        return (agy_quota.blocked_until(m, effort, table=quota)
+                if quota and isinstance(route, dict) and route.get('cli') == 'agy' else None)
+    if explore or model:
+        if held(explore or model):
+            raise ValueError('role {}: {}; name another model'.format(role, agy_quota.skip_note(
+                explore or model, held(explore or model))))
+    else:
+        for m in eligible:
+            if not held(m):
+                break
+            quota_skipped.append(agy_quota.skip_note(m, held(m)))
+        eligible = [m for m in eligible if not held(m)]
+        if not eligible:
+            raise ValueError('role {}: every leaderboard pick is blocked by agy quota ({})'.format(
+                role, '; '.join(quota_skipped)))
     chosen = explore or model or eligible[0]
     switched, executor_choice = None, None
     if not (explore or model or pin):
@@ -454,11 +485,13 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     elif not (explore or model or pin):
         delegated = delegate(role, data, excluded, made_by, chosen, int(uuid.uuid4().hex[:8], 16) / 2 ** 32,
                              families if judging else frozenset(),
-                             runnable(requested, follows_route) & {'claude', 'codex', 'agy'})
+                             runnable(requested, follows_route) & {'claude', 'codex', 'agy'},
+                             quota=quota, skipped=quota_skipped)
         if delegated:
             chosen = delegated[0]
     route = data['routes'].get(chosen)
-    if delegated or switched or gate or (judging and families and chosen != (explore or model or ranked[0])):
+    if (delegated or switched or gate or (quota_skipped and chosen != ranked[0])
+            or (judging and families and chosen != (explore or model or ranked[0]))):
         executor = route['cli']   # named in the receipt and the log below; not a silent swap
     if isinstance(route, dict) and (role in JUDGMENT or (not model and route.get('cli') in ('openrouter', 'gemini'))):
         executor = route.get('cli')
@@ -479,6 +512,9 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         raise ValueError('invalid native model id')
     # The 85% brake moves Claude work to agy's Claude, only where the launcher can run agy.
     overflow = claude_overflow(executor, chosen) if 'agy' in runnable(requested, follows_route) else None
+    if overflow and agy_quota.blocked_until(overflow[0], effort, table=quota):
+        quota_skipped.append(agy_quota.skip_note(overflow[0], agy_quota.blocked_until(overflow[0], effort, table=quota)))
+        overflow = None   # stays on Claude: agy's Claude is out of quota until then
     receipt = dict(schema=1, selection_id=uuid.uuid4().hex, utc=dt.datetime.now(dt.timezone.utc).isoformat(),
         role=role, model=chosen, canonical=route['canonical'], executor=executor,
         roles_sha256=hashlib.sha256(raw).hexdigest(), roles_updated=data.get('updated'),
@@ -497,6 +533,8 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
             receipt['producer_family_source'] = family_sources
     if delegate_skip:
         receipt['delegate_skipped'] = delegate_skip
+    if quota_skipped:
+        receipt['quota_skipped'] = quota_skipped
     if executor_choice:
         receipt['executor_choice'] = executor_choice + ('; leaderboard pick {} moved to {}'.format(
             eligible[0] if not (explore or model) else chosen, switched) if switched else '')
@@ -520,6 +558,52 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
             stream.flush()
             os.fsync(stream.fileno())
     return receipt
+
+
+# 11-20: a job that ran into agy's quota tells nothing about the model, like a launcher error (--retract, 35454e6).
+# It is recorded "ungraded" with note "quota", never pass, partial or fail, whoever grades it.
+AGY_QUOTA_TEXT = re.compile(r'RESOURCE_EXHAUSTED|Individual quota reached', re.I)
+
+
+def quota_failure(log, receipt):
+    """A short reason when this selection's agy run hit the quota, else None. Reads the job log from the
+    selection's MODEL_SELECTION line to its MODEL_OUTCOME: the executor's AGY_QUOTA line, or agy's own error
+    text from an executor older than that line. On the way it copies AGY_QUOTA rows into this machine's quota
+    log, so a controller whose --host job hit the quota on the host stops picking that model too."""
+    if receipt.get('executor') != 'agy':
+        return None
+    try:
+        lines = Path(log).read_text(errors='replace').splitlines()
+    except OSError:
+        return None
+    sid, inside, part = receipt.get('selection_id'), False, []
+    for line in lines:
+        if line.startswith(('MODEL_SELECTION ', 'MODEL_OUTCOME ')):
+            try:
+                mine = json.loads(line.split(' ', 1)[1]).get('selection_id') == sid
+            except (ValueError, AttributeError):
+                mine = False
+            if mine and line.startswith('MODEL_SELECTION '):
+                inside = True
+            elif mine:
+                break
+            continue
+        if inside:
+            part.append(line)
+    text = '\n'.join(part)
+    rows = agy_quota.hit(text)
+    for row in rows:
+        try:
+            agy_quota.record(row)
+        except OSError:
+            pass
+    if rows:
+        row = agy_quota.annotate(dict(rows[-1]))
+        return 'quota: agy {} {}'.format(row.get('model'), (
+            '{} window until {}'.format(row.get('window'), row['blocked_until']) if row.get('blocked_until')
+            else ' '.join(str(row.get('error')).split())[:120]))
+    found = AGY_QUOTA_TEXT.search(text)
+    return 'quota: agy ' + ' '.join(text[found.start():].splitlines()[0].split())[:120] if found else None
 
 
 # 11-19 (general): grading never blocks a lane ("lanes never stop") and never depends on anyone remembering.
@@ -710,19 +794,26 @@ def main(argv=None):
                 row = dict(id='grade-' + receipt['selection_id'], date=dt.date.today().isoformat(),
                            source_kind='everyday', job=receipt.get('job'), grade='ungraded',
                            model=receipt.get('route_model') or receipt['model'], role=receipt.get('role'),
-                           note='returned without a grade')
+                           note=(quota_failure(args.log, receipt) if args.log else None) or 'returned without a grade')
                 log_record(args.receipt.with_name('everyday-grades.jsonl'), '', row)
-                morning_report([(row['job'], receipt.get('lane'), row['model'])], reason='returned without a grade')
+                if not row['note'].startswith('quota'):
+                    morning_report([(row['job'], receipt.get('lane'), row['model'])], reason='returned without a grade')
                 print('recorded ungraded: ' + row['job'])
             return 0
         if not args.log or not args.receipt:
             raise ValueError('--log and --receipt are required')
         if args.grade:
             receipt = json.loads(args.receipt.read_text())
+            quota = quota_failure(args.log, receipt)
             row = dict(id='grade-' + receipt['selection_id'], date=dt.date.today().isoformat(),
-                       source_kind='everyday', job=receipt.get('job') or args.job, grade=args.grade,
+                       source_kind='everyday', job=receipt.get('job') or args.job,
+                       grade='ungraded' if quota else args.grade,
                        model=receipt.get('route_model') or receipt['model'], role=receipt['role'],
-                       note=' '.join(args.note.split())[:300])
+                       note=' '.join(('{} (given {}: {})'.format(quota, args.grade, args.note) if quota
+                                      else args.note).split())[:300])
+            if quota:
+                print('{} hit the agy quota, so it is recorded ungraded, not {}'.format(row['job'], args.grade),
+                      file=sys.stderr)
             # The grade lands where the job's outcome is already recorded (its log), and in the grades file
             # beside its receipt, which the daily model scorer reads.
             log_record(args.log, 'MODEL_GRADE', row)
@@ -751,6 +842,10 @@ def main(argv=None):
         if receipt.get('executor_choice'):
             with Path(args.log).open('a') as stream:
                 stream.write('{} job={}\n'.format(receipt['executor_choice'], args.job))
+        for line in receipt.get('quota_skipped') or ():
+            with Path(args.log).open('a') as stream:
+                stream.write('{} job={}\n'.format(line, args.job))
+            print('worker model: ' + line, file=sys.stderr)
         if receipt.get('delegate'):
             with Path(args.log).open('a') as stream:
                 stream.write('{} job={}\n'.format(receipt['delegate'], args.job))

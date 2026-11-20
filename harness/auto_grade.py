@@ -10,6 +10,7 @@ All pass: pass. No exit 0 or no Shipped line: fail. Shipped but a check failed: 
 Check lines, the call needs judgment, so the lane's reviewing model (the leaderboard's review pick, from
 another family than the producer, never delegated) reads the spec and REPORT.md and answers
 PASS, PARTIAL or FAIL. If that cannot be had, the job stays "ungraded" (counted, outside the rate).
+An agy run that hit its quota is "ungraded" with note "quota" before any of this: infrastructure, not the model.
 The row records the producer model and the grader (checks, or the reviewing model).
 
   auto_grade.py --receipt JOB.log.selection.json --log JOB.log --dir WORKDIR --spec JOB.md
@@ -121,6 +122,16 @@ def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, ho
     spec_text = Path(spec).read_text(errors='replace') if spec and Path(spec).is_file() else ''
     run_text = '' if no_checks else spec_text
     rc = exit_code(log, receipt.get('selection_id'))
+    quota = wm.quota_failure(log, receipt)
+    if quota:
+        # Infrastructure, not the model: never pass, partial or fail, and nothing for the morning report to grade.
+        row = dict(id='grade-' + receipt['selection_id'], date=dt.date.today().isoformat(), source_kind='everyday',
+                   job=receipt.get('job'), grade='ungraded', model=receipt.get('route_model') or receipt['model'],
+                   producer=receipt.get('route_model') or receipt['model'], grader='quota', role=receipt.get('role'),
+                   auto=True, note=quota[:500])
+        wm.log_record(log, 'MODEL_GRADE', row)
+        wm.log_record(Path(receipt_path).with_name('everyday-grades.jsonl'), '', row)
+        return row
     shipped = first_line(Path(workdir) / 'REPORT.md').startswith('Shipped:')
     restated = first_line(Path(workdir) / 'STATUS.md').startswith('You asked:')
     checks = run_checks(run_text, workdir, host) if rc == 0 and shipped else []

@@ -144,7 +144,7 @@ def read_allowance(roots, now=None):
                     'No fresh Claude weekly reading ({}): rstack/tools/claude-usage refreshes {} from launchd every '
                     '15 min; at most {:g} h old counts.'.format(claude_status(read_started)[1], usage_dir() / 'claude.json',
                                                             claude_max_age() / 3600)),
-                agy_quota=agy_quota_latest() or 'none recorded')
+                agy_quota=agy_quota_latest() or 'none recorded', agy_blocked=agy_blocked())
 
 
 def state_dir():
@@ -274,8 +274,22 @@ def cached(now=None, max_age=CACHE_MAX_AGE_S):
     return data
 
 
+def _agy_quota():
+    """harness/agy_quota.py beside this tool (the repo) or at the install root, or None."""
+    here = Path(__file__).resolve().parents[2]
+    for folder in (here / 'harness', here):
+        if (folder / 'agy_quota.py').is_file():
+            from importlib.util import module_from_spec, spec_from_file_location
+            spec = spec_from_file_location('agy_quota', str(folder / 'agy_quota.py'))
+            module = module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    return None
+
+
 def agy_quota_latest():
-    """The newest agy 429/quota row the executor logged (state_dir/agy-quota.jsonl), or None."""
+    """The newest agy 429/quota row the executor logged (state_dir/agy-quota.jsonl), or None. With agy_quota.py
+    at hand it also carries `window` (5h or weekly) and `blocked_until` when agy named a reset (11-20)."""
     try:
         lines = (state_dir() / 'agy-quota.jsonl').read_text().splitlines()
     except OSError:
@@ -286,8 +300,19 @@ def agy_quota_latest():
         except ValueError:
             continue
         if isinstance(row, dict):
-            return row
+            quota = _agy_quota()
+            return quota.annotate(row) if quota and row.get('model') else row
     return None
+
+
+def agy_blocked():
+    """['MODEL (TIER): WINDOW window until UTC', ...] for each agy model the picker skips now."""
+    quota = _agy_quota()
+    if not quota:
+        return []
+    table = quota.blocked(path=state_dir() / 'agy-quota.jsonl')
+    return ['{} ({}): {} window until {}'.format(m, t, r.get('window') or 'unknown', r['blocked_until'])
+            for (m, t), r in sorted(table.items(), key=lambda kv: (kv[0][0], str(kv[0][1])))]
 
 
 def message(text, log=None):

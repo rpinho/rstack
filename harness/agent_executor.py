@@ -279,19 +279,20 @@ QUOTA = re.compile(r'\b429\b|quota|rate.?limit|resource.?exhausted|too many requ
 
 
 def log_agy_quota(cmd, text):
+    """Append the row (with blocked_until and its 5h/weekly window when agy names a reset), and print it as an
+    AGY_QUOTA line: the job log carries it to the controller, whose picker and grader read it (11-20)."""
     import datetime as dt
+    import agy_quota
     model = cmd[cmd.index('--model') + 1] if '--model' in cmd else 'default'
     tier = next((t for t in AGY_EFFORTS if model.endswith('-' + t)), None)
     if not tier and '--effort' in cmd:
         tier = cmd[cmd.index('--effort') + 1]
-    base = Path(os.environ.get('RSTACK_STATE_DIR') or
-                Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'rstack').expanduser()
-    row = dict(utc=dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'), model=model, tier=tier,
-               job=os.environ.get('RH_JOB') or os.environ.get('RSTACK_LANE') or '', error=' '.join(text.split())[:500])
+    row = agy_quota.annotate(dict(
+        utc=dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'), model=model, tier=tier,
+        job=os.environ.get('RH_JOB') or os.environ.get('RSTACK_LANE') or '', error=' '.join(text.split())[:500]))
+    print(agy_quota.MARK + json.dumps(row, sort_keys=True), file=sys.stderr)
     try:
-        base.mkdir(parents=True, exist_ok=True)
-        with (base / 'agy-quota.jsonl').open('a') as stream:
-            stream.write(json.dumps(row, sort_keys=True) + '\n')
+        agy_quota.record(row)
     except OSError as exc:
         print('agent_executor: could not log the agy quota error: {}'.format(exc), file=sys.stderr)
 
