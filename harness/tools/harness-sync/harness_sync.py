@@ -4,7 +4,7 @@
 The installed copy and the repo drifted for days: fixes went straight into the installed
 files, other fixes went only into the repo, and each copy aged differently. This makes the
 committed repo the only source. It installs the git-tracked files under harness/ plus the
-Codex wrapper/health tools under rstack/tools/ at a
+Codex wrapper/health tools under rstack/tools/ and the job launcher (tools/launch.sh -> launcher/) at a
 committed ref (default: main), never the working tree, so a half-finished edit cannot reach
 running lanes. Installed code is made read-only so a hand edit fails loudly instead of
 drifting quietly. Lanes, ledgers and other runtime state in the installed root are never
@@ -40,6 +40,9 @@ RECEIPT = '.harness-sync.json'
 RSTACK_TOOLS = ('codex', 'codex-budget', '_codex_budget.py', 'codex-budget.json.example', 'allowance', 'job-health', 'claude-usage', 'npx', 'launch-guard', 'x-reply-review', '_lan.py', 'lan-proxy', 'lan-proxy-pf-refresh', 'ask_lint.py', 'resets-check',
                 'grok-post', '_grok_post.py', '_grok_ask.py', 'grok-ask.json.example', 'grok-post.json.example',
                 'x-handle-guard', 'grok-ask', 'x-route', 'x-submit-gate', 'xurl', 'xurl-policy', 'x-log')
+# The job launcher, installed at <root>/launcher/ so the lanes run committed launcher code (11-20: their
+# per-host _codex/launch.sh is now a thin exec into it). It finds the harness as the root it sits in.
+LAUNCHER = {'tools/launch.sh': 'launcher/launch.sh', 'tools/RULES.md': 'launcher/RULES.md'}
 CODE_SUFFIXES = {'.py', '.sh'}
 SKIP_DIRS = {'lanes', '__pycache__', 'alerts', '.pytest_cache'}
 HOST_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z')
@@ -56,13 +59,15 @@ def blob_id(data):
 
 def manifest(repo, ref):
     """Tracked harness files and selected spend tools, from a committed ref only."""
-    out = git(repo, 'ls-tree', '-r', '-z', '--full-tree', ref, 'harness/', *('rstack/tools/' + name for name in RSTACK_TOOLS))
+    out = git(repo, 'ls-tree', '-r', '-z', '--full-tree', ref, 'harness/', *('rstack/tools/' + name for name in RSTACK_TOOLS),
+              *LAUNCHER)
     files = {}
     for entry in filter(None, out.split(b'\0')):
         meta, path = entry.split(b'\t', 1)
         mode, kind, oid = meta.decode().split()
         if kind == 'blob' and mode != '120000':
             rel = path.decode()
+            rel = LAUNCHER.get(rel, rel)
             files[rel[len('harness/'):] if rel.startswith('harness/') else rel] = (mode, oid)
     return files
 

@@ -509,7 +509,11 @@ def overflow_setup(tmp_path, monkeypatch, percent, limit='85'):
 def test_above_the_threshold_a_claude_job_overflows_to_agys_claude_and_says_so(tmp_path, monkeypatch):
     p = overflow_setup(tmp_path, monkeypatch, 91)
     monkeypatch.delenv('RH_LAUNCHER_EXECUTORS', raising=False)
-    assert wm.select('batch', 'claude', path=p)['executor'] == 'claude'   # this launcher cannot run agy
+    # A caller that reads only the model name cannot run agy; one that follows the route can (11-20).
+    assert wm.select('batch', 'claude', path=p, follows_route=False)['executor'] == 'claude'
+    assert wm.select('batch', 'claude', path=p)['executor'] == 'agy'
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude')   # a host without agy says so
+    assert wm.select('batch', 'claude', path=p)['executor'] == 'claude'
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     got = wm.select('batch', 'claude', path=p)
     assert (got['model'], got['canonical']) == ('claude-opus-5-5', 'anthropic/claude-opus-5.5')
@@ -735,12 +739,32 @@ def test_a_delegate_runs_only_on_an_executor_the_launcher_can_run(tmp_path, monk
     monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
     monkeypatch.delenv('RH_LAUNCHER_EXECUTORS', raising=False)
     for _ in range(40):
-        got = wm.select('batch', 'codex', path=p)
-        # Both launchers in use run claude; neither the lanes' launcher nor a codex job runs agy.
+        # A caller that runs the model name on its own CLI never gets an agy delegate.
+        got = wm.select('batch', 'codex', path=p, follows_route=False)
         assert got['executor'] in ('codex', 'claude') and not got['model'].startswith('gemini'), got
-    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude')   # a launcher that names what it runs
+    for _ in range(40):
+        assert wm.select('batch', 'codex', path=p)['executor'] in ('codex', 'claude')
+
+
+def test_the_stopgap_is_relaxed_a_route_following_caller_gets_delegates_on_all_three(tmp_path, monkeypatch):
+    # 11-20: the lanes' launcher now execs rstack tools/launch.sh, which runs codex, claude and agy, so the
+    # stopgap of 829d256 no longer holds a delegate to the executor asked for when the caller follows the route.
+    p = family_roles(tmp_path / 'roles.json')
+    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
+    monkeypatch.delenv('RH_LAUNCHER_EXECUTORS', raising=False)
     seen = {wm.select('batch', 'codex', path=p)['executor'] for _ in range(60)}
-    assert 'agy' in seen or 'claude' in seen
+    assert 'agy' in seen, seen
+    out = io.StringIO()
+    routes = set()
+    for i in range(30):
+        out.seek(0); out.truncate()
+        with contextlib.redirect_stdout(out):
+            assert wm.main(['--role', 'batch', '--executor', 'codex', '--roles-file', str(p), '--print-route',
+                            '--job', 'fixture-job', '--log', str(tmp_path / 'job.log'),
+                            '--receipt', str(tmp_path / 'r{}.json'.format(i))]) == 0
+        routes.add(out.getvalue().split()[1])
+    assert 'agy' in routes, routes
 
 
 def test_retract_marks_a_job_grade_retracted_and_needs_a_reason(tmp_path, capsys):
@@ -859,3 +883,47 @@ def test_the_picker_does_not_overwrite_the_readers_own_failure_row(tmp_path, mon
     alert.write_text('0.0h\tclaude-usage\tClaude usage not read: usage endpoint answered HTTP 401.\n')
     wm.select('batch', 'codex', path=p)
     assert 'HTTP 401' in alert.read_text()
+
+
+def science_gate(tmp_path, monkeypatch):
+    gate = tmp_path / 'science-publish-gate'
+    gate.write_text("#!/usr/bin/env python3\nREVIEWERS = ('fable', 'claude-science', 'opus', 'astra')\nMIN_ACCEPTS = 2\n")
+    monkeypatch.setenv('RH_SCIENCE_PUBLISH_GATE', str(gate))
+    routes = {'claude-sonnet-5-5': ('claude', 'anthropic/claude-sonnet-5.5'), 'claude-opus-5-5': ('claude', 'anthropic/claude-opus-5.5'),
+              'gemini-4-neon-low': ('agy', 'google/gemini-4-neon-low'), 'gpt-6.2-astra': ('codex', 'openai/gpt-6.2-astra'),
+              'gpt-6.2-sol': ('codex', 'openai/gpt-6.2-sol'), 'claude-fable-5-2': ('claude', 'anthropic/claude-fable-5.2')}
+    p = tmp_path / 'roles.json'
+    p.write_text(json.dumps({'roles': {'review': ['claude-sonnet-5-5', 'gemini-4-neon-low', 'claude-opus-5-5', 'gpt-6.2-astra']},
+                             'routes': {m: {'cli': c, 'canonical': k} for m, (c, k) in routes.items()}}))
+    return p
+
+
+def test_a_science_publish_review_is_held_to_the_gates_reviewers_and_a_plain_review_still_delegates(tmp_path, monkeypatch):
+    # 11-20, math: math_c82r12rvb2_1120 (a public PR text review) was delegated to claude-sonnet-5-5, a reviewer
+    # science-publish-gate never counts, so it could not reach the two accepts.
+    p = science_gate(tmp_path, monkeypatch)
+    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
+    monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
+    for made_by in ('gpt-6.2-sol', 'claude-opus-5-5'):
+        for _ in range(30):
+            got = wm.select('review', 'codex', path=p, made_by=made_by, gate='science-publish')
+            assert got['model'] in ('claude-opus-5-5', 'gpt-6.2-astra'), got
+            assert got['source'] != 'delegate' and got['model_pin'].startswith('science-publish gate')
+    assert wm.select('review', 'codex', path=p, made_by='gpt-6.2-sol', gate='science-publish')['executor'] == 'claude'
+    # Without the gate line a review still takes part in the delegated share.
+    seen = {wm.select('review', 'codex', path=p, made_by='gpt-6.2-sol')['source'] for _ in range(20)}
+    assert 'delegate' in seen
+    # The spec line is what turns it on, through the CLI the launcher calls.
+    spec = tmp_path / 'job.md'
+    spec.write_text('Review the PR text.\nGate: science-publish\n')
+    assert wm.spec_gate(spec.read_text()) == 'science-publish' and wm.spec_gate('Review the PR text.\n') == ''
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert wm.main(['--role', 'review', '--made-by', 'gpt-6.2-sol', '--roles-file', str(p), '--spec', str(spec),
+                        '--print-route', '--job', 'j', '--log', str(tmp_path / 'j.log'),
+                        '--receipt', str(tmp_path / 'j.json')]) == 0
+    assert out.getvalue().split()[0] == 'claude-opus-5-5'
+    # An unreadable gate refuses rather than guessing a reviewer.
+    monkeypatch.setenv('RH_SCIENCE_PUBLISH_GATE', str(tmp_path / 'absent'))
+    with pytest.raises(ValueError, match='REVIEWERS cannot be read'):
+        wm.select('review', 'codex', path=p, made_by='gpt-6.2-sol', gate='science-publish')

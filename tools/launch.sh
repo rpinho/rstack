@@ -14,7 +14,13 @@ if [[ -x $HOME/.local/bin/osascript && $(whence -p osascript) != $HOME/.local/bi
 fi
 (( $# >= 2 )) || { print -u2 -- 'usage: launch.sh JOB WORKDIR'; exit 2; }
 self=${0:A}
+# The harness this file runs: ../harness in a checkout, .. in the installed root, where harness-sync puts
+# this file at <root>/launcher/ (11-20: the lanes' launcher execs the installed copy, so every lane job
+# runs committed code; the installed root had no launcher before).
+if [[ -d ${self:h:h}/harness ]]; then H=${self:h:h}/harness; else H=${self:h:h}; fi
 job=$1; dir=$2; shift 2
+# Optional and never fatal: a missing notifier must not turn a job into a failed one.
+notify() { [[ -z ${LAUNCH_NOTIFY_COMMAND:-} ]] || ${=LAUNCH_NOTIFY_COMMAND} "$1" >/dev/null 2>&1 || true; }
 LAUNCH_ROLE=${LAUNCH_ROLE:-batch}; LAUNCH_MODEL=${LAUNCH_MODEL:-}; LAUNCH_MODEL_OVERRIDE=${LAUNCH_MODEL_OVERRIDE:-$MODEL_OVERRIDE_REASON}
 LAUNCH_MADE_BY=${LAUNCH_MADE_BY:-}
 LAUNCH_EXPLORE=${LAUNCH_EXPLORE:-}
@@ -86,7 +92,7 @@ fi
 [[ $dir = /* ]] || dir=${LAUNCH_WORK_ROOT:-$PWD}/$dir
 cd "$dir" || exit 1
 # Resolve aliases and hyphenated lane names before host checks or any job writes.
-lane=$(python3 "${self:h:h}/harness/lane_registry.py" \
+lane=$(python3 "$H/lane_registry.py" \
   --lanes-root "${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-${RH_ROOT:-$PWD/.runtime}}}/lanes" \
   --job "$job" --lane "${LAUNCH_LANE:-}") || exit 78
 lane_dir=${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-${RH_ROOT:-$PWD/.runtime}}}/lanes/$lane
@@ -114,8 +120,11 @@ if [[ $load == <-> ]] && (( load > ${LAUNCH_MAX_LOAD:-30} )) && [[ -z $FORCE_LAU
   print -u2 -- "launch.sh refused: load $load on $load_where"; exit 75
 fi
 artifacts=${LAUNCH_ARTIFACT_DIR:-$PWD/.runtime/jobs}
-# Sweep passes a relative spec path; standalone jobs use the configured artifacts dir.
-if [[ $job == */* ]]; then
+# Sweep passes a relative spec path; standalone jobs use the configured artifacts dir. An absolute
+# job is the spec's own path without .md (the lanes' wrapper resolves a sweep's relative path to it).
+if [[ $job == /* ]]; then
+  spec=${job:A}.md
+elif [[ $job == */* ]]; then
   spec=${self:h}/$job.md; spec=${spec:A}
 else
   spec=$artifacts/$job.md
@@ -151,15 +160,24 @@ log=${spec:r}.log
 # embeds the lane's whole RULES.md and INTAKE.toml in its generated specs, which on 11-06 put
 # c5's 472-word ask at 3,047 words and refused every job the sweep generated. Shared blocks
 # added to the prompt below this line are never counted.
-words=$(python3 "${self:h:h}/harness/tools/spec_words.py" "$spec") || exit 2
+words=$(python3 "$H/tools/spec_words.py" "$spec") || exit 2
 cap=${LAUNCH_SPEC_WORD_CAP:-1000}
-if [[ -z $LAUNCH_RESUME ]] && (( words > cap )); then
+# LAUNCH_SPEC_CAP_SINCE (epoch seconds): specs last modified before it predate the rule and are exempt,
+# so an old long spec can still be relaunched (the lanes' launcher has exempted pre-11-04 specs since 11-04).
+zmodload -F zsh/stat b:zstat 2>/dev/null
+spec_mtime=$(zstat +mtime -- "$spec" 2>/dev/null); [[ $spec_mtime == <-> ]] || spec_mtime=0
+if [[ -z $LAUNCH_RESUME ]] && (( words > cap )) && (( spec_mtime >= ${LAUNCH_SPEC_CAP_SINCE:-0} )); then
   if [[ -z $SPEC_OVER_CAP ]]; then
     print -u2 -- "launch.sh REFUSED $job: spec is $words job-specific words, over the $cap cap (the goal is turning into process; set SPEC_OVER_CAP=reason)"
     print -- "exit 2 spec-over-cap $words words $(date)" >> "$log"
+    notify "launch refused $job: spec over $cap words ($words job-specific)"
     exit 2
   fi
-  print -- "spec over cap allowed ($words words): $SPEC_OVER_CAP $(date)" >> "$log"
+  # Once per launch: a detached job's child runs this check again and says nothing.
+  if [[ -z ${LAUNCH_DETACHED:-} ]]; then
+    print -- "spec over cap allowed ($words words): $SPEC_OVER_CAP $(date)" >> "$log"
+    notify "launch $job: spec over $cap words allowed: $SPEC_OVER_CAP"
+  fi
 fi
 # The registry resolves lane and lane_dir above, before host checks and logs.
 # 11-10: a lane-yield HOLD stops the lane's jobs here. Until now only friends' own loops read one,
@@ -167,6 +185,40 @@ fi
 if [[ -f $lane_dir/HOLD ]]; then
   print -u2 -- "launch.sh refused $job: lane $lane is on hold: $(head -1 $lane_dir/HOLD) Only general removes $lane_dir/HOLD."
   exit 78
+fi
+# LAUNCH_DETACH=tmux: the job never lives under the caller's process tree. 11-01: the 7:25 AM memory kill
+# took out eight jobs inside Claude's process tree with no exit line, and nobody noticed for 13 hours. So
+# a job started outside tmux, or from a claude-* session, moves itself into its own tmux session
+# job-<job> (the name job-stop and job-watchdog use) and the caller waits for it and exits with its code.
+# It sits after every admission check, so a refusal still reaches the caller, and before the round gate
+# and the registry, so a round is opened once and the registered pid is the job's. Ported from the
+# lanes' launcher (_codex/launch.sh), which now execs this file.
+if [[ ${LAUNCH_DETACH:-} == tmux && -z ${LAUNCH_DETACHED:-} ]]; then
+  tm=${LAUNCH_TMUX:-tmux}
+  s=; [[ -n $TMUX ]] && s=$($tm display-message -p '#S' 2>/dev/null)
+  if [[ -z $TMUX || $s == claude-* ]]; then
+    name=job-${job//[.:]/_}
+    if $tm has-session -t "=$name" 2>/dev/null; then print -u2 -- "launch.sh: $job already running in $name"; exit 75; fi
+    # The session gets the tmux server's environment, not this one, so what this job was given (flags
+    # included, resolved above) is passed explicitly.
+    export LAUNCH_ROLE LAUNCH_MODEL LAUNCH_MODEL_OVERRIDE LAUNCH_MADE_BY LAUNCH_EXPLORE LAUNCH_EFFORT LAUNCH_HOST \
+           LAUNCH_TIMEOUT_SECONDS LAUNCH_CLAUDE_TOOLS LAUNCH_BACKEND=$backend LAUNCH_LANE=$lane
+    envs=("PATH=$PATH")
+    for k in ${(ok)parameters}; do
+      [[ $k == (LAUNCH_*|RH_*|RSTACK_*|AGENT_BACKEND|SPEC_OVER_CAP|MODEL_OVERRIDE_REASON|PYTHONDONTWRITEBYTECODE|*_NUM_THREADS) ]] || continue
+      [[ $k == (LAUNCH_DETACHED|FORCE_LAUNCH) || ${parameters[$k]} != *export* ]] && continue
+      envs+=("$k=${(P)k}")
+    done
+    envs+=(LAUNCH_DETACHED=1 FORCE_LAUNCH=1)
+    at=0; [[ -f $log ]] && at=$(wc -c < "$log")
+    $tm new-session -d -s "$name" -c "$dir" "env ${(j: :)${(q)envs[@]}} zsh ${(q)self} ${(q)job} ${(q)dir}" || exit 1
+    while $tm has-session -t "=$name" 2>/dev/null; do sleep ${LAUNCH_DETACH_POLL:-15}; done
+    # The exit line the job wrote (every launcher line ends with $(date)); only this run's part of the log.
+    last=$(tail -c +$(( at + 1 )) "$log" 2>/dev/null | grep -E '^exit [^ ]+ .*(Mon|Tue|Wed|Thu|Fri|Sat|Sun) ' | tail -1 | awk '{print $2}')
+    [[ $last == <-> ]] && exit $last
+    [[ $last == stopped ]] && exit 143
+    print -u2 -- "launch.sh: $job ended without an exit line in $log"; exit 1
+  fi
 fi
 # rounds.py has held this rule since the first c5 postmortem on 11-06: no repeat of a method that
 # just produced a dry streak, no reopening a closed dead end, no round 1 without reading the KB.
@@ -179,28 +231,34 @@ if [[ -n $LAUNCH_ROUND ]]; then
               --generator "$LAUNCH_GENERATOR" --params "$LAUNCH_PARAMS" --scorer "$LAUNCH_SCORER")
   [[ -z $LAUNCH_HYPOTHESIS ]] || round_args+=(--hypothesis "$LAUNCH_HYPOTHESIS")
   [[ -z $LAUNCH_NEW_EVIDENCE ]] || round_args+=(--new-evidence "$LAUNCH_NEW_EVIDENCE")
-  if ! python3 "${self:h:h}/harness/tools/rounds.py" "${round_args[@]}" >> "$log.round" 2>&1; then
+  if ! python3 "$H/tools/rounds.py" "${round_args[@]}" >> "$log.round" 2>&1; then
     print -u2 -- "launch.sh REFUSED $job: the round gate refused this round"
     tail -20 "$log.round" >&2
     print -- "exit 78 round-gate-refused $(date)" >> "$log"
+    notify "launch refused $job: the round gate refused round $LAUNCH_ROUND (see $log.round)"
     exit 78
   fi
 fi
 reg=${LAUNCH_STATE:-$PWD/.runtime/job-registry}
 mkdir -p "$reg"
 registry_name=${job//[^A-Za-z0-9_.-]/_}
+# job-watchdog resumes a registered JOB by name, from its log beside the specs. A job given as a path (a
+# sweep worker) has no such log, so it registers one level down, where the watchdog does not look (the
+# lanes' launcher wrote those entries outside the registry altogether).
+if [[ $job == */* ]]; then registry_name=paths/$registry_name; mkdir -p "$reg/paths"; fi
 # host= is what lets a stop reach the machine the executor is actually on. Without it,
 # 11-07: a --host job was stopped here, the local tmux session died and the log said
 # "exit stopped", while codex kept running on the host as an orphan nobody was watching.
 remote_marks=${LAUNCH_REMOTE_JOBS:-.local/state/research-harness/remote-jobs}
-print -l "dir=$dir" "pid=$$" ${LAUNCH_HOST:+"host=$LAUNCH_HOST"} ${LAUNCH_HOST:+"remote_marks=$remote_marks"} > "$reg/$registry_name.job"
+# restarts= is job-watchdog's per-job restart cap and path= the PATH it resumes with.
+print -l "dir=$dir" "pid=$$" "restarts=${LAUNCH_RESTARTS:-0}" "path=$PATH" ${LAUNCH_HOST:+"host=$LAUNCH_HOST"} ${LAUNCH_HOST:+"remote_marks=$remote_marks"} > "$reg/$registry_name.job"
 finished() {
   [[ ! -f $reg/$registry_name.job ]] || mv "$reg/$registry_name.job" "$reg/$registry_name.finished"
 }
 trap finished EXIT
 stopped() { print -- "exit stopped by signal $(date)" >> "$log"; exit 143; }
 trap stopped TERM HUP
-selector=${LAUNCH_SELECTOR:-${self:h:h}/harness/worker_models.py}
+selector=${LAUNCH_SELECTOR:-$H/worker_models.py}
 # lane and lane_dir are derived above, with the round gate that needs them. A missing GOAL.md or
 # an unavailable `rh` is not fatal: a job that cannot read its goal still runs, and the gap shows
 # up in the prompt's absence rather than as a dead lane.
@@ -209,9 +267,9 @@ start=1; [[ -n $LAUNCH_RESUME ]] && start=2
 for (( i = start; i <= 5; i++ )); do
   sel_exec=$backend
   [[ ${LAUNCH_PROVIDER:-} == (openrouter|gemini) && $backend == codex ]] && sel_exec=$LAUNCH_PROVIDER
-  # This launcher runs all three executors, so a delegate may be on any of them (the lanes' own launcher
-  # does not set this, and gets delegates only on the executor it asked for).
-  selection=$(RH_LAUNCHER_EXECUTORS=codex,claude,agy python3 "$selector" --role "$LAUNCH_ROLE" --executor "$sel_exec" --model "$LAUNCH_MODEL" --explore "$LAUNCH_EXPLORE" --model-override "$LAUNCH_MODEL_OVERRIDE" --made-by "$LAUNCH_MADE_BY" --job "$job" --lane "$lane" --workdir "$dir" --lane-dir "$lane_dir" --spec "$spec" --print-route --log "$log" --receipt "$log.selection.json") || { print -- "exit 2 model-selection-refused $(date)" >> "$log"; exit 2; }
+  # This launcher runs all three executors, so a delegate may be on any of them. A host without one of
+  # the CLIs names the ones it has in RH_LAUNCHER_EXECUTORS.
+  selection=$(RH_LAUNCHER_EXECUTORS=${RH_LAUNCHER_EXECUTORS:-codex,claude,agy} python3 "$selector" --role "$LAUNCH_ROLE" --executor "$sel_exec" --model "$LAUNCH_MODEL" --explore "$LAUNCH_EXPLORE" --model-override "$LAUNCH_MODEL_OVERRIDE" --made-by "$LAUNCH_MADE_BY" --job "$job" --lane "$lane" --workdir "$dir" --lane-dir "$lane_dir" --spec "$spec" --print-route --log "$log" --receipt "$log.selection.json") || { print -- "exit 2 model-selection-refused $(date)" >> "$log"; exit 2; }
   selected_route=("${(@f)selection}")
   m=$selected_route[1]; backend=$selected_route[2]
   case $backend in
@@ -252,6 +310,11 @@ for (( i = start; i <= 5; i++ )); do
   # lane has already paid for. Before 11-06 only `rh ideas promote` enforced prior art and only
   # sweep prompts carried lessons, so 31 of the last 60 specs never mentioned either.
   { [[ ! -f ${self:h}/RULES.md ]] || { cat "${self:h}/RULES.md"; printf '\n---\n\n'; }
+    # LAUNCH_PREAMBLE: files (colon separated) every job of this host reads first, e.g. the lanes' FRONT.md.
+    for f in ${(s.:.)LAUNCH_PREAMBLE}; do
+      [[ -f $f ]] || continue
+      cat "$f"; [[ $(tail -n 1 "$f") == --- ]] && printf '\n' || printf '\n---\n\n'
+    done
     [[ ! -f $lane_dir/GOAL.md ]] || { printf -- '--- LANE GOAL (%s, the owner'\''s words; agents never edit it) ---\n' "$lane"; cat "$lane_dir/GOAL.md"; printf '\n---\n\n'; }
     [[ -z $lessons ]] || { printf -- '--- LESSONS THIS LANE ALREADY PAID FOR ---\n%s\n---\n\n' "$lessons"; }
     cat "$spec"; (( i > 1 )) && printf '\n\nRESUME (attempt %d): read STATUS.md, REPORT.md and existing files; continue completed work.\n' $i; } > "$log.prompt"
@@ -267,12 +330,12 @@ for (( i = start; i <= 5; i++ )); do
       export GEMINI_API_KEY="$(cat "$HOME/.config/gemini/api_key")" || exit 2
       [[ -n $GEMINI_API_KEY ]] || { print -u2 -- 'missing Gemini key'; exit 2; }
     fi
-    nice -n 10 python3 "${self:h:h}/harness/agent_executor.py" --backend "$backend" \
+    nice -n 10 python3 "$H/agent_executor.py" --backend "$backend" \
       --executable "$cx" --directory "$dir" --model "$m" --effort "$LAUNCH_EFFORT" \
       --output "$out" --budget "${LAUNCH_CLAUDE_BUDGET:-1.00}" \
       --allowed-tools "$LAUNCH_CLAUDE_TOOLS" --timeout-seconds "$LAUNCH_TIMEOUT_SECONDS" \
-      < "$log.prompt" > "$attempt_log" 2>&1
-    rc=$?
+      < "$log.prompt" 2>&1 | tee "$attempt_log" >> "$log"
+    rc=$?   # pipefail: the executor's code, not tee's
   else
     # A remote run uses the SAME absolute paths on both machines, and refuses when the work dir
     # is not there, rather than falling back to the remote $HOME and writing results nowhere.
@@ -329,7 +392,7 @@ for (( i = start; i <= 5; i++ )); do
       remote_auth='export GEMINI_API_KEY=$(cat "$HOME/.config/gemini/api_key")'
     fi
     remote="cd ${(q)dir} 2>/dev/null || { echo ${(q)missing} >&2; exit 2; }
-export PATH=\$HOME/.local/bin:/opt/homebrew/bin:\$PATH
+export PATH=${${LAUNCH_REMOTE_PATH:+${(q)LAUNCH_REMOTE_PATH}}:-\$HOME/.local/bin:/opt/homebrew/bin:\$PATH}
 ${LAUNCH_PROVIDER:+export LAUNCH_PROVIDER=${(q)LAUNCH_PROVIDER}}
 ${RH_ALLOW_OPENROUTER:+export RH_ALLOW_OPENROUTER=${(q)RH_ALLOW_OPENROUTER}}
 ${RH_ALLOW_GEMINI_API:+export RH_ALLOW_GEMINI_API=${(q)RH_ALLOW_GEMINI_API}}
@@ -347,10 +410,13 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
     # that records the exit code), streams its output here, survives a dropped connection, and on a
     # restarted launcher reattaches to the attempt in $log.remote.json instead of starting another.
     print -r -- "$remote" > "$log.rcmd"
-    : > "$attempt_log"
-    python3 "${self:h:h}/harness/tools/remote_run.py" --host "$LAUNCH_HOST" --job "${job:t}" \
-      --log "$attempt_log" --prompt "$log.prompt" --command "$log.rcmd" --state "$log.remote.json"
+    # remote_run appends the host's output to the job log as it arrives; this attempt's part is then
+    # copied out for the checks below.
+    at=$(wc -c < "$log")
+    python3 "$H/tools/remote_run.py" --host "$LAUNCH_HOST" --job "${job:t}" \
+      --log "$log" --prompt "$log.prompt" --command "$log.rcmd" --state "$log.remote.json"
     rc=$?
+    tail -c +$(( at + 1 )) "$log" > "$attempt_log"
     # Status has to keep working from the controller: the heavy outputs stay on the host and
     # only these few small bookkeeping files come back, so STATUS.md, REPORT.md, the receipts
     # and event-watch read exactly as they did when the job ran here.
@@ -379,11 +445,17 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
       --include="${out:t}" \
       --exclude='*' "$LAUNCH_HOST:$dir/" "$dir/" >> "$log.pull" 2>&1 ||
       print -- "pull from $LAUNCH_HOST failed rc $? (outputs are on the host) $(date)" >> "$log"
+    # The executor's last message is written beside the spec, which for a lane job is not in the work dir
+    # (_codex/JOB.last.md), so the pull above cannot bring it back.
+    if [[ ${out:A} != ${dir:A}/* ]]; then
+      rsync -a --timeout=120 -e "${LAUNCH_SSH:-ssh}" "$LAUNCH_HOST:$out" "$out" >> "$log.pull" 2>&1 ||
+        print -- "pull of ${out:t} from $LAUNCH_HOST failed $(date)" >> "$log"
+    fi
     # A receipt binds the evidence it cites by path and hash: the X capture copy, or the
     # X_SEARCHES.jsonl copy for a dated none-row, in the run directory. Those file names are the
     # worker's, so the receipts pulled above say which files to bring back too. Without this a
     # receipt that is correct on the host fails here for a missing file (planets, 11-09).
-    named=$(python3 -I "${self:h:h}/harness/tools/receipt_files.py" "$dir" 2>>"$log.pull")
+    named=$(python3 -I "$H/tools/receipt_files.py" "$dir" 2>>"$log.pull")
     # One file at a time: openrsync drops the whole list when one name is missing on the host.
     for rel in ${(f)named}; do
       print -r -- "$rel" | rsync -a --timeout=120 --max-size="${LAUNCH_PULL_MAX_SIZE:-4m}" -e "${LAUNCH_SSH:-ssh}" \
@@ -400,11 +472,10 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
         msg="ledger diverged: RESULTS.jsonl on $LAUNCH_HOST differs from this machine's for lane $lane. This machine stays authoritative; the host copy was NOT merged and is still there."
         print -- "LEDGER DIVERGED $LAUNCH_HOST $(date)" >> "$log"
         print -- "$msg" >> "$log"
-        [[ -z ${LAUNCH_NOTIFY_COMMAND:-} ]] || "${LAUNCH_NOTIFY_COMMAND}" "$msg" >/dev/null 2>&1 || true
+        notify "$msg"
       fi
     fi
   fi
-  cat "$attempt_log" >> "$log"
   policy_flag=0
   if [[ $backend == codex ]] && grep -Fq 'This content was flagged for possible cybersecurity risk' "$attempt_log"; then
     policy_flag=1
@@ -438,7 +509,7 @@ print -- "lint restate-ask=$ok_ask shipped-line=$ok_ship $(date)" >> "$log"
 # checks first (exit code, Shipped and You asked lines, the spec's Check: lines), else the lane's reviewing
 # model. Whatever cannot be graded is recorded "ungraded" (counted, outside the rate) for the morning report.
 # Never blocks and never fails the job. A --host job's checks would run on the wrong machine, so it skips them.
-python3 "${self:h:h}/harness/auto_grade.py" --receipt "$log.selection.json" --log "$log" --dir "$dir" \
+python3 "$H/auto_grade.py" --receipt "$log.selection.json" --log "$log" --dir "$dir" \
   --spec "$spec" ${LAUNCH_HOST:+--no-checks} >> "$log" 2>&1 || true
 python3 "$selector" --record-ungraded --receipt "$log.selection.json" --log "$log" >/dev/null 2>&1 || true
 yield=${LAUNCH_YIELD_LEDGER:-$PWD/.runtime/job-yield.jsonl}
@@ -449,7 +520,5 @@ print(json.dumps(dict(utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), jo
   "$job" "$rc" "$ok_ask" "$shipped" >> "$yield" 2>/dev/null
 # The notification is optional and never fatal: a missing notifier must not turn a finished job
 # into a failed one.
-if (( ! ok_ask || ! ok_ship )) && [[ -n ${LAUNCH_NOTIFY_COMMAND:-} ]]; then
-  ${=LAUNCH_NOTIFY_COMMAND} "job $job ended without the hard-rule lines (You asked: $ok_ask, Shipped: $ok_ship)" >/dev/null 2>&1 || true
-fi
+(( ok_ask && ok_ship )) || notify "job $job ended without the hard-rule lines (You asked: $ok_ask, Shipped: $ok_ship)"
 exit "$rc"

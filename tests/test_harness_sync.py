@@ -170,3 +170,27 @@ def test_codex_wrapper_and_policy_ship_from_committed_source(env):
     assert (root / 'rstack/tools/_codex_budget.py').exists()
     assert (root / 'rstack/tools/ask_lint.py').read_text() == 'committed ask_lint.py\n'
     assert run('--check') == 0
+
+
+def test_the_job_launcher_ships_to_launcher_and_finds_the_installed_harness(env):
+    # 11-20: the lanes' _codex/launch.sh execs the installed launcher, so it must come from a commit and
+    # resolve its harness as the root it is installed in (there is no harness/ directory there).
+    repo, root, _, _, run = env
+    (repo / 'tools').mkdir()
+    real = Path(__file__).resolve().parents[1] / 'tools'
+    (repo / 'tools/launch.sh').write_text((real / 'launch.sh').read_text())
+    (repo / 'tools/launch.sh').chmod(0o755)
+    (repo / 'tools/RULES.md').write_text('rules\n')
+    (repo / 'tools/other.sh').write_text('#!/bin/sh\n')   # only the launcher and its rules ship
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'launcher')
+    assert run() == 0
+    assert os.access(root / 'launcher/launch.sh', os.X_OK) and (root / 'launcher/RULES.md').read_text() == 'rules\n'
+    assert not (root / 'launcher/other.sh').exists() and not (root / 'tools/launch.sh').exists()
+    assert run('--check') == 0
+    out = subprocess.run(['zsh', '-c', 'self=$1; if [[ -d ${self:h:h}/harness ]]; then H=${self:h:h}/harness; '
+                          'else H=${self:h:h}; fi; print -r -- $H', 'x', str(root / 'launcher/launch.sh')],
+                         capture_output=True, text=True).stdout.strip()
+    assert out == str(root)
+    assert 'if [[ -d ${self:h:h}/harness ]]; then H=${self:h:h}/harness; else H=${self:h:h}; fi' in \
+        (root / 'launcher/launch.sh').read_text()

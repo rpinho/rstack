@@ -385,3 +385,23 @@ def test_the_launcher_runs_a_claude_overflow_on_agy_and_logs_why(tmp_path):
     assert 'claude overflow via agy (weekly at 90%)' in log
     receipt = json.loads((jobs/'fixture.log.selection.json').read_text())
     assert receipt['executor'] == 'agy' and receipt['model'] == 'claude-opus-5-5'
+
+
+def test_codex_runs_without_an_openai_api_key_or_base_url(tmp_path):
+    # 11-20: the lanes' launcher ran codex under `env -u OPENAI_BASE_URL -u OPENAI_API_KEY`; with either set,
+    # codex can bill the API instead of the subscription. Now that the lanes run this executor, it does that.
+    seen = tmp_path / 'env.json'
+    fake = tmp_path / 'codex'
+    fake.write_text('#!' + sys.executable + '\nimport json, os, sys\nsys.stdin.read()\n'
+                    'json.dump(dict(os.environ), open(' + repr(str(seen)) + ', "w"))\n')
+    fake.chmod(0o755)
+    env = dict(__import__('os').environ, OPENAI_API_KEY='sk-should-not-pass', OPENAI_BASE_URL='http://x',
+               KEEP_ME='1', LAUNCH_CODEX_SANDBOX='bypass')
+    env.pop('LAUNCH_PROVIDER', None)
+    done = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / 'harness/agent_executor.py'),
+                           '--backend', 'codex', '--executable', str(fake), '--model', 'gpt-x', '--effort', 'low',
+                           '--directory', str(tmp_path), '--output', str(tmp_path / 'last.md')],
+                          input='prompt', env=env, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    got = json.loads(seen.read_text())
+    assert 'OPENAI_API_KEY' not in got and 'OPENAI_BASE_URL' not in got and got['KEEP_ME'] == '1'

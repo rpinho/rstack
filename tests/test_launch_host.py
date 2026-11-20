@@ -342,7 +342,9 @@ def test_a_diverged_ledger_is_reported_rather_than_merged(tmp_path):
     assert 'was NOT merged' in text
     # The report goes through the same notifier the hard-rule lint uses, and a missing notifier
     # must not fail a finished job.
-    assert 'LAUNCH_NOTIFY_COMMAND' in text.split('LEDGER DIVERGED')[1][:400]
+    assert 'notify "$msg"' in text.split('LEDGER DIVERGED')[1][:400]
+    assert ('notify() { [[ -z ${LAUNCH_NOTIFY_COMMAND:-} ]] || ${=LAUNCH_NOTIFY_COMMAND} "$1" >/dev/null 2>&1 '
+            '|| true; }') in text
 
 
 def test_the_marker_lands_under_the_remote_home_and_not_in_a_directory_called_HOME(tmp_path):

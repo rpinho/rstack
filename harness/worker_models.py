@@ -164,6 +164,41 @@ DELEGATE_MODELS = ('gemini-4-neon-low', 'gemini-4-neon-medium', 'gemini-4-argon-
 PIN = re.compile(r'^[ \t]*[-*]?[ \t]*model pin:[ \t]*(\S.*)$', re.I | re.M)
 
 
+# A review for the science-publish gate counts only when its reviewer is one the gate accepts (11-20, math:
+# math_c82r12rvb2_1120 was delegated to claude-sonnet-5-5 and could never count toward the two accepts). The
+# spec says so in one line, and the pick is then held to the gate's own REVIEWERS, read from the gate itself:
+#   Gate: science-publish
+GATE = re.compile(r'^[ \t]*[-*]?[ \t]*gate:[ \t]*science-publish\b', re.I | re.M)
+
+
+def spec_gate(text):
+    return 'science-publish' if GATE.search(text or '') else ''
+
+
+def gate_reviewers():
+    """The science-publish gate's REVIEWERS tuple, parsed from the gate's source (RH_SCIENCE_PUBLISH_GATE, else
+    `science-publish-gate` on PATH) rather than copied here, so the two cannot drift. Unreadable is a refusal."""
+    import ast
+    import shutil
+    path = os.environ.get('RH_SCIENCE_PUBLISH_GATE') or shutil.which('science-publish-gate')
+    try:
+        tree = ast.parse(Path(path).read_text())
+        for node in tree.body:
+            if (isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'REVIEWERS' for t in node.targets)):
+                names = ast.literal_eval(node.value)
+                if names and all(isinstance(n, str) and n for n in names):
+                    return tuple(names)
+    except (OSError, TypeError, ValueError, SyntaxError):
+        pass
+    raise ValueError('Gate: science-publish, but the gate\'s REVIEWERS cannot be read from {} '
+                     '(set RH_SCIENCE_PUBLISH_GATE); not picking a reviewer the gate may not count'.format(path))
+
+
+def gate_reviewer(model, reviewers):
+    """True when the model id names one of the gate's reviewers as a whole part (opus, astra, fable, ...)."""
+    return any('-{}-'.format(r) in '-{}-'.format(model) for r in reviewers)
+
+
 def spec_pin(text):
     found = PIN.search(text or '')
     return ' '.join(found.group(1).split())[:200] if found else ''
@@ -289,16 +324,21 @@ def codex_delegates_today(add=False):
     return count
 
 
-def runnable(executor):
+def runnable(executor, follows_route=True):
     """The executors the calling launcher can actually run.
 
     11-19 23:52, games lane: a batch job was delegated to gemini-4-neon-medium (route agy), and the lanes'
-    launcher, which runs only codex and claude, started Codex with that model; it exited in 17 s. A launcher
-    that runs more says so in RH_LAUNCHER_EXECUTORS (rstack tools/launch.sh does); otherwise a delegate must
-    run on the executor this selection was asked for."""
+    launcher, which ran only codex and claude, started Codex with that model; it exited in 17 s. The stopgap
+    (829d256) kept a delegate on the executor the selection was asked for. 11-20: the lanes' launcher is now
+    a thin exec into rstack tools/launch.sh, which runs codex, claude and agy, so a caller that follows the
+    route it is given (--print-route, or select() from Python) may get any of the three. A caller that reads
+    only the model name still gets its own executor or claude, as before. RH_LAUNCHER_EXECUTORS, when set,
+    names exactly what the launcher can run (a host without one of the CLIs)."""
     named = os.environ.get('RH_LAUNCHER_EXECUTORS', '')
-    # Both launchers in use run claude: the lanes' _codex/launch.sh and rstack tools/launch.sh.
-    return {e.strip() for e in named.split(',') if e.strip()} or {executor, 'claude'}
+    named = {e.strip() for e in named.split(',') if e.strip()}
+    if named:
+        return named
+    return {'codex', 'claude', 'agy'} if follows_route else {executor, 'claude'}
 
 
 def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), executors=('codex', 'claude', 'agy')):
@@ -334,7 +374,7 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), exe
 
 
 def select(role, executor, model='', override='', path=None, made_by='', job='', lane='', explore='', pin='',
-           workdir='', lane_dir=''):
+           workdir='', lane_dir='', follows_route=True, gate=''):
     requested = executor
     judgment_hint = ''
     if role == 'batch' and JUDGMENT_JOB.search(job):
@@ -381,6 +421,16 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         if model and not override.startswith('Ricardo:'):
             raise ValueError(judgment_hint + 'role {} hard-coded model refused; the leaderboard picks {}; '
                              '--model requires --model-override Ricardo: REASON'.format(role, eligible[0]))
+    if gate == 'science-publish':
+        reviewers = gate_reviewers()
+        eligible = [m for m in eligible if gate_reviewer(m, reviewers)]
+        if not eligible:
+            raise ValueError('role {}: no leaderboard pick is a science-publish gate reviewer ({})'.format(
+                role, ', '.join(reviewers)))
+        if (explore or model) and not gate_reviewer(explore or model, reviewers):
+            raise ValueError('{} is not a science-publish gate reviewer ({})'.format(explore or model, ', '.join(reviewers)))
+        # Held like a pinned spec: no headroom move and no delegation outside the gate's reviewers.
+        pin = pin or 'science-publish gate: reviewers {}'.format(', '.join(reviewers))
     if role in INDEPENDENT and not made_by:
         raise ValueError(judgment_hint + 'role {} requires --made-by MODEL (LAUNCH_MADE_BY)'.format(role))
     if model and not override:
@@ -404,11 +454,11 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     elif not (explore or model or pin):
         delegated = delegate(role, data, excluded, made_by, chosen, int(uuid.uuid4().hex[:8], 16) / 2 ** 32,
                              families if judging else frozenset(),
-                             runnable(requested) & {'claude', 'codex', 'agy'})
+                             runnable(requested, follows_route) & {'claude', 'codex', 'agy'})
         if delegated:
             chosen = delegated[0]
     route = data['routes'].get(chosen)
-    if delegated or switched or (judging and families and chosen != (explore or model or ranked[0])):
+    if delegated or switched or gate or (judging and families and chosen != (explore or model or ranked[0])):
         executor = route['cli']   # named in the receipt and the log below; not a silent swap
     if isinstance(route, dict) and (role in JUDGMENT or (not model and route.get('cli') in ('openrouter', 'gemini'))):
         executor = route.get('cli')
@@ -428,7 +478,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9/_.:-]*', chosen):
         raise ValueError('invalid native model id')
     # The 85% brake moves Claude work to agy's Claude, only where the launcher can run agy.
-    overflow = claude_overflow(executor, chosen) if 'agy' in runnable(requested) else None
+    overflow = claude_overflow(executor, chosen) if 'agy' in runnable(requested, follows_route) else None
     receipt = dict(schema=1, selection_id=uuid.uuid4().hex, utc=dt.datetime.now(dt.timezone.utc).isoformat(),
         role=role, model=chosen, canonical=route['canonical'], executor=executor,
         roles_sha256=hashlib.sha256(raw).hexdigest(), roles_updated=data.get('updated'),
@@ -686,7 +736,8 @@ def main(argv=None):
         receipt = select(args.role, args.executor, args.model, args.model_override, args.roles_file,
                          args.made_by, args.job, args.lane, args.explore,
                          spec_pin(args.spec.read_text()) if args.spec and args.spec.is_file() else '',
-                         args.workdir, args.lane_dir)
+                         args.workdir, args.lane_dir, follows_route=args.print_route,
+                         gate=spec_gate(args.spec.read_text()) if args.spec and args.spec.is_file() else '')
         if receipt['role'] in JUDGMENT and args.spec and assigns_judgment_model(args.spec.read_text()):
             print('launch.sh refused {}: name the leaderboard role, not a model (LEADERBOARD.md); '
                   'the leaderboard picks {}'.format(args.job, receipt['model']), file=sys.stderr)

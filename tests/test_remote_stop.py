@@ -156,7 +156,7 @@ def test_the_launcher_records_the_host_and_the_marks_path(tmp_path):
     assert '${LAUNCH_HOST:+"host=$LAUNCH_HOST"}' in text
     assert '${LAUNCH_HOST:+"remote_marks=$remote_marks"}' in text
     # And nothing is recorded for a local job, so remote-stop stays a no-op for it.
-    assert 'print -l "dir=$dir" "pid=$$" ${LAUNCH_HOST:+' in text
+    assert 'print -l "dir=$dir" "pid=$$" "restarts=${LAUNCH_RESTARTS:-0}" "path=$PATH" ${LAUNCH_HOST:+' in text
 
 
 def test_the_remote_shell_records_the_executors_own_pid(tmp_path):

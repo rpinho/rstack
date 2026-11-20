@@ -47,6 +47,7 @@ def metered_refusal(provider, env=None):
             'Set {}=1 only to finish work already in flight.'.format(provider, flag))
 
 
+CODEX_UNSET = ('OPENAI_API_KEY', 'OPENAI_BASE_URL')
 CODEX_SANDBOXES = ('read-only', 'workspace-write', 'danger-full-access')
 
 
@@ -366,6 +367,9 @@ def main(argv=None):
     if a.backend == 'agy':
         return run_agy(cmd, a.directory, a.output, a.timeout_seconds)
     if a.backend == 'codex':
+        # No OpenAI API key or base URL reaches codex: with one in the environment it can bill the API instead of
+        # the subscription (11-19: no pay-as-you-go). The lanes' launcher has run codex this way since 10-18.
+        env = {k: v for k, v in os.environ.items() if k not in CODEX_UNSET}
         if os.environ.get('LAUNCH_PROVIDER') == 'gemini':
             from gemini_transport import bridge
             if not os.environ.get('GEMINI_API_KEY'):
@@ -374,8 +378,8 @@ def main(argv=None):
             # Current Codex supports only Responses; Google exposes Chat Completions.
             with bridge() as base_url:
                 cmd[-1:-1] = ['-c', 'model_providers.gemini.base_url=' + json.dumps(base_url)]
-                return subprocess.call(cmd, cwd=a.directory)
-        return subprocess.call(cmd, cwd=a.directory)
+                return subprocess.call(cmd, cwd=a.directory, env=env)
+        return subprocess.call(cmd, cwd=a.directory, env=env)
     # Preserve the provider's JSON result, including usage and budget errors.
     expired = threading.Event()
     with a.output.open('wb') as out:
