@@ -50,7 +50,7 @@ def test_bench_rows_never_rank_and_show_in_their_own_column(tmp_path, monkeypatc
     page = tmp_path / 'LEADERBOARD.md'
     mr.public(data, page)
     text = page.read_text()
-    assert '| Role | Model | Routing order | Everyday passed | Everyday n | Bench passed | Date |' in text
+    assert '| Role | Model | Routing order | Everyday passed | Everyday n | Bench passed | Cost per pass | Date |' in text
     assert '| batch | claude-opus-5-5 | 1 | 0.917 | 6 |' in text
     assert '| batch | gemini-3.8-flash-low | ' in text and '| n<5 | 0 | 1.0 |' in text
 

@@ -442,9 +442,12 @@ def fallback_tail(order):
     return [m for m in order if canon(m) not in SUPERSEDED]
 
 
-def rank(role, ev):
+def rank(role, ev, cost=None):
     """Models with MIN_N or more graded everyday tasks first, by Wilson lower bound; every other model after
-    them in its seed/candidate order ("n<5"). The bench never enters: rank is called with everyday evidence."""
+    them in its seed/candidate order ("n<5"). The bench never enters: rank is called with everyday evidence.
+    `cost` ({model: percent of a weekly plan per passed task}) only orders models whose everyday standing is
+    exactly equal (same Wilson bound and rate); a model with no cost figure sorts after one that has it."""
+    cost = cost or {}
     e = ev.get(role, {})
     def graded(m):
         return effective(m, e)[0] >= MIN_N
@@ -457,7 +460,8 @@ def rank(role, ev):
     pool = list(SEED[role]) + CANDIDATES.get(role, [])
     order = [m for m in pool + sorted((m for m in e if m not in pool), key=low, reverse=True)
              if served_model(m) and m not in GEMINI4_DROPPED]
-    data = sorted((m for m in order if graded(m)), key=lambda m: (low(m), rate(m)), reverse=True)
+    data = sorted((m for m in order if graded(m)),
+                  key=lambda m: (low(m), rate(m), -cost[m] if m in cost else -math.inf), reverse=True)
     order = data + [m for m in order if not graded(m)]
     order = spread_labs(order, MIN_LABS.get(role, 1))
     flags = []
@@ -600,10 +604,12 @@ def recompute(write=True):
                       for canonical, (cli, native) in MODELS.items()}, 'evidence': {},
            'overrides': OVERRIDES, 'min_labs': MIN_LABS}
     bench = bench_evidence()
+    cost = costs()
     out['bench'] = {}
+    out['cost'] = {}
     out['ranking'] = 'everyday'
     for role in ROLES:
-        order, _ = rank(role, ev)
+        order, _ = rank(role, ev, {m: v['per_pass'] for m, v in cost.get(role, {}).items() if v['per_pass'] is not None})
         out['roles'][role] = [MODELS[m][1] for m in order]
         # 'scored' is the n<5 rule: under MIN_N graded everyday tasks the model shows "n<5" and has no rate.
         out['evidence'][role] = {MODELS[m][1]: {'n': v['n'], 'rate': round(v['k']/v['n'], 3),
@@ -620,11 +626,33 @@ def recompute(write=True):
             if v.get('ungraded'):
                 out['evidence'][role].setdefault(MODELS[m][1], {'n': 0, 'rate': None, 'low': None, 'days': 0,
                                                                'scored': False})['ungraded'] = v['ungraded']
+        out['cost'][role] = {MODELS[m][1]: {'n': v['n'], 'passes': v['passes'], 'pct_per_pass': v['per_pass']}
+                             for m, v in cost.get(role, {}).items() if m in MODELS and v['per_pass'] is not None}
         out['bench'][role] = {MODELS[m][1]: {'n': v['n'], 'rate': round(v['k']/v['n'], 3)}
                               for m, v in bench.get(role, {}).items() if v['n'] and m in MODELS}
     if write:
         write_roles(out)
     return out
+
+
+def job_cost_module():
+    spec = importlib.util.spec_from_file_location('job_cost', HERE / 'job_cost.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def costs():
+    """{role: {model: {'n', 'passes', 'pct', 'per_pass'}}}: cost per passed everyday task, display and tie-break
+    only. Any missing source gives {} (shown as "-"); this never raises."""
+    try:
+        found = job_cost_module().per_pass(os.environ.get('RH_LAUNCH_RECEIPTS'), canon)
+    except Exception:
+        return {}
+    out = collections.defaultdict(dict)
+    for (role, model), v in found.items():
+        out[role][model] = v
+    return dict(out)
 
 
 def safe_cell(value):
@@ -643,7 +671,7 @@ def score(value):
 
 def snapshot_rows(path):
     """Read only the two public table schemas; never copy arbitrary page prose."""
-    tables = {7: [], 6: [], 4: []}
+    tables = {8: [], 7: [], 6: [], 4: []}
     if not path or not Path(path).is_file():
         return tables
     for line in Path(path).read_text().splitlines():
@@ -659,7 +687,7 @@ def snapshot_rows(path):
         if role not in ROLES or not canon(model):
             raise ValueError('unknown public role or model in snapshot')
         dt.date.fromisoformat(cells[-1])
-        if len(cells) == 7:
+        if len(cells) in (7, 8):
             if cells[2] != '-' and (not cells[2].isdigit() or int(cells[2]) < 1):
                 raise ValueError('invalid routing position in snapshot')
             for value in (cells[3], cells[5]):
@@ -668,6 +696,8 @@ def snapshot_rows(path):
             if cells[4] != '-' and not cells[4].isdigit() and not re.fullmatch(
                     r'inherited from [A-Za-z0-9][A-Za-z0-9/_.:-]* \(n=\d+\); own n=\d+', cells[4]):
                 raise ValueError('invalid everyday n in snapshot')
+            if len(cells) == 8 and cells[6] != '-' and not re.fullmatch(r'\d+(?:\.\d+)?% wk', cells[6]):
+                raise ValueError('invalid cost per pass in snapshot')
         elif len(cells) == 6:
             if cells[2] != '-' and (not cells[2].isdigit() or int(cells[2]) < 1):
                 raise ValueError('invalid routing position in snapshot')
@@ -686,16 +716,20 @@ def public(data, path, observations=(), previous=None):
     old = snapshot_rows(previous if previous is not None else path)
     lines = ['# Model leaderboard', '',
              'A dated routing snapshot from selected local harness outcomes. The ranking is everyday delegated work: real tasks handed to workers, graded pass, partial (half) or fail when they came back. "n<5" means fewer than 5 graded everyday tasks, and such a model ranks below every model with data. The bench (planted claims, reproductions with known answers) is a separate check on correctness and cost and never ranks. Starting orders include operator seed choices. This is not a universal benchmark.', '',
-             '| Role | Model | Routing order | Everyday passed | Everyday n | Bench passed | Date |',
-             '|---|---|---:|---:|---:|---:|---|']
+             '| Role | Model | Routing order | Everyday passed | Everyday n | Bench passed | Cost per pass | Date |',
+             '|---|---|---:|---:|---:|---:|---:|---|']
     # A rerun on the same day replaces that day's routing rows; older days are kept (merge, never erase).
-    lines.extend(l for l in old[7] if not l.rstrip().endswith(f'| {date} |'))
+    # Rows written before the cost column (7 cells) are carried with a dash for it.
+    legacy = ['| ' + ' | '.join(c[:6] + ['-', c[6]]) + ' |' for c in
+              ([x.strip() for x in l.strip('|').split('|')] for l in old[7])]
+    lines.extend(l for l in old[8] + legacy if not l.rstrip().endswith(f'| {date} |'))
     for role, ranked in data['roles'].items():
         safe_cell(role)
         if role not in ROLES:
             raise ValueError('unknown public role')
         role_scores = data.get('evidence', {}).get(role, {})
         role_bench = data.get('bench', {}).get(role, {})
+        role_cost = data.get('cost', {}).get(role, {})
         for model in list(ranked) + sorted((set(role_scores) | set(role_bench)) - set(ranked)):
             safe_cell(model)
             if model not in {native for _, native in MODELS.values()}:
@@ -712,8 +746,12 @@ def public(data, path, observations=(), previous=None):
                 everyday = score(inherited['rate'])
                 n = 'inherited from {} (n={}); own n={}'.format(inherited['from'], int(inherited['n']), n)
             bench = score(role_bench[model]['rate']) if model in role_bench else '-'
+            per_pass = role_cost.get(model, {}).get('pct_per_pass')
+            if per_pass is not None and not (type(per_pass) in (int, float) and math.isfinite(per_pass) and per_pass >= 0):
+                raise ValueError('invalid cost per pass')
+            cost = '{:.2f}% wk'.format(per_pass) if per_pass is not None else '-'
             order = str(ranked.index(model) + 1) if model in ranked else '-'
-            line = f"| {role} | {model} | {order} | {everyday} | {n} | {bench} | {date} |"
+            line = f"| {role} | {model} | {order} | {everyday} | {n} | {bench} | {cost} | {date} |"
             if line not in lines:
                 lines.append(line)
     if old[6]:
@@ -756,7 +794,7 @@ def bootstrap(path):
         if not line.startswith('| '):
             continue
         cells = [cell.strip() for cell in line.strip('|').split('|')]
-        if len(cells) not in (6, 7) or cells[0] == 'Role':
+        if len(cells) not in (6, 7, 8) or cells[0] == 'Role':
             continue
         role, model, position, date = cells[0], cells[1], cells[2], cells[-1]
         if role == 'Entry' or role in MODELS:
@@ -768,7 +806,7 @@ def bootstrap(path):
             canon(model)
         dt.date.fromisoformat(date)
         dates.append(date)
-        # The everyday table (7 columns, 11-19) is the routing; the older held-score table is history.
+        # The everyday table (7 columns 11-19, 8 with cost per pass from 11-20) is the routing; the older held-score table is history.
         snapshots[(role, len(cells), date)][model] = position
     for role in {r for r, _, _ in snapshots}:
         width = max(w for r, w, _ in snapshots if r == role)

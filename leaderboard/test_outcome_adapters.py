@@ -107,7 +107,7 @@ def test_new_model_enters_unscored_and_can_move_only_with_existing_evidence_rule
     page = tmp_path / 'LEADERBOARD.md'
     roles.public(data, page)
     # 11-19: after the two seeds and the four agy candidates (three Flash tiers, Neon medium; 11-20).
-    assert '| design | claude-fable-5-3 | 7 | n<5 | 1 | - |' in page.read_text()
+    assert '| design | claude-fable-5-3 | 7 | n<5 | 1 | - | - |' in page.read_text()
     strong = {'design': {new: dict(n=100, k=100, days={'2026-01-01', '2026-01-02'})}}
     assert roles.rank('design', strong)[0][0] == new
     assert roles.SEED['judge'] == roles.SEED['review']
@@ -554,7 +554,7 @@ def test_public_merge_retains_scored_and_observation_history(setup_reader, tmp_p
     roles.public(data, page)
     for line in historical.splitlines():
         assert line in page.read_text()
-    assert '| design | claude-fable-5-3 | 7 | n<5 | 1 | - | 2026-01-03 |' in page.read_text()
+    assert '| design | claude-fable-5-3 | 7 | n<5 | 1 | - | - | 2026-01-03 |' in page.read_text()
     once = page.read_text()
     roles.public(data, page)
     assert page.read_text() == once

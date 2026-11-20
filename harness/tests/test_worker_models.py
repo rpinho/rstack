@@ -1169,3 +1169,17 @@ def test_argon_and_carbon_are_never_delegated_in_any_role(tmp_path, monkeypatch)
     for role in ('batch', 'mechanical'):
         assert seen[role] <= {'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium', 'gpt-6.2-sol'}, (role, seen[role])
     assert 'gemini-4-neon-medium' in seen['review'] and 'gemini-4-hydrogen-medium' in seen['batch']
+
+
+def test_hydrogen_low_is_held_back_until_it_earns_its_place_over_medium():
+    low, med = wm.HYDROGEN_LOW, wm.HYDROGEN_MEDIUM
+    pool = ['gemini-4-neon-medium', low, med]
+    ev = lambda ln, lr, mn, mr: {low: dict(n=ln, rate=lr), med: dict(n=mn, rate=mr)}
+    assert wm.prefer_hydrogen_medium(pool, ev(0, None, 0, None), {}) == ['gemini-4-neon-medium', med]
+    assert wm.prefer_hydrogen_medium(pool, ev(0, None, 5, 0.8), {}) == pool            # medium established: low may try
+    assert wm.prefer_hydrogen_medium(pool, ev(5, 0.7, 5, 0.8), {}) == ['gemini-4-neon-medium', med]
+    assert wm.prefer_hydrogen_medium(pool, ev(5, 0.9, 5, 0.8), {}) == pool            # low earned it on the record
+    cost = {low: dict(pct_per_pass=0.2), med: dict(pct_per_pass=0.5)}
+    assert wm.prefer_hydrogen_medium(pool, ev(5, 0.8, 5, 0.8), cost) == pool          # tie, cheaper
+    assert wm.prefer_hydrogen_medium(pool, ev(5, 0.8, 5, 0.8), {}) == ['gemini-4-neon-medium', med]
+    assert wm.prefer_hydrogen_medium(pool, None, None) == pool                         # bad input never raises

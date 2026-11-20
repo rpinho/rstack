@@ -25,9 +25,9 @@ BOARD = """| Role | Model | Routing order | Everyday passed | Everyday n | Bench
 def test_the_block_has_everyday_first_and_the_bench_apart_from_the_newest_day(tmp_path):
     out = render.block(BOARD)
     assert out.startswith(render.BEGIN) and out.rstrip().endswith(render.END)
-    assert '| Role | # | Model | Everyday passed | Everyday n | Bench passed |' in out
-    assert '| batch | 1 | gpt-6.2-sol | 1.0 | inherited from gpt-6.1-sol (n=25); own n=0 | - |' in out
-    assert '| batch | - | gpt-6.1-sol | 1.0 | 25 | - |' in out and '0.9' not in out
+    assert '| Role | # | Model | Everyday passed | Everyday n | Bench passed | Cost per pass |' in out
+    assert '| batch | 1 | gpt-6.2-sol | 1.0 | inherited from gpt-6.1-sol (n=25); own n=0 | - | - |' in out
+    assert '| batch | - | gpt-6.1-sol | 1.0 | 25 | - | - |' in out and '0.9' not in out
     assert '| review | 1 | claude-opus-5-5 | n<5 | 0 | 1.0 |' in out
     board = tmp_path / 'LEADERBOARD.md'
     board.write_text(BOARD)
@@ -51,3 +51,11 @@ def test_the_lint_flags_bench_guidance_outside_the_block_only():
         'Both 6.2 models answered a smoke test on Codex before the switch.',
     ])
     assert [n for n, _ in lint.findings(page)] == [4, 5, 8]
+
+
+def test_the_block_carries_the_cost_per_pass_column():
+    board = """| Role | Model | Routing order | Everyday passed | Everyday n | Bench passed | Cost per pass | Date |
+|---|---|---:|---:|---:|---:|---:|---|
+| batch | claude-sonnet-5-5 | 1 | 0.9 | 6 | - | 1.23% wk | 2026-11-20 |
+"""
+    assert '| batch | 1 | claude-sonnet-5-5 | 0.9 | 6 | - | 1.23% wk |' in render.block(board)

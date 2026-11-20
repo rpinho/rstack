@@ -38,7 +38,7 @@ def test_public_export_keeps_only_routing_scores_and_date(tmp_path):
     roles.public(data(), path)
     text = path.read_text()
     assert 'PRIVATE_SENTINEL' not in text and '12345' not in text
-    assert '| batch | gpt-6.1-sol | 1 | 0.8 | 20 | - | 2026-01-02 |' in text
+    assert '| batch | gpt-6.1-sol | 1 | 0.8 | 20 | - | - | 2026-01-02 |' in text
     restored = roles.bootstrap(path)
     assert restored['roles'] == {'batch': ['gpt-6.1-sol']}
     path.write_text('PRIVATE_SENTINEL')

@@ -378,6 +378,33 @@ def runnable(executor, follows_route=True):
     return {'codex', 'claude', 'agy'} if follows_route else {executor, 'claude'}
 
 
+HYDROGEN_LOW, HYDROGEN_MEDIUM = 'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium'
+
+
+def prefer_hydrogen_medium(pool, evidence, cost, min_n=5):
+    """11-20: Hydrogen-medium is drawn before Hydrogen-low until low earns it on everyday work. Low leaves the
+    pool while medium has under `min_n` graded tasks (medium is tried first), and again once both have enough
+    unless low's everyday rate beats medium's, or ties it at a lower cost per passed task. Never raises and
+    never empties a pool: a missing figure keeps both."""
+    try:
+        if HYDROGEN_LOW not in pool or HYDROGEN_MEDIUM not in pool:
+            return pool
+        low, med = evidence.get(HYDROGEN_LOW) or {}, evidence.get(HYDROGEN_MEDIUM) or {}
+        if (med.get('n') or 0) < min_n:
+            return [m for m in pool if m != HYDROGEN_LOW]
+        if (low.get('n') or 0) < min_n:
+            return pool               # medium is established; low gets its n=5 to earn the place
+        lr, mr = low.get('rate'), med.get('rate')
+        if lr is None or mr is None:
+            return pool
+        lc = ((cost or {}).get(HYDROGEN_LOW) or {}).get('pct_per_pass')
+        mc = ((cost or {}).get(HYDROGEN_MEDIUM) or {}).get('pct_per_pass')
+        earned = lr > mr or (lr == mr and lc is not None and mc is not None and lc < mc)
+        return pool if earned else [m for m in pool if m != HYDROGEN_LOW]
+    except (AttributeError, TypeError):
+        return pool
+
+
 def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), executors=('codex', 'claude', 'agy'),
              quota=None, skipped=None):
     """(model, note) when this selection is one of the delegated share, else None. An agy model whose logged quota
@@ -412,8 +439,10 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), exe
         pool.append(m)
     if not pool:
         return None
-    # Fewest graded outcomes first, so every delegate reaches n=5; the draw breaks ties.
     n = lambda m: (evidence.get(m) or {}).get('n', 0)
+    pool = prefer_hydrogen_medium(pool, evidence, (data.get('cost') or {}).get(
+        ROLE_ROWS.get(role, role) if role not in data['roles'] else role, {}))
+    # Fewest graded outcomes first, so every delegate reaches n=5; the draw breaks ties.
     pick = min(pool, key=lambda m: (n(m), hashlib.sha256((m + repr(draw)).encode()).hexdigest()))
     if data['routes'][pick].get('cli') == 'codex':
         codex_delegates_today(add=True)
