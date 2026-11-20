@@ -209,7 +209,7 @@ start=1; [[ -n $LAUNCH_RESUME ]] && start=2
 for (( i = start; i <= 5; i++ )); do
   sel_exec=$backend
   [[ ${LAUNCH_PROVIDER:-} == (openrouter|gemini) && $backend == codex ]] && sel_exec=$LAUNCH_PROVIDER
-  selection=$(python3 "$selector" --role "$LAUNCH_ROLE" --executor "$sel_exec" --model "$LAUNCH_MODEL" --explore "$LAUNCH_EXPLORE" --model-override "$LAUNCH_MODEL_OVERRIDE" --made-by "$LAUNCH_MADE_BY" --job "$job" --lane "$lane" --spec "$spec" --print-route --log "$log" --receipt "$log.selection.json") || { print -- "exit 2 model-selection-refused $(date)" >> "$log"; exit 2; }
+  selection=$(python3 "$selector" --role "$LAUNCH_ROLE" --executor "$sel_exec" --model "$LAUNCH_MODEL" --explore "$LAUNCH_EXPLORE" --model-override "$LAUNCH_MODEL_OVERRIDE" --made-by "$LAUNCH_MADE_BY" --job "$job" --lane "$lane" --workdir "$dir" --lane-dir "$lane_dir" --spec "$spec" --print-route --log "$log" --receipt "$log.selection.json") || { print -- "exit 2 model-selection-refused $(date)" >> "$log"; exit 2; }
   selected_route=("${(@f)selection}")
   m=$selected_route[1]; backend=$selected_route[2]
   case $backend in
@@ -413,9 +413,6 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
   fi
   python3 "$selector" --log "$log" --receipt "$log.selection.json" --outcome "$rc" || exit 2
   print -r -- "GRADE ON RETURN: python3 ${selector:A} --grade pass|partial|fail --note WHY --receipt ${log:A}.selection.json --log ${log:A}" >> "$log"
-  # 11-19 (general): grading never blocks a lane. A returned delegated job nobody has graded yet is recorded
-  # "ungraded" at once (counted, outside the rate) and listed for the morning report; a later grade replaces it.
-  python3 "$selector" --record-ungraded --receipt "$log.selection.json" --log "$log" >/dev/null 2>&1 || true
   (( policy_flag == 0 && rc != 0 && i < 5 )) || break
   [[ $backend == codex ]] || break  # A Claude retry must not reset its spend cap.
   # A quota response ends this model's attempt even if it also says 'at capacity'.
@@ -435,6 +432,13 @@ asked=$(first_line "$dir/STATUS.md"); shipped=$(first_line "$dir/REPORT.md")
 ok_ask=0; [[ $asked == You\ asked:* ]] && ok_ask=1
 ok_ship=0; [[ $shipped == Shipped:* ]] && ok_ship=1
 print -- "lint restate-ask=$ok_ask shipped-line=$ok_ship $(date)" >> "$log"
+# 11-19 (general): a returned delegated job is graded here, at return, with no session in the loop: its own
+# checks first (exit code, Shipped and You asked lines, the spec's Check: lines), else the lane's reviewing
+# model. Whatever cannot be graded is recorded "ungraded" (counted, outside the rate) for the morning report.
+# Never blocks and never fails the job. A --host job's checks would run on the wrong machine, so it skips them.
+python3 "${self:h:h}/harness/auto_grade.py" --receipt "$log.selection.json" --log "$log" --dir "$dir" \
+  --spec "$spec" ${LAUNCH_HOST:+--no-checks} >> "$log" 2>&1 || true
+python3 "$selector" --record-ungraded --receipt "$log.selection.json" --log "$log" >/dev/null 2>&1 || true
 yield=${LAUNCH_YIELD_LEDGER:-$PWD/.runtime/job-yield.jsonl}
 mkdir -p "${yield:h}" 2>/dev/null
 python3 -I -c 'import json, sys, time

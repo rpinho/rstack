@@ -658,3 +658,52 @@ def test_a_lane_with_an_ungraded_returned_job_still_launches(fake_home):
     result = run_launcher(fake_home)
     assert result.returncode == 0, result.stderr
     assert 'refused' not in result.stderr
+
+
+def family_roles(path):
+    routes = {'claude-opus-5-5': ('claude', 'anthropic/claude-opus-5.5'), 'claude-sonnet-5-5': ('claude', 'anthropic/claude-sonnet-5.5'),
+              'gpt-6.2-sol': ('codex', 'openai/gpt-6.2-sol'), 'gpt-6.2-astra': ('codex', 'openai/gpt-6.2-astra'),
+              'gemini-4-argon-low': ('agy', 'google/gemini-4-argon-low'), 'gemini-4-neon-low': ('agy', 'google/gemini-4-neon-low')}
+    path.write_text(json.dumps({'roles': {'review': ['gemini-4-argon-low', 'claude-opus-5-5', 'gpt-6.2-astra'],
+                                          'batch': ['gemini-4-argon-low', 'gpt-6.2-sol']},
+                                'routes': {m: {'cli': c, 'canonical': k} for m, (c, k) in routes.items()}}))
+    return path
+
+
+@pytest.mark.parametrize('producer,family', [('gemini-3.8-flash-low', 'google'), ('claude-opus-5-5', 'anthropic')])
+def test_a_referee_is_never_delegated_to_the_producers_family(tmp_path, monkeypatch, producer, family):
+    from bug_verdicts import maker
+    p = family_roles(tmp_path / 'roles.json')
+    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
+    for _ in range(40):
+        got = wm.select('review', 'codex', path=p, made_by=producer)
+        assert maker(got['model'], got['canonical']) != family, got
+        assert got['producer_family'] == [family]
+
+
+def test_a_planted_referee_batch_reads_the_hunters_family_from_plants(tmp_path, monkeypatch):
+    # The open-source lane's case: the hunter's family is in PLANTS.jsonl, whatever LAUNCH_MADE_BY says.
+    from bug_verdicts import maker
+    p = family_roles(tmp_path / 'roles.json')
+    lane_dir, work = tmp_path / 'lane', tmp_path / 'ref-job'
+    lane_dir.mkdir(); work.mkdir()
+    (lane_dir / 'PLANTS.jsonl').write_text(json.dumps(dict(batch='b1', workdir=str(work), hunter_family='Google',
+                                                           hunter_model='gemini-4-argon-low', hunter_maker='google')) + '\n')
+    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
+    for _ in range(40):
+        got = wm.select('review', 'codex', path=p, made_by='claude-opus-5-5', workdir=str(work), lane_dir=str(lane_dir))
+        assert maker(got['model'], got['canonical']) not in ('google', 'anthropic'), got
+    # A batch-role job on a planted batch: the base pick (Gemini first in batch) moves off the hunter's family too.
+    monkeypatch.setenv('RH_DELEGATE_SHARE', '0')
+    got = wm.select('batch', 'codex', path=p, job='lane-hunt-x', workdir=str(work), lane_dir=str(lane_dir))
+    assert got['model'] == 'gpt-6.2-sol' and got['executor'] == 'codex'
+
+
+def test_a_judging_job_with_an_unknown_producer_is_not_delegated(tmp_path, monkeypatch):
+    p = family_roles(tmp_path / 'roles.json')
+    data = json.loads(p.read_text()); data['roles']['taste'] = ['claude-opus-5-5']; p.write_text(json.dumps(data))
+    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
+    monkeypatch.setenv('RH_DELEGATE_ROLES', 'taste')
+    got = wm.select('taste', 'claude', path=p)
+    assert got['source'] == 'leaderboard' and got['producer_family'] == 'unknown'
+    assert 'unknown producer family' in got['delegate_skipped']
