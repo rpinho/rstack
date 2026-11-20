@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Read the Claude weekly (and five-hour) usage on a schedule, so no session has to type it in.
+
+Why (11-20): the executor picker routes work by subscription headroom, and its Claude figure was a
+number a session copied from Ricardo's screenshot into usage/claude.json. It went stale every day and
+read 0% while the real week stood at 24%.
+
+Source: GET https://api.anthropic.com/api/oauth/usage, the endpoint Claude Code's own /usage screen calls,
+with the OAuth token Claude Code keeps in the macOS Keychain ("Claude Code-credentials"). UNDOCUMENTED:
+it can change or disappear without notice. The token is read from the Keychain at call time and goes in a
+request header only; it is never written to disk, a log or argv. Nothing documented works headless:
+`claude -p /usage` prints the session's cost, and the status line's rate limits exist only inside a
+running interactive session.
+
+On success it writes $RSTACK_STATE_DIR/usage/claude.json atomically:
+    {"weekly_percent", "at", "source", "resets_at", "five_hour_percent", "five_hour_resets_at"}
+(the five-hour keys only when the account reports that window), and an empty
+$RSTACK_STATE_DIR/asks-waiting/<host>-claude-usage.tsv. On any failure it leaves claude.json as it was
+(the picker then sees it go stale and keeps its last policy), writes one row to that tsv, which the
+conductor's asks-waiting hook prints on every turn, and exits 1, which job-health alerts on.
+--push HOST copies both files to the same paths on HOST (the conductor's Mac), mtimes kept.
+
+    claude-usage [--push HOST] [--dry]       --dry prints the reading and writes nothing
+"""
+import argparse
+from datetime import datetime
+import json
+import math
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+URL = 'https://api.anthropic.com/api/oauth/usage'
+KEYCHAIN_SERVICE = 'Claude Code-credentials'
+SOURCE = 'claude-usage: api.anthropic.com/api/oauth/usage (undocumented; Claude Code OAuth token from Keychain)'
+
+
+def state_dir():
+    base = os.environ.get('RSTACK_STATE_DIR') or os.path.join(
+        os.environ.get('XDG_STATE_HOME') or os.path.expanduser('~/.local/state'), 'rstack')
+    return Path(os.path.expanduser(base))
+
+
+def host_label():
+    value = os.environ.get('RSTACK_HOST', '').strip()
+    if value:
+        return value
+    if sys.platform == 'darwin':
+        try:
+            r = subprocess.run(['/usr/sbin/scutil', '--get', 'LocalHostName'], capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    import socket
+    return socket.gethostname().split('.')[0]
+
+
+def alert_path():
+    return state_dir() / 'asks-waiting' / (host_label() + '-claude-usage.tsv')
+
+
+class Failure(Exception):
+    pass
+
+
+def token():
+    """Claude Code's OAuth access token, read from the Keychain now. Never returned to a caller that logs."""
+    try:
+        r = subprocess.run(['/usr/bin/security', 'find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise Failure('Keychain read failed ({})'.format(type(exc).__name__))
+    if r.returncode != 0:
+        raise Failure('Keychain item "{}" not readable (security exit {})'.format(KEYCHAIN_SERVICE, r.returncode))
+    try:
+        oauth = json.loads(r.stdout)['claudeAiOauth']
+        value, expires = oauth['accessToken'], oauth.get('expiresAt')
+    except (ValueError, KeyError, TypeError):
+        raise Failure('Keychain item has no claudeAiOauth.accessToken')
+    if isinstance(expires, (int, float)) and expires / 1000 < time.time():
+        raise Failure('Claude Code OAuth token expired {:.1f} h ago; a running Claude session refreshes it'.format(
+            (time.time() - expires / 1000) / 3600))
+    return value
+
+
+def fetch(get_token=token, opener=urllib.request.urlopen):
+    req = urllib.request.Request(URL, headers={'Authorization': 'Bearer ' + get_token(),
+                                               'anthropic-beta': 'oauth-2025-04-20', 'Accept': 'application/json'})
+    try:
+        with opener(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        raise Failure('usage endpoint answered HTTP {}'.format(exc.code))
+    except (urllib.error.URLError, OSError) as exc:
+        raise Failure('usage endpoint unreachable ({})'.format(getattr(exc, 'reason', exc)))
+    except ValueError:
+        raise Failure('usage endpoint answered something that is not JSON')
+
+
+def percent(window):
+    if isinstance(window, dict):
+        value = window.get('utilization')
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and 0 <= value <= 100:
+            return float(value)
+    return None
+
+
+def reset_time(window):
+    try:
+        return datetime.fromisoformat(str(window['resets_at']).replace('Z', '+00:00')).isoformat()
+    except (TypeError, KeyError, ValueError):
+        return None
+
+
+def reading(body, now):
+    """claude.json's record from the endpoint body; Failure when the weekly figure is missing."""
+    if not isinstance(body, dict):
+        raise Failure('usage body is not an object')
+    week = body.get('seven_day')
+    weekly = percent(week)
+    if weekly is None:
+        raise Failure('usage body has no seven_day.utilization (the endpoint may have changed)')
+    rec = dict(weekly_percent=weekly, at=int(now), source=SOURCE, resets_at=reset_time(week))
+    five = percent(body.get('five_hour'))
+    if five is not None:
+        rec.update(five_hour_percent=five, five_hour_resets_at=reset_time(body['five_hour']))
+    return rec
+
+
+def write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name('.' + path.name + '.tmp')
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+def push(host, paths):
+    """Copy each file to the same absolute path on host, keeping its mtime so newer-wins mirrors agree."""
+    ok = True
+    for p in paths:
+        try:
+            subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, 'mkdir -p ' + str(p.parent)],
+                           capture_output=True, timeout=60, check=True)
+            subprocess.run(['scp', '-q', '-p', '-o', 'BatchMode=yes', str(p), '{}:{}'.format(host, p)],
+                           capture_output=True, timeout=60, check=True)
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+            print('claude-usage: WARNING push of {} to {} failed'.format(p, host), file=sys.stderr)
+    return ok
+
+
+def run(now=None, fetcher=None):
+    """(record or None, alert row or None)."""
+    now = time.time() if now is None else now
+    try:
+        return reading((fetcher or fetch)(), now), None
+    except Failure as exc:
+        return None, '0.0h\tclaude-usage\tClaude usage not read: {}. The executor picker treats Claude as unknown ' \
+                     'and keeps its last policy until a reading comes back.'.format(exc)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--push')
+    ap.add_argument('--dry', action='store_true')
+    a = ap.parse_args(argv)
+    rec, row = run()
+    if a.dry:
+        print(json.dumps(rec, sort_keys=True) if rec else row)
+        return 0 if rec else 1
+    usage = state_dir() / 'usage' / 'claude.json'
+    if rec:
+        write(usage, json.dumps(rec) + '\n')
+    write(alert_path(), (row + '\n') if row else '')
+    if a.push:
+        push(a.push, ([usage] if rec else []) + [alert_path()])
+    print(json.dumps(rec, sort_keys=True) if rec else row, file=sys.stdout if rec else sys.stderr)
+    return 0 if rec else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

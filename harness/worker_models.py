@@ -213,10 +213,12 @@ HEADROOM_HORIZON_H = 168   # a provider whose reset time is unknown is treated a
 
 
 def headroom(now=None):
-    """{provider: {used, hours, per_hour}} for claude and codex, from the allowance reader; {} if either is unread."""
+    """({provider: {used, hours, per_hour}}, None) for claude and codex from the allowance reader, or ({}, why)
+    when either is unread. An unknown Claude reading also leaves one alert row for the conductor (11-20: it must
+    never freeze silently)."""
     allowance = _allowance()
     if not allowance:
-        return {}
+        return {}, 'allowance reader not found'
     import time
     now = time.time() if now is None else now
     data = allowance.cached(now)
@@ -224,13 +226,18 @@ def headroom(now=None):
     for provider in ('claude', 'codex'):
         row = data.get(provider)
         if not isinstance(row, dict) or row.get('weekly_used_percent') is None:
-            return {}
+            why = '{} usage unknown'.format(provider)
+            if provider == 'claude':
+                why += ' ({})'.format(data.get('claude_unknown') or 'no reading')
+                if hasattr(allowance, 'claude_unknown_alert'):
+                    allowance.claude_unknown_alert(data.get('claude_unknown') or 'no reading', now)
+            return {}, why
         resets = row.get('resets_at')
         hours = max((float(resets) - now) / 3600, 1.0) if resets else HEADROOM_HORIZON_H
         left = max(0.0, 100.0 - float(row['weekly_used_percent']))
         out[provider] = dict(used=float(row['weekly_used_percent']), hours=hours, per_hour=left / hours,
                              reset_known=bool(resets))
-    return out
+    return out, None
 
 
 def headroom_line(order, rooms):
@@ -240,12 +247,18 @@ def headroom_line(order, rooms):
     return 'executor {}: headroom {}'.format(order[0], parts[0].split(' ', 1)[1]) + ''.join(' vs ' + x for x in parts[1:])
 
 
-def headroom_pick(role, chosen, data, excluded, families, rooms):
+def headroom_pick(role, chosen, data, excluded, families, rooms, unknown=None, executor=''):
     """(model, provider, line) when the headroom choice moves the pick to another provider's default, else
-    (None, None, line); line is None when there is nothing to compare."""
+    (None, None, line); line is None when there is nothing to compare. With a reading unknown the last policy
+    holds (the leaderboard pick on the requested executor) and the line says so."""
     route = data['routes'].get(chosen) or {}
-    if os.environ.get('RH_HEADROOM_ROUTING', '1') == '0' or route.get('cli') not in ('claude', 'codex') or not rooms:
+    if os.environ.get('RH_HEADROOM_ROUTING', '1') == '0' or route.get('cli') not in ('claude', 'codex'):
         return None, None, None
+    if not rooms:
+        if not unknown:
+            return None, None, None
+        return None, None, 'executor {}: {}; last policy kept (leaderboard pick {}, no headroom move)'.format(
+            route.get('cli') or executor, unknown, chosen)
     order = sorted(rooms, key=lambda p: rooms[p]['per_hour'], reverse=True)
     for provider in order:
         if provider == route.get('cli'):
@@ -379,8 +392,9 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     chosen = explore or model or eligible[0]
     switched, executor_choice = None, None
     if not (explore or model or pin):
+        rooms, unknown = headroom() if os.environ.get("RH_HEADROOM_ROUTING", "1") != "0" else ({}, None)
         switched, provider, executor_choice = headroom_pick(role, chosen, data, excluded,
-                                                            families if judging else frozenset(), headroom())
+                                                            families if judging else frozenset(), rooms, unknown, executor)
         if switched:
             chosen = switched
             executor = provider

@@ -71,7 +71,8 @@ def test_selection_and_exit_receipts_bind_role_model_and_table(tmp_path):
     selected=json.loads(receipt.read_text())
     roles(p,'fixture-second') # completion keeps the actual selection, not today's model
     assert wm.main(args+['--outcome','17'])==0
-    lines=log.read_text().splitlines()
+    # the executor-choice line (here: claude usage unknown, last policy kept) is a note, not a record
+    lines=[l for l in log.read_text().splitlines() if not l.startswith('executor ')]
     assert lines[0].startswith('MODEL_SELECTION ') and lines[1].startswith('MODEL_OUTCOME ')
     outcome=json.loads(lines[1].split(' ',1)[1])
     assert outcome['selection_id']==selected['selection_id'] and outcome['roles_sha256']==selected['roles_sha256']
@@ -814,3 +815,47 @@ def test_the_headroom_pick_keeps_the_referee_out_of_the_producers_family(tmp_pat
     stub_allowance(monkeypatch, claude=(0, 63), codex=(95, 100))
     got = wm.select('review', 'codex', path=p, made_by='claude-opus-5-5')
     assert maker(got['model'], got['canonical']) != 'anthropic' and got['executor'] == 'codex'
+
+
+def real_allowance_state(tmp_path, monkeypatch, claude_age_s, codex_used=95):
+    """The real allowance reader over a temp state dir: codex from a fresh cached snapshot, claude from usage/claude.json."""
+    import time
+    now = time.time()
+    state = tmp_path / 'state'
+    (state / 'allowance').mkdir(parents=True)
+    (state / 'usage').mkdir()
+    (state / 'allowance/snapshot.json').write_text(json.dumps({'_read_at': now, 'codex': {
+        'weekly_used_percent': codex_used, 'resets_at': now + 100 * 3600}}))
+    if claude_age_s is not None:
+        (state / 'usage/claude.json').write_text(json.dumps({'weekly_percent': 0, 'at': now - claude_age_s,
+                                                              'source': 'claude-usage: test', 'resets_at': now + 63 * 3600}))
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(state))
+    monkeypatch.setenv('RSTACK_HOST', 'm5')
+    monkeypatch.delenv('RESETS_USAGE_DIR', raising=False)
+    monkeypatch.delenv('RH_HEADROOM_ROUTING', raising=False)
+    monkeypatch.setenv('RH_DELEGATE_SHARE', '0')
+    return state / 'asks-waiting/m5-claude-usage.tsv'
+
+
+def test_unknown_or_stale_claude_usage_keeps_the_last_policy_and_leaves_an_alert_row(tmp_path, monkeypatch):
+    p = headroom_roles(tmp_path / 'roles.json')
+    for age in (None, 3 * 3600):   # missing, then three hours old (the reader runs every 15 min)
+        alert = real_allowance_state(tmp_path / str(age), monkeypatch, age)
+        got = wm.select('batch', 'codex', path=p)
+        assert (got['model'], got['executor']) == ('gpt-6.2-sol', 'codex')   # the leaderboard pick, not moved
+        assert 'claude usage unknown' in got['executor_choice'] and 'last policy kept' in got['executor_choice']
+        row = alert.read_text().split('\t')
+        assert row[1] == 'claude-usage' and 'Claude usage unknown' in row[2]
+    # A fresh reading routes by headroom again (Claude 100% left vs Codex 5%).
+    real_allowance_state(tmp_path / 'fresh', monkeypatch, 600)
+    got = wm.select('batch', 'codex', path=p)
+    assert (got['model'], got['executor']) == ('claude-sonnet-5-5', 'claude')
+
+
+def test_the_picker_does_not_overwrite_the_readers_own_failure_row(tmp_path, monkeypatch):
+    p = headroom_roles(tmp_path / 'roles.json')
+    alert = real_allowance_state(tmp_path, monkeypatch, None)
+    alert.parent.mkdir(parents=True)
+    alert.write_text('0.0h\tclaude-usage\tClaude usage not read: usage endpoint answered HTTP 401.\n')
+    wm.select('batch', 'codex', path=p)
+    assert 'HTTP 401' in alert.read_text()

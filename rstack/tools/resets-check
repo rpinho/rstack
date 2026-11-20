@@ -12,9 +12,9 @@ Registry (default ~/.config/rstack/resets.json, RESETS_REGISTRY overrides):
 Every run, for each unused reset, it writes one asks-waiting row when either:
   - it expires within EXPIRY_DAYS (7), or
   - that provider's weekly usage is at USAGE_PERCENT (70) or more, when a number is readable:
-    Codex from the local rate-limit snapshots (rstack/tools/allowance); Claude only from a usage file
-    a session wrote ({"weekly_percent": 72, "at": <unix seconds>}, at most 24 h old; RESETS_USAGE_DIR,
-    default $RSTACK_STATE_DIR/usage/<provider>.json), since nothing headless can read claude.ai.
+    Codex from the local rate-limit snapshots (rstack/tools/allowance); Claude from the usage file
+    rstack/tools/claude-usage writes every 15 min ({"weekly_percent": 72, "at": <unix seconds>}, at most
+    24 h old here; RESETS_USAGE_DIR, default $RSTACK_STATE_DIR/usage/<provider>.json).
 The rows go to $RSTACK_STATE_DIR/asks-waiting/<host>-resets.tsv, which the conductor's asks-waiting hook
 prints on every turn. NOTIFY_DAYS (2) before each expiry it also sends Ricardo one notify-ricardo line,
 once per reset.

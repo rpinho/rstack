@@ -37,7 +37,7 @@ import storage  # noqa: E402  (Trash-only deletion; refuses when no Trash comman
 
 RECEIPT = '.harness-sync.json'
 # Spend enforcement and its dependencies ship with the harness, at a distinct namespace.
-RSTACK_TOOLS = ('codex', 'codex-budget', '_codex_budget.py', 'codex-budget.json.example', 'allowance', 'job-health', 'npx', 'launch-guard', 'x-reply-review', '_lan.py', 'lan-proxy', 'lan-proxy-pf-refresh', 'ask_lint.py', 'resets-check',
+RSTACK_TOOLS = ('codex', 'codex-budget', '_codex_budget.py', 'codex-budget.json.example', 'allowance', 'job-health', 'claude-usage', 'npx', 'launch-guard', 'x-reply-review', '_lan.py', 'lan-proxy', 'lan-proxy-pf-refresh', 'ask_lint.py', 'resets-check',
                 'grok-post', '_grok_post.py', '_grok_ask.py', 'grok-ask.json.example', 'grok-post.json.example',
                 'x-handle-guard', 'grok-ask', 'x-route', 'x-submit-gate', 'xurl', 'xurl-policy', 'x-log')
 CODE_SUFFIXES = {'.py', '.sh'}
