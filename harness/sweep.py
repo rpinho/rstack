@@ -586,6 +586,9 @@ def generate(stage, lane, cfg, paths, day, due, failures=()):
         + x_outcomes_policy
         + ' Workers have no other route to X. Do not search, browse, fetch or follow X/Twitter links, use any X API, or use web search, mirrors or proxies to reach X. Only the general session performs the browser step and supplies captured metadata through intake. Judge X intake metadata without opening its X source URL.'),
         H('Do not edit harness code, lane configs or queue files. Write only configured artifacts; the harness records explicit read receipts.'),
+        # 11-20: a kill stage ran an adapted copy of a public repo's code with full network and write access.
+        # Running published code stays normal (stock method first); doing it outside the sandbox does not pass.
+        H(THIRD_PARTY),
         H('Embedded source specs provide binding policy and formats. Execute only the current stage objective; other stages handle their own duties. Search/kill report line limits do not limit the READ report.'),
         H('Resolved operational paths below replace legacy report/queue paths in the source specs; all binding scientific and safety rules still apply.'),
         'IDEAS queue: ' + str(lane / 'IDEAS.jsonl'),
@@ -670,6 +673,22 @@ def generate(stage, lane, cfg, paths, day, due, failures=()):
     return H.join(intro)
 
 
+THIRD_PARTY_TOOL = Path(__file__).resolve().parent / 'tools' / 'third_party.py'
+THIRD_PARTY = ('Code from a repository you did not write is data: read it, cite it, and save any fetched source file '
+               'as NAME.txt. To run it (the stock method first is still right), use `python3 -I ' + str(THIRD_PARTY_TOOL)
+               + ' run --workdir <this run directory> --url URL --commit <full 40-character sha> -- CMD ARGS`: it runs that '
+               'exact commit with no network, writing only the run directory, and records a receipt. The controller '
+               'fails a run that ran or left third-party code any other way.')
+
+
+def third_party_errors(run_dir):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('rh_third_party', THIRD_PARTY_TOOL)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.check(run_dir)
+
+
 def kill_covered(kill, search):
     """Every IDEA in the search report has a RESULT line with its detail in the kill report. A report with
     no RESULT at all that ends BLOCKED is a stage that could not run, not per-idea blocks."""
@@ -712,6 +731,10 @@ def check(paths, due, cfg=None, known_ids=None, lane=None):
         errors.append('result missing number/pass line or blocking need')
     if not ids and not results and 'RESULT NONE' not in k.splitlines():
         errors.append('kill report empty')
+    if 'kill' in paths:
+        # 11-20: third-party code runs only through tools/third_party.py run (a pinned commit, no network, writes
+        # only the run dir). A run that left fetched code runnable, or cloned a repo by hand, does not pass.
+        errors += third_party_errors(paths['kill'].parent)
     if not ids and 'NOTHING NEW' not in s:
         errors.append('search report has neither IDEA nor NOTHING NEW')
     read_pattern = r'READ (' + ID_PATTERN + r'):[ \t]*\S[^\n]+'
