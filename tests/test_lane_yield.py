@@ -82,9 +82,10 @@ def test_report_only_lane_gets_no_hold_file(tmp_path, monkeypatch):
     hold = tmp_path / 'HOLD'
     monkeypatch.setattr(ly.Path, 'home', lambda: tmp_path)
     ly.act({'lane': 'm', 'as_of': 'x', 'fails': ['BURNING']}, {'hold': str(hold), 'report_only': True})
-    assert not hold.exists()
+    assert not hold.exists() and not (tmp_path / 'YIELD_HOLD').exists()
     ly.act({'lane': 'm', 'as_of': 'x', 'fails': ['BURNING']}, {'hold': str(hold)})
-    assert hold.exists()
+    # general, 11-20: lane-yield writes its own warning file, never the HOLD that stops a lane.
+    assert (tmp_path / 'YIELD_HOLD').exists() and not hold.exists()
 
 
 def test_unsurfaced_holds_claims_fail_for_any_subject_without_a_hold_file(tmp_path, monkeypatch):

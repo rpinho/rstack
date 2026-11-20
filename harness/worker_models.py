@@ -27,6 +27,12 @@ class MeteredRefusal(ValueError):
     """The selector's one hard line: a pay-as-you-go route (money). main() exits 4 on it, and launch.sh
     reroutes every other selector refusal to the leaderboard pick instead of stopping (RULE #1)."""
 
+
+class NoRoom(ValueError):
+    """11-20 (general): the Codex wrapper refused this job on its cap (RH_CODEX_CLOSED), and Claude (80% ceiling,
+    lane shares) and agy have no room for it either. main() exits 5, and launch.sh queues the job instead of
+    failing it (codex-budget.limit)."""
+
 ROLES_FILE = settings.path('RH_ROLES_FILE', Path('.runtime/roles.json'))
 JUDGMENT = frozenset(('review', 'judge', 'audit', 'taste', 'design', 'ideation'))
 INDEPENDENT = frozenset(('review', 'judge', 'audit'))
@@ -373,9 +379,22 @@ def runnable(executor, follows_route=True):
     names exactly what the launcher can run (a host without one of the CLIs)."""
     named = os.environ.get('RH_LAUNCHER_EXECUTORS', '')
     named = {e.strip() for e in named.split(',') if e.strip()}
-    if named:
-        return named
-    return {'codex', 'claude', 'agy'} if follows_route else {executor, 'claude'}
+    run = named or ({'codex', 'claude', 'agy'} if follows_route else {executor, 'claude'})
+    # 11-20 (general): RH_CODEX_CLOSED is set by launch.sh after the Codex wrapper refused this job on its cap;
+    # the job is asked for again on what is left.
+    return run - {'codex'} if os.environ.get('RH_CODEX_CLOSED', '').strip() else run
+
+
+def codex_closed_pick(role, data, ranked, excluded, families):
+    """Where a Codex pick goes when Codex refused the job on its cap: Claude's default for the role, the same pick
+    the headroom choice moves work to (PROVIDER_DEFAULT), else the role's first Claude model. None when Claude is
+    not open to it (excluded, or the family the job judges)."""
+    def open_to(m):
+        r = data['routes'].get(m)
+        return (isinstance(r, dict) and r.get('cli') == 'claude' and m not in excluded and m not in NEVER_PICKED
+                and r.get('canonical') not in excluded and maker(m, r.get('canonical')) not in families)
+    first = PROVIDER_DEFAULT['claude'].get(role) or PROVIDER_DEFAULT['claude']['*']
+    return next((m for m in [first] + list(ranked) if open_to(m)), None)
 
 
 HYDROGEN_LOW, HYDROGEN_MEDIUM = 'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium'
@@ -521,8 +540,17 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         raise ValueError('hard-coded model refused: --model requires --model-override REASON')
     if override and not model:
         raise ValueError('--model-override requires --model')
-    if explore and explore not in ranked:
-        raise ValueError('--explore model is not in the role {} pool: {}'.format(role, explore))
+    # 11-20 (general): an explore pick is a deliberate experiment, so a model outside the role's pool runs as asked,
+    # warned, and the receipt says so (math: `--explore claude-sonnet-5-5` for builder was rerouted to the
+    # leaderboard pick, so the experiment never ran). It still needs a route.
+    explore_outside = bool(explore) and explore not in ranked
+    if explore_outside:
+        if not isinstance(data['routes'].get(explore), dict):
+            raise ValueError('--explore model {} is not in the role {} pool and has no route in the leaderboard'.format(
+                explore, role))
+        if harness_blocks.gate('selector.explore-pool', '--explore {} is not in the role {} pool; it runs as '
+                               'asked'.format(explore, role), job=job, lane=lane):
+            raise ValueError('--explore model is not in the role {} pool: {}'.format(role, explore))
     # 11-20: an agy model whose quota reset (agy-quota.jsonl) has not passed fails at once, so it is not picked.
     # The default pick moves to the next leaderboard model, the receipt says why; a named model is refused.
     quota, quota_skipped = agy_quota.blocked(), []
@@ -554,6 +582,21 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         if switched:
             chosen = switched
             executor = provider
+    # 11-20 (general): the Codex wrapper refused this job on its cap (codex-budget.limit) and launch.sh asks again
+    # with RH_CODEX_CLOSED set. A Codex pick moves to Claude; the ceiling and lane shares below still apply, with
+    # agy past them. A pick held to Codex (a pin, an explicit model) waits for Codex instead: NoRoom, queued.
+    codex_closed = os.environ.get('RH_CODEX_CLOSED', '').strip()
+    if codex_closed and (data['routes'].get(chosen) or {}).get('cli') == 'codex':
+        moved = None
+        if not (explore or model or pin) and 'claude' in runnable(requested, follows_route):
+            moved = codex_closed_pick(role, data, eligible, excluded, families if judging else frozenset())
+        if not moved:
+            raise NoRoom('role {}: Codex refused this job ({}) and {}'.format(
+                role, codex_closed, '{} is held to Codex'.format(chosen) if (explore or model or pin)
+                else 'no Claude pick is open to it'))
+        chosen = switched = moved
+        executor = 'claude'
+        executor_choice = 'executor claude: Codex refused this job ({})'.format(codex_closed)
     delegated, delegate_skip = None, ''
     if judging and not families:
         delegate_skip = 'judging job with an unknown producer family: not delegated'
@@ -568,6 +611,10 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     if (delegated or switched or gate or (quota_skipped and chosen != ranked[0])
             or (judging and families and chosen != (explore or model or ranked[0]))):
         executor = route['cli']   # named in the receipt and the log below; not a silent swap
+    # 11-20: an explored model runs on its own CLI when the launcher can run it, as a delegate does; before, a
+    # Claude model explored from a Codex job failed "no compatible codex route" and was rerouted away.
+    if explore and isinstance(route, dict) and route.get('cli') in runnable(requested, follows_route):
+        executor = route['cli']
     if isinstance(route, dict) and (role in JUDGMENT or (not model and route.get('cli') in ('openrouter', 'gemini'))):
         executor = route.get('cli')
         if executor not in ('codex', 'claude', 'agy', 'openrouter', 'gemini'):
@@ -585,6 +632,11 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
                     role, chosen, cap['leave']))
             cap_route = claude_fallback(role, data, excluded, families if judging else frozenset(), requested,
                                         follows_route, chosen)
+            if not cap_route and codex_closed:
+                # 11-20 (general): Codex refused this job and Claude is past its ceiling or the lane's share, so the
+                # job queues (launch.sh) rather than taking Claude past the line.
+                raise NoRoom('role {} selected {}: {}; Codex refused this job ({}) and agy is not open to it'.format(
+                    role, chosen, cap['leave'], codex_closed))
             if not cap_route:
                 # RULE #1: the ceiling reroutes work; with nowhere to reroute it to, the job stays on Claude.
                 if harness_blocks.gate('selector.claude-ceiling', 'role {} selected {}: {}; no Codex or agy fallback '
@@ -619,7 +671,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     if overflow and agy_quota.blocked_until(overflow[0], effort, table=quota):
         quota_skipped.append(agy_quota.skip_note(overflow[0], agy_quota.blocked_until(overflow[0], effort, table=quota)))
         if cap_route and cap_route[1] == 'agy':
-            raise ValueError('role {} selected {}: {}; agy\'s Claude is out of quota too ({})'.format(
+            raise (NoRoom if codex_closed else ValueError)('role {} selected {}: {}; agy\'s Claude is out of quota too ({})'.format(
                 role, chosen, cap['leave'], quota_skipped[-1]))
         overflow = None   # stays on Claude: agy's Claude is out of quota until then
     receipt = dict(schema=1, selection_id=uuid.uuid4().hex, utc=dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -642,6 +694,10 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         receipt['claude_cap'] = '; '.join(cap['notes'])
         if cap['warning']:
             receipt['claude_warning'] = cap['warning']
+    if codex_closed:
+        receipt['codex_refused'] = codex_closed
+    if explore_outside:
+        receipt['explore_outside_pool'] = '{} is not in the role {} pool; explored as asked'.format(explore, role)
     if delegate_skip:
         receipt['delegate_skipped'] = delegate_skip
     if quota_skipped:
@@ -963,7 +1019,7 @@ def main(argv=None):
             with Path(args.log).open('a') as stream:
                 stream.write('{} job={}\n'.format(receipt['delegate'], args.job))
             print('worker model: ' + receipt['delegate'], file=sys.stderr)
-        for key in ('claude_cap', 'claude_warning'):
+        for key in ('explore_outside_pool', 'claude_cap', 'claude_warning'):
             if receipt.get(key):
                 with Path(args.log).open('a') as stream:
                     stream.write('{}: {} job={}\n'.format(key, receipt[key], args.job))
@@ -980,6 +1036,9 @@ def main(argv=None):
     except MeteredRefusal as exc:
         harness_blocks.gate('selector.metered', str(exc), job=getattr(args, 'job', ''), lane=getattr(args, 'lane', ''))
         return 4
+    except NoRoom as exc:
+        print('worker model: no room: ' + str(exc), file=sys.stderr)
+        return 5
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print('worker model: ' + str(exc), file=sys.stderr)
         return 2

@@ -1260,7 +1260,16 @@ def guard(cfg):
         if not reasons:
             return
         if time.monotonic() >= deadline:
-            raise ValueError('sweep refused: ' + '; '.join(reasons))
+            # 11-20 (general, RULE #1): the wait is the check; after it the sweep runs, warned. The worker still
+            # runs at nice 10 (launch.sh) under the memory guard: run_worker stops a tree past memory_gib, and
+            # mem_guard watches the machine (launch.host-memguard makes sure it is up on a host).
+            import harness_blocks
+            if harness_blocks.gate('sweep.host-headroom', 'still {} on {} after the {}-minute wait; running at nice 10 '
+                                   'under the memory guard'.format('; '.join(reasons), host or 'this machine',
+                                                                   cfg.get('load_wait_minutes', 30)),
+                                   fix='wait, or lower memory_gib / cores in SWEEP.toml'):
+                raise ValueError('sweep refused: ' + '; '.join(reasons))
+            return
         pause = min(30, max(0, deadline - time.monotonic()))
         if cfg.get('_cancel') is not None:
             cfg['_cancel'].wait(pause)

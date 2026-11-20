@@ -828,9 +828,12 @@ class SweepTests(unittest.TestCase):
     def test_high_load_and_low_disk_refuse(self):
         cfg = self.loaded()
         cfg['load_wait_minutes'] = 0
+        # general, 11-20 (RULE #1): high load after the wait is a warning and the sweep runs; low disk still refuses.
         with patch.object(sweep, 'disk_guard'), patch.object(sweep, 'cpu_busy', return_value=None), patch.object(sweep, 'free_memory_gib', return_value=100),\
-                patch.object(sweep.os, 'getloadavg', return_value=(0, 99, 0)), self.assertRaisesRegex(ValueError, 'load'):
+                patch.object(sweep.os, 'getloadavg', return_value=(0, 99, 0)), patch('sys.stderr', new_callable=io.StringIO) as err:
             sweep.guard(cfg)
+        self.assertIn('[sweep.host-headroom] WARNING', err.getvalue())
+        self.assertIn('load above', err.getvalue())
         # a 1-min spike alone no longer refuses; a high 5-min average waits, then proceeds once it drops
         cfg['load_wait_minutes'] = 30
         with patch.object(sweep, 'cpu_busy', return_value=None), patch.object(sweep, 'free_memory_gib', return_value=100),\

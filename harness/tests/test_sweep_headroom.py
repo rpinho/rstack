@@ -38,20 +38,23 @@ def test_network_bound_high_load_does_not_block_worker(cfg):
         sweep.guard(cfg)
 
 
+# general, 11-20 (RULE #1): pressure that outlasts the wait (load_wait_minutes, 0 here) is a warning, and the sweep
+# runs at nice 10 under the memory guard. What counts as pressure is unchanged.
 @pytest.mark.parametrize('busy,free,reason', [(.91, 12, 'CPU headroom'), (.1, 2, 'free memory'), (.1, None, 'memory unavailable')])
-def test_cpu_or_memory_pressure_refuses(cfg, busy, free, reason):
+def test_cpu_or_memory_pressure_warns_after_the_wait(cfg, capsys, busy, free, reason):
     with patch.object(sweep, 'disk_guard'), patch.object(sweep, 'cpu_busy', return_value=busy),\
-            patch.object(sweep, 'free_memory_gib', return_value=free), patch.object(sweep.os, 'cpu_count', return_value=10),\
-            pytest.raises(ValueError, match=reason):
+            patch.object(sweep, 'free_memory_gib', return_value=free), patch.object(sweep.os, 'cpu_count', return_value=10):
         sweep.guard(cfg)
+    err = capsys.readouterr().err
+    assert '[sweep.host-headroom] WARNING' in err and reason in err
 
 
-def test_reserve_requested_worker_cores(cfg):
+def test_reserve_requested_worker_cores(cfg, capsys):
     cfg['cores'] = 3
     with patch.object(sweep, 'disk_guard'), patch.object(sweep, 'cpu_busy', return_value=.75),\
-            patch.object(sweep, 'free_memory_gib', return_value=12), patch.object(sweep.os, 'cpu_count', return_value=10),\
-            pytest.raises(ValueError, match='CPU headroom'):
+            patch.object(sweep, 'free_memory_gib', return_value=12), patch.object(sweep.os, 'cpu_count', return_value=10):
         sweep.guard(cfg)
+    assert 'CPU headroom' in capsys.readouterr().err
 
 
 def test_headroom_waits_then_proceeds(cfg):
@@ -63,16 +66,17 @@ def test_headroom_waits_then_proceeds(cfg):
     sleep.assert_called_once_with(30)
 
 
-def test_load_fallback_is_configurable(cfg):
+def test_load_fallback_is_configurable(cfg, capsys):
     with patch.object(sweep, 'disk_guard'), patch.object(sweep, 'cpu_busy', return_value=None),\
             patch.object(sweep, 'free_memory_gib', return_value=12), patch.object(sweep.os, 'getloadavg', return_value=(10, 10, 10)):
-        with pytest.raises(ValueError, match='fallback 5-min load'):
-            sweep.guard(cfg)
+        sweep.guard(cfg)
+        assert 'fallback 5-min load' in capsys.readouterr().err
         cfg['max_load'] = 12
         sweep.guard(cfg)
+        assert 'host-headroom' not in capsys.readouterr().err
         cfg['load_fallback'] = False
-        with pytest.raises(ValueError, match='fallback disabled'):
-            sweep.guard(cfg)
+        sweep.guard(cfg)
+        assert 'fallback disabled' in capsys.readouterr().err
 
 
 def test_cpu_busy_sums_process_utilization_per_core():

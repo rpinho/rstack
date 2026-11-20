@@ -9,14 +9,18 @@ lane's COVERAGE.jsonl:
     {"target": "owner/repo", "commit": "<sha>", "round": "r2",
      "units": [{"unit": "src/fit.py", "bug_class": "off-by-one", "status": "covered"}, ...]}
 
-`rh bughunt coverage LANE record FILE` refuses a round that covers nothing new at that commit
-(COVERAGE_REPEAT); `rh bughunt coverage LANE show TARGET` lists what is covered, what is deferred
-and whether the target is done: at least two rounds, the last of which found no new candidate.
+`rh bughunt coverage LANE record FILE` records a round; one that covers nothing new at that commit
+(COVERAGE_REPEAT) is recorded with `coverage_repeat` and a warning, and does not count toward done
+(general, 11-20: it used to be refused, and the hunt's work was then not recorded at all).
+`rh bughunt coverage LANE show TARGET` lists what is covered, what is deferred and whether the target
+is done: at least two rounds, the last of which found no new candidate.
 """
 import datetime as dt
 import json
 from pathlib import Path
 import re
+
+import harness_blocks
 
 STATUSES = ('covered', 'candidate', 'deferred')
 SHA = re.compile(r'^[0-9a-f]{7,40}$')
@@ -66,7 +70,8 @@ def cells(history, target, commit=None, statuses=('covered', 'candidate')):
 
 
 def record(lane, doc):
-    """(ok, messages). A round must cover at least one unit not covered before at that commit."""
+    """(ok, messages). A round that covers no unit not covered before at that commit is a warning
+    (bughunt.coverage, fail-open): it is recorded with coverage_repeat and does not count toward done."""
     errors = validate(doc)
     if errors:
         return False, ['COVERAGE_MALFORMED: ' + e for e in errors]
@@ -76,16 +81,21 @@ def record(lane, doc):
     before = cells(history, doc['target'], doc['commit'])
     now = cells([doc], doc['target'], doc['commit'])
     new = now - before
+    repeat = ''
     if before and not new:
-        return False, ['COVERAGE_REPEAT: round {} covers only units already covered at {}; hunt the deferred '
-                       'or never-listed units (rh bughunt coverage show)'.format(doc['round'], doc['commit'][:10])]
+        repeat = ('COVERAGE_REPEAT: round {} covers only units already covered at {}; hunt the deferred '
+                  'or never-listed units (rh bughunt coverage show)'.format(doc['round'], doc['commit'][:10]))
+        if harness_blocks.gate('bughunt.coverage', repeat, lane=Path(lane).name):
+            return False, [repeat]
     found = cells([doc], doc['target'], doc['commit'], ('candidate',))
     row = dict(doc, utc=dt.datetime.now(dt.timezone.utc).isoformat(), new_units=len(new),
                new_candidates=len(found - cells(history, doc['target'], doc['commit'], ('candidate',))))
+    if repeat:
+        row['coverage_repeat'] = repeat
     with open(Path(lane) / 'COVERAGE.jsonl', 'a') as fh:
         fh.write(json.dumps(row, sort_keys=True) + '\n')
-    return True, ['recorded round {}: {} new units, {} new candidates'.format(
-        doc['round'], row['new_units'], row['new_candidates'])]
+    return True, (['WARNING (fail-open, recorded): ' + repeat] if repeat else []) + [
+        'recorded round {}: {} new units, {} new candidates'.format(doc['round'], row['new_units'], row['new_candidates'])]
 
 
 def status(lane, target):
@@ -93,7 +103,8 @@ def status(lane, target):
     if not history:
         return dict(rounds=0, done=False, covered=[], deferred=[], commit=None)
     commit = history[-1]['commit']
-    at = [r for r in history if r['commit'] == commit]
+    # A round that covered nothing new (coverage_repeat) is not the gap-fill pass that makes a target done.
+    at = [r for r in history if r['commit'] == commit and not r.get('coverage_repeat')]
     covered = cells(at, target, commit)
     deferred = cells(at, target, commit, ('deferred',)) - covered
     done = len(at) >= 2 and at[-1].get('new_candidates', 1) == 0 and not deferred

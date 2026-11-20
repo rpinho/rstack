@@ -58,6 +58,8 @@ def harness(tmp_path, lane='fixture'):
                RH_ROLES_FILE=str(roles), FORCE_LAUNCH='1', LAUNCH_LANE_ROOT=str(root),
                LAUNCH_SSH=str(ssh), SSH_LOG=str(tmp_path / 'ssh.log'),
                LAUNCH_MEMGUARD_HEARTBEAT=str(beat),
+               # 11-20: a dead guard is kickstarted over ssh, and this ssh runs locally: never this Mac's guard.
+               LAUNCH_MEMGUARD_KICK='true', LAUNCH_MEMGUARD_RECHECK_S='0',
                LAUNCH_REMOTE_EXECUTOR=str(REPO / 'harness/agent_executor.py'),
                LAUNCH_REMOTE_ATTEMPTS=str(tmp_path / 'remote-attempts'), LAUNCH_REMOTE_POLL_S='0.2')
     env.pop('LAUNCH_RESUME', None)
@@ -425,8 +427,10 @@ def test_a_host_whose_load_cannot_be_read_is_refused_not_measured_here(tmp_path)
     env['FAKE_SSH_DOWN'] = '1'
     proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path), '--host', 'm5'],
                           env=env, capture_output=True, text=True, timeout=120)
-    assert proc.returncode == 75
-    assert 'cannot read the load on m5' in proc.stderr
+    # RULE #1 (11-20): an unreadable load and a guard that cannot be reached are warnings, and the job then
+    # fails on the host being down, not on a number read here.
+    assert proc.returncode != 0
+    assert 'cannot read the load on m5' in proc.stderr and 'on this machine' not in proc.stderr
 
 
 def test_a_local_job_still_reads_this_machine(tmp_path):
@@ -500,7 +504,8 @@ def launch(tmp_path, env):
 
 
 @pytest.mark.parametrize('beat', ['missing', 'stale'])
-def test_a_host_without_a_live_memory_guard_is_refused(tmp_path, beat):
+def test_a_host_without_a_live_memory_guard_is_kickstarted(tmp_path, beat):
+    """general, 11-20 (RULE #1): the guard is restarted over ssh and the job runs; warned if it stays down."""
     jobs, env = harness(tmp_path)
     hb = Path(env['LAUNCH_MEMGUARD_HEARTBEAT'])
     if beat == 'missing':
@@ -508,10 +513,12 @@ def test_a_host_without_a_live_memory_guard_is_refused(tmp_path, beat):
     else:
         old = hb.stat().st_mtime - 300
         os.utime(hb, (old, old))
+    env['LAUNCH_MEMGUARD_KICK'] = 'touch ' + str(hb)   # the kickstart brings the heartbeat back
     proc = launch(tmp_path, env)          # FORCE_LAUNCH is set and does not skip this
-    assert proc.returncode == 75, proc.stderr
-    assert 'the memory guard on m5 is not running' in proc.stderr
-    assert not (tmp_path / 'remote-attempts').exists(), 'nothing was staged on the host'
+    assert proc.returncode == 0, proc.stderr
+    assert 'kickstarted, it is beating again' in proc.stderr
+    assert 'cmd=touch ' + str(hb) in Path(env['SSH_LOG']).read_text()
+    assert (tmp_path / 'remote-attempts').exists(), 'the job was staged on the host'
 
 
 def test_a_host_job_must_declare_its_peak_memory(tmp_path):

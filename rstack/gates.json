@@ -276,54 +276,60 @@
    "files": [
     "rstack/tools/_codex_budget.py",
     "rstack/tools/allowance",
-    "rstack/tools/codex"
+    "rstack/tools/codex",
+    "tools/launch.sh",
+    "harness/worker_models.py"
    ],
-   "class": "hard-line",
+   "class": "fail-open",
    "kind": "tool",
    "old": "Codex per-lane/day caps and 85% weekly refusal, exit 75",
-   "change": "goes through the registry; refusals logged; refused runs are now ungraded, never fail (auto_grade)",
-   "hard_line": "pending",
+   "change": "general 11-20: the cap still holds on Codex (the wrapper exits 75, logged as a warning); launch.sh reruns the job on claude (80% ceiling and lane shares) or agy, and while both are capped queues it, warned, never failing it; the refused run stays ungraded (auto_grade)",
    "fix": "LAUNCH_URGENT=<reason> for an urgent job, or AGENT_BACKEND=claude|agy",
-   "pending": "Recommend fail-open-with-reroute: when the lane cap refuses, launch.sh reruns the job on claude/agy instead of exit 75. It protects a shared weekly allowance, not money."
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_a_codex_budget_refusal_reruns_the_job_on_claude"
+   }
   },
   {
    "gate": "rounds.repeat",
    "files": [
     "harness/tools/rounds.py"
    ],
-   "class": "hard-line",
+   "class": "fail-open",
    "kind": "launcher",
    "old": "refuses a round whose (generator, params, scorer) ran in the last 5 rounds without --hypothesis",
-   "change": "through the registry; logged",
-   "hard_line": "pending",
+   "change": "general 11-20: warns and the round runs; the warning goes into the job prompt, the job log and the round's row",
    "fix": "change a knob, or pass --hypothesis \"<what is different and what it would show>\"",
-   "pending": "Recommend fail-open: warn and run; lane-yield already fails a lane that spends without results."
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_round_process_gates_warn_into_the_prompt"
+   }
   },
   {
    "gate": "rounds.dry-family",
    "files": [
     "harness/tools/rounds.py"
    ],
-   "class": "hard-line",
+   "class": "fail-open",
    "kind": "launcher",
    "old": "refuses the next round in a family after 3 dry rounds",
-   "change": "through the registry; logged",
-   "hard_line": "pending",
+   "change": "general 11-20: warns and the round runs, with the streak in the job prompt, the job log and the round's row",
    "fix": "run a different family, or close this one: rounds.py close-family",
-   "pending": "Recommend fail-open (warn) with the streak shown in the job prompt."
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_round_process_gates_warn_into_the_prompt"
+   }
   },
   {
    "gate": "rounds.dead-end",
    "files": [
     "harness/tools/rounds.py"
    ],
-   "class": "hard-line",
+   "class": "fail-open",
    "kind": "launcher",
    "old": "refuses reopening a closed family without --new-evidence",
-   "change": "through the registry; logged",
-   "hard_line": "pending",
+   "change": "general 11-20: warns and the round runs; the warning goes into the job prompt, the job log and the round's row",
    "fix": "pass --new-evidence \"<what changed>\"",
-   "pending": "Recommend fail-open (warn)."
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_round_process_gates_warn_into_the_prompt"
+   }
   },
   {
    "gate": "rounds.wrong-target",
@@ -344,26 +350,29 @@
    "files": [
     "harness/tools/rounds.py"
    ],
-   "class": "hard-line",
+   "class": "fail-open",
    "kind": "launcher",
    "old": "refuses a round when a registered baseline stopped reproducing",
-   "change": "through the registry; logged (\"could not run\" split out as fail-open)",
-   "hard_line": "pending",
+   "change": "general 11-20: the round runs; the drifted comparison is flagged in the job prompt, the job log, the round's row and the selection receipt",
    "fix": "baseline.py --lane L check, then re-register or fix the baseline",
-   "pending": "Recommend fail-open (warn in the prompt): the round can still run; its comparison is flagged."
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_a_drifted_baseline_runs_the_round_flagged"
+   }
   },
   {
    "gate": "lane-yield.hold",
    "files": [
-    "harness/tools/lane-yield/lane_yield.py"
+    "harness/tools/lane-yield/lane_yield.py",
+    "tools/launch.sh"
    ],
-   "class": "hard-line",
+   "class": "fail-open",
    "kind": "report",
    "old": "lane-yield --act writes HOLD for a lane that spent 20+ job-hours with no refereed result",
-   "change": "unchanged; the HOLD is enforced by launch.lane-hold",
-   "hard_line": "pending",
-   "fix": "general removes lanes/L/HOLD",
-   "pending": "Recommend keep as a report, but make the HOLD a warning in launch.sh (fail-open) and a decision card to general."
+   "change": "general 11-20: --act writes YIELD_HOLD beside the hold path (a report, never HOLD) and files a decision card (tell-general decision); launch.sh warns on YIELD_HOLD, puts it in the prompt and runs. A HOLD general writes still refuses (launch.lane-hold)",
+   "fix": "general decides: mv lanes/L/YIELD_HOLD lanes/L/HOLD to hold the lane, or remove YIELD_HOLD",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_a_lane_yield_hold_warns_and_files_a_decision_card"
+   }
   },
   {
    "gate": "launch.lane-hold",
@@ -396,13 +405,14 @@
    "files": [
     "tools/launch.sh"
    ],
-   "class": "hard-line",
+   "class": "fail-open",
    "kind": "launcher",
    "old": "refuses a --host job when the host memory guard heartbeat is missing or over 60 s old",
-   "change": "through the registry; logged",
-   "hard_line": "pending",
+   "change": "general 11-20: kickstarts the guard over ssh (launchctl kickstart of com.ricardo.mem-guard), rechecks the heartbeat, then runs, warned if the recheck still fails",
    "fix": "ssh HOST launchctl kickstart gui/$(id -u)/com.ricardo.mem-guard",
-   "pending": "Recommend fail-open-with-repair: kickstart the guard over ssh, then run. A freeze (11-10) kills every lane on that host."
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_a_dead_host_memory_guard_is_kickstarted_then_the_job_runs"
+   }
   },
   {
    "gate": "launch.host-peak-cap",
@@ -435,13 +445,14 @@
    "files": [
     "harness/sweep.py"
    ],
-   "class": "hard-line",
+   "class": "fail-open",
    "kind": "launcher",
    "old": "waits for memory/CPU headroom, then refuses at its deadline",
-   "change": "unchanged (the unreadable-probe case is now sweep.host-probe, fail-open)",
-   "hard_line": "pending",
+   "change": "general 11-20: waits for headroom as before; at the deadline the sweep runs with a warning, at nice 10 (launch.sh) under the memory guard (the worker tree limit here, mem_guard on the machine)",
    "fix": "wait, or lower memory_gib / cores in SWEEP.toml",
-   "pending": "Recommend fail-open after the wait (run at nice 10 under the memory guard)."
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_sweep_headroom_runs_after_the_wait"
+   }
   },
   {
    "gate": "sweep.engaged-only",
@@ -895,6 +906,34 @@
    }
   },
   {
+   "gate": "selector.judgment-pin",
+   "files": [
+    "harness/worker_models.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused (exit 2) a review/judge/audit --model pin whose --model-override did not start with \"Ricardo:\"; launch.sh then rerouted it to the leaderboard pick (math's Sonnet control arm)",
+   "change": "general 11-20 (a9f2f45): any non-empty --model-override pins a judgment role; recorded as outcome allowed-override. A blank reason still refuses and names the pick; --made-by and the other-family rule are unchanged",
+   "fix": "--model-override REASON with --model, or name the role and let the leaderboard pick",
+   "probe": {
+    "pytest": "harness/tests/test_worker_models.py::test_review_pin_with_an_override_is_selected_and_logged"
+   }
+  },
+  {
+   "gate": "selector.explore-pool",
+   "files": [
+    "harness/worker_models.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "old": "refused (exit 2) an --explore model outside the role's pool; launch.sh then rerouted it to the leaderboard pick (math 11-20: --explore claude-sonnet-5-5 for builder)",
+   "change": "general 11-20: the explored model runs, warned; the receipt says source=explore and explore_outside_pool",
+   "fix": "add the model to the role's pool in the leaderboard, or explore one already in it",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_an_explore_outside_the_pool_runs_the_explored_model"
+   }
+  },
+  {
    "gate": "rounds.lane",
    "files": [
     "harness/tools/rounds.py"
@@ -1082,13 +1121,14 @@
    "files": [
     "harness/bug_coverage.py"
    ],
-   "class": "hard-line",
+   "class": "fail-open",
    "kind": "tool",
    "old": "refuses recording a bug-hunt round that covers nothing new at that commit",
-   "change": "unchanged",
-   "hard_line": "pending",
+   "change": "general 11-20: the round is recorded with coverage_repeat and a warning (stdout and the ledger); it does not count toward done, and the lane's next job prompt carries the warning",
    "fix": "cover new files or a new commit, or record why with the round",
-   "pending": "Recommend fail-open (warn), same family as rounds.repeat."
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_a_coverage_repeat_is_recorded_with_a_warning"
+   }
   },
   {
    "gate": "mem-guard",
@@ -1108,13 +1148,11 @@
    "files": [
     "harness/upstream.py"
    ],
-   "class": "hard-line",
+   "class": "fail-open",
    "kind": "tool",
    "old": "tell-general refuses a report that calls an unmerged PR \"live\"",
-   "change": "unchanged (enforced in tell-general, KB)",
-   "hard_line": "pending",
-   "fix": "say \"open\" or \"merged\" as upstream.py reports it",
-   "pending": "Recommend fail-open (warn, the report still goes) via a KB patch to tell-general."
+   "change": "general 11-20: fail-open; tell-general (M4, outside this repo) warns and sends, with the lint's note on the message. Patch at m4:~/.local/state/never-in-the-way-1120/kb-patches/tell-general.patch, not applied",
+   "fix": "say \"open\" or \"merged\" as upstream.py reports it"
   },
   {
    "gate": "friend-reply-gate.py",

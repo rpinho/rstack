@@ -286,8 +286,10 @@ def gate(lane, family, new_evidence='', limit=DRY_LIMIT, fp='', hypothesis='',
          window=REPEAT_WINDOW):
     """Return (errors, warnings) for starting a round in `family`.
 
-    Errors refuse the round. The point is to redirect it, not to end the lane, so every error
-    names what would let it proceed.
+    Errors go through the registry (rstack/gates.json): one a hard line refuses the round, every
+    other is a warning the round runs past and carries into its prompt (general, 11-20: repeat,
+    dry family, dead end and baseline drift warn). The point is to redirect it, not to end the
+    lane, so every error names what would let it proceed.
     """
     lane = Path(lane)
     rows = read(lane / ROUNDS)
@@ -341,8 +343,9 @@ def gate(lane, family, new_evidence='', limit=DRY_LIMIT, fp='', hypothesis='',
         warnings.append('{} dry round(s) in a row; {} more closes this family'
                         .format(overall, limit - overall))
     # Last, and only when nothing else refused: a check can take minutes, and a round already
-    # refused for something else would spend them for nothing.
-    if not errors:
+    # refused for something else would spend them for nothing. 11-20: a warning does not count, the
+    # round runs, so its baseline is checked.
+    if not [e for e in errors if harness_blocks.refuses(gate_name(e))]:
         errors.extend(baseline_errors(lane))
     return errors, warnings
 
@@ -444,6 +447,13 @@ def main(argv=None):
         row = dict(utc=now, round=a.round, family=a.family, outcome=STARTED, fingerprint=fp,
                    generator=a.generator, scorer=a.scorer, hypothesis=a.hypothesis,
                    spend_usd=0.0, n_selective=0)
+        # 11-20 (general): what warned stays on the round, so a later reader sees it ran past a repeat, a dry
+        # family or a dead end, and that a comparison against a drifted baseline is flagged.
+        if errors:
+            row['warnings'] = ['{}: {}'.format(gate_name(e), e) for e in errors]
+        drift = [e for e in errors if gate_name(e) == 'rounds.baseline-drift']
+        if drift:
+            row['baseline_drift'] = drift[0]
         append(a.lane / ROUNDS, row)
         print(json.dumps(row, sort_keys=True))
     return 0

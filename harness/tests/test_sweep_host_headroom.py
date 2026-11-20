@@ -83,31 +83,32 @@ def test_the_hosts_memory_is_the_floor_not_the_controllers(cfg, tmp_path, monkey
     sweep.guard(cfg)                                            # no wait, no refusal
 
 
-def test_a_full_host_is_not_admitted_because_the_controller_is_idle(cfg, tmp_path, monkeypatch):
+# general, 11-20 (RULE #1): after the wait (load_wait_minutes, 0 here) a host without headroom is a warning,
+# and the sweep runs at nice 10 under the memory guard. Which machine's numbers decide is unchanged.
+def test_a_full_host_is_not_admitted_because_the_controller_is_idle(cfg, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sweep, 'free_memory_gib', lambda: 64.0)
     monkeypatch.setattr(sweep, 'cpu_busy', lambda: 0.01)
     stub_ssh(tmp_path, monkeypatch, answers(free_gib=0.4, busy_pcpu=10.0))
-    with pytest.raises(ValueError) as e:
-        sweep.guard(cfg)
-    assert 'insufficient free memory' in str(e.value)
+    sweep.guard(cfg)
+    err = capsys.readouterr().err
+    assert '[sweep.host-headroom] WARNING' in err and 'insufficient free memory on m5' in err
 
 
-def test_a_busy_host_is_not_admitted_either(cfg, tmp_path, monkeypatch):
+def test_a_busy_host_is_not_admitted_either(cfg, tmp_path, monkeypatch, capsys):
     stub_ssh(tmp_path, monkeypatch, answers(cores=18, free_gib=40.0, busy_pcpu=18 * 95))
-    with pytest.raises(ValueError) as e:
-        sweep.guard(cfg)
-    assert 'insufficient CPU headroom' in str(e.value)
+    sweep.guard(cfg)
+    assert 'insufficient CPU headroom on m5' in capsys.readouterr().err
 
 
-def test_busy_is_scaled_by_the_hosts_cores_not_this_machines(cfg, tmp_path, monkeypatch):
+def test_busy_is_scaled_by_the_hosts_cores_not_this_machines(cfg, tmp_path, monkeypatch, capsys):
     """1,000% of CPU is idle on 18 cores and overloaded on 4. Reading the core count from the
     controller would make the same host look busy or free depending on which machine asked."""
     stub_ssh(tmp_path, monkeypatch, answers(cores=18, free_gib=40.0, busy_pcpu=1000.0))
     sweep.guard(cfg)
+    assert 'host-headroom' not in capsys.readouterr().err
     stub_ssh(tmp_path, monkeypatch, answers(cores=4, free_gib=40.0, busy_pcpu=1000.0))
-    with pytest.raises(ValueError) as e:
-        sweep.guard(cfg)
-    assert 'insufficient CPU headroom' in str(e.value)
+    sweep.guard(cfg)
+    assert 'insufficient CPU headroom on m5' in capsys.readouterr().err
 
 
 @pytest.mark.parametrize('body', [

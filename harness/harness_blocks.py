@@ -49,17 +49,19 @@ REFUSE = 3
 LEDGER = 'harness-blocks.jsonl'
 # Used only when the registry cannot be read at all: these gates still refuse, every other gate fails
 # open. tests/test_gates_registry.py keeps this equal to the registry's refusing gates.
+# 11-20: general moved codex-budget.limit, rounds.{repeat,dry-family,dead-end,baseline-drift},
+# bughunt.coverage, lane-yield.hold, launch.host-memguard, sweep.host-headroom and upstream.live-claim to
+# fail-open, so they left this set with the registry.
 FALLBACK_REFUSING = frozenset((
-    'bug-claims-check', 'bughunt.coverage', 'codex-budget.limit', 'codex-budget.npx',
+    'bug-claims-check', 'codex-budget.npx',
     'conductor-inbox-gate.py', 'contact-gate', 'egress-gate', 'email-voice-gate.py', 'friend-reply-gate.py',
     'general-inbox-gate.py', 'general-relay-check.py', 'guard-main-tree.py', 'lan-proxy.allowlist',
-    'lane-no-questions.py', 'lane-yield.hold', 'launch.host-memguard', 'launch.host-peak-cap',
+    'lane-no-questions.py', 'launch.host-peak-cap',
     'launch.lane-hold', 'launch.lane-status', 'mem-guard', 'no-laptop-shell.py', 'osascript-shim',
     'outreach.send', 'pod-create-gate.py', 'pod-deadline-gate.py', 'protected-paths',
-    'read-the-thread-first.py', 'result-gates', 'rounds.baseline-drift', 'rounds.dead-end',
-    'rounds.dry-family', 'rounds.repeat', 'rounds.wrong-target', 'science-publish-gate.py',
-    'selector.metered', 'sweep.disk-floor', 'sweep.engaged-only', 'sweep.host-headroom', 'third_party.run',
-    'trash-guard.py', 'upstream.live-claim', 'voice-lint', 'voice-send-gate.py', 'x-api-bypass-guard',
+    'read-the-thread-first.py', 'result-gates', 'rounds.wrong-target', 'science-publish-gate.py',
+    'selector.metered', 'sweep.disk-floor', 'sweep.engaged-only', 'third_party.run',
+    'trash-guard.py', 'voice-lint', 'voice-send-gate.py', 'x-api-bypass-guard',
     'x-handle-guard', 'x-policy', 'x-submit-gate',
 ))
 

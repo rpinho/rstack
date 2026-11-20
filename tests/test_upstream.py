@@ -130,7 +130,9 @@ def test_others_merged_a_week_after_us_makes_it_binding(tmp_path, monkeypatch):
     assert row['upstream_binding'] is True and row['upstream_merge_gap_days'] == 8
     assert 'binding: upstream merged others 8 d after our last merge' in row['fails'][0]
     ly.act(row, cfg)
-    assert Path(cfg['hold']).read_text().startswith('HOLD by lane-yield')
+    # 11-20 (general): lane-yield's hold is YIELD_HOLD beside the hold path, a warning; HOLD stays general's.
+    assert Path(cfg['hold']).with_name('YIELD_HOLD').read_text().startswith('YIELD_HOLD by lane-yield')
+    assert not Path(cfg['hold']).exists()
 
 
 def test_six_days_is_not_yet_binding(tmp_path):

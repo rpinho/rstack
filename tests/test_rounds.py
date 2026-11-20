@@ -114,7 +114,7 @@ def test_a_selective_round_clears_everything(tmp_path):
     assert errors(d, 'boltzgen') == [] and rd.dry_streak(rd.read(d / rd.ROUNDS)) == 0
 
 
-def test_the_cli_logs_a_round_and_the_gate_reads_it(tmp_path):
+def test_the_cli_logs_a_round_and_the_gate_reads_it(tmp_path, capsys):
     d = lane(tmp_path)
     assert rd.main(['--lane', str(d), 'consult', '--source', 'index.md',
                     '--took', 'the PXDesign family']) == 0
@@ -122,11 +122,16 @@ def test_the_cli_logs_a_round_and_the_gate_reads_it(tmp_path):
         assert rd.main(['--lane', str(d), 'log', '--round', 'R%d' % (41 + i),
                         '--family', 'boltzgen', '--outcome', 'dry', '--spend-usd', '5',
                         '--provider', 'JapanFold']) == 0
-    assert rd.main(['--lane', str(d), 'check', '--family', 'boltzgen']) == 2
+    # general, 11-20 (RULE #1): a dry family and a dead end warn; the round may run.
+    capsys.readouterr()
+    assert rd.main(['--lane', str(d), 'check', '--family', 'boltzgen']) == 0
+    assert '[rounds.dry-family] WARNING' in capsys.readouterr().err
     assert rd.main(['--lane', str(d), 'check', '--family', 'pxdesign']) == 0
     assert rd.main(['--lane', str(d), 'close-family', '--family', 'boltzgen',
                     '--reason', 'three dry rounds']) == 0
-    assert rd.main(['--lane', str(d), 'check', '--family', 'boltzgen']) == 2
+    capsys.readouterr()
+    assert rd.main(['--lane', str(d), 'check', '--family', 'boltzgen']) == 0
+    assert '[rounds.dead-end] WARNING' in capsys.readouterr().err
     rows = rd.read(d / rd.ROUNDS)
     assert len(rows) == 3 and rd.spend(rows) == 15.0
 
@@ -215,7 +220,8 @@ def test_a_check_that_cannot_finish_refuses_rather_than_passes(tmp_path):
     assert not (d / rd.BASELINE_CACHE).exists()
 
 
-def test_the_cli_start_is_refused_on_drift(tmp_path):
+def test_the_cli_start_runs_flagged_on_drift(tmp_path):
+    """general, 11-20: a drifted baseline no longer refuses the round; the round's row flags it."""
     import subprocess, sys
     d = lane(tmp_path)
     consult(d)
@@ -223,8 +229,10 @@ def test_the_cli_start_is_refused_on_drift(tmp_path):
     r = subprocess.run([sys.executable, str(ROOT / 'harness/tools/rounds.py'), '--lane', str(d),
                         'start', '--round', 'R1', '--family', 'boltzgen'],
                        capture_output=True, text=True, timeout=60)
-    assert r.returncode == 2 and 'BASELINE_DRIFT' in r.stderr and 'toy-2020' in r.stderr
-    assert not (d / rd.ROUNDS).exists(), 'a refused round writes no row'
+    assert r.returncode == 0 and 'BASELINE_DRIFT' in r.stderr and 'toy-2020' in r.stderr
+    row = rd.read(d / rd.ROUNDS)[-1]
+    assert row['outcome'] == rd.STARTED and 'toy-2020' in row['baseline_drift']
+    assert any(w.startswith('rounds.baseline-drift: ') for w in row['warnings'])
 
 
 def test_a_lane_with_a_host_runs_its_baseline_check_there(tmp_path, monkeypatch):

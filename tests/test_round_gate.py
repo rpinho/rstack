@@ -72,17 +72,19 @@ def lane(tmp_path):
     return d
 
 
-def test_the_same_knobs_under_a_new_family_name_are_still_refused(lane):
+def test_the_same_knobs_under_a_new_family_name_are_still_caught(lane):
     """c5's hole. `family` is a label the lane picks, and a lane sure it is varying enough will
-    keep picking a new one. The fingerprint is computed from what the round does."""
+    keep picking a new one. The fingerprint is computed from what the round does. Since 11-20
+    (general, RULE #1) the repeat is a warning the round runs past, kept on the round's row."""
     opened(lane, 'R1')
     again = cli(lane, 'start', '--round', 'R2', '--family', 'boltzgen_v2_retuned',
                 '--generator', 'BoltzGen', '--params', '{"n": 100, "length": [60, 80]}',
                 '--scorer', 'ipae')
-    assert again.returncode == 2
+    assert again.returncode == 0
     assert 'REPEAT' in again.stderr and 'R1' in again.stderr
-    # Refused means not recorded: a refused round must not pad the ledger it was judged against.
-    assert [r['round'] for r in rounds.read(lane / 'ROUNDS.jsonl')] == ['R1', 'R1']
+    rows = rounds.read(lane / 'ROUNDS.jsonl')
+    assert [r['round'] for r in rows] == ['R1', 'R1', 'R2']
+    assert any(w.startswith('rounds.repeat: REPEAT') for w in rows[-1]['warnings'])
 
 
 def test_param_order_is_not_a_variation_but_a_changed_value_is(lane):
@@ -201,9 +203,9 @@ def test_the_launcher_opens_the_round_in_the_lane_ledger(tmp_path):
     assert ran.exists()
 
 
-def test_the_launcher_refuses_a_repeat_before_spending_anything(tmp_path):
-    """The refusal has to come before the executor runs, or the guard only reports a round that
-    has already been paid for."""
+def test_the_launcher_warns_a_repeat_into_the_prompt(tmp_path):
+    """The check has to come before the executor runs, or it only reports a round that has already
+    been paid for. Since 11-20 (general, RULE #1) it warns, and the job reads the warning."""
     first = dict(LAUNCH_ROUND='R1', LAUNCH_FAMILY='boltzgen', LAUNCH_GENERATOR='BoltzGen',
                  LAUNCH_PARAMS=PARAMS, LAUNCH_SCORER='ipae')
     proc, ledger, ran = launcher(tmp_path, env_extra=first)
@@ -214,8 +216,8 @@ def test_the_launcher_refuses_a_repeat_before_spending_anything(tmp_path):
     ran.unlink()
     again = dict(first, LAUNCH_ROUND='R2', LAUNCH_FAMILY='boltzgen_but_surely_different')
     proc2, _, ran2 = launcher(tmp_path, env_extra=again)
-    assert proc2.returncode == 78, proc2.stdout + proc2.stderr
+    assert proc2.returncode == 0, proc2.stdout + proc2.stderr
     assert 'REPEAT' in proc2.stderr
-    assert not ran2.exists()           # nothing was spent
+    assert ran2.exists()               # it ran
     assert [json.loads(l)['round'] for l in ledger.read_text().splitlines() if l.strip()] \
-        == ['R1', 'R1']                # and the refused round was not recorded
+        == ['R1', 'R1', 'R2']          # and the round is recorded, with its warning

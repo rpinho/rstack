@@ -84,17 +84,17 @@ def test_an_unknown_gate_keeps_refusing_and_is_named_in_the_report(tmp_path, mon
 
 def test_a_block_later_rerun_overridden_or_retracted_is_a_harness_bug(tmp_path, monkeypatch):
     monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
-    harness_blocks.record('rounds.repeat', 'hard-line', 'repeat', job='math_a')        # pending: counts
+    harness_blocks.record('launch.host-peak-cap', 'hard-line', 'peak', job='math_a')   # pending: counts
     harness_blocks.record('trash-guard.py', 'hard-line', 'rm -rf', job='math_b')       # a hard line held: does not
     harness_blocks.record('launch.load', 'fail-open', 'load', job='math_c')
     assert harness_blocks.admitted('math_a') == 1 and harness_blocks.admitted('math_a') == 0
     harness_blocks.admitted('math_b')
     harness_blocks.mark('math_c', 'retract', reason='worker_models --retract')
     s = harness_blocks.summarize(harness_blocks.read())
-    assert [b['gate'] for b in s['harness_bugs']] == ['rounds.repeat']
+    assert [b['gate'] for b in s['harness_bugs']] == ['launch.host-peak-cap']
     assert s['blocks'] == 2 and s['warns'] == 1
     text = harness_blocks.line(s)
-    assert 'top blockers: launch.load (1), rounds.repeat (1), trash-guard.py (1)' in text
+    assert 'top blockers: launch.host-peak-cap (1), launch.load (1), trash-guard.py (1)' in text
 
 
 def test_the_daily_report_tells_general(tmp_path):
@@ -205,7 +205,7 @@ def test_launch_gates_warn_and_run(tmp_path):
 
 def test_a_lane_on_hold_still_refuses_and_names_its_fix(tmp_path):
     (tmp_path / 'runtime/lanes/fixture').mkdir(parents=True)
-    (tmp_path / 'runtime/lanes/fixture/HOLD').write_text('HOLD by lane-yield\n')
+    (tmp_path / 'runtime/lanes/fixture/HOLD').write_text('PAUSED 11-16 by general: not doing this lane\n')
     proc, jobs, env = launch(tmp_path, 'fixture-held', 'a job\n')
     assert proc.returncode == 78 and 'pending general' in proc.stderr and 'Fix: general removes' in proc.stderr
     assert ledger(tmp_path / 'state')[-1]['pending'] is True
@@ -264,12 +264,12 @@ def test_round_gate_process_checks_warn(tmp_path):
     bad = subprocess.run([sys.executable, str(REPO / 'harness/tools/rounds.py'), '--lane', str(tmp_path / 'nope'),
                           'start', '--round', 'r', '--family', 'f'], env=env, capture_output=True, text=True)
     assert bad.returncode == 0
-    # A repeat is general's call (pending): still refused, with the fix and a ledger row.
+    # general, 11-20: a repeat warns too, and the round opens.
     subprocess.run(rounds + ['log', '--round', 'r2', '--family', 'f', '--outcome', 'dry', '--generator', 'h'],
                    env=env, check=True, capture_output=True)
     rep = subprocess.run(rounds + ['start', '--round', 'r3', '--family', 'f', '--generator', 'h'],
                          env=env, capture_output=True, text=True)
-    assert rep.returncode == 2 and '[rounds.repeat] REFUSED' in rep.stderr
+    assert rep.returncode == 0 and '[rounds.repeat] WARNING (fail-open' in rep.stderr
 
 
 def test_a_refused_pin_reroutes_to_the_leaderboard_pick(tmp_path):
@@ -338,6 +338,220 @@ def test_codex_wrapper_errors_fail_open():
     src = (REPO / 'rstack/tools/_codex_budget.py').read_text()
     # After the run: an accounting error no longer replaces the run's own exit code with 75.
     assert "completion accounting failed ({}); the run\\'s own exit code stands" in src
-    assert "_gate('codex-budget.unavailable'" in src and "_gate('codex-budget.limit'" in src
+    assert "_gate('codex-budget.unavailable'" in src and "_warn('codex-budget.limit'" in src
     assert GATES['codex-budget.unavailable']['class'] == 'fail-open'
     assert GATES['codex-budget.accounting']['class'] == 'fail-open'
+
+
+# --- general's decisions on the ambiguous gates (11-20): the input that used to refuse now runs, warned ----------
+CODEX_CLAUDE_ROLES = {'roles': {'batch': ['fixture-codex', 'fixture-claude']},
+                      'routes': {'fixture-codex': {'canonical': 'fixture-codex', 'cli': 'codex'},
+                                 'fixture-claude': {'canonical': 'fixture-claude', 'cli': 'claude'}}}
+
+
+def capped_codex(tmp_path, refusals=99):
+    """A codex CLI that the spend wrapper refuses `refusals` times (its REFUSED line, exit 75), then runs."""
+    count = tmp_path / 'codex-calls'
+    return stub(tmp_path / 'fake-codex', 'from pathlib import Path\nimport sys\np = Path({!r})\n'
+                'n = int(p.read_text()) if p.exists() else 0\np.write_text(str(n + 1))\n'
+                'if n < {}:\n    print("codex: REFUSED 3% weekly allowance/day limit for fixture", file=sys.stderr)\n'
+                '    sys.exit(75)\nprint("codex ran")\n'.format(str(count), refusals)), count
+
+
+def test_a_codex_budget_refusal_reruns_the_job_on_claude(tmp_path):
+    """codex-budget.limit used to fail the job (exit 75); the cap holds on Codex and the job runs on Claude."""
+    codex, count = capped_codex(tmp_path)
+    fake = claude_stub(tmp_path)
+    jobs, env = lanes_env(tmp_path, CODEX_CLAUDE_ROLES, AGENT_BACKEND='codex', LAUNCH_CODEX=str(codex),
+                          LAUNCH_CLAUDE=str(fake), RH_CLAUDE_CAP='0', RH_HEADROOM_ROUTING='0')
+    (jobs / 'fixture-cap.md').write_text('a job\n')
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-cap', str(tmp_path)], env=env, capture_output=True,
+                          text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    log = (jobs / 'fixture-cap.log').read_text()
+    assert '=== attempt 1 model fixture-codex' in log and 'codex budget refused fixture-cap' in log
+    assert '=== attempt 1 model fixture-claude' in log and count.read_text() == '1'
+    receipt = json.loads((jobs / 'fixture-cap.log.selection.json').read_text())
+    assert (receipt['executor'], receipt['model']) == ('claude', 'fixture-claude')
+    assert receipt['codex_refused'] == '3% weekly allowance/day limit for fixture'
+
+
+def test_both_capped_queues_the_job_then_runs_it(tmp_path):
+    """Codex and Claude both capped: the job queues, warned, and runs when Codex has room again; never failed."""
+    codex, count = capped_codex(tmp_path, refusals=2)
+    real = REPO / 'harness/worker_models.py'
+    # The selector, except that Claude and agy have no room while Codex is closed (exit 5, as the 80% ceiling does).
+    selector = stub(tmp_path / 'fake-selector', 'import os, sys\n'
+                    'if os.environ.get("RH_CODEX_CLOSED") and any(a.endswith(".reroute.json") for a in sys.argv):\n'
+                    '    sys.exit(5)\n'
+                    'os.execv(sys.executable, [sys.executable, {!r}] + sys.argv[1:])\n'.format(str(real)))
+    jobs, env = lanes_env(tmp_path, CODEX_CLAUDE_ROLES, AGENT_BACKEND='codex', LAUNCH_CODEX=str(codex),
+                          LAUNCH_SELECTOR=str(selector), LAUNCH_BUDGET_QUEUE_POLL='0', RH_HEADROOM_ROUTING='0')
+    (jobs / 'fixture-cq.md').write_text('a job\n')
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-cq', str(tmp_path)], env=env, capture_output=True,
+                          text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    log = (jobs / 'fixture-cq.log').read_text()
+    assert log.count('queued: codex budget') == 1 and 'codex ran' in log and count.read_text() == '3'
+    rows = [r for r in ledger(tmp_path / 'state') if r['gate'] == 'codex-budget.limit']
+    assert [r['outcome'] for r in rows] == ['warn']
+
+
+def test_a_selector_with_codex_closed_and_claude_capped_has_no_room(monkeypatch, tmp_path):
+    """The exit 5 that queues: Codex refused the job and Claude is past its ceiling with nowhere else to go."""
+    import worker_models as wm
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
+    monkeypatch.setenv('RH_CODEX_CLOSED', 'weekly cap')
+    monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
+    monkeypatch.setattr(wm.claude_cap, 'enabled', lambda: True)
+    monkeypatch.setattr(wm.claude_cap, 'decide', lambda chosen, *a, **k: dict(
+        model=chosen, leave='weekly 82% >= 80% ceiling', notes=[], warning='', opus_reason=''))
+    monkeypatch.setattr(wm, 'claude_fallback', lambda *a, **k: None)
+    roles = tmp_path / 'roles.json'
+    roles.write_text(json.dumps(CODEX_CLAUDE_ROLES))
+    with pytest.raises(wm.NoRoom):
+        wm.select('batch', 'codex', '', '', roles, job='fixture', lane='lane-a')
+    assert wm.main(['--role', 'batch', '--roles-file', str(roles), '--log', str(tmp_path / 'l'),
+                    '--receipt', str(tmp_path / 'r.json'), '--print-route']) == 5
+
+
+def rounds_cli(lane_dir, *args):
+    return subprocess.run([sys.executable, str(REPO / 'harness/tools/rounds.py'), '--lane', str(lane_dir), *args],
+                          capture_output=True, text=True,
+                          env=dict(os.environ, RSTACK_STATE_DIR=str(lane_dir.parent / 'rounds-state')))
+
+
+def test_round_process_gates_warn_into_the_prompt(tmp_path):
+    """A repeat in a dry family that was closed used to refuse the round (exit 78); it runs, and the job reads why."""
+    lane = tmp_path / 'runtime/lanes/fixture'
+    lane.mkdir(parents=True)
+    for n in (1, 2, 3):
+        assert rounds_cli(lane, 'log', '--round', 'r%d' % n, '--family', 'f', '--outcome', 'dry',
+                          '--generator', 'g').returncode == 0
+    rounds_cli(lane, 'close-family', '--family', 'f', '--reason', 'three dry rounds')
+    rounds_cli(lane, 'consult', '--source', 'index.md', '--took', 'still nothing')
+    proc, jobs, env = launch(tmp_path, 'fixture-r4', 'a job\n', LAUNCH_ROUND='r4', LAUNCH_FAMILY='f',
+                             LAUNCH_GENERATOR='g', RH_ROOT=str(tmp_path / 'runtime'))
+    assert proc.returncode == 0, proc.stderr
+    prompt = (jobs / 'fixture-r4.log.prompt').read_text()
+    assert 'HARNESS WARNINGS FOR THIS JOB' in prompt
+    for gate in ('rounds.repeat', 'rounds.dry-family', 'rounds.dead-end'):
+        assert '[{}] WARNING'.format(gate) in prompt, gate
+    assert 'round gate warnings, round r4 runs' in (jobs / 'fixture-r4.log').read_text()
+    receipt = json.loads((jobs / 'fixture-r4.log.selection.json').read_text())
+    assert {w.split(']')[0] for w in receipt['round_warnings']} >= {
+        '[rounds.repeat', '[rounds.dry-family', '[rounds.dead-end'}
+    row = json.loads((lane / 'ROUNDS.jsonl').read_text().splitlines()[-1])
+    assert row['round'] == 'r4' and row['outcome'] == 'started' and len(row['warnings']) >= 3
+
+
+def test_a_drifted_baseline_runs_the_round_flagged(tmp_path):
+    """rounds.baseline-drift used to refuse; the round runs and the comparison is flagged in prompt and receipt."""
+    lane = tmp_path / 'runtime/lanes/fixture'
+    lane.mkdir(parents=True)
+    rounds_cli(lane, 'consult', '--source', 'index.md', '--took', 'the family')
+    (lane / 'value.txt').write_text('1.5\n')
+    (lane / 'BASELINES.jsonl').write_text(json.dumps(dict(name='toy-2020', source='fixture', published=1.0,
+                                                          cmd='cat value.txt', tolerance=1e-9, timeout=60)) + '\n')
+    proc, jobs, env = launch(tmp_path, 'fixture-bd', 'a job\n', LAUNCH_ROUND='r1', LAUNCH_FAMILY='f',
+                             LAUNCH_GENERATOR='g', RH_ROOT=str(tmp_path / 'runtime'))
+    assert proc.returncode == 0, proc.stderr
+    prompt = (jobs / 'fixture-bd.log.prompt').read_text()
+    assert 'BASELINE DRIFT' in prompt and 'toy-2020' in prompt
+    receipt = json.loads((jobs / 'fixture-bd.log.selection.json').read_text())
+    assert 'toy-2020' in receipt['baseline_drift']
+    assert 'toy-2020' in json.loads((lane / 'ROUNDS.jsonl').read_text().splitlines()[-1])['baseline_drift']
+
+
+def test_a_coverage_repeat_is_recorded_with_a_warning(tmp_path, monkeypatch):
+    """bughunt.coverage used to refuse recording the round; it is recorded and the lane's next job reads it."""
+    import bug_coverage
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
+    lane = tmp_path / 'runtime/lanes/fixture'
+    lane.mkdir(parents=True)
+    r1 = dict(target='org/tool', commit='a' * 40, round='r1',
+              units=[dict(unit='src/fit.py', bug_class='off-by-one', status='covered')])
+    assert bug_coverage.record(lane, r1)[0]
+    ok, msgs = bug_coverage.record(lane, dict(r1, round='r2'))
+    assert ok and 'COVERAGE_REPEAT' in msgs[0]
+    assert ledger(tmp_path / 'state')[-1]['gate'] == 'bughunt.coverage'
+    proc, jobs, env = launch(tmp_path, 'fixture-bh', 'a job\n')
+    assert proc.returncode == 0, proc.stderr
+    assert 'Bug-hunt coverage: COVERAGE_REPEAT: round r2' in (jobs / 'fixture-bh.log.prompt').read_text()
+
+
+def test_a_lane_yield_hold_warns_and_files_a_decision_card(tmp_path, monkeypatch):
+    """lane-yield's hold used to stop the lane (a HOLD file, exit 78). It is YIELD_HOLD now: a decision card to
+    general, and a warning the job runs past. general's own HOLD still refuses (the test above)."""
+    sys.path.insert(0, str(REPO / 'harness/tools/lane-yield'))
+    import lane_yield
+    home = tmp_path / 'home'
+    told = tmp_path / 'told'
+    (home / '.claude/skills/orchestrator/scripts').mkdir(parents=True)
+    stub(home / '.claude/skills/orchestrator/scripts/tell-general',
+         'import sys\nopen({!r}, "a").write(" ".join(sys.argv[1:]))\n'.format(str(told)))
+    monkeypatch.setattr(lane_yield.Path, 'home', lambda: home)
+    lane = tmp_path / 'runtime/lanes/fixture'
+    lane_yield.act({'lane': 'fixture', 'as_of': '2026-11-20', 'fails': ['BURNING: 25 job-h, 0 new']},
+                   {'hold': str(lane / 'HOLD')})
+    assert (lane / 'YIELD_HOLD').exists() and not (lane / 'HOLD').exists()
+    card = told.read_text()
+    assert card.startswith('--from lane-yield decision lane-yield FAIL fixture: BURNING') and 'mv ' in card
+    proc, jobs, env = launch(tmp_path, 'fixture-yh', 'a job\n')
+    assert proc.returncode == 0, proc.stderr
+    assert 'Lane yield: YIELD_HOLD by lane-yield' in (jobs / 'fixture-yh.log.prompt').read_text()
+    assert [r['outcome'] for r in ledger(tmp_path / 'state') if r['gate'] == 'lane-yield.hold'] == ['warn']
+
+
+def test_a_dead_host_memory_guard_is_kickstarted_then_the_job_runs(tmp_path):
+    """launch.host-memguard used to refuse (exit 75). The guard is kickstarted over ssh; if it still is not
+    beating, the job runs with a warning."""
+    from test_launch_host import harness as host_harness
+    jobs, env = host_harness(tmp_path)
+    Path(env['LAUNCH_MEMGUARD_HEARTBEAT']).unlink()
+    env.update(LAUNCH_MEMGUARD_KICK='true', RSTACK_STATE_DIR=str(tmp_path / 'state'))   # the kickstart does not help
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path), '--host', 'm5'], env=env,
+                          capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    assert '[launch.host-memguard] WARNING (fail-open' in proc.stderr and 'after a kickstart' in proc.stderr
+    assert 'cmd=true' in Path(env['SSH_LOG']).read_text()
+    assert [r['outcome'] for r in ledger(tmp_path / 'state') if r['gate'] == 'launch.host-memguard'] == ['warn']
+
+
+def test_sweep_headroom_runs_after_the_wait(tmp_path, monkeypatch):
+    """sweep.host-headroom used to refuse at the end of its wait; the sweep runs, warned."""
+    import sweep
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
+    monkeypatch.setattr(sweep, 'disk_guard', lambda cfg: None)
+    monkeypatch.setattr(sweep, 'execution_host', lambda cfg: '')
+    monkeypatch.setattr(sweep, 'free_memory_gib', lambda: 0.5)
+    monkeypatch.setattr(sweep, 'cpu_busy', lambda: 0.1)
+    sweep.guard({'load_wait_minutes': 0, 'min_free_memory_gib': 6, 'cores': 1, 'max_load': 8})
+    rows = ledger(tmp_path)
+    assert [(r['gate'], r['outcome']) for r in rows] == [('sweep.host-headroom', 'warn')]
+    assert 'insufficient free memory' in rows[0]['reason'] and 'nice 10' in rows[0]['reason']
+
+    def full(cfg):   # the disk floor beside it is kept: still a refusal
+        raise ValueError('sweep refused: disk below the floor')
+    monkeypatch.setattr(sweep, 'disk_guard', full)
+    with pytest.raises(ValueError, match='disk'):
+        sweep.guard({'load_wait_minutes': 0})
+
+
+def test_an_explore_outside_the_pool_runs_the_explored_model(tmp_path):
+    """math 11-20: `--explore claude-sonnet-5-5` outside the builder pool was rerouted to the leaderboard pick."""
+    roles = {'roles': {'batch': ['fixture-claude']},
+             'routes': {'fixture-claude': {'canonical': 'fixture-claude', 'cli': 'claude'},
+                        'fixture-other': {'canonical': 'fixture-other', 'cli': 'claude'}}}
+    fake = claude_stub(tmp_path)
+    jobs, env = lanes_env(tmp_path, roles, AGENT_BACKEND='codex', LAUNCH_CLAUDE=str(fake), RH_CLAUDE_CAP='0',
+                          RH_HEADROOM_ROUTING='0')
+    (jobs / 'fixture-ex.md').write_text('a job\n')
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-ex', str(tmp_path), '--explore', 'fixture-other'], env=env,
+                          capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    log = (jobs / 'fixture-ex.log').read_text()
+    assert '=== attempt 1 model fixture-other' in log and 'rerouted to the leaderboard pick' not in log
+    receipt = json.loads((jobs / 'fixture-ex.log.selection.json').read_text())
+    assert (receipt['source'], receipt['executor']) == ('explore', 'claude') and receipt['explore_outside_pool']
+    assert [r['outcome'] for r in ledger(tmp_path / 'state') if r['gate'] == 'selector.explore-pool'] == ['warn']

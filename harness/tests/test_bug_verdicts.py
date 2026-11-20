@@ -263,7 +263,10 @@ def test_a_paper_is_refereed_from_its_pdf_not_a_clone(ln, tmp_path):
     assert ok and '1 of 1 planted caught' in msgs[-1], msgs
 
 
-def test_coverage_refuses_a_round_with_nothing_new(ln):
+def test_coverage_records_a_round_with_nothing_new_as_a_warning(ln, monkeypatch, tmp_path):
+    """general, 11-20 (RULE #1): a repeat used to be refused, and the hunt's work went unrecorded. It is now
+    recorded with coverage_repeat and a warning, and does not count toward done."""
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
     r1 = dict(target='org/tool', commit=COMMIT, round='r1', units=[
         dict(unit='src/fit.py', bug_class='off-by-one', status='candidate'),
         dict(unit='src/io.py', bug_class='parsing', status='deferred')])
@@ -271,8 +274,11 @@ def test_coverage_refuses_a_round_with_nothing_new(ln):
     assert not bug_coverage.status(ln, 'org/tool')['done']
     repeat = dict(r1, round='r2', units=[dict(unit='src/fit.py', bug_class='off-by-one', status='covered')])
     ok, msgs = bug_coverage.record(ln, repeat)
-    assert not ok and 'COVERAGE_REPEAT' in msgs[0]
-    gapfill = dict(r1, round='r2', units=[dict(unit='src/io.py', bug_class='parsing', status='covered')])
+    assert ok and msgs[0].startswith('WARNING (fail-open, recorded): COVERAGE_REPEAT')
+    assert 'COVERAGE_REPEAT' in bug_coverage.rows(ln)[-1]['coverage_repeat']
+    assert bug_coverage.status(ln, 'org/tool')['rounds'] == 1, 'a repeat is not a gap-fill pass'
+    assert '"gate": "bughunt.coverage"' in (tmp_path / 'state/harness-blocks.jsonl').read_text()
+    gapfill = dict(r1, round='r3', units=[dict(unit='src/io.py', bug_class='parsing', status='covered')])
     assert bug_coverage.record(ln, gapfill)[0]
     st = bug_coverage.status(ln, 'org/tool')
     assert st['rounds'] == 2 and st['done'] and not st['deferred']

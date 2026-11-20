@@ -152,11 +152,25 @@ fi
 # FORCE_LAUNCH does not skip this: the guard is what lets anything run there unattended.
 if [[ -n $LAUNCH_HOST ]]; then
   hbf=${LAUNCH_MEMGUARD_HEARTBEAT:-'$HOME/.local/state/mem-guard/heartbeat'}
-  hb=$(${=${LAUNCH_SSH:-ssh}} -o BatchMode=yes -o ConnectTimeout=20 "$LAUNCH_HOST" \
-       "f=$hbf; [ -f \"\$f\" ] && echo \$(( \$(date +%s) - \$(stat -f %m \"\$f\" 2>/dev/null || stat -c %Y \"\$f\") ))" 2>/dev/null | awk 'NF{print int($1); exit}')
-  if { [[ $hb != <-> ]] || (( hb > 60 )); } &&
-     refuses launch.host-memguard "the memory guard on $LAUNCH_HOST is not running (heartbeat ${hb:+$hb s old}${hb:-missing})" "ssh $LAUNCH_HOST launchctl kickstart gui/\$(id -u)/com.ricardo.mem-guard"; then
-    exit 75
+  beat_age() {
+    ${=${LAUNCH_SSH:-ssh}} -o BatchMode=yes -o ConnectTimeout=20 "$LAUNCH_HOST" \
+      "f=$hbf; [ -f \"\$f\" ] && echo \$(( \$(date +%s) - \$(stat -f %m \"\$f\" 2>/dev/null || stat -c %Y \"\$f\") ))" 2>/dev/null | awk 'NF{print int($1); exit}'
+  }
+  hb=$(beat_age)
+  # 11-20 (general, RULE #1): a guard that is down is restarted, not a reason to refuse the job. The guard's
+  # launch agent is kickstarted over ssh (-k also restarts one that hangs with a stale heartbeat), the
+  # heartbeat is read again, and the job runs either way, warned if the guard still is not beating.
+  if [[ $hb != <-> ]] || (( hb > 60 )); then
+    was="heartbeat ${hb:+$hb s old}${hb:-missing}"
+    kick=${LAUNCH_MEMGUARD_KICK:-"launchctl kickstart -k gui/\$(id -u)/${LAUNCH_MEMGUARD_LABEL:-com.ricardo.mem-guard}"}
+    ${=${LAUNCH_SSH:-ssh}} -o BatchMode=yes -o ConnectTimeout=20 "$LAUNCH_HOST" "$kick" >/dev/null 2>&1
+    sleep ${LAUNCH_MEMGUARD_RECHECK_S:-10}
+    hb=$(beat_age)
+    if [[ $hb == <-> ]] && (( hb <= 60 )); then
+      print -u2 -- "launch.sh: the memory guard on $LAUNCH_HOST was down ($was); kickstarted, it is beating again"
+    elif refuses launch.host-memguard "the memory guard on $LAUNCH_HOST is not running ($was; still ${hb:+$hb s old}${hb:-missing} after a kickstart); running anyway" "ssh $LAUNCH_HOST launchctl kickstart -k gui/\$(id -u)/${LAUNCH_MEMGUARD_LABEL:-com.ricardo.mem-guard}"; then
+      exit 75
+    fi
   fi
   peak=$(grep -Eio -m1 '^[-* ]*peak rss: *[0-9]+(\.[0-9]+)? *GB' $spec 2>/dev/null | grep -Eo '[0-9]+(\.[0-9]+)?' | head -1)
   if [[ -z $peak ]] && refuses launch.host-peak-declared "a job for $LAUNCH_HOST declares no 'Peak RSS: N GB' line; the memory guard there still kills anything over its limit" "add 'Peak RSS: N GB' to $spec, measured with /usr/bin/time -l on the heaviest step"; then
@@ -200,6 +214,13 @@ fi
 if [[ -f $lane_dir/HOLD ]] &&
    refuses launch.lane-hold "lane $lane is on hold: $(head -1 $lane_dir/HOLD)" "general removes $lane_dir/HOLD (tell-general decision)"; then
   exit 78
+fi
+# 11-20 (general, RULE #1): lane-yield's own hold is YIELD_HOLD, a report with a decision card to general, not a
+# HOLD. The job runs and carries it in its prompt; general holds the lane by turning it into HOLD.
+yield_hold=
+if [[ -f $lane_dir/YIELD_HOLD ]]; then
+  yield_hold=$(head -1 "$lane_dir/YIELD_HOLD")
+  refuses lane-yield.hold "lane $lane: $yield_hold" "general decides: mv $lane_dir/YIELD_HOLD $lane_dir/HOLD to hold the lane, or remove it" && exit 78
 fi
 # LAUNCH_DETACH=tmux: the job never lives under the caller's process tree. 11-01: the 7:25 AM memory kill
 # took out eight jobs inside Claude's process tree with no exit line, and nobody noticed for 13 hours. So
@@ -248,11 +269,13 @@ fi
 # and passed. Calling `start` here is what makes the write unavoidable: it gates and opens the
 # round in one command, and it refuses a fingerprint seen in the recent rounds, so relabelling the
 # same knobs as a new family does not get through.
+round_warn=
 if [[ -n $LAUNCH_ROUND ]]; then
   round_args=(--lane "$lane_dir" start --round "$LAUNCH_ROUND" --family "${LAUNCH_FAMILY:-$lane}"
               --generator "$LAUNCH_GENERATOR" --params "$LAUNCH_PARAMS" --scorer "$LAUNCH_SCORER")
   [[ -z $LAUNCH_HYPOTHESIS ]] || round_args+=(--hypothesis "$LAUNCH_HYPOTHESIS")
   [[ -z $LAUNCH_NEW_EVIDENCE ]] || round_args+=(--new-evidence "$LAUNCH_NEW_EVIDENCE")
+  round_at=0; [[ -f $log.round ]] && round_at=$(wc -c < "$log.round")
   python3 "$H/tools/rounds.py" "${round_args[@]}" >> "$log.round" 2>&1
   round_rc=$?
   # rounds.py exits 2 only when a gate the registry lets refuse refused (its fail-open checks print a
@@ -266,7 +289,21 @@ if [[ -n $LAUNCH_ROUND ]]; then
   elif (( round_rc != 0 )); then
     refuses launch.round-gate-error "rounds.py failed (exit $round_rc) before deciding; the round runs unrecorded" "read $log.round" && exit 78
   fi
-  grep -h 'WARNING (fail-open' "$log.round" 2>/dev/null | tail -5 >&2
+  # 11-20 (general): a repeat, a dry family, a dead end or a drifted baseline warns and the round runs. This
+  # run's warnings (not the whole file's) go to stderr, the job log and, below, the prompt and the receipt.
+  round_warn=$(tail -c +$(( round_at + 1 )) "$log.round" 2>/dev/null | grep -h 'WARNING (fail-open')
+  if [[ -n $round_warn ]]; then
+    print -r -- "$round_warn" >&2
+    print -r -- "round gate warnings, round $LAUNCH_ROUND runs (RULE #1): $round_warn $(date)" >> "$log"
+  fi
+fi
+# 11-20 (general): a bug-hunt round that covered nothing new is recorded with a warning (bughunt.coverage); the
+# lane's next job reads it in its prompt.
+cov_warn=
+if [[ -f $lane_dir/COVERAGE.jsonl ]]; then
+  cov_warn=$(tail -1 "$lane_dir/COVERAGE.jsonl" | python3 -c 'import json,sys
+try: print(json.loads(sys.stdin.read()).get("coverage_repeat", ""))
+except Exception: pass' 2>/dev/null)
 fi
 # Admitted. If this job was blocked in the last week, the block did not hold: the ledger records a rerun,
 # which the daily report counts as a harness bug (RULE #1).
@@ -296,7 +333,10 @@ selector=${LAUNCH_SELECTOR:-$H/worker_models.py}
 # up in the prompt's absence rather than as a dead lane.
 lessons=$(rh --root "${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-${RH_ROOT:-$PWD/.runtime}}}" lessons for "$lane" -n "${LAUNCH_LESSONS:-12}" 2>/dev/null)
 start=1; [[ -n $LAUNCH_RESUME ]] && start=2
+codex_closed=; budget_warned=0
 for (( i = start; i <= 5; i++ )); do
+  # Set after the Codex wrapper refused this job on its cap (below): the selector then leaves Codex out.
+  if [[ -n $codex_closed ]]; then export RH_CODEX_CLOSED=$codex_closed; else unset RH_CODEX_CLOSED; fi
   sel_exec=$backend
   [[ ${LAUNCH_PROVIDER:-} == (openrouter|gemini) && $backend == codex ]] && sel_exec=$LAUNCH_PROVIDER
   # This launcher runs all three executors, so a delegate may be on any of them. A host without one of
@@ -334,6 +374,17 @@ for (( i = start; i <= 5; i++ )); do
     python3 -c 'import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d["codex_sandbox"]={"mode":"danger-full-access","why":"spec line Third-party: run"}
 json.dump(d, open(p, "w"), indent=2)' "$log.selection.json" 2>/dev/null || true
+  fi
+  unset RH_CODEX_CLOSED   # the selection's input only; the job's own children choose for themselves
+  # 11-20 (general): the round ran past its gate's warnings; the receipt says which, and flags a comparison
+  # against a baseline that stopped reproducing.
+  if [[ -n $round_warn ]]; then
+    python3 -c 'import json,sys
+p=sys.argv[1]; d=json.load(open(p)); w=[l.strip() for l in sys.argv[2].splitlines() if l.strip()]
+d["round_warnings"]=w
+drift=[l for l in w if l.startswith("[rounds.baseline-drift]")]
+if drift: d["baseline_drift"]=drift[0]
+json.dump(d, open(p, "w"), indent=2)' "$log.selection.json" "$round_warn" 2>/dev/null || true
   fi
   case $backend in
     codex) cx=${LAUNCH_CODEX:-codex};;
@@ -388,6 +439,15 @@ json.dump(d, open(p, "w"), indent=2)' "$log.selection.json" 2>/dev/null || true
     done
     [[ ! -f $lane_dir/GOAL.md ]] || { printf -- '--- LANE GOAL (%s, the owner'\''s words; agents never edit it) ---\n' "$lane"; cat "$lane_dir/GOAL.md"; printf '\n---\n\n'; }
     [[ -z $lessons ]] || { printf -- '--- LESSONS THIS LANE ALREADY PAID FOR ---\n%s\n---\n\n' "$lessons"; }
+    # 11-20 (general, RULE #1): what the gates used to refuse, this job now runs past and reads here.
+    if [[ -n $round_warn$yield_hold$cov_warn ]]; then
+      printf -- '--- HARNESS WARNINGS FOR THIS JOB (it runs anyway; act on them) ---\n'
+      [[ -z $round_warn ]] || printf -- 'Round gate:\n%s\n' "$round_warn"
+      [[ $round_warn != *'[rounds.baseline-drift]'* ]] || printf -- 'BASELINE DRIFT: a registered baseline no longer reproduces, so any comparison against it is flagged. Say so in REPORT.md and do not count a beat against it as new.\n'
+      [[ -z $yield_hold ]] || printf -- 'Lane yield: %s\n' "$yield_hold"
+      [[ -z $cov_warn ]] || printf -- 'Bug-hunt coverage: %s\n' "$cov_warn"
+      printf -- '---\n\n'
+    fi
     cat "$spec"; (( i > 1 )) && printf '\n\nRESUME (attempt %d): read STATUS.md, REPORT.md and existing files; continue completed work.\n' $i; } > "$log.prompt"
   print -- "=== attempt $i model $m${LAUNCH_HOST:+ host $LAUNCH_HOST} $(date)" >> "$log"
   attempt_log="$log.attempt-$i"
@@ -564,6 +624,31 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
     exit 2
   fi
   print -r -- "GRADE ON RETURN: python3 ${selector:A} --grade pass|partial|fail --note WHY --receipt ${log:A}.selection.json --log ${log:A}" >> "$log"
+  # 11-20 (general, RULE #1): codex-budget.limit. The Codex wrapper refused this job on a cap (exit 75 and its
+  # REFUSED line), so nothing ran. The cap holds on Codex; the job is rerun on claude (80% ceiling and lane
+  # shares, applied by the selector) or agy instead of failing. While neither has room (selector exit 5) the job
+  # queues, warned, and tries Codex again after each wait, whose day cap resets; it is never failed for the
+  # budget. A budget refusal is not an attempt, so it does not use up the five.
+  if [[ $backend == codex ]] && (( rc == 75 )) && grep -q '^codex: REFUSED ' "$attempt_log" 2>/dev/null; then
+    codex_closed=$(grep -m1 '^codex: REFUSED ' "$attempt_log"); codex_closed=${codex_closed#codex: REFUSED }
+    RH_CODEX_CLOSED=$codex_closed RH_LAUNCHER_EXECUTORS=${RH_LAUNCHER_EXECUTORS:-codex,claude,agy} python3 "$selector" \
+      --role "$LAUNCH_ROLE" --executor "$sel_exec" --model "" --explore "" --model-override "" --made-by "$LAUNCH_MADE_BY" \
+      --job "$job" --lane "$lane" --workdir "$dir" --lane-dir "$lane_dir" --spec "$spec" --print-route \
+      --log "$log.reroute" --receipt "$log.reroute.json" >/dev/null 2>>"$log.reroute"
+    if (( $? == 5 )); then
+      if (( ! budget_warned )); then
+        budget_warned=1
+        refuses codex-budget.limit "Codex refused $job ($codex_closed) and Claude and agy have no room for it; queued, trying again every ${LAUNCH_BUDGET_QUEUE_POLL:-1800}s" "LAUNCH_URGENT=<reason>, or job-stop $job" && exit 75
+        print -- "queued: codex budget ($codex_closed) and no room on claude or agy $(date)" >> "$log"
+        notify "launch $job queued: Codex refused it ($codex_closed) and Claude/agy have no room"
+      fi
+      sleep ${LAUNCH_BUDGET_QUEUE_POLL:-1800}
+      codex_closed=   # Codex first again
+    else
+      print -- "codex budget refused $job ($codex_closed): rerunning it on claude or agy $(date)" >> "$log"
+    fi
+    (( i-- )); continue
+  fi
   (( policy_flag == 0 && rc != 0 && i < 5 )) || break
   [[ $backend == codex ]] || break  # A Claude retry must not reset its spend cap.
   # A quota response ends this model's attempt even if it also says 'at capacity'.

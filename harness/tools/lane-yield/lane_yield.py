@@ -36,7 +36,10 @@ A lane with `report_only: true` is pushed to general on FAIL but gets no hold fi
 not ours, i.e. its last merge by anyone is UPSTREAM_BIND_DAYS (7) or more newer than our last merge. While
 the maintainer merges nobody, a hold would punish the lane for his inactivity; once he merges others, it
 is about our PRs.
-With --act, a failing lane gets its hold file written (its loops stop spending) and a push to general.
+With --act, a failing lane gets a push to general. One that is spending without results also gets
+YIELD_HOLD written beside its hold path and a decision card (tell-general decision): general, 11-20,
+lane-yield's hold is a report and a warning, not a refusal. launch.sh warns on YIELD_HOLD and runs the
+job; a HOLD general writes (`mv YIELD_HOLD HOLD`, or by hand) still stops the lane.
 Exit 0 = all lanes PASS, 1 = some lane FAILS, 2 = config error.
 """
 import argparse, glob, json, os, re, subprocess, sys, time
@@ -54,6 +57,7 @@ sys.path.insert(0, str(LINT))
 from result_lint import lint  # noqa: E402
 
 UPSTREAM_BIND_DAYS = 7
+YIELD_HOLD = 'YIELD_HOLD'   # lane-yield's own hold: a warning file beside the configured hold path (11-20)
 DEFAULTS = dict(window_hours=48, max_job_hours_without_new=20, min_verdicts=20, max_pass_share=0.9,
                 max_attempts_without_new=0, max_dry_streak=3)
 
@@ -358,13 +362,27 @@ def act(row, cfg):
     # A paperwork gap and a direction change are not spending in circles, so neither holds.
     spending = [f for f in row['fails']
                 if not f.startswith('UNSURFACED') and not f.startswith('DRY_STREAK')]
+    # 11-20 (general, RULE #1): the hold lane-yield writes is a report, never HOLD itself. It goes to YIELD_HOLD
+    # beside the configured hold path, which launch.sh only warns on, and general gets a decision card: hold the
+    # lane (mv YIELD_HOLD HOLD) or clear it. A HOLD is only ever general's, so launch.sh can keep refusing on one.
+    text = f'lane-yield FAIL {row["lane"]}: ' + '; '.join(row['fails'])
+    kind = 'ricardo'
     if hold and spending and (not cfg.get('report_only') or row.get('upstream_binding')):
-        p = Path(os.path.expanduser(hold))
+        held = Path(os.path.expanduser(hold))
+        p = held.with_name(YIELD_HOLD)
         if not p.exists():
-            p.write_text(f'HOLD by lane-yield {row["as_of"]}: ' + '; '.join(row['fails']) + '\nOnly general removes this file.\n')
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(f'YIELD_HOLD by lane-yield {row["as_of"]}: ' + '; '.join(row['fails']) +
+                             '\nA warning, not a hold: the lane\'s jobs still run and carry this in their prompt. '
+                             f'general decides: `mv {p} {held}` holds the lane; removing this file clears it.\n')
+            except OSError:
+                pass
+        kind = 'decision'
+        text += f'. Wrote {p} (a warning; the lane still runs). Hold it: mv {p} {held}; or remove {p}.'
     tg = Path.home() / '.claude/skills/orchestrator/scripts/tell-general'
     if tg.exists():
-        subprocess.run([str(tg), 'ricardo', f'lane-yield FAIL {row["lane"]}: ' + '; '.join(row['fails'])], capture_output=True)
+        subprocess.run([str(tg), '--from', 'lane-yield', kind, text], capture_output=True)
 
 
 def main(argv=None):
@@ -372,7 +390,7 @@ def main(argv=None):
     p.add_argument('--config', default=os.path.expanduser('~/.config/lane-yield.json'))
     p.add_argument('--as-of', help='ISO time to evaluate at (backtest), default now')
     p.add_argument('--lane', action='append')
-    p.add_argument('--act', action='store_true', help='write the hold file and push general for failing lanes')
+    p.add_argument('--act', action='store_true', help='write YIELD_HOLD and push general for failing lanes')
     p.add_argument('--json', action='store_true')
     a = p.parse_args(argv)
     try:

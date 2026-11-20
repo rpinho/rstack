@@ -852,13 +852,16 @@ def supervise(native, args, cfg, lane, cwd, interactive, batch):
                                                urgent, role))
             if stripped:
                 append(base, lane, dict(event='priority_stripped', ts=started, cwd=cwd))
-            if reason and _gate('codex-budget.limit', reason, lane=lane,
-                                fix='LAUNCH_URGENT=<reason> for an urgent job, or run it on another route (AGENT_BACKEND=claude|agy)'):
+            if reason:
+                # 11-20 (general): the cap still holds on Codex, and the job does not fail on it. launch.sh reads
+                # the REFUSED line below and reruns the job on claude (80% ceiling, lane shares) or agy, or queues
+                # it while both are capped; so the ledger records a warning, not a block (codex-budget.limit).
+                _warn('codex-budget.limit', reason + '; Codex is not run, launch.sh reruns the job on claude or agy',
+                      lane=lane, fix='LAUNCH_URGENT=<reason> for an urgent job, or run it on another route '
+                                     '(AGENT_BACKEND=claude|agy)')
                 append(base, lane, dict(event='refused', ts=started, reason=reason, cwd=cwd, role=role))
                 print('codex: REFUSED ' + reason, file=sys.stderr)
                 return REFUSED
-            if reason:
-                append(base, lane, dict(event='warned', ts=started, reason=reason, cwd=cwd, role=role))
             if bucket == 'referee':
                 print('codex: ' + note, file=sys.stderr)
             # Remember explicit homes for job-health even after this environment disappears.
@@ -945,6 +948,16 @@ def _gate(name, reason, lane='', fix=''):
         return hb.gate(name, reason, fix=fix, lane=lane)
     except Exception:
         return True
+
+
+def _warn(name, reason, lane='', fix=''):
+    """Log a warning for a check that does not refuse the work (rstack/gates.json); never raises."""
+    hb = _hb()
+    try:
+        if hb is not None:
+            hb.warn(name, reason, fix=fix, lane=lane)
+    except Exception:
+        pass
 
 
 def wrapper_main(argv=None):
