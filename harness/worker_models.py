@@ -169,7 +169,37 @@ def spec_pin(text):
     return ' '.join(found.group(1).split())[:200] if found else ''
 
 
-def delegate(role, data, excluded, made_by, top, draw):
+def producer_families(made_by='', workdir='', lane_dir=''):
+    """({maker, ...}, [sources]) of the model that produced what this job judges.
+
+    11-19, open-source lane: a delegate referee from the hunter's own family failed REFEREE_SAME_FAMILY. That
+    check reads the hunter's family from the lane's PLANTS.jsonl (written by rh bughunt referee-prompt from the
+    claims file), not from LAUNCH_MADE_BY, so both are read here, with the same maker() map."""
+    families, sources = set(), []
+    if made_by:
+        families.add(maker(made_by))
+        sources.append('made_by ' + made_by)
+    if workdir and lane_dir:
+        try:
+            lines = (Path(lane_dir) / 'PLANTS.jsonl').read_text().splitlines()
+        except OSError:
+            lines = []
+        target = os.path.realpath(str(workdir))
+        for line in reversed(lines):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get('workdir') and os.path.realpath(row['workdir']) == target:
+                family = row.get('hunter_maker') or maker(row.get('hunter_family'), row.get('hunter_model'))
+                if family:
+                    families.add(family)
+                    sources.append('hunter {} (PLANTS batch {})'.format(family, row.get('batch')))
+                break
+    return families, sources
+
+
+def delegate(role, data, excluded, made_by, top, draw, families=frozenset()):
     """(model, note) when this selection is one of the delegated share, else None."""
     try:
         share = float(os.environ.get('RH_DELEGATE_SHARE') or 0)
@@ -185,7 +215,7 @@ def delegate(role, data, excluded, made_by, top, draw):
         if (m == top or not isinstance(route, dict) or route.get('cli') not in ('claude', 'codex', 'agy')
                 or m in excluded or route.get('canonical') in excluded):
             continue
-        if role in JUDGMENT and made_by and maker(m, route.get('canonical')) == maker(made_by):
+        if maker(m, route.get('canonical')) in families:
             continue
         pool.append(m)
     if not pool:
@@ -197,7 +227,8 @@ def delegate(role, data, excluded, made_by, top, draw):
         share, role, pick, n(pick), top)
 
 
-def select(role, executor, model='', override='', path=None, made_by='', job='', lane='', explore='', pin=''):
+def select(role, executor, model='', override='', path=None, made_by='', job='', lane='', explore='', pin='',
+           workdir='', lane_dir=''):
     judgment_hint = ''
     if role == 'batch' and JUDGMENT_JOB.search(job):
         role = 'review'
@@ -219,6 +250,17 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     excluded = data.get('overrides', {}).get(row, {}).get('exclude', [])
     excluded = excluded + data.get('overrides', {}).get(role, {}).get('exclude', [])
     eligible = ranked
+    families, family_sources = producer_families(made_by, workdir, lane_dir)
+    # A job that judges another model's work: a judgment role, or a referee batch the lane planted.
+    judging = role in JUDGMENT or any(src.startswith('hunter ') for src in family_sources)
+    if judging and families and role not in JUDGMENT:
+        def route_maker(m):
+            route = data['routes'].get(m)
+            return maker(m, route.get('canonical') if isinstance(route, dict) else None)
+        eligible = [m for m in ranked if route_maker(m) not in families] or eligible
+        if route_maker(eligible[0]) in families:
+            raise ValueError('job {} judges {} work and every {} pick is from that family'.format(
+                job, '/'.join(sorted(families)), role))
     if role in JUDGMENT:
         def canonical(model):
             route = data['routes'].get(model)
@@ -226,7 +268,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
 
         eligible = [m for m in ranked if m not in excluded
                     and canonical(m) not in excluded
-                    and (not made_by or maker(m, canonical(m)) != maker(made_by))]
+                    and maker(m, canonical(m)) not in families]
         if not eligible:
             raise ValueError(judgment_hint + 'role {} has no eligible leaderboard pick for maker {}'.format(role, made_by))
         if model and not override.startswith('Ricardo:'):
@@ -241,13 +283,16 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     if explore and explore not in ranked:
         raise ValueError('--explore model is not in the role {} pool: {}'.format(role, explore))
     chosen = explore or model or eligible[0]
-    delegated = None
-    if not (explore or model or pin):
-        delegated = delegate(role, data, excluded, made_by, chosen, int(uuid.uuid4().hex[:8], 16) / 2 ** 32)
+    delegated, delegate_skip = None, ''
+    if judging and not families:
+        delegate_skip = 'judging job with an unknown producer family: not delegated'
+    elif not (explore or model or pin):
+        delegated = delegate(role, data, excluded, made_by, chosen, int(uuid.uuid4().hex[:8], 16) / 2 ** 32,
+                             families if judging else frozenset())
         if delegated:
             chosen = delegated[0]
     route = data['routes'].get(chosen)
-    if delegated:
+    if delegated or (judging and families and chosen != (explore or model or ranked[0])):
         executor = route['cli']   # named in the receipt and the log below; not a silent swap
     if isinstance(route, dict) and (role in JUDGMENT or (not model and route.get('cli') in ('openrouter', 'gemini'))):
         executor = route.get('cli')
@@ -275,6 +320,12 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         receipt['delegate'] = delegated[1]
     if pin:
         receipt['model_pin'] = pin
+    if judging:
+        receipt['producer_family'] = sorted(families) or 'unknown'
+        if family_sources:
+            receipt['producer_family_source'] = family_sources
+    if delegate_skip:
+        receipt['delegate_skipped'] = delegate_skip
     # 11-19: the receipt states what the pick rests on, everyday work first (n<5 = fewer than 5 graded tasks)
     # and the bench beside it, never instead of it.
     everyday = (data.get('evidence') or {}).get(row, {}).get(chosen) or {}
@@ -407,6 +458,8 @@ def main(argv=None):
     parser.add_argument('--made-by', default='')
     parser.add_argument('--job', default='')
     parser.add_argument('--lane', default='')
+    parser.add_argument('--workdir', default='', help='the job work dir: finds a referee batch\'s hunter in PLANTS.jsonl')
+    parser.add_argument('--lane-dir', default='')
     parser.add_argument('--spec', type=Path)
     parser.add_argument('--print-route', action='store_true', help='print model then executor on separate lines')
     parser.add_argument('--roles-file', type=Path, default=ROLES_FILE)
@@ -464,7 +517,8 @@ def main(argv=None):
             return 0
         receipt = select(args.role, args.executor, args.model, args.model_override, args.roles_file,
                          args.made_by, args.job, args.lane, args.explore,
-                         spec_pin(args.spec.read_text()) if args.spec and args.spec.is_file() else '')
+                         spec_pin(args.spec.read_text()) if args.spec and args.spec.is_file() else '',
+                         args.workdir, args.lane_dir)
         if receipt['role'] in JUDGMENT and args.spec and assigns_judgment_model(args.spec.read_text()):
             print('launch.sh refused {}: name the leaderboard role, not a model (LEADERBOARD.md); '
                   'the leaderboard picks {}'.format(args.job, receipt['model']), file=sys.stderr)

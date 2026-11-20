@@ -209,7 +209,7 @@ start=1; [[ -n $LAUNCH_RESUME ]] && start=2
 for (( i = start; i <= 5; i++ )); do
   sel_exec=$backend
   [[ ${LAUNCH_PROVIDER:-} == (openrouter|gemini) && $backend == codex ]] && sel_exec=$LAUNCH_PROVIDER
-  selection=$(python3 "$selector" --role "$LAUNCH_ROLE" --executor "$sel_exec" --model "$LAUNCH_MODEL" --explore "$LAUNCH_EXPLORE" --model-override "$LAUNCH_MODEL_OVERRIDE" --made-by "$LAUNCH_MADE_BY" --job "$job" --lane "$lane" --spec "$spec" --print-route --log "$log" --receipt "$log.selection.json") || { print -- "exit 2 model-selection-refused $(date)" >> "$log"; exit 2; }
+  selection=$(python3 "$selector" --role "$LAUNCH_ROLE" --executor "$sel_exec" --model "$LAUNCH_MODEL" --explore "$LAUNCH_EXPLORE" --model-override "$LAUNCH_MODEL_OVERRIDE" --made-by "$LAUNCH_MADE_BY" --job "$job" --lane "$lane" --workdir "$dir" --lane-dir "$lane_dir" --spec "$spec" --print-route --log "$log" --receipt "$log.selection.json") || { print -- "exit 2 model-selection-refused $(date)" >> "$log"; exit 2; }
   selected_route=("${(@f)selection}")
   m=$selected_route[1]; backend=$selected_route[2]
   case $backend in
