@@ -34,6 +34,14 @@ RATES = {'gpt-6.1-sol': (50, 2.5, 250, 2.5), 'gpt-6.2-sol': (50, 2.5, 250, 2),
          'gpt-6.2-astra': (200, 10, 1000, 2), 'gpt-6-astra': (250, 25, 1250, 2.5),
          'gpt-6-sol': (50, 5, 250, 2.5), 'gpt-6.1-terra': (25, 1.25, 125, 2.5)}
 FALLBACK_TOKENS_PER_POINT = 250 / 50 * 1_000_000
+# 11-20 (general, on the open-source report): agy's Gemini quota is spent until ~11-26, so a claim a Claude
+# hunter made needs a Codex referee, and the lane's own Codex budget was refusing them ("past 50 calls").
+# A referee call (RSTACK_CALL_ROLE=referee, set by tools/launch.sh from the selection receipt) that only the
+# lane's daily budget refuses may run on a separate bucket of this many calls/day per lane, and only while
+# every agy Gemini candidate is blocked; otherwise the bucket is 0. Hunts never use it.
+REFEREE_EXTRA_PER_DAY = 40
+RESETS_IN = re.compile(r'resets?\s+in\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+(?:\.\d+)?)\s*s)?', re.I)
+AGY_TIERS = ('low', 'medium', 'high', 'xhigh', 'max')
 
 DEFAULTS = {'calls_hour': 60, 'weekly_percent_day': 3}
 LANES = {name: {'calls_hour': 200, 'weekly_percent_day': 10} for name in ('games', 'open-source')}
@@ -65,6 +73,11 @@ def config():
         for key, value in limits.items():
             if key in (*DEFAULTS, 'calls_run') and (not allowance.finite(value) or value <= 0):
                 raise ValueError('limits must be positive and finite')
+    cfg.setdefault('referee_extra_per_day', REFEREE_EXTRA_PER_DAY)
+    for limits in [cfg, *cfg['lanes'].values()]:
+        value = limits.get('referee_extra_per_day', 0)
+        if type(value) is not int or value < 0:
+            raise ValueError('referee_extra_per_day must be a whole number, 0 or more')
     cfg.setdefault('notify_command', [str(Path.home() / '.local/bin/tell-general')])
     cfg.setdefault('owner_command', [str(Path.home() / '.local/bin/notify-ricardo')])
     for key in ('notify_command', 'owner_command'):
@@ -488,11 +501,18 @@ def account_alerts(cfg, base, lane, weekly, now):
                 path.write_text(json.dumps(seen, sort_keys=True) + '\n')
 
 
-def admit(cfg, base, lane, now, prefix, prompt_tokens, weekly, interactive=False, urgent=''):
+def lane_rows(base, lane):
     rows = read_rows(base / (lane + '.jsonl'))
     if lane == 'open-source':
         # Preserve spend recorded before bio became an alias; renaming must not reset limits.
         rows = sorted(rows + read_rows(base / 'bio.jsonl'), key=lambda row: row.get('ts', 0))
+    return rows
+
+
+def admit(cfg, base, lane, now, prefix, prompt_tokens, weekly, interactive=False, urgent='', budget=True):
+    """The refusal reason, or None. budget=False skips the lane's own daily budget (the day limit and the
+    bulk-estimate gate) and keeps every other check: what a referee call on the referee bucket is held to."""
+    rows = lane_rows(base, lane)
     history = calls(rows)
     limits = dict(cfg['defaults'], **cfg['lanes'].get(lane, {}))
     if weekly:
@@ -528,13 +548,13 @@ def admit(cfg, base, lane, now, prefix, prompt_tokens, weekly, interactive=False
                 os.kill(row['pid'], 0)
             except ProcessLookupError:
                 return 'previous wrapper run has incomplete accounting; reconcile its rollout before continuing'
-    if spent >= limits['weekly_percent_day']:
+    if budget and spent >= limits['weekly_percent_day']:
         return '{}% weekly allowance/day limit for {}'.format(limits['weekly_percent_day'], lane)
     if any(r.get('usage_missing') for r in daily):
         return 'previous successful run has unaccounted usage; reconcile its rollout before continuing'
     estimates = [r for r in rows if r.get('event') == 'estimate']
     estimate = estimates[-1] if estimates else None
-    if len(history) >= 50:
+    if budget and len(history) >= 50:
         if not estimate:
             return 'past 50 calls; record codex-budget estimate {} --calls N --tokens T'.format(lane)
         since = [r for r in history if estimate['ts'] <= r['started_at'] <= now]
@@ -556,6 +576,83 @@ def admit(cfg, base, lane, now, prefix, prompt_tokens, weekly, interactive=False
                       'Codex urgent run for {} above 85%: {}'.format(lane, urgent), now, owner=True):
             return 'urgent owner notification failed; run refused'
     return None
+
+
+def agy_blocked_until(path=None):
+    """{model: epoch until which agy refuses it} from the executor's 429 log (state_dir/agy-quota.jsonl).
+
+    Each row is one refusal: utc, model (the route name, tier included), tier, and agy's error text, which
+    says "Resets in 152h14m46s". A row without a reset time blocks nothing: how long is unknown.
+    """
+    blocked = {}
+    try:
+        lines = Path(path or state_dir() / 'agy-quota.jsonl').read_text().splitlines()
+    except OSError:
+        return blocked
+    for line in lines:
+        try:
+            row = json.loads(line)
+            at = datetime.fromisoformat(row['utc']).timestamp()
+        except (ValueError, KeyError, TypeError):
+            continue
+        match = RESETS_IN.search(str(row.get('error', '')))
+        if not match or not any(match.groups()):
+            continue
+        h, m, sec = match.groups()
+        until = at + int(h or 0) * 3600 + int(m or 0) * 60 + float(sec or 0)
+        model = str(row.get('model', ''))
+        blocked[model] = max(until, blocked.get(model, 0))
+    return blocked
+
+
+def agy_gemini_candidates(cfg):
+    """The agy routes that serve Gemini: referee_agy_candidates in the config, else the model leaderboard's
+    routes with cli agy and a google/ canonical (RH_ROLES_FILE, else roles_file in the config)."""
+    if isinstance(cfg.get('referee_agy_candidates'), list):
+        return sorted(str(m) for m in cfg['referee_agy_candidates'])
+    path = os.environ.get('RH_ROLES_FILE') or cfg.get('roles_file')
+    if not path:
+        return []
+    try:
+        routes = json.loads(Path(path).expanduser().read_text()).get('routes', {})
+    except (OSError, ValueError, AttributeError):
+        return []
+    return sorted(name for name, route in routes.items() if isinstance(route, dict) and route.get('cli') == 'agy'
+                  and str(route.get('canonical', '')).startswith('google/'))
+
+
+def referee_bucket(cfg, lane, now):
+    """(calls/day, why): the lane's referee bucket, open only while every agy Gemini candidate is blocked."""
+    size = cfg['lanes'].get(lane, {}).get('referee_extra_per_day', cfg.get('referee_extra_per_day', 0))
+    candidates = agy_gemini_candidates(cfg)
+    if not candidates:
+        return 0, 'no agy Gemini candidates known (roles_file or RH_ROLES_FILE)'
+    blocked = agy_blocked_until()
+    free = [m for m in candidates if blocked.get(m, 0) <= now]
+    if free:
+        return 0, 'agy Gemini not all blocked: {} free'.format(', '.join(free[:3]) + (' +{}'.format(len(free) - 3)
+                                                                                    if len(free) > 3 else ''))
+    until = min(blocked[m] for m in candidates)
+    return size, 'every agy Gemini candidate ({}) blocked until at least {}'.format(
+        len(candidates), datetime.fromtimestamp(until, timezone.utc).strftime('%Y-%m-%d %H:%MZ'))
+
+
+def admit_call(cfg, base, lane, now, prefix, prompt_tokens, weekly, interactive=False, urgent='', role=''):
+    """(reason or None, bucket, note). A referee call the lane's daily budget alone refuses runs on the
+    referee bucket while it is open and has calls left today; every other check still applies."""
+    reason = admit(cfg, base, lane, now, prefix, prompt_tokens, weekly, interactive, urgent)
+    if not reason or role != 'referee' or interactive:
+        return reason, 'lane', ''
+    if admit(cfg, base, lane, now, prefix, prompt_tokens, weekly, interactive, urgent, budget=False):
+        return reason, 'lane', ''
+    size, why = referee_bucket(cfg, lane, now)
+    used = sum(1 for r in lane_rows(base, lane) if r.get('event') == 'start' and r.get('bucket') == 'referee'
+               and now - 86400 < r.get('ts', 0) <= now)
+    if used >= size:
+        return '{}; referee bucket {}'.format(reason, 'closed: ' + why if not size else
+                                              'spent: {}/{} today'.format(used, size)), 'lane', why
+    return None, 'referee', 'referee bucket call {}/{} today for {} (lane budget: {}; {})'.format(
+        used + 1, size, lane, reason, why)
 
 
 def native_link():
@@ -748,14 +845,19 @@ def supervise(native, args, cfg, lane, cwd, interactive, batch):
             # Waiting contenders must count reservations made since their invocation began.
             started = time.time()
             weekly = weekly_snapshot(cfg, started)
-            reason = ('--ephemeral disables required rollout accounting' if batch and '--ephemeral' in args else
-                      admit(cfg, base, lane, started, prefix, prompt_tokens, weekly, interactive, urgent))
+            role = os.environ.get('RSTACK_CALL_ROLE', '').strip()
+            reason, bucket, note = (('--ephemeral disables required rollout accounting', 'lane', '')
+                                    if batch and '--ephemeral' in args else
+                                    admit_call(cfg, base, lane, started, prefix, prompt_tokens, weekly, interactive,
+                                               urgent, role))
             if stripped:
                 append(base, lane, dict(event='priority_stripped', ts=started, cwd=cwd))
             if reason:
-                append(base, lane, dict(event='refused', ts=started, reason=reason, cwd=cwd))
+                append(base, lane, dict(event='refused', ts=started, reason=reason, cwd=cwd, role=role))
                 print('codex: REFUSED ' + reason, file=sys.stderr)
                 return REFUSED
+            if bucket == 'referee':
+                print('codex: ' + note, file=sys.stderr)
             # Remember explicit homes for job-health even after this environment disappears.
             known = codex_homes(cfg) + [home]
             (state_dir() / 'codex-homes.json').write_text(json.dumps(sorted(set(map(str, known)))) + '\n')
@@ -763,6 +865,7 @@ def supervise(native, args, cfg, lane, cwd, interactive, batch):
                                    run_id=os.environ.get('RSTACK_RUN_ID', '').strip(),
                                    pid=os.getpid(), codex_home=str(home), prefix=prefix,
                                    prompt_tokens=prompt_tokens, interactive=interactive, urgent=urgent, weekly_before=weekly,
+                                   role=role, bucket=bucket, bucket_note=note,
                                    resume_rollouts=list(before)))
         env = dict(os.environ, CODEX_INTERNAL_ORIGINATOR_OVERRIDE=marker)
         process = subprocess.Popen([str(native)] + args, stdin=stream if stream else None, env=env)

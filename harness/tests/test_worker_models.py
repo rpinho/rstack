@@ -927,3 +927,19 @@ def test_a_science_publish_review_is_held_to_the_gates_reviewers_and_a_plain_rev
     monkeypatch.setenv('RH_SCIENCE_PUBLISH_GATE', str(tmp_path / 'absent'))
     with pytest.raises(ValueError, match='REVIEWERS cannot be read'):
         wm.select('review', 'codex', path=p, made_by='gpt-6.2-sol', gate='science-publish')
+
+
+@pytest.mark.parametrize('role_args,expected', [(['--role', 'review', '--made-by', 'claude-opus-5-5'], 'referee'),
+                                                ([], 'batch')])
+def test_the_codex_call_is_told_whether_it_referees(fake_home, role_args, expected):
+    """11-20: the Codex wrapper's referee bucket admits only referee calls; launch.sh says which one this is."""
+    _, artifacts, _, env = fake_home
+    if role_args:
+        judgment_roles(Path(env['RH_ROLES_FILE']))
+    codex = Path(env['LAUNCH_CODEX'])
+    codex.write_text('#!' + sys.executable + '\nimport json,os,sys\nfrom pathlib import Path\n'
+                     'Path(os.environ["FAKE_CALL"]).write_text(json.dumps(os.environ.get("RSTACK_CALL_ROLE")))\n')
+    result = run_launcher(fake_home, *role_args)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(Path(env['FAKE_CALL']).read_text()) == expected
+    assert json.loads((artifacts / 'fixture-job.log.selection.json').read_text())['call_role'] == expected

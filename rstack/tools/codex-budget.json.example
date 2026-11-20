@@ -4,6 +4,8 @@
     "games": {"calls_hour": 200, "weekly_percent_day": 10},
     "open-source": {"calls_hour": 200, "weekly_percent_day": 10}
   },
+  "referee_extra_per_day": 40,
+  "roles_file": "~/.config/model-leaderboard/roles.json",
   "notify_command": ["tell-general"],
   "owner_command": ["notify-ricardo"],
   "codex_homes": [],

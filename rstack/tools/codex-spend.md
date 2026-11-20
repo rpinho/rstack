@@ -38,6 +38,13 @@ The wrapper reuses the local allowance reader. The launcher applies only its tmu
   `codex-budget estimate LANE --calls 100 --tokens 27000`. Tokens are estimated input tokens
   **per call**, so this records 2,700,000 planned input tokens. The estimate has finite call
   and token totals and does not override any limit.
+- Referee bucket (11-20): a call `tools/launch.sh` marks `RSTACK_CALL_ROLE=referee` (a review,
+  judge or audit role, or a referee batch on a hunter's claims) that only the lane's daily budget
+  refuses (the day limit or the fifty-call estimate) runs on a separate bucket of
+  `referee_extra_per_day` calls per lane per rolling day (default 40; a lane entry can override it),
+  and only while every agy Gemini route (`roles_file`/`RH_ROLES_FILE`, or `referee_agy_candidates`)
+  is blocked in `agy-quota.jsonl`. Otherwise the bucket is 0. The hourly cap, fan-out and account
+  checks still apply. Stderr and the ledger's start row (`bucket`, `bucket_note`) say which bucket a call used.
 - Account alerts: 50%, 70%, 85%, once per reset window. The wrapper and companion launch
   legacy guard share `RSTACK_STATE_DIR/allowance/alerts.json` and its lock. The launcher does not call that guard. Above 85%, batch calls
   require nonblank `LAUNCH_URGENT`. Every admitted urgent attempt there is logged and sent

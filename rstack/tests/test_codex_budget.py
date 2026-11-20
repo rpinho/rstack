@@ -884,3 +884,74 @@ def test_token_weights_follow_turn_models_and_priority(isolated):
     total, _ = cb.usage_at(path)
     assert total['weighted_tokens'] == 150 + 650 * 2.5
     assert cb.weighted_tokens(dict(input_tokens=1_000_000), 'other/provider') == 0
+
+
+# ---- the referee bucket (11-20) --------------------------------------------------------------
+
+GEMINI = ['gemini-3.8-flash-high', 'gemini-4-argon-medium']
+
+
+def agy_refusals(models, at=NOW - 3600, resets='152h14m46s'):
+    write_jsonl(cb.state_dir() / 'agy-quota.jsonl', [dict(
+        utc=cb.datetime.fromtimestamp(at, cb.timezone.utc).isoformat(), model=m, tier=m.rsplit('-', 1)[1],
+        job='j', error='Individual quota reached. Resets in {}.'.format(resets)) for m in models])
+
+
+def roles(tmp_path, cfg):
+    path = tmp_path / 'roles.json'
+    path.write_text(json.dumps(dict(roles={}, routes=dict(
+        {m: dict(cli='agy', canonical='google/' + m) for m in GEMINI},
+        **{'claude-opus-5-5-high': dict(cli='agy', canonical='anthropic/claude-opus-5-5'),
+           'gpt-6.2-astra': dict(cli='codex', canonical='openai/gpt-6.2-astra')}))))
+    cfg['roles_file'] = str(path)
+    return cfg
+
+
+def test_agy_reset_times_are_read_per_model(isolated):
+    agy_refusals(['gemini-4-argon-medium'], resets='4h52m1s')
+    assert cb.agy_blocked_until()['gemini-4-argon-medium'] == pytest.approx(NOW - 3600 + 4 * 3600 + 52 * 60 + 1)
+    assert cb.agy_gemini_candidates(roles(isolated[0], isolated[2])) == GEMINI
+
+
+def test_a_referee_past_the_lane_budget_runs_on_the_referee_bucket_only_while_agy_gemini_is_out(isolated):
+    root, _, cfg, _, _ = isolated
+    cfg = roles(root, dict(cfg, referee_extra_per_day=2))
+    with cb.locked() as base:
+        seed(base, 'open-source', 50, start=NOW - 7000)
+        args = (cfg, base, 'open-source', NOW, 'x', 1, weekly())
+        # One Gemini candidate still free: no bucket, the lane's own refusal stands.
+        agy_refusals(GEMINI[1:])
+        reason, bucket, _ = cb.admit_call(*args, role='referee')
+        assert 'past 50 calls' in reason and 'referee bucket closed' in reason and bucket == 'lane'
+        # Every candidate blocked: referees run on the bucket, hunts do not.
+        agy_refusals(GEMINI)
+        assert 'past 50 calls' in cb.admit_call(*args, role='batch')[0]
+        for n in (1, 2):
+            reason, bucket, note = cb.admit_call(*args, role='referee')
+            assert reason is None and bucket == 'referee' and 'call {}/2'.format(n) in note
+            cb.append(base, 'open-source', dict(event='start', call_id='ref{}'.format(n), ts=NOW - 1, bucket='referee'))
+        assert 'referee bucket spent: 2/2' in cb.admit_call(*args, role='referee')[0]
+        # The bucket is the lane budget only: the hourly cap still refuses a referee.
+        cfg['lanes']['open-source'] = dict(cfg['lanes']['open-source'], calls_hour=2)
+        assert '2 calls/hour' in cb.admit_call(*args, role='referee')[0]
+    # After agy's reset the bucket closes again.
+    agy_refusals(GEMINI, at=NOW - 200 * 3600)
+    assert cb.referee_bucket(cfg, 'open-source', NOW)[0] == 0
+
+
+def test_the_wrapper_says_which_bucket_a_referee_used(isolated, monkeypatch):
+    root, _, cfg, config, _ = isolated
+    fake_native(isolated)
+    cfg = json.loads(config.read_text())
+    config.write_text(json.dumps(roles(root, cfg)))
+    agy_refusals(GEMINI, at=time.time() - 60)
+    with cb.locked() as base:
+        seed(base, 'normal', 50, start=time.time() - 7000)
+    env = dict(os.environ, RSTACK_CALL_ROLE='referee')
+    r = run_wrapper('exec', 'hello', env=env)
+    assert r.returncode == 0, r.stderr
+    assert 'referee bucket call 1/40 today for normal' in r.stderr
+    start = [row for row in cb.read_rows(cb.state_dir() / 'codex-ledger/normal.jsonl') if row['event'] == 'start'][-1]
+    assert start['bucket'] == 'referee' and start['role'] == 'referee'
+    r = run_wrapper('exec', 'hello', env=dict(os.environ, RSTACK_CALL_ROLE='batch'))
+    assert r.returncode == cb.REFUSED and 'past 50 calls' in r.stderr

@@ -483,6 +483,10 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         role=role, model=chosen, canonical=route['canonical'], executor=executor,
         roles_sha256=hashlib.sha256(raw).hexdigest(), roles_updated=data.get('updated'),
         model_override=override, source='explore' if explore else 'override' if model else 'delegate' if delegated else 'leaderboard', job=job, lane=lane, made_by=made_by)
+    # 11-20: what the Codex wrapper is told this call is (launch.sh exports it as RSTACK_CALL_ROLE). A referee
+    # (an independent judgment role, or a referee batch on a hunter's claims) may use the referee bucket.
+    receipt['call_role'] = ('referee' if role in INDEPENDENT | {'referee'}
+                            or any(src.startswith('hunter ') for src in family_sources) else role)
     if delegated:
         receipt['delegate'] = delegated[1]
     if pin:

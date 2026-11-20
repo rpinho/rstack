@@ -272,6 +272,11 @@ for (( i = start; i <= 5; i++ )); do
   selection=$(RH_LAUNCHER_EXECUTORS=${RH_LAUNCHER_EXECUTORS:-codex,claude,agy} python3 "$selector" --role "$LAUNCH_ROLE" --executor "$sel_exec" --model "$LAUNCH_MODEL" --explore "$LAUNCH_EXPLORE" --model-override "$LAUNCH_MODEL_OVERRIDE" --made-by "$LAUNCH_MADE_BY" --job "$job" --lane "$lane" --workdir "$dir" --lane-dir "$lane_dir" --spec "$spec" --print-route --log "$log" --receipt "$log.selection.json") || { print -- "exit 2 model-selection-refused $(date)" >> "$log"; exit 2; }
   selected_route=("${(@f)selection}")
   m=$selected_route[1]; backend=$selected_route[2]
+  # 11-20: the Codex wrapper charges a referee call (call_role in the selection receipt) to the lane's
+  # referee bucket when only the lane's daily budget refuses it; every other call carries its role too.
+  RSTACK_CALL_ROLE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("call_role", ""))' \
+    "$log.selection.json" 2>/dev/null)
+  export RSTACK_CALL_ROLE
   case $backend in
     codex) cx=${LAUNCH_CODEX:-codex};;
     openrouter|gemini) export LAUNCH_PROVIDER=$backend; backend=codex; cx=${LAUNCH_CODEX:-codex};;
@@ -398,7 +403,7 @@ ${RH_ALLOW_OPENROUTER:+export RH_ALLOW_OPENROUTER=${(q)RH_ALLOW_OPENROUTER}}
 ${RH_ALLOW_GEMINI_API:+export RH_ALLOW_GEMINI_API=${(q)RH_ALLOW_GEMINI_API}}
 ${LAUNCH_CODEX_SANDBOX:+export LAUNCH_CODEX_SANDBOX=${(q)LAUNCH_CODEX_SANDBOX}}
 ${LAUNCH_CODEX_NETWORK:+export LAUNCH_CODEX_NETWORK=${(q)LAUNCH_CODEX_NETWORK}}
-export RSTACK_LANE=${(q)lane} LAUNCH_URGENT=${(q)LAUNCH_URGENT}
+export RSTACK_LANE=${(q)lane} LAUNCH_URGENT=${(q)LAUNCH_URGENT} RSTACK_CALL_ROLE=${(q)RSTACK_CALL_ROLE}
 $remote_auth
 mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
 mkdir -p $rmarks 2>/dev/null || true
