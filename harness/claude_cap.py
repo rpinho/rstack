@@ -9,7 +9,7 @@ code, applied by worker_models.select() to every Claude pick, and the receipt sa
   pacing    weekly + burn %/h x hours to reset > 80: Opus is moved to Sonnet; at >= RH_CLAUDE_PACE_OFF_PERCENT
             (100: on course to hit the wall) the job leaves Claude. Burn is the slope of
             usage/claude-history.jsonl (written by claude-usage) over the last 6 h, else this week's average.
-  default   Sonnet 5.5 for every launched Claude role. Opus only with a spec line "Model: opus, REASON".
+  Sonnet   preferred Claude model for mechanical/batch/cheap picks only; judgment roles keep the leaderboard's pick.
   shares    ~/.config/rstack/claude-shares.json: {"LANE": {"max_week_percent": N, "models": ["sonnet"]}, "default": {...}}.
 
 Lane attribution (limits): the usage endpoint reports one weekly figure and no breakdown. A lane's share is
@@ -31,7 +31,7 @@ CEILING = 80.0
 WARN = 70.0
 PACE_OFF = 100.0
 SONNET = 'claude-sonnet-5-5'
-OPUS = re.compile(r'^[ \t]*[-*]?[ \t]*model:[ \t]*opus\b[ \t]*(?:,[ \t]*(\S.*))?$', re.I | re.M)
+LOW_JUDGMENT = ('mechanical', 'batch', 'cheap')   # roles where Sonnet is the preferred Claude model
 WEEK_H = 168.0
 
 
@@ -44,17 +44,6 @@ def _f(name, default):
 
 def enabled():
     return os.environ.get('RH_CLAUDE_CAP', '1') != '0'
-
-
-def spec_opus(text):
-    """('', '') without the line, ('opus', reason) with it; ValueError when the reason is missing."""
-    found = OPUS.search(text or '')
-    if not found:
-        return ''
-    reason = ' '.join((found.group(1) or '').split())[:200]
-    if not reason:
-        raise ValueError('spec says "Model: opus" with no reason; write "Model: opus, REASON" (Sonnet 5.5 is the default)')
-    return reason
 
 
 def is_opus(model):
@@ -203,20 +192,21 @@ def lane_percent(lane, weekly, since, now, allowance=None, projects=None):
 
 # ---- the decision ----------------------------------------------------------------------------------------
 
-def decide(model, lane, opus_reason, sonnet_ok, allowance, now=None, pinned=False, projects=None):
+def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, projects=None):
     """What a Claude pick may do. Returns dict(model, leave, notes, warning, opus_reason):
     leave is a reason string when Claude must be left for a fallback route, else ''."""
     now = time.time() if now is None else now
     notes, leave, warning = [], '', ''
-    out = dict(model=model, leave='', notes=notes, warning='', opus_reason=opus_reason if is_opus(model) else '')
+    out = dict(model=model, leave='', notes=notes, warning='')
     if not enabled():
         return out
     ceiling, warn, pace_off = _f('RH_CLAUDE_CEILING_PERCENT', CEILING), _f('RH_CLAUDE_WARN_PERCENT', WARN), \
         _f('RH_CLAUDE_PACE_OFF_PERCENT', PACE_OFF)
-    # Sonnet is the default; Opus needs the spec line (an explicit --model/pin is the operator's own choice).
-    if is_opus(model) and not opus_reason and sonnet_ok and not pinned:
+    # Within the leaderboard's Claude picks, Sonnet is preferred for low-judgment roles only; judgment roles keep
+    # the leaderboard's pick (an explicit --model or spec pin is the operator's own choice).
+    if is_opus(model) and role in LOW_JUDGMENT and sonnet_ok and not pinned:
         out['model'] = model = SONNET
-        notes.append('claude default Sonnet 5.5: no "Model: opus, REASON" line in the spec')
+        notes.append('claude Sonnet 5.5 preferred for the {} role'.format(role))
     weekly = allowance.claude_weekly(now) if allowance else None
     if not weekly:
         notes.append('claude usage unknown: ceiling, pacing and shares not applied')
@@ -239,7 +229,6 @@ def decide(model, lane, opus_reason, sonnet_ok, allowance, now=None, pinned=Fals
             return out
         if is_opus(model) and sonnet_ok and not pinned:
             out['model'] = model = SONNET
-            out['opus_reason'] = ''
             notes.append(line + '; Opus downshifted to Sonnet 5.5')
         else:
             notes.append(line + '; already Sonnet')
@@ -249,7 +238,6 @@ def decide(model, lane, opus_reason, sonnet_ok, allowance, now=None, pinned=Fals
         allowed = share.get('models')
         if allowed and not any(a in model for a in allowed) and sonnet_ok and any(a == 'sonnet' for a in allowed):
             out['model'] = model = SONNET
-            out['opus_reason'] = ''
             notes.append('lane {} share allows {}: moved to Sonnet 5.5'.format(lane, '/'.join(allowed)))
         cap = share.get('max_week_percent')
         if isinstance(cap, (int, float)):

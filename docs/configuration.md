@@ -168,8 +168,8 @@ Ricardo: Claude must never reach 100% (general runs on it), Sonnet is the defaul
 - Pacing: weekly + burn %/h x hours to reset above 80 moves Opus to Sonnet; at `RH_CLAUDE_PACE_OFF_PERCENT` (100)
   the job leaves Claude. Burn is the slope of `usage/claude-history.jsonl` (claude-usage appends a row every
   reading, 14 days kept) over 6 h, else the week's average. The receipt's `claude_cap` says why.
-- Default model: Sonnet 5.5. Opus needs a spec line `Model: opus, REASON` (no reason refuses the launch); the
-  reason is in the receipt (`opus_reason`) and the log.
+- Sonnet 5.5 is the preferred Claude model for mechanical, batch and cheap picks only (11-20 correction: not a
+  default); judgment roles keep the leaderboard's pick, and an explicit model or spec pin wins.
 - Lane shares: `~/.config/rstack/claude-shares.json` (`rstack/tools/claude-shares.json.example`), per lane
   `max_week_percent` and `models`, with a `default`. Measured from Claude Code transcripts (token-weighted, Opus x5,
   fraction of all transcripts since the week began x the weekly percent). Limits: a session in a directory not

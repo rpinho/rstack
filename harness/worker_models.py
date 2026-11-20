@@ -416,7 +416,7 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), exe
 
 
 def select(role, executor, model='', override='', path=None, made_by='', job='', lane='', explore='', pin='',
-           workdir='', lane_dir='', follows_route=True, gate='', opus=''):
+           workdir='', lane_dir='', follows_route=True, gate=''):
     requested = executor
     judgment_hint = ''
     if role == 'batch' and JUDGMENT_JOB.search(job):
@@ -534,7 +534,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     cap, cap_route = None, None
     if executor == 'claude' and route and route.get('cli') == 'claude' and claude_cap.enabled():
         held = bool(explore or model or pin or gate)
-        cap = claude_cap.decide(chosen, lane, opus, claude_cap.SONNET in data['routes'], _allowance(), pinned=held)
+        cap = claude_cap.decide(chosen, lane, role, claude_cap.SONNET in data['routes'], _allowance(), pinned=held)
         if cap['model'] != chosen:
             chosen, route = cap['model'], data['routes'][cap['model']]
         if cap['leave']:
@@ -591,12 +591,10 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         receipt['producer_family'] = sorted(families) or 'unknown'
         if family_sources:
             receipt['producer_family_source'] = family_sources
-    if cap and (cap['notes'] or cap['warning'] or cap['opus_reason']):
+    if cap and (cap['notes'] or cap['warning']):
         receipt['claude_cap'] = '; '.join(cap['notes'])
         if cap['warning']:
             receipt['claude_warning'] = cap['warning']
-        if cap['opus_reason']:
-            receipt['opus_reason'] = cap['opus_reason']
     if delegate_skip:
         receipt['delegate_skipped'] = delegate_skip
     if quota_skipped:
@@ -898,8 +896,7 @@ def main(argv=None):
                          args.made_by, args.job, args.lane, args.explore,
                          spec_pin(args.spec.read_text()) if args.spec and args.spec.is_file() else '',
                          args.workdir, args.lane_dir, follows_route=args.print_route,
-                         gate=spec_gate(args.spec.read_text()) if args.spec and args.spec.is_file() else '',
-                         opus=claude_cap.spec_opus(args.spec.read_text()) if args.spec and args.spec.is_file() else '')
+                         gate=spec_gate(args.spec.read_text()) if args.spec and args.spec.is_file() else '')
         if receipt['role'] in JUDGMENT and args.spec and assigns_judgment_model(args.spec.read_text()):
             print('launch.sh refused {}: name the leaderboard role, not a model (LEADERBOARD.md); '
                   'the leaderboard picks {}'.format(args.job, receipt['model']), file=sys.stderr)
@@ -922,9 +919,6 @@ def main(argv=None):
                 with Path(args.log).open('a') as stream:
                     stream.write('{}: {} job={}\n'.format(key, receipt[key], args.job))
                 print('worker model: ' + receipt[key], file=sys.stderr)
-        if receipt.get('opus_reason'):
-            with Path(args.log).open('a') as stream:
-                stream.write('opus allowed: {} job={}\n'.format(receipt['opus_reason'], args.job))
         if receipt.get('overflow'):
             with Path(args.log).open('a') as stream:
                 stream.write('{} job={} model={} route={}\n'.format(receipt['overflow'], args.job, receipt['model'],

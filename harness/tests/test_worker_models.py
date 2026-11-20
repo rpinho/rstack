@@ -974,32 +974,34 @@ def cap_setup(tmp_path, monkeypatch, used, hours=100, history=None, shares=None)
     if shares is not None:
         (tmp_path / 'shares.json').write_text(json.dumps(shares))
     p = tmp_path / 'roles.json'
-    p.write_text(json.dumps({'roles': {'batch': ['claude-opus-5-5']}, 'routes': {
+    p.write_text(json.dumps({'roles': {'batch': ['claude-opus-5-5'], 'review': ['claude-opus-5-5']}, 'routes': {
         'claude-opus-5-5': {'cli': 'claude', 'canonical': 'anthropic/claude-opus-5.5'},
         'claude-sonnet-5-5': {'cli': 'claude', 'canonical': 'anthropic/claude-sonnet-5.5'},
+        'gpt-6.2-astra': {'cli': 'codex', 'canonical': 'openai/gpt-6.2-astra'},
         'gpt-6.2-sol': {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'}}}))
     return p
 
 
-def test_sonnet_is_the_default_and_opus_needs_a_reason_in_the_spec(tmp_path, monkeypatch):
+def test_sonnet_is_preferred_only_for_mechanical_and_batch_claude_picks(tmp_path, monkeypatch):
+    # 11-20 (Ricardo): "it shouldn't be the default ... it's more for mechanical work." No global Sonnet default.
     p = cap_setup(tmp_path, monkeypatch, 10, hours=160, history=[(2, 9.5), (0, 10)])
-    got = wm.select('batch', 'claude', path=p)
-    assert got['model'] == 'claude-sonnet-5-5' and 'Sonnet 5.5' in got['claude_cap']
-    got = wm.select('batch', 'claude', path=p, opus='needs the long context')
-    assert got['model'] == 'claude-opus-5-5' and got['opus_reason'] == 'needs the long context'
-    with pytest.raises(ValueError, match='no reason'):
-        wm.claude_cap.spec_opus('Model: opus')
-    assert wm.claude_cap.spec_opus('- Model: opus, sealed referee') == 'sealed referee'
-    assert wm.claude_cap.spec_opus('nothing here') == ''
+    data = json.loads(p.read_text())
+    data['roles'].update({r: ['claude-opus-5-5'] for r in ('mechanical', 'review', 'judge', 'taste', 'ideation', 'builder', 'design')})
+    p.write_text(json.dumps(data))
+    for role in ('batch', 'mechanical'):
+        got = wm.select(role, 'claude', path=p)
+        assert got['model'] == 'claude-sonnet-5-5' and 'Sonnet 5.5 preferred' in got['claude_cap'], role
+    for role in ('review', 'judge', 'taste', 'ideation', 'builder', 'design'):
+        got = wm.select(role, 'claude', path=p, made_by='gpt-6.2-sol')
+        assert got['model'] == 'claude-opus-5-5' and 'claude_cap' not in got, role
+    # an explicit model or spec pin wins over the preference
+    assert wm.select('batch', 'claude', path=p, pin='sealed referee')['model'] == 'claude-opus-5-5'
+    # a spec line "Model: opus" is no longer parsed or required
     spec, log, receipt = tmp_path / 'spec.md', tmp_path / 'job.log', tmp_path / 'r.json'
-    spec.write_text('do it\nModel: opus, long context\n')
-    assert wm.main(['--role', 'batch', '--executor', 'claude', '--roles-file', str(p), '--spec', str(spec),
-                    '--job', 'j', '--log', str(log), '--receipt', str(receipt)]) == 0
-    assert 'opus allowed: long context job=j' in log.read_text()
-    assert json.loads(receipt.read_text())['opus_reason'] == 'long context'
-    spec.write_text('Model: opus\n')
-    assert wm.main(['--role', 'batch', '--executor', 'claude', '--roles-file', str(p), '--spec', str(spec),
-                    '--job', 'j', '--log', str(log), '--receipt', str(receipt)]) == 2
+    spec.write_text('do it\nModel: opus\n')
+    assert wm.main(['--role', 'review', '--made-by', 'gpt-6.2-sol', '--executor', 'claude', '--roles-file', str(p),
+                    '--spec', str(spec), '--job', 'j', '--log', str(log), '--receipt', str(receipt)]) == 0
+    assert json.loads(receipt.read_text())['model'] == 'claude-opus-5-5'
 
 
 def test_at_the_ceiling_claude_is_refused_and_the_job_takes_codex_then_agy(tmp_path, monkeypatch):
@@ -1047,15 +1049,15 @@ def test_from_70_percent_the_receipt_warns(tmp_path, monkeypatch):
 def test_pacing_downshifts_opus_to_sonnet_then_claude_to_codex(tmp_path, monkeypatch):
     # 40% now, +0.2%/h x 100 h = 60%: under 80, Opus (with a reason) stays
     p = cap_setup(tmp_path, monkeypatch, 40, history=[(5, 39), (0, 40)])
-    assert wm.select('batch', 'claude', path=p, opus='x')['model'] == 'claude-opus-5-5'
+    assert wm.select('review', 'claude', path=p, made_by='gpt-6.2-sol')['model'] == 'claude-opus-5-5'
     # +0.5%/h x 100 h = 90%: past 80, short of the wall: Opus goes to Sonnet and the receipt says why
     p = cap_setup(tmp_path, monkeypatch, 40, history=[(5, 37.5), (0, 40)])
-    got = wm.select('batch', 'claude', path=p, opus='x')
+    got = wm.select('review', 'claude', path=p, made_by='gpt-6.2-sol')
     assert got['model'] == 'claude-sonnet-5-5' and got['executor'] == 'claude'
-    assert 'projects 90% > 80%' in got['claude_cap'] and 'Opus downshifted' in got['claude_cap'] and 'opus_reason' not in got
+    assert 'projects 90% > 80%' in got['claude_cap'] and 'Opus downshifted' in got['claude_cap']
     # +1%/h x 100 h = 140%: on course for 100%, so the job leaves Claude
     p = cap_setup(tmp_path, monkeypatch, 40, history=[(5, 35), (0, 40)])
-    got = wm.select('batch', 'claude', path=p, opus='x')
+    got = wm.select('review', 'claude', path=p, made_by='gemini-3.8-flash-low')
     assert got['executor'] == 'codex' and 'projects 140%' in got['claude_cap'] and 'leaves Claude' in got['claude_cap']
     # no history yet: this week's average (28% over 168-100=68 h is 0.41%/h; x 100 h = 69%)
     (tmp_path / 'state/usage/claude-history.jsonl').unlink()
@@ -1099,7 +1101,7 @@ def test_a_lane_over_its_share_is_refused_claude_and_falls_back(tmp_path, monkey
     shares['meccog-apoe4']['max_week_percent'] = 50
     (tmp_path / 'shares.json').write_text(json.dumps(shares))
     (tmp_path / 'state/usage/claude-lanes-cache.json').unlink()
-    got = wm.select('batch', 'claude', path=p, lane='meccog-apoe4', opus='x')
+    got = wm.select('review', 'claude', path=p, lane='meccog-apoe4', made_by='gpt-6.2-sol')
     assert (got['executor'], got['model']) == ('claude', 'claude-sonnet-5-5') and 'allows sonnet' in got['claude_cap']
 
 
