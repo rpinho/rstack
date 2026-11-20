@@ -103,3 +103,23 @@ def test_the_launcher_grades_a_returned_delegated_job_by_itself(tmp_path):
     assert receipt['source'] == 'delegate' and receipt['model'] == 'gpt-6.2-sol'
     row = json.loads((jobs / 'everyday-grades.jsonl').read_text().splitlines()[-1])
     assert (row['grade'], row['grader'], row['producer']) == ('pass', 'checks', 'gpt-6.2-sol')
+
+
+def test_a_host_jobs_checks_run_on_the_host_where_its_outputs_are(tmp_path, monkeypatch):
+    # 11-20: jobs run on the m5 from the M4 wrote out.txt there; the M4 has only STATUS.md and REPORT.md back, and
+    # a reviewer reading the M4's copy graded all three fail.
+    receipt, log, work, spec = returned(tmp_path)
+    (work / 'out.txt').unlink()   # the controller's copy has no outputs
+    host_side = tmp_path / 'host'
+    (host_side / work.relative_to('/')).mkdir(parents=True)
+    (host_side / work.relative_to('/') / 'out.txt').write_text('ok')
+    ssh = tmp_path / 'fake-ssh'
+    ssh.write_text('#!/bin/sh\nwhile [ "$1" = "-o" ]; do shift 2; done\necho "$1" >> ' + str(tmp_path / 'hosts') +
+                   '\nshift\ncd ' + str(host_side) + ' && exec sh -c "$(echo "$*" | sed "s|cd |cd ' + str(host_side) + '|")"\n')
+    ssh.chmod(0o755)
+    monkeypatch.setenv('LAUNCH_SSH', str(ssh))
+    auto_grade.main(['--receipt', str(receipt), '--log', str(log), '--dir', str(work), '--spec', str(spec), '--host', 'm5'])
+    row = graded(tmp_path)
+    assert (row['grade'], row['grader']) == ('pass', 'checks') and (tmp_path / 'hosts').read_text().strip() == 'm5'
+    assert 'cd ' in (REPO / 'tools/launch.sh').read_text() and '--host} ${LAUNCH_HOST:+$LAUNCH_HOST}' in \
+        (REPO / 'tools/launch.sh').read_text()

@@ -508,9 +508,9 @@ print -- "lint restate-ask=$ok_ask shipped-line=$ok_ship $(date)" >> "$log"
 # 11-19 (general): a returned delegated job is graded here, at return, with no session in the loop: its own
 # checks first (exit code, Shipped and You asked lines, the spec's Check: lines), else the lane's reviewing
 # model. Whatever cannot be graded is recorded "ungraded" (counted, outside the rate) for the morning report.
-# Never blocks and never fails the job. A --host job's checks would run on the wrong machine, so it skips them.
+# Never blocks and never fails the job. A --host job's outputs stay on the host, so its checks run there.
 python3 "$H/auto_grade.py" --receipt "$log.selection.json" --log "$log" --dir "$dir" \
-  --spec "$spec" ${LAUNCH_HOST:+--no-checks} >> "$log" 2>&1 || true
+  --spec "$spec" ${LAUNCH_HOST:+--host} ${LAUNCH_HOST:+$LAUNCH_HOST} >> "$log" 2>&1 || true
 python3 "$selector" --record-ungraded --receipt "$log.selection.json" --log "$log" >/dev/null 2>&1 || true
 yield=${LAUNCH_YIELD_LEDGER:-$PWD/.runtime/job-yield.jsonl}
 mkdir -p "${yield:h}" 2>/dev/null

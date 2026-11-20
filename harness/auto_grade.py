@@ -59,11 +59,20 @@ def exit_code(log, selection_id):
     return None
 
 
-def run_checks(spec_text, workdir):
+def run_checks(spec_text, workdir, host=''):
+    """(command, passed) per Check: line. A --host job's outputs stay on the host (only STATUS.md, REPORT.md and
+    a few small files come back), so its checks run there, in the same work dir, over ssh. 11-20: three jobs
+    run on the m5 from the M4 shipped out.txt there and were graded fail by a reviewer reading the M4's copy."""
+    import shlex
     results = []
     for command in CHECK.findall(spec_text or ''):
         try:
-            done = subprocess.run(command, shell=True, cwd=workdir, capture_output=True, timeout=CHECK_SECONDS)
+            if host:
+                argv = shlex.split(os.environ.get('LAUNCH_SSH') or 'ssh') + [
+                    '-o', 'BatchMode=yes', host, 'cd {} && {}'.format(shlex.quote(str(workdir)), command)]
+                done = subprocess.run(argv, capture_output=True, timeout=CHECK_SECONDS)
+            else:
+                done = subprocess.run(command, shell=True, cwd=workdir, capture_output=True, timeout=CHECK_SECONDS)
             results.append((command, done.returncode == 0))
         except subprocess.TimeoutExpired:
             results.append((command, False))
@@ -107,14 +116,14 @@ def review(receipt, spec_text, workdir, roles_file=None):
     return found.group(1).lower(), model, ' '.join(text.split())[:300]
 
 
-def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False):
+def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, host=''):
     receipt = json.loads(Path(receipt_path).read_text())
     spec_text = Path(spec).read_text(errors='replace') if spec and Path(spec).is_file() else ''
     run_text = '' if no_checks else spec_text
     rc = exit_code(log, receipt.get('selection_id'))
     shipped = first_line(Path(workdir) / 'REPORT.md').startswith('Shipped:')
     restated = first_line(Path(workdir) / 'STATUS.md').startswith('You asked:')
-    checks = run_checks(run_text, workdir) if rc == 0 and shipped else []
+    checks = run_checks(run_text, workdir, host) if rc == 0 and shipped else []
     notes = ['exit {}'.format(rc), 'Shipped line ' + ('yes' if shipped else 'no'),
              'You asked line ' + ('yes' if restated else 'no')]
     notes += ['check {}: {}'.format('ok' if ok else 'FAILED', command[:80]) for command, ok in checks]
@@ -145,13 +154,16 @@ def main(argv=None):
     p.add_argument('--dir', type=Path, required=True)
     p.add_argument('--spec', type=Path)
     p.add_argument('--roles-file', type=Path)
-    p.add_argument('--no-checks', action='store_true', help='skip Check: commands (the work ran on another host)')
+    p.add_argument('--no-checks', action='store_true', help='skip Check: commands')
+    p.add_argument('--host', default='', help='the work ran on this ssh host: run the Check: commands there')
     a = p.parse_args(argv)
     try:
         receipt = json.loads(a.receipt.read_text())
         if receipt.get('source') != 'delegate':
             return 0
-        row = grade(a.receipt, a.log, a.dir, a.spec, a.roles_file, a.no_checks)
+        if a.host and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,62}', a.host):
+            raise ValueError('--host must be an ssh alias')
+        row = grade(a.receipt, a.log, a.dir, a.spec, a.roles_file, a.no_checks, a.host)
         print('auto-graded {} {} (producer {}, grader {})'.format(row['job'], row['grade'], row['producer'],
                                                                   row['grader']))
         return 0
