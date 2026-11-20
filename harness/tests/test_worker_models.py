@@ -324,10 +324,11 @@ def judgment_roles(path):
 
 
 @pytest.mark.parametrize('role', sorted(wm.JUDGMENT))
-def test_judgment_pin_requires_owner_reason_and_names_pick(tmp_path, role):
+def test_judgment_pin_without_a_reason_refuses_and_names_pick(tmp_path, role):
+    # 11-20: any non-empty reason pins a judgment role; a blank one still refuses, naming the pick.
     path = judgment_roles(tmp_path / 'roles.json')
     with pytest.raises(ValueError, match=role + '.*leaderboard picks claude-opus-5-5'):
-        wm.select(role, 'codex', 'claude-sonnet-5', 'save budget', path, made_by='gpt-6.1-sol')
+        wm.select(role, 'codex', 'claude-sonnet-5', '  ', path, made_by='gpt-6.1-sol')
     assert not (tmp_path / 'model-overrides.jsonl').exists()
 
 
@@ -365,23 +366,32 @@ def test_owner_override_env_is_accepted_and_logged(tmp_path, monkeypatch):
                        job='fixture-review', utc=got['utc'])
 
 
-def test_review_launch_pin_is_rerouted_to_the_leaderboard_pick(fake_home):
-    # A judgment pin still needs `Ricardo: REASON` (left to general, see AUDIT); without it the job no longer
-    # stops: the leaderboard's pick referees it, warned (RULE #1).
+def test_review_launch_pin_with_any_override_runs_the_pinned_model(fake_home):
+    # 11-20 (general, RULE #1 audit): any non-empty --model-override pins a judgment role (math's Sonnet
+    # control arm). It runs the pinned model and the ledger records allowed-override.
     _, _, _, env = fake_home
     judgment_roles(Path(env['RH_ROLES_FILE']))
     fake_claude(fake_home)
     result = run_launcher(fake_home, '--role', 'review', '--made-by', 'gpt-6.1-sol',
-                          '--model', 'claude-sonnet-5', '--model-override', 'save budget')
+                          '--model', 'claude-sonnet-5', '--model-override', 'control arm: Sonnet vs the pick')
     assert result.returncode == 0, result.stderr
-    assert 'review' in result.stderr and 'leaderboard picks claude-opus-5-5' in result.stderr
-    assert 'claude-opus-5-5' in json.loads(Path(env['FAKE_CALL']).read_text())
+    assert 'claude-sonnet-5' in json.loads(Path(env['FAKE_CALL']).read_text())
+
+
+def test_review_pin_with_an_override_is_selected_and_logged(tmp_path, monkeypatch):
+    path = judgment_roles(tmp_path / 'roles.json')
+    monkeypatch.setenv('RH_MODEL_OVERRIDE_LOG', str(tmp_path / 'overrides.jsonl'))
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
+    got = wm.select('review', 'codex', 'claude-sonnet-5', 'control arm', path, made_by='gpt-6.1-sol', job='j1')
+    assert got['model'] == 'claude-sonnet-5'
+    rows = [json.loads(l) for l in (tmp_path / 'state' / 'harness-blocks.jsonl').read_text().splitlines()]
+    assert any(r['gate'] == 'selector.judgment-pin' and r['outcome'] == 'allowed-override' for r in rows)
 
 
 def test_review_pin_refusal_names_pick_even_without_maker(tmp_path):
     path = judgment_roles(tmp_path / 'roles.json')
     with pytest.raises(ValueError, match='review.*leaderboard picks claude-opus-5-5'):
-        wm.select('review', 'codex', 'claude-sonnet-5', 'save budget', path)
+        wm.select('review', 'codex', 'claude-sonnet-5', ' ', path)  # a blank override still refuses
 
 
 @pytest.mark.parametrize('job', ['math_c38ref_1104', 'math_l1chk_a_1103',
@@ -408,7 +418,7 @@ def test_inferred_review_pin_refuses_before_executor(fake_home, reason, model):
     assert result.returncode == 2
     assert 'job name math_c38ref_1104 makes this a judgment job' in result.stderr
     assert '--role review --made-by MODEL' in result.stderr
-    assert 'hard-coded model refused' in result.stderr
+    assert 'requires --made-by MODEL' in result.stderr  # independence still refuses; the reason does not
     assert not Path(env['FAKE_CALL']).exists()
     assert not (Path(env['RH_ROLES_FILE']).parent / 'model-overrides.jsonl').exists()
 

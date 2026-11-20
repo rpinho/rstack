@@ -495,9 +495,16 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
                     and maker(m, canonical(m)) not in families]
         if not eligible:
             raise ValueError(judgment_hint + 'role {} has no eligible leaderboard pick for maker {}'.format(role, made_by))
-        if model and not override.startswith('Ricardo:'):
+        # 11-20 (general, on the RULE #1 audit): any non-empty --model-override pins a judgment role, as for
+        # every other role. It used to need "Ricardo: REASON", so math's Sonnet control arm, launched as a
+        # review, ran on the leaderboard pick instead. The pin is logged as allowed-override.
+        if model and not override.strip():
             raise ValueError(judgment_hint + 'role {} hard-coded model refused; the leaderboard picks {}; '
-                             '--model requires --model-override Ricardo: REASON'.format(role, eligible[0]))
+                             '--model requires --model-override REASON'.format(role, eligible[0]))
+        if model:
+            harness_blocks.record('selector.judgment-pin', 'fail-open', 'role {} pinned to {} instead of the '
+                                  'leaderboard pick {}: {}'.format(role, model, eligible[0], override),
+                                  job=job, outcome='allowed-override')
     if gate == 'science-publish':
         reviewers = gate_reviewers()
         eligible = [m for m in eligible if gate_reviewer(m, reviewers)]
