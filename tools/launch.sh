@@ -321,6 +321,20 @@ for (( i = start; i <= 5; i++ )); do
   RSTACK_CALL_ROLE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("call_role", ""))' \
     "$log.selection.json" 2>/dev/null)
   export RSTACK_CALL_ROLE
+  # 11-20 (bio): a Codex referee that reruns a claim through third_party.py run died with exit 71,
+  # because sandbox-exec cannot nest inside Codex's own sandbox. third_party.py is the sandbox there
+  # (pinned commit, no network, writes only the run dir), so a referee or review spec that says
+  # `Third-party: run` gets Codex's outer sandbox off, recorded in the log and the selection receipt.
+  # An explicit LAUNCH_CODEX_SANDBOX always wins.
+  if [[ $backend == codex && -z ${LAUNCH_CODEX_SANDBOX:-} &&
+        ( $RSTACK_CALL_ROLE == (referee|review) || $LAUNCH_ROLE == (referee|review) ) ]] &&
+     grep -Eiq '^[-* ]*third-party: *run([^a-z]|$)' "$spec" 2>/dev/null; then
+    export LAUNCH_CODEX_SANDBOX=danger-full-access
+    print -- "codex sandbox danger-full-access: the spec says Third-party: run (third_party.py sandboxes that code) $(date)" >> "$log"
+    python3 -c 'import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d["codex_sandbox"]={"mode":"danger-full-access","why":"spec line Third-party: run"}
+json.dump(d, open(p, "w"), indent=2)' "$log.selection.json" 2>/dev/null || true
+  fi
   case $backend in
     codex) cx=${LAUNCH_CODEX:-codex};;
     openrouter|gemini) export LAUNCH_PROVIDER=$backend; backend=codex; cx=${LAUNCH_CODEX:-codex};;

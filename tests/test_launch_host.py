@@ -589,3 +589,44 @@ def test_network_opens_the_workspace_sandbox_without_turning_it_off(monkeypatch)
     monkeypatch.delenv('LAUNCH_CODEX_NETWORK')
     assert 'sandbox_workspace_write.network_access=true' not in agent_executor.command(
         'codex', 'codex', 'm', 'high', '/w', '/o', sandbox='workspace-write')
+
+
+def _codex_referee(tmp_path, spec_extra, env_extra=None):
+    """A referee job routed to a Codex stub on the host, with `spec_extra` appended to its spec."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    jobs, env = harness(tmp_path)
+    (jobs / 'fixture-job.md').write_text(ASK + '\n\nPeak RSS: 1 GB\n' + spec_extra)
+    roles = tmp_path / 'roles.json'
+    roles.write_text(json.dumps(dict(roles={'referee': ['fixture-codex']}, routes={
+        'fixture-codex': {'canonical': 'fixture-codex', 'cli': 'codex'}})))
+    env.update(AGENT_BACKEND='codex', LAUNCH_CODEX=env['LAUNCH_CLAUDE'], LAUNCH_ROLE='referee')
+    env.pop('LAUNCH_CODEX_SANDBOX', None)
+    env.update(env_extra or {})
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path), '--host', 'm5'],
+                          env=env, capture_output=True, text=True, timeout=120)
+    log = jobs / 'fixture-job.log'
+    receipt = jobs / 'fixture-job.log.selection.json'
+    return proc, (log.read_text() if log.exists() else ''), (
+        json.loads(receipt.read_text()) if receipt.exists() else {})
+
+
+def test_a_third_party_referee_runs_codex_without_its_outer_sandbox(tmp_path):
+    """11-20 (bio): a Codex referee calling third_party.py run exited 71, because sandbox-exec cannot
+    nest inside Codex's sandbox. A referee spec saying `Third-party: run` turns the outer one off,
+    and says so in the log and the selection receipt."""
+    proc, log, receipt = _codex_referee(tmp_path, 'Third-party: run\n')
+    program, _ = staged(tmp_path)
+    assert 'export LAUNCH_CODEX_SANDBOX=danger-full-access' in program, proc.stderr + log
+    assert 'codex sandbox danger-full-access' in log
+    assert receipt.get('codex_sandbox', {}).get('mode') == 'danger-full-access'
+
+
+def test_without_the_line_or_with_an_explicit_setting_the_sandbox_is_untouched(tmp_path):
+    proc, log, receipt = _codex_referee(tmp_path / 'a', '')
+    program, _ = staged(tmp_path / 'a')
+    assert 'LAUNCH_CODEX_SANDBOX' not in program, proc.stderr + log
+    assert 'codex_sandbox' not in receipt
+    proc, log, _ = _codex_referee(tmp_path / 'b', 'Third-party: run\n',
+                                  env_extra={'LAUNCH_CODEX_SANDBOX': 'workspace-write'})
+    program, _ = staged(tmp_path / 'b')
+    assert 'export LAUNCH_CODEX_SANDBOX=workspace-write' in program, proc.stderr + log
