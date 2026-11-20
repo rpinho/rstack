@@ -199,7 +199,18 @@ def producer_families(made_by='', workdir='', lane_dir=''):
     return families, sources
 
 
-def delegate(role, data, excluded, made_by, top, draw, families=frozenset()):
+def runnable(executor):
+    """The executors the calling launcher can actually run.
+
+    11-19 23:52, games lane: a batch job was delegated to gemini-4-neon-medium (route agy), and the lanes'
+    launcher, which runs only codex and claude, started Codex with that model; it exited in 17 s. A launcher
+    that runs more says so in RH_LAUNCHER_EXECUTORS (rstack tools/launch.sh does); otherwise a delegate must
+    run on the executor this selection was asked for."""
+    named = os.environ.get('RH_LAUNCHER_EXECUTORS', '')
+    return {e.strip() for e in named.split(',') if e.strip()} or {executor}
+
+
+def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), executors=('codex', 'claude', 'agy')):
     """(model, note) when this selection is one of the delegated share, else None."""
     try:
         share = float(os.environ.get('RH_DELEGATE_SHARE') or 0)
@@ -212,7 +223,7 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset()):
     pool = []
     for m in DELEGATE_MODELS:
         route = data['routes'].get(m)
-        if (m == top or not isinstance(route, dict) or route.get('cli') not in ('claude', 'codex', 'agy')
+        if (m == top or not isinstance(route, dict) or route.get('cli') not in executors
                 or m in excluded or route.get('canonical') in excluded):
             continue
         if maker(m, route.get('canonical')) in families:
@@ -288,7 +299,8 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         delegate_skip = 'judging job with an unknown producer family: not delegated'
     elif not (explore or model or pin):
         delegated = delegate(role, data, excluded, made_by, chosen, int(uuid.uuid4().hex[:8], 16) / 2 ** 32,
-                             families if judging else frozenset())
+                             families if judging else frozenset(),
+                             runnable(executor) & {'claude', 'codex', 'agy'})
         if delegated:
             chosen = delegated[0]
     route = data['routes'].get(chosen)

@@ -562,6 +562,7 @@ def delegate_roles(path):
 def test_a_delegated_share_goes_to_the_delegate_with_fewest_graded_outcomes_and_says_so(tmp_path, monkeypatch):
     p = delegate_roles(tmp_path / 'roles.json')
     monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     got = wm.select('review', 'codex', path=p, made_by='gpt-6')
     assert got['source'] == 'delegate' and got['model'] == 'gemini-4-neon-low' and got['executor'] == 'agy'
     assert got['delegate'] == ('delegated share 1 of review: gemini-4-neon-low (everyday n=0) instead of the '
@@ -722,3 +723,16 @@ def test_a_job_recorded_at_return_says_so_and_a_later_grade_clears_its_row(tmp_p
     wm.clear_ungraded('job-a', state=state, host='h')
     rows = target.read_text().splitlines()
     assert [r.split('\t')[0] for r in rows] == ['job-b']
+
+
+def test_a_delegate_runs_only_on_an_executor_the_launcher_can_run(tmp_path, monkeypatch):
+    # 11-19 23:52, games: the lanes' launcher ran Codex with a delegated gemini-4-neon-medium and exited in 17 s.
+    p = family_roles(tmp_path / 'roles.json')
+    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
+    monkeypatch.delenv('RH_LAUNCHER_EXECUTORS', raising=False)
+    for _ in range(40):
+        got = wm.select('batch', 'codex', path=p)
+        assert got['executor'] == 'codex' and got['model'].startswith('gpt-'), got
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
+    seen = {wm.select('batch', 'codex', path=p)['executor'] for _ in range(60)}
+    assert 'agy' in seen or 'claude' in seen
