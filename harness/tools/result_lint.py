@@ -9,6 +9,9 @@ A claim directory holds CLAIM.md (or RESULT.md). The lint enforces three rules (
    `Deviations:` line that is `none` or says where the standard method failed (`standard failed: ...`).
 3. Baselines before predictive claims. If the claim reports a predictive metric, BASELINES.json must give the
    trivial, simple and method scores on the same split, and its `sbs` must match harness/tools/sbs.py.
+   Each metric the `Ours:` line reports needs its own row (its `metric` field), since beating the mean on one
+   metric says nothing about another. A row may give `noise`, the run-to-run spread of the method at a fixed
+   step on that split; a gap over the simple baseline no larger than it is printed as noise (a note, not a FAIL).
 4. Scooped and scale. A `yes` needs a `Cited by:` line from the forward-citation check (tools/cited-by): the
    citing-paper count, the paper's year and the closest citing paper or `none`. Old, well-cited papers are where
    someone else got there first. And a `Kind:` line from a fixed scale, so nobody has to guess how big it is:
@@ -28,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'sbs'))
 from sbs import sbs  # noqa: E402
 
 METRIC = re.compile(r'\b(AUROC|AUPRC|ROC[- ]AUC|AUC|accuracy|balanced accuracy|F1|RMSE|MAE|MSE|R\^?2|R²|'
-                    r'Spearman|Pearson|correlation|mAP|log[- ]loss|top-\d)\b', re.I)
+                    r'Spearman|Pearson|correlation|Jaccard|mAP|log[- ]loss|top-\d)\b', re.I)
 LOWER = re.compile(r'\b(RMSE|MAE|MSE|log[- ]loss|error|loss)\b', re.I)
 KINDS = ('rerun', 'value', 'question', 'conjecture', 'note')
 CITED = re.compile(r'\b\d+\b.*\b(19|20)\d{2}\b.*closest\s*:\s*\S', re.I)
@@ -97,12 +100,50 @@ def lint(d, new_only=False):
                     v = sbs(r['trivial'], r['simple'], r['method'], r.get('higher_is_better', True))
                     if abs(v - float(r['sbs'])) > 1e-6:
                         errs.append(f'BASELINES.json sbs {r["sbs"]} does not match recomputed {v:.6f}')
+                    if 'noise' in r and not float(r['noise']) >= 0:
+                        raise ValueError(f'noise must be a spread >= 0, got {r["noise"]!r}')
+                errs.extend(metric_gaps(field(text, 'Ours') or '', rows))
             except (KeyError, ValueError, TypeError, json.JSONDecodeError) as e:
                 errs.append(f'BASELINES.json unreadable or incomplete: {e}')
         if not re.search(r'\bSBS\b', text):
             errs.append('predictive metric found: state the SBS in the claim text')
     return errs
 
+
+def _metrics(text):
+    return {re.sub(r'[\s-]', '', m.lower()) for m in METRIC.findall(text)}
+
+
+def metric_gaps(ours, rows):
+    """11-19, Arc VCC 2026 wrap-up: >9 in 10 final entries beat the context mean on PDS, ~4 in 10 on MSE and
+    ~1 in 3 on Jaccard. One BASELINES row used to cover every metric a claim reported; now each metric
+    named on the `Ours:` line needs a row whose `metric` names it. Unnamed legacy rows still cover a single
+    metric."""
+    claimed = _metrics(ours)
+    covered = set().union(*(_metrics(str(r.get('metric', ''))) for r in rows))
+    if not covered and len(claimed) <= 1:
+        return []
+    return [f'Ours reports {m} but BASELINES.json has no row with that metric: beat the trivial (mean) '
+            f'predictor on each metric you report' for m in sorted(claimed - covered)]
+
+
+def noise_notes(d):
+    """Rows whose method-vs-simple gap is within their declared run-to-run `noise` (kaggle-ple 11-19: a
+    0.452 -> 0.520 paired gain was run noise, not the change). Printed, never a FAIL."""
+    try:
+        rows = baseline_rows(json.loads((Path(d) / 'BASELINES.json').read_text()))
+    except (OSError, ValueError):
+        return []
+    out = []
+    for r in rows:
+        try:
+            gap, noise = abs(float(r['method']) - float(r['simple'])), float(r['noise'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if gap <= noise:
+            out.append(f'NOISE: {r.get("metric") or "metric"} method {r["method"]} vs simple {r["simple"]}: '
+                       f'gap {gap:.4g} is within the run-to-run spread {noise:.4g}; report it as noise')
+    return out
 
 
 def baseline_rows(data):
@@ -134,7 +175,8 @@ def main(argv=None):
         errs = lint(d, a.new_only)
         bad += bool(errs)
         if not a.quiet:
-            print(f'{"FAIL" if errs else "PASS"} {d}' + ''.join(f'\n  - {e}' for e in errs))
+            print(f'{"FAIL" if errs else "PASS"} {d}' + ''.join(f'\n  - {e}' for e in errs)
+                  + ''.join(f'\n  ~ {n}' for n in noise_notes(d)))
     return 1 if bad else 0
 
 

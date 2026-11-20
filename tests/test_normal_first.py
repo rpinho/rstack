@@ -127,3 +127,34 @@ def test_baselines_per_metric_with_saved_stdout(tmp_path):
     assert any('does not match' in e for e in lint(tmp_path))
     (tmp_path / 'BASELINES.json').write_text(json.dumps({'SSI': {'command': ['x']}}))
     assert any('unreadable or incomplete' in e for e in lint(tmp_path))
+
+
+def _row(metric, trivial, simple, method, higher=True, **extra):
+    return dict(metric=metric, higher_is_better=higher, trivial=trivial, simple=simple, method=method,
+                sbs=sbs(trivial, simple, method, higher), **extra)
+
+
+def test_each_reported_metric_needs_its_own_baseline_row(tmp_path):
+    # 11-19, Arc VCC 2026: most entries beat the context mean on PDS but lost to it on MSE and Jaccard.
+    claim = GOOD.replace('Ours: C = 1.2350', 'Ours: Pearson 0.41 and MSE 0.020 on the held-out line') + 'SBS 0.5.\n'
+    (tmp_path / 'CLAIM.md').write_text(claim)
+    (tmp_path / 'BASELINES.json').write_text(json.dumps([_row('Pearson', 0.0, 0.2, 0.41)]))
+    assert any('Ours reports mse' in e for e in lint(tmp_path))
+    rows = [_row('Pearson', 0.0, 0.2, 0.41), dict(_row('MSE', 0.030, 0.025, 0.020, higher=False), trivial=0.018)]
+    (tmp_path / 'BASELINES.json').write_text(json.dumps(rows))
+    assert any('does not beat the trivial' in e for e in lint(tmp_path))  # loses to the mean on MSE
+    (tmp_path / 'BASELINES.json').write_text(json.dumps([_row('Pearson', 0.0, 0.2, 0.41),
+                                                         _row('MSE', 0.030, 0.025, 0.020, higher=False)]))
+    assert lint(tmp_path) == []
+
+
+def test_noise_is_a_note_not_a_fail(tmp_path):
+    from result_lint import noise_notes
+    (tmp_path / 'CLAIM.md').write_text(GOOD + 'AUROC 0.8556 vs simple 0.84. SBS 0.956.\n')
+    (tmp_path / 'BASELINES.json').write_text(json.dumps(_row('AUROC', 0.5, 0.84, 0.8556, noise=0.02)))
+    assert lint(tmp_path) == []
+    assert any('within the run-to-run spread' in n for n in noise_notes(tmp_path))
+    (tmp_path / 'BASELINES.json').write_text(json.dumps(_row('AUROC', 0.5, 0.84, 0.8556, noise=0.004)))
+    assert noise_notes(tmp_path) == []
+    (tmp_path / 'BASELINES.json').write_text(json.dumps(_row('AUROC', 0.5, 0.84, 0.8556, noise=-1)))
+    assert any('noise must be' in e for e in lint(tmp_path))
