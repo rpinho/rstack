@@ -91,7 +91,7 @@ def fetch(job, url, commit, subdir=None):
     return dest
 
 
-def run(job, url, commit, cmd, subdir=None, timeout=None, sandbox=SANDBOX):
+def run(job, url, commit, cmd, subdir=None, timeout=None, sandbox=SANDBOX, stdout=None, stderr=None):
     job = Path(job).resolve()
     if not cmd:
         raise ValueError('no command')
@@ -102,7 +102,7 @@ def run(job, url, commit, cmd, subdir=None, timeout=None, sandbox=SANDBOX):
     tmp.mkdir(exist_ok=True)
     env = dict(os.environ, TMPDIR=str(tmp), HOME=str(tmp), PYTHONDONTWRITEBYTECODE='1')
     prof = profile(job)
-    r = subprocess.run([sandbox, '-p', prof, *cmd], cwd=dest, env=env, timeout=timeout)
+    r = subprocess.run([sandbox, '-p', prof, *cmd], cwd=dest, env=env, timeout=timeout, stdout=stdout, stderr=stderr)
     row = dict(utc=now(), url=url, commit=commit, dir=str(dest.relative_to(job)), command=cmd, rc=r.returncode,
                sandbox='sandbox-exec: no network, writes only ' + str(job),
                profile_sha256=hashlib.sha256(prof.encode()).hexdigest())

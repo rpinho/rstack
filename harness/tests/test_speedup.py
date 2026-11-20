@@ -75,6 +75,41 @@ def test_a_faster_version_with_the_same_outputs_passes(project):
     assert len(trashed) == 1, 'scratch goes to the Trash, never a recursive delete'
 
 
+def test_their_code_runs_through_third_party_pinned_and_sandboxed(project):
+    """11-20: verify ran their code in plain git worktrees with network and full write access."""
+    repo, base, make, trashed = project
+    d = make('sandboxed')
+    row = speedup.verify(d, CFG)
+    assert row['verdict'] == 'PASS', row['codes']
+    receipts = row['third_party']
+    assert len(receipts) == 2 * 3, 'one third_party receipt per run of each version'
+    assert {r['commit'] for r in receipts} == {base} and {r['rc'] for r in receipts} == {0}
+    assert {r['dir'].split('/')[1].split('-')[0] for r in receipts} == {'before', 'after'}
+    assert all(r['sandbox'].startswith('sandbox-exec: no network') for r in receipts)
+    assert json.loads((d / 'VERIFY.json').read_text())['third_party'] == receipts
+
+
+def test_their_code_cannot_write_outside_the_scratch_job(project, tmp_path):
+    repo, base, make, trashed = project
+    d = make('escape')
+    data = json.loads((d / 'SPEEDUP.json').read_text())
+    data['command'] = 'echo x > {} && '.format(tmp_path / 'escaped.txt') + data['command']
+    (d / 'SPEEDUP.json').write_text(json.dumps(data))
+    row = speedup.verify(d, CFG)
+    assert any(c.startswith('SPEEDUP_RUN_FAILED') for c in row['codes'])
+    assert not (tmp_path / 'escaped.txt').exists()
+    assert row['third_party'] and row['third_party'][0]['rc'] != 0
+    assert json.loads((d / 'VERIFY.json').read_text())['third_party'] == row['third_party']
+
+
+def test_no_sandbox_no_run(project, monkeypatch, tmp_path):
+    tp = speedup.third_party()
+    monkeypatch.setattr(speedup, 'third_party', lambda: tp)
+    monkeypatch.setattr(tp, 'SANDBOX', str(tmp_path / 'no-sandbox-exec'))
+    with pytest.raises(ValueError, match='NO_SANDBOX'):
+        speedup.verify(project[2]('nosandbox'), CFG)
+
+
 def test_a_faster_version_that_changes_an_answer_is_refused(project):
     row = speedup.verify(project[2]('changed', output='1.000000 2.000001'), CFG)
     assert row['verdict'] == 'FAIL' and any(c.startswith('SPEEDUP_OUTPUT_MISMATCH') for c in row['codes'])

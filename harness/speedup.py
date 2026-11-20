@@ -19,10 +19,13 @@ DIR holds SPEEDUP.json:
      "profile": "profile.txt",        the profile that found the hot spot, relative to DIR
      "hotspot": "f() 72% of 41 s"}    the hot spot, with its numbers
 
-The verifier checks out `base` twice in temporary git worktrees, applies the patch to one, runs
-the command in both `runs` times (alternating, so drift hits both), compares every output, and
-writes VERIFY.json: the verdict, every failure code, median wall time and peak memory of each
-version, the speedup, the host, and the hashes of the manifest and patch it verified. It refuses
+The verifier fetches `base` twice through tools/third_party.py (a pinned commit, into a scratch job
+dir), applies the patch to one, runs the command in both `runs` times (alternating, so drift hits
+both) with `third_party.py run`: sandbox-exec, no network, writes only the scratch job dir. It
+compares every output and writes VERIFY.json: the verdict, every failure code, median wall time and
+peak memory of each version, the speedup, the host, the hashes of the manifest and patch it
+verified, and the third_party receipt rows of every run. There is no unsandboxed fallback (11-20:
+it used to run their code in plain git worktrees with full network and write access). It refuses
 to run where RH_NO_LOCAL_COMPUTE=1 (a controller that must not run other people's code at size).
 
 Failure codes: SPEEDUP_PROFILE_MISSING, SPEEDUP_PATCH_FAILS, SPEEDUP_RUN_FAILED,
@@ -33,6 +36,7 @@ SPEEDUP_STALE_BASE (their code moved on), SPEEDUP_OVERLAP (they have open work o
 """
 import datetime as dt
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -49,12 +53,25 @@ import storage
 
 UTC = dt.timezone.utc
 FIELDS = ('target', 'repo', 'base', 'patch', 'command', 'outputs', 'runs', 'profile', 'hotspot')
-# The child's peak resident memory, read by a tiny wrapper so it is per run and per version.
-PEAK = ('import resource, subprocess, sys\n'
+# The child's peak resident memory and wall time, read by a tiny wrapper inside the sandbox so they are
+# per run and per version, and the sandbox's own start-up is not timed.
+PEAK = ('import resource, subprocess, sys, time\n'
+        't = time.perf_counter()\n'
         'rc = subprocess.run(sys.argv[1], shell=True).returncode\n'
+        'wall = time.perf_counter() - t\n'
         'peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss\n'
-        'print("RH_PEAK", peak * (1 if sys.platform == "darwin" else 1024), file=sys.stderr)\n'
+        'print("RH_PEAK", peak * (1 if sys.platform == "darwin" else 1024), wall, file=sys.stderr)\n'
         'sys.exit(rc)\n')
+THIRD_PARTY_TOOL = Path(__file__).resolve().parent / 'tools' / 'third_party.py'
+
+
+def third_party():
+    spec = importlib.util.spec_from_file_location('rh_third_party', THIRD_PARTY_TOOL)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 NUMBER = re.compile(r'^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$')
 
 
@@ -105,14 +122,20 @@ def same(left, right, tolerance):
     return True
 
 
-def timed(command, cwd, timeout):
+def timed(tp, job, repo, base, name, command, timeout):
+    """Run COMMAND in JOB's NAME checkout of BASE through third_party.run: (rc, wall, peak, stderr tail)."""
+    err_path = Path(job).parent / '{}.stderr'.format(name)
     start = time.perf_counter()
-    run = subprocess.run([sys.executable, '-c', PEAK, command], cwd=cwd, capture_output=True,
-                         text=True, timeout=timeout)
+    with open(err_path, 'w') as err:
+        rc = tp.run(job, repo, base, [sys.executable, '-c', PEAK, command], subdir=name, timeout=timeout,
+                    stderr=err)
     wall = time.perf_counter() - start
-    peak = next((int(line.split()[1]) for line in run.stderr.splitlines()
-                 if line.startswith('RH_PEAK ')), None)
-    return run.returncode, wall, peak, run.stderr[-2000:]
+    text = err_path.read_text(errors='replace')
+    line = next((line.split() for line in text.splitlines() if line.startswith('RH_PEAK ')), None)
+    peak = int(line[1]) if line else None
+    if line and len(line) > 2:
+        wall = float(line[2])
+    return rc, wall, peak, text[-2000:]
 
 
 def verify(directory, cfg=None, clock=None, timeout=6 * 3600):
@@ -120,6 +143,10 @@ def verify(directory, cfg=None, clock=None, timeout=6 * 3600):
     if os.environ.get('RH_NO_LOCAL_COMPUTE') == '1':
         raise ValueError('this machine is a controller (RH_NO_LOCAL_COMPUTE=1); run speedup-verify '
                          'on the compute host, as a job')
+    tp = third_party()
+    if not Path(tp.SANDBOX).exists():
+        raise ValueError('NO_SANDBOX: {} not found; their code runs only through third_party.py run '
+                         '(sandbox-exec, no network), never unsandboxed'.format(tp.SANDBOX))
     cfg = dict(defaults(), **(cfg or {}))
     directory = Path(directory).expanduser().resolve()
     data = manifest(directory)
@@ -133,12 +160,18 @@ def verify(directory, cfg=None, clock=None, timeout=6 * 3600):
         row['codes'].append('SPEEDUP_PROFILE_MISSING: profile on a representative input first, and '
                             'name the hot spot with its numbers')
     work = Path(tempfile.mkdtemp(prefix='rh-speedup-'))
+    job = work / 'job'
+    job.mkdir()
     repo = str(Path(data['repo']).expanduser())
-    trees = dict(before=work / 'before', after=work / 'after')
     try:
-        for tree in trees.values():
-            subprocess.run(['git', '-C', repo, 'worktree', 'add', '--detach', '--quiet', str(tree),
-                            data['base']], check=True, capture_output=True)
+        trees = {}
+        try:
+            for name in ('before', 'after'):
+                trees[name] = tp.fetch(job, repo, data['base'], subdir=name)
+        except (ValueError, RuntimeError) as error:
+            row['codes'].append('SPEEDUP_PATCH_FAILS: their commit {} could not be checked out pinned: {}'.format(
+                data['base'][:12], str(error)[:200]))
+            return finish(directory, row)
         applied = subprocess.run(['git', '-C', str(trees['after']), 'apply', str(patch)],
                                  capture_output=True, text=True)
         if applied.returncode:
@@ -149,7 +182,8 @@ def verify(directory, cfg=None, clock=None, timeout=6 * 3600):
         peaks = dict(before=[], after=[])
         for _ in range(data['runs']):
             for name in ('before', 'after'):
-                rc, wall, peak, err = timed(data['command'], trees[name], timeout)
+                rc, wall, peak, err = timed(tp, job, repo, data['base'], name, data['command'], timeout)
+                row['third_party'] = tp._rows(job / tp.RECEIPTS)
                 if rc:
                     row['codes'].append('SPEEDUP_RUN_FAILED: the {} version exited {}: {}'.format(
                         name, rc, err.strip()[-200:]))
@@ -183,12 +217,8 @@ def verify(directory, cfg=None, clock=None, timeout=6 * 3600):
                 row['speedup'], row['saving_seconds'], cfg['speedup_min_ratio'], cfg['speedup_min_seconds']))
         return finish(directory, row)
     finally:
-        for tree in trees.values():
-            subprocess.run(['git', '-C', repo, 'worktree', 'remove', '--force', str(tree)],
-                           capture_output=True)
-        subprocess.run(['git', '-C', repo, 'worktree', 'prune'], capture_output=True)
-        # The worktrees are rebuilt from git; what is left of the scratch dir goes to the Trash,
-        # never a recursive delete (harness rule: reversible disposal only).
+        # The checkouts were fetched into the scratch dir; it goes to the Trash, never a recursive
+        # delete (harness rule: reversible disposal only).
         try:
             storage.trash(work)
         except (OSError, subprocess.SubprocessError):
