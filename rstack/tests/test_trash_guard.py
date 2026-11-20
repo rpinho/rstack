@@ -62,7 +62,9 @@ def test_forced_recursive_rm_is_blocked_without_a_registry(prefix, flags):
 ])
 def test_real_protected_deletions_stay_blocked(template, protection):
     keep, env = protection
-    blocked(HOOK, bash(template.format(path=keep)), env=env)
+    result = blocked(HOOK, bash(template.format(path=keep)), env=env)
+    assert str(keep) in result['stdout']
+    assert 'Leave it in place and choose' in result['stdout']
     assert keep.exists()
 
 
@@ -83,10 +85,42 @@ def test_finder_delete_is_checked_only_on_execution(protection):
     allowed(HOOK, bash('echo ' + shlex.quote(command)), env=env)
 
 
-def test_actual_unresolved_deletions_still_refuse(protection):
-    _, env = protection
-    blocked(HOOK, bash('/usr/bin/trash "$UNRESOLVED_RELEASE"'), env=env)
-    blocked(HOOK, bash('mv "$UNRESOLVED_RELEASE" ~/.Trash'), env=env)
+@pytest.mark.parametrize('program', ['/usr/bin/trash', 'trash'])
+@pytest.mark.parametrize('metadata', ['missing registry', 'invalid registry', 'missing source'])
+def test_unavailable_metadata_warns_and_allows_trash(tmp_path, program, metadata):
+    target = tmp_path / 'ordinary'
+    target.touch()
+    registry = tmp_path / 'registry.json'
+    if metadata == 'invalid registry':
+        registry.write_text('not JSON')
+    elif metadata == 'missing source':
+        registry.write_text(json.dumps({'sources': [str(tmp_path / 'missing.json')]}))
+    env = {'RSTACK_PROTECTED_PATHS': str(registry), 'RSTACK_STATE_DIR': str(tmp_path)}
+    result = allowed(HOOK, bash(f'{program} {shlex.quote(str(target))}'), env=env)
+    assert 'could not read protection metadata' in result['context']
+    row = json.loads((tmp_path / 'harness-blocks.jsonl').read_text())
+    assert (row['gate'], row['class'], row['outcome']) == ('trash-guard.py', 'fail-open', 'warn')
+
+
+def test_an_unavailable_source_does_not_hide_a_known_protected_path(tmp_path, protection):
+    keep, env = protection
+    registry = tmp_path / 'registry.json'
+    registry.write_text(json.dumps({'paths': [str(keep)], 'sources': [str(tmp_path / 'missing.json')]}))
+    result = blocked(HOOK, bash(f'/usr/bin/trash {shlex.quote(str(keep))}'),
+                     env={**env, 'RSTACK_STATE_DIR': str(tmp_path)})
+    assert str(keep) in result['stdout']
+
+
+def test_shell_local_operand_warns_but_does_not_hide_a_known_overlap(tmp_path, protection):
+    keep, env = protection
+    env = {**env, 'RSTACK_STATE_DIR': str(tmp_path)}
+    command = 'RSTACK_FIXTURE_XE=~/unprotected; /usr/bin/trash "$RSTACK_FIXTURE_XE/ORIGINALS_PAUSED"'
+    result = allowed(HOOK, bash(command), env=env)
+    assert 'could not resolve a cleanup operand' in result['context']
+    row = json.loads((tmp_path / 'harness-blocks.jsonl').read_text())
+    assert row['outcome'] == 'warn'
+    result = blocked(HOOK, bash(f'{command} {shlex.quote(str(keep))}'), env=env)
+    assert str(keep) in result['stdout']
 
 
 def test_quotes_in_actual_protected_filenames_are_preserved(tmp_path):
@@ -96,3 +130,14 @@ def test_quotes_in_actual_protected_filenames_are_preserved(tmp_path):
     registry.write_text(json.dumps({'paths': [str(keep)]}))
     blocked(HOOK, bash('/usr/bin/trash ' + shlex.quote(str(keep))),
             env={'RSTACK_PROTECTED_PATHS': str(registry)})
+
+
+
+def test_a_permanent_delete_with_an_unresolvable_operand_still_refuses(tmp_path, protection):
+    """11-20 (harness-m5 review): only a reversible trash goes ahead when the check cannot finish.
+    rm is a permanent delete, so a shell-local operand it cannot check is refused, naming the fix."""
+    keep, env = protection
+    env = {**env, 'RSTACK_STATE_DIR': str(tmp_path)}
+    result = blocked(HOOK, bash('RSTACK_FIXTURE_XE=~/x; rm "$RSTACK_FIXTURE_XE/file"'), env=env)
+    assert '/usr/bin/trash' in result['stdout']
+    allowed(HOOK, bash('RSTACK_FIXTURE_XE=~/x; /usr/bin/trash "$RSTACK_FIXTURE_XE/file"'), env=env)

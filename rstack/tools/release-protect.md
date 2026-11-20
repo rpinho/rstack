@@ -14,7 +14,10 @@ The Finder-delete `osascript` shim checks this registry before either Trash or
 Finder fallback. Install `protected_paths.py` beside the shim, including when
 copying it rather than symlinking it. Copy its sibling `shell_commands.py` too for
 the shell hook; it shares the model gate's parser and unfinished-quote fallback.
-`harness.storage.trash` uses the same check. The canonical library is tracked under
+`harness.storage.trash` uses the same check. The Bash hook refuses confirmed
+overlaps and names the protected path. It logs a warning and allows cleanup if
+metadata or shell-local operands are unreadable, while checking any paths it
+can resolve. The canonical library is tracked under
 `harness/`, so normal harness sync includes it; the tools directory links to it.
 Application-specific retention belongs to the application: the games deployment
 code computes its last three successful live releases and registers its private

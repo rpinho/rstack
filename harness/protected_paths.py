@@ -14,14 +14,32 @@ def default_registry():
                 Path.home() / '.local/state/rstack/protected-paths.json'))
 
 
-def protected_paths(registry=None, *, required=False, seen=None):
+class ProtectedPathOverlap(ValueError):
+    def __init__(self, path):
+        self.path = path
+        super().__init__('cleanup refused: path overlaps protected release {}'.format(path))
+
+
+def protected_paths(registry=None, *, required=False, seen=None, on_error=None):
     registry = Path(registry or default_registry()).expanduser().absolute()
     seen = set() if seen is None else seen
+    try:
+        out, sources = _read_registry(registry, required, seen)
+    except (OSError, ValueError, RuntimeError) as exc:
+        if on_error is None:
+            raise
+        on_error('could not read protection metadata at {} ({})'.format(registry, type(exc).__name__))
+        return set()
+    for source in sources:
+        out.update(protected_paths(source, required=True, seen=seen | {registry}, on_error=on_error))
+    return out
+
+
+def _read_registry(registry, required, seen):
     if registry in seen:
         raise ValueError('protected-path source cycle')
-    seen = seen | {registry}
     if not registry.exists() and not required:
-        return set()
+        return set(), []
     data = json.loads(registry.read_text())
     if not isinstance(data, dict) or set(data) - {'paths', 'sources', 'schema'}:
         raise ValueError('invalid protected-path document')
@@ -33,18 +51,21 @@ def protected_paths(registry=None, *, required=False, seen=None):
     out = {registry, registry.resolve()} if paths or sources else set()
     for p in paths:
         out.update((Path(p).absolute(), Path(p).resolve()))
-    for source in sources:
-        out.update(protected_paths(source, required=True, seen=seen))
-    return out
+    return out, sources
 
 
 def assert_disposable(paths, registry=None, *, required=False):
-    protected = protected_paths(registry, required=required)
+    _assert_no_overlap(paths, protected_paths(registry, required=required))
+
+
+def _assert_no_overlap(paths, protected):
     for raw in paths:
-        for candidate in {Path(raw).expanduser().absolute(), Path(raw).expanduser().resolve()}:
+        path = Path(raw).expanduser()
+        for resolve in (path.absolute, path.resolve):
+            candidate = resolve()
             for keep in protected:
                 if candidate == keep or candidate in keep.parents or keep in candidate.parents:
-                    raise ValueError('cleanup refused: path overlaps a protected release')
+                    raise ProtectedPathOverlap(keep)
 
 
 def deletion_commands(command, _depth=0):
@@ -111,21 +132,40 @@ def deletion_commands(command, _depth=0):
 
 def assert_shell_disposable(command, registry=None):
     """Check real cleanup operands using the model gate's shell reader/fallback."""
+    assert_cleanup_disposable(deletion_commands(command), registry)
+
+
+def assert_cleanup_disposable(commands, registry=None, *, on_error=None):
+    """Check known operands even when another operand or metadata source is unreadable."""
     import glob
-    commands = [argv for argv in deletion_commands(command) if Path(argv[0]).name != 'osascript']
-    if not commands or not protected_paths(registry):
+    commands = [argv for argv in commands if Path(argv[0]).name != 'osascript']
+    if not commands:
+        return
+    protected = protected_paths(registry, required=on_error is not None, on_error=on_error)
+    if not protected:
         return
     for argv in commands:
+        options = True
         for token in argv[1:]:
-            if token.startswith('-'):
+            if options and token == '--':
+                options = False
+                continue
+            if options and token.startswith('-'):
                 continue
             # The unfinished-quote fallback retains quote marks. Check that path
             # too, rather than letting an open quote hide a protected operand.
             for operand in {token, token.strip('\"\x27')}:
-                expanded = os.path.expandvars(os.path.expanduser(operand))
-                if '$' in expanded or '`' in expanded:
-                    raise ValueError('cleanup refused: cannot resolve a deletion operand with protected releases registered')
-                candidates = glob.glob(expanded) if glob.has_magic(expanded) else [expanded]
-                if not candidates:
-                    candidates = [expanded.split('*', 1)[0].split('?', 1)[0].split('[', 1)[0]]
-                assert_disposable(candidates, registry)
+                try:
+                    expanded = os.path.expandvars(os.path.expanduser(operand))
+                    if '$' in expanded or '`' in expanded:
+                        raise ValueError('cannot resolve a shell variable or substitution')
+                    candidates = glob.glob(expanded) if glob.has_magic(expanded) else [expanded]
+                    if not candidates:
+                        candidates = [expanded.split('*', 1)[0].split('?', 1)[0].split('[', 1)[0]]
+                    _assert_no_overlap(candidates, protected)
+                except ProtectedPathOverlap:
+                    raise
+                except (OSError, ValueError, RuntimeError):
+                    if on_error is None:
+                        raise
+                    on_error('could not resolve a cleanup operand')

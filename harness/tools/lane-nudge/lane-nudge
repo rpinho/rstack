@@ -280,7 +280,7 @@ def main():
             why += ' ({}, {:.0f} h since the last one)'.format(c['deliverable'], c.get('hours_since_last_delivery') or 0)
         if c.get('last_sweep_refused'):
             why += '; the last sweep was REFUSED, not idle: ' + c['last_sweep_refused'] + '. Fix that first'
-        if error and why == 'quiet':
+        if why == 'quiet' and (error or c.get('status') == 'UNKNOWN'):
             why = 'quiet (cadence unknown: the read failed)'
         text = (RESULT_MSG.format(lane=lane, path=unread) if unread and why.startswith('a job result')
                 else MSG.format(lane=lane, why=why, idle=idle) + pickup(c))

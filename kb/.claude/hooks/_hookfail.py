@@ -283,6 +283,7 @@ def run(name, body, triage=None, guards='this action', on_error='deny', fail_clo
 
     A failed `lookup` asks. With fail_closed, any other error refuses whatever triage says.
     With timeout, a body still running after that many seconds is an error too.
+    A hook with separate checks for confirmed hard lines can use on_error='warn'.
     Returns the exit code to hand to sys.exit.
     """
     raw = sys.stdin.read()
@@ -316,6 +317,10 @@ def run(name, body, triage=None, guards='this action', on_error='deny', fail_clo
         finally:
             if timeout:
                 signal.setitimer(signal.ITIMER_REAL, 0)
+
+    if on_error == 'warn':
+        warn('internal error ({}); the hook could not complete its check'.format(why))
+        return 0
 
     # RULE #1: a fail-open hook that broke is a warning, never a refusal, whatever it guards.
     if fails_open(name):

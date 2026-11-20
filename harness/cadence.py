@@ -1,9 +1,9 @@
 """Deliverable liveness independent of sweep workers. Evaluation is strictly read-only.
 
 Flat CADENCE.toml works with both supported Python TOML readers. JSONL evidence
-is authoritative when configured; only its timestamp field is retained, and an
-optional success_field excludes failed sweep attempts. No evidence text reaches
-alerts, push arguments, state, or diagnostics.
+uses a timestamp field and an optional success_field to exclude failed attempts.
+Open-source also reads public GitHub comments and reviews. No evidence text
+reaches alerts, push arguments, state, or diagnostics.
 """
 import datetime as dt
 import glob
@@ -11,6 +11,9 @@ import json
 import math
 from pathlib import Path
 import re
+import subprocess
+import time
+import harness_blocks
 import lane_alerts
 
 UTC = dt.timezone.utc
@@ -118,6 +121,83 @@ def delivery_time(lane, cfg, clock):
     return newest
 
 
+def github_delivery_time(clock, since=None):
+    """Latest authored comment on our public PRs/issues, or public PR review."""
+    deadline = time.monotonic() + 15
+
+    def api(*args):
+        return subprocess.run(['gh', 'api', '--hostname', 'github.com', *args],
+                              check=True, capture_output=True, text=True,
+                              timeout=max(0, deadline - time.monotonic())).stdout
+
+    login = api('user', '--jq', '.login').strip().lower()
+    if not re.fullmatch(r'[a-z0-9-]+', login):
+        raise ValueError('invalid GitHub login')
+    pages = json.loads(api(f'users/{login}/events/public?per_page=100', '--paginate', '--slurp'))
+    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+        raise ValueError('invalid GitHub event pages')
+    comment_targets = {'IssueCommentEvent': 'issue', 'PullRequestReviewCommentEvent': 'pull_request'}
+    candidates = []
+    for page in pages:
+        for event in page:
+            kind = event['type']
+            if kind not in comment_targets and kind != 'PullRequestReviewEvent':
+                continue
+            if event.get('public') is not True or event['actor']['login'].lower() != login:
+                continue
+            payload = event['payload']
+            if payload.get('action') != 'created':
+                continue
+            when = stamp(event['created_at'])
+            if when <= clock and (since is None or when > since):
+                candidates.append((when, event))
+    authors = {}
+    for when, event in sorted(candidates, key=lambda item: item[0], reverse=True):
+        kind = event['type']
+        if kind == 'PullRequestReviewEvent':
+            return when
+        subject = event['payload'][comment_targets[kind]]
+        user = subject.get('user')
+        if user:
+            author = user['login'].lower()
+        else:
+            # Inline review-comment events carry a reduced PR object. Verify its
+            # author on the PR itself, then reuse that answer for older comments.
+            url = subject['url']
+            endpoint = re.fullmatch(r'https://api\.github\.com/(repos/[\w.-]+/[\w.-]+/(?:pulls|issues)/\d+)', url)
+            if not endpoint:
+                raise ValueError('invalid GitHub comment target')
+            if url not in authors:
+                authors[url] = api(endpoint[1], '--jq', '.user.login').strip().lower()
+                if not re.fullmatch(r'[a-z0-9-]+', authors[url]):
+                    raise ValueError('invalid GitHub comment target author')
+            author = authors[url]
+        if author == login:
+            return when
+    return None
+
+
+def public_delivery_time(lane, cfg, clock):
+    """Return the freshest known delivery and whether both sources were checked."""
+    when, complete = None, True
+    try:
+        when = delivery_time(lane, cfg, clock)
+    except (OSError, ValueError, OverflowError) as exc:
+        complete = False
+        harness_blocks.warn('cadence.public-activity',
+                            'could not read the delivery ledger ({})'.format(type(exc).__name__), lane=lane.name)
+    try:
+        activity = github_delivery_time(clock, since=when)
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        complete = False
+        harness_blocks.warn('cadence.public-activity',
+                            'could not read public GitHub activity ({})'.format(type(exc).__name__), lane=lane.name)
+    else:
+        if activity is not None:
+            when = activity
+    return when, complete
+
+
 def last_sweep_refusal(lane, rh):
     """The refusal text of the lane's latest finished sweep, if it was refused before doing any work.
 
@@ -192,7 +272,7 @@ def digest_flow(lane, clock, days=DIGEST_DAYS):
 
 
 def evaluate(lane, rh, now=None):
-    """One lane; no lane locks, worker config reads, mkdirs, alerts or pushes."""
+    """One lane; no lane locks, worker config reads, alerts or pushes."""
     clock = stamp(now or rh.now())
     result = dict(lane=lane.name, status='UNCONFIGURED', deliverable=None,
                   owner_session=None, hours_since_last_delivery=None,
@@ -218,12 +298,17 @@ def evaluate(lane, rh, now=None):
             result['status'] = 'HELD'
             result['held'] = (hold.read_text(errors='replace').strip().splitlines() or [''])[0][:200]
             return result
-        when = delivery_time(lane, cfg, clock)
+        if lane.name == 'open-source':
+            when, complete = public_delivery_time(lane, cfg, clock)
+        else:
+            when, complete = delivery_time(lane, cfg, clock), True
         age = max(0, (clock - when).total_seconds() / 3600) if when else None
+        status = ('STALLED' if age is None or age > cfg['every_hours'] else
+                  'WARN' if age >= cfg['warn_hours'] else 'OK')
+        if not complete and status != 'OK':
+            status = 'UNKNOWN'
         result.update(last_delivery=when.isoformat() if when else None,
-                      hours_since_last_delivery=age,
-                      status=('STALLED' if age is None or age > cfg['every_hours'] else
-                              'WARN' if age >= cfg['warn_hours'] else 'OK'))
+                      hours_since_last_delivery=age, status=status)
         # An interval anchored to the last delivery is stable across polls/days.
         # Missing evidence has a stable sentinel, never a poll-time bucket.
         result['stall_window'] = when.isoformat() if when else 'never'
@@ -231,7 +316,7 @@ def evaluate(lane, rh, now=None):
             result['digest'] = digest_flow(lane, clock)
         except OSError:
             result['digest'] = None    # an unreadable idea ledger is not a cadence failure
-        if result['status'] != 'OK':
+        if status in ('WARN', 'STALLED'):
             refused = last_sweep_refusal(lane, rh)
             if refused:
                 result['last_sweep_refused'] = refused

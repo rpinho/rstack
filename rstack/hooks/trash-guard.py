@@ -8,7 +8,7 @@ sounds, and the owner had to ask twice, days apart, for the noise to stop. Prose
 `/usr/bin/trash` (macOS 14+) moves to the same Trash with Put Back, silently.
 
 Only executed Bash commands are checked. Edit/Write contents, quoted mentions and
-heredoc bodies are text. Protected cleanup operands still refuse on unreadable metadata.
+heredoc bodies are text. Incomplete protection checks warn. Confirmed overlaps refuse.
 """
 import os
 from pathlib import Path
@@ -34,8 +34,10 @@ def body(event):
     cmd = (event.get('tool_input') or {}).get('command', '')
     source = Path(__file__).resolve().parent
     sys.path[:0] = [str(source / '..' / 'tools'), os.path.expanduser('~/.local/bin')]
-    from protected_paths import assert_shell_disposable, deletion_commands
+    from protected_paths import ProtectedPathOverlap, assert_cleanup_disposable, deletion_commands
+    commands = []
     for argv in deletion_commands(cmd):
+        commands.append(argv)
         name = Path(argv[0]).name
         if name == 'osascript' and FINDER_DELETE.search(' '.join(argv[1:])):
             _hookfail.decide('deny', REASON)
@@ -49,13 +51,28 @@ def body(event):
             if recursive and force:
                 _hookfail.decide('deny', 'Use /usr/bin/trash PATH instead: forced recursive rm is irreversible.')
                 return 0
+    # 11-20 (RULE #1, harness-m5 review): only a reversible trash may go ahead when the check cannot finish.
+    # rm, rmdir and unlink are permanent deletes, a hard line, so an operand or registry this check cannot
+    # read still refuses them, naming the fix.
+    trash = [argv for argv in commands if Path(argv[0]).name == 'trash']
+    permanent = [argv for argv in commands if Path(argv[0]).name != 'trash']
+    warnings = []
     try:
-        assert_shell_disposable(cmd)
-    except Exception:
-        _hookfail.decide('deny', 'Cleanup refused: protected release overlap or unreadable protection metadata.')
+        assert_cleanup_disposable(permanent)
+        assert_cleanup_disposable(trash, on_error=warnings.append)
+    except ProtectedPathOverlap as exc:
+        _hookfail.decide('deny', 'Cleanup overlaps protected release {}. Leave it in place and choose a '
+                         'path outside the protected release that does not contain it.'.format(exc.path))
+    except (OSError, ValueError, RuntimeError) as exc:
+        _hookfail.decide('deny', 'Permanent delete refused: {}. Use a literal path, or /usr/bin/trash PATH, '
+                         'which is reversible.'.format(exc))
+    else:
+        if warnings:
+            _hookfail.warn('Cleanup protection check incomplete: {}. Use literal paths to check '
+                           'shell-local operands.'.format('; '.join(dict.fromkeys(warnings))))
     return 0
 
 
 if __name__ == '__main__':
-    sys.exit(_hookfail.run('trash-guard.py', body, triage,
-                           guards='deletion commands and protected cleanup paths'))
+    sys.exit(_hookfail.run('trash-guard.py', body, triage, guards='deletion commands and protected cleanup paths',
+                           on_error='warn'))

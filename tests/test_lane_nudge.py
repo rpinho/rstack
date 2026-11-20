@@ -53,6 +53,106 @@ def test_cadence_behind_is_named():
     assert nudge.decide(61, False, 'STALLED', 0, NOW) == 'STALLED on cadence'
 
 
+@pytest.fixture
+def public_cadence_lane(tmp_path, monkeypatch):
+    lane = tmp_path / 'open-source'
+    lane.mkdir()
+    (lane / 'CADENCE.toml').write_text(
+        'deliverable = "Public contribution"\nowner_session = "open-source"\n'
+        'every_hours = 26\nevidence_jsonl = "DELIVERIES.jsonl"\n'
+        'timestamp_field = "finished"\nsuccess_field = "ok"\n')
+    (lane / 'DELIVERIES.jsonl').write_text('{"finished":"2026-11-19T23:00:00Z","ok":true,"kind":"pr"}\n')
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
+    return lane
+
+
+@pytest.mark.parametrize('event_type,target,author,pr', [
+    ('IssueCommentEvent', 'issue', 'fixture-user', True),  # review reply in the PR conversation
+    ('IssueCommentEvent', 'issue', 'fixture-user', False),  # comment on our own issue
+    ('PullRequestReviewCommentEvent', 'pull_request', 'fixture-user', True),  # inline reply
+    ('PullRequestReviewEvent', 'pull_request', 'maintainer', True),
+])
+def test_only_recent_public_event_clears_cadence(
+        public_cadence_lane, monkeypatch, event_type, target, author, pr):
+    import cadence
+    import rh
+
+    subject = {'number': 2554, 'user': {'login': author}}
+    if event_type == 'PullRequestReviewCommentEvent':
+        subject = {'number': 2554, 'url': 'https://api.github.com/repos/example/project/pulls/2554'}
+    if pr and target == 'issue':
+        subject['pull_request'] = {'url': 'https://api.github.com/repos/example/project/pulls/2554'}
+    own_reply = {
+        'type': event_type, 'public': True, 'actor': {'login': 'Fixture-User'},
+        'created_at': '2026-11-20T17:51:53Z',
+        'payload': {'action': 'created', target: subject},
+    }
+    controls = [
+        dict(own_reply, public=False),
+        dict(own_reply, actor={'login': 'maintainer'}),
+        dict(own_reply, payload={**own_reply['payload'], 'action': 'edited'}),
+        dict(own_reply, type='IssueCommentEvent',
+             payload={'action': 'created', 'issue': {'user': {'login': 'maintainer'}}}),
+        dict(own_reply, created_at='2026-11-21T00:00:00Z'),
+    ]
+    pages = [controls, []]
+
+    def gh(args, **kwargs):
+        assert 0 < kwargs['timeout'] <= 15 and kwargs['check']
+        if args == ['gh', 'api', '--hostname', 'github.com', 'user', '--jq', '.login']:
+            return nudge.subprocess.CompletedProcess(args, 0, stdout='fixture-user\n')
+        if args == ['gh', 'api', '--hostname', 'github.com',
+                    'repos/example/project/pulls/2554', '--jq', '.user.login']:
+            assert event_type == 'PullRequestReviewCommentEvent'
+            return nudge.subprocess.CompletedProcess(args, 0, stdout=author + '\n')
+        assert args == ['gh', 'api', '--hostname', 'github.com',
+                        'users/fixture-user/events/public?per_page=100', '--paginate', '--slurp']
+        return nudge.subprocess.CompletedProcess(args, 0, stdout=json.dumps(pages))
+
+    monkeypatch.setattr(cadence.subprocess, 'run', gh)
+    now = '2026-11-20T18:00:00Z'
+    row = cadence.evaluate(public_cadence_lane, rh, now)
+    assert row['status'] == 'WARN'
+    pages[1].append(own_reply)
+    row = cadence.evaluate(public_cadence_lane, rh, now)
+    assert row['status'] == 'OK'
+    assert row['last_delivery'] == '2026-11-20T17:51:53+00:00'
+    assert nudge.decide(61, False, row['status'], 0, NOW) == 'quiet'
+
+
+def test_github_read_error_warns_without_a_cadence_flag(public_cadence_lane, monkeypatch, capsys):
+    import cadence
+    import rh
+
+    def offline(*args, **kwargs):
+        raise nudge.subprocess.TimeoutExpired('gh', 15)
+
+    monkeypatch.setattr(cadence.subprocess, 'run', offline)
+    row = cadence.evaluate(public_cadence_lane, rh, '2026-11-20T18:00:00Z')
+    assert row['status'] == 'UNKNOWN'
+    assert nudge.decide(61, False, row['status'], 0, NOW) == 'quiet'
+    assert 'could not read public GitHub activity (TimeoutExpired)' in capsys.readouterr().err
+    ledger = public_cadence_lane.parent / 'harness-blocks.jsonl'
+    entry = json.loads(ledger.read_text())
+    assert (entry['gate'], entry['outcome']) == ('cadence.public-activity', 'warn')
+
+
+def test_unreadable_delivery_ledger_still_uses_public_activity(public_cadence_lane, monkeypatch, capsys):
+    import cadence
+    import rh
+
+    def unreadable(*args):
+        raise PermissionError
+
+    monkeypatch.setattr(cadence, 'delivery_time', unreadable)
+    delivery = cadence.stamp('2026-11-20T17:51:53Z')
+    monkeypatch.setattr(cadence, 'github_delivery_time', lambda clock, since: delivery)
+    row = cadence.evaluate(public_cadence_lane, rh, '2026-11-20T18:00:00Z')
+    assert row['status'] == 'OK'
+    assert row['last_delivery'] == delivery.isoformat()
+    assert 'could not read the delivery ledger (PermissionError)' in capsys.readouterr().err
+
+
 def test_running_work_or_recent_turn_is_left_alone():
     assert nudge.decide(500, True, 'STALLED', 0, NOW) is None
     assert nudge.decide(59, False, 'WARN', 0, NOW) is None

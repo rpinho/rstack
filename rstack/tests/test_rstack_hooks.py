@@ -91,8 +91,9 @@ def test_trash_guard():
     blocked(h, bash(FINDER))
     allowed(h, bash('/usr/bin/trash /tmp/x'))
     allowed(h, bash('ls -la'))
-    blocked(h, {'tool_name': 'Bash', 'tool_input': FINDER})            # unreadable, looks guarded
-    loud(h, '{"tool_name": "Bash", "tool_input": {"command": "ls"')    # unreadable, unrelated
+    for bad in ({'tool_name': 'Bash', 'tool_input': FINDER},
+                '{"tool_name": "Bash", "tool_input": {"command": "ls"'):
+        assert 'could not complete its check' in allowed(h, bad)['context']
 
 
 # ------------------------------------------------------------------ block-main-tree-commit

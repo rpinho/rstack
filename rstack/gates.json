@@ -42,9 +42,19 @@
    "class": "hard-line",
    "kind": "hook",
    "old": "denies forced recursive rm and Finder deletes; protects registered paths",
-   "change": "none (hard line)",
+   "change": "confirmed overlaps and hard deletes refuse; protection and hook errors warn and allow",
    "hard_line": "permanent-delete",
-   "fix": "/usr/bin/trash PATH (recoverable), never rm -rf"
+   "fix": "/usr/bin/trash PATH for unprotected paths, never rm -rf"
+  },
+  {
+   "gate": "cadence.public-activity",
+   "files": [
+    "harness/cadence.py"
+   ],
+   "class": "fail-open",
+   "kind": "check",
+   "old": "open-source cadence reads only the delivery ledger",
+   "change": "read the delivery ledger and public GitHub activity; warn and suppress stale cadence flags when a source is unavailable"
   },
   {
    "gate": "osascript-shim",
@@ -1232,7 +1242,6 @@
   "harness/tools/harness-sync/harness_sync.py": "installer: refuses to overwrite hand edits or install under a running job; nothing a lane runs waits on it",
   "harness/tools/conductor-inbox/install-conductor-inbox.sh": "installer script",
   "harness/settings.py": "mentions a refusal in a comment only",
-  "harness/cadence.py": "reports the last sweep refusal; refuses nothing",
   "harness/tools/lane-nudge/lane-nudge": "reports a refused sweep; refuses nothing",
   "harness/tools/prior_art_receipt.py": "mentions refused sources in a comment only",
   "harness/tools/spec_words.py": "word counter for launch.spec-word-cap; refuses nothing itself",
