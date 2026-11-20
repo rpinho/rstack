@@ -4,6 +4,8 @@ Read <RULES path> first and follow it.
 
 Working dir: <dir> (write only here). Budget: <cores> cores, nice 10. Do NOT <submit/push/post/contact>.
 
+Before relaunching, count this job's processes with `pgrep -f JOBNAME | wc -l` only; never print process command lines (other sessions' commands would land in this log).
+
 ## Context
 <What exists already, with paths and numbers. What failed before and why.>
 

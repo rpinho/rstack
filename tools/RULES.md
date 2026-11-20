@@ -8,6 +8,8 @@ Freeze the experiment configuration, comparison and pass line before examining r
 
 Run only within the permitted root and compute budget. Use bounded workers, checkpoints in `STATUS.md`, a deadline, process cleanup and a verified result harvest. No worker should survive the authorized job interval. Alerts should go to the owning agent; escalate to a person only when their action is required.
 
+Before relaunching, count this job's processes with `pgrep -f JOBNAME | wc -l` only; never print process command lines (other sessions' commands would land in this log).
+
 Do not publish, push, post, upload or contact anyone without task authorization. Outreach requires draft review, lint and exact-byte approval. Data-use restrictions and source licenses apply even to public downloads. Never include secrets, personal state or private challenge data in publishable artifacts.
 
 Whenever you referee or review a result, yours or anyone's, answer these three in the verdict, each with the file, command, count or line you checked. An unsupported "no" fails the check.

@@ -2,11 +2,26 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('sw', ROOT / 'harness/tools/spec_words.py')
 sw = importlib.util.module_from_spec(spec); spec.loader.exec_module(sw)
 
 ASK = 'Find a better bound for C44 than the printed one, or say plainly that you did not.'
+
+
+@pytest.mark.parametrize('command', ['pgrep -fl foo', 'pgrep -lf foo', 'pgrep -a foo',
+                                     'ps aux', 'ps -ef', 'ps -o command', 'ps -o args',
+                                     "ps -p 123 -o 'pid, args'"])
+def test_process_listings_are_flagged_inside_specs(command):
+    text = f'{ASK}\nUse `{command}`.\n'
+    assert sw.process_listing_lines(text) == [2]
+
+
+def test_process_listing_check_allows_pid_only_commands():
+    text = 'Count with `pgrep -f JOBNAME | wc -l`. Inspect with `ps -o pid,comm`.'
+    assert sw.process_listing_lines(text) == []
 
 
 def generated(policy_words=2000, lessons_words=500):

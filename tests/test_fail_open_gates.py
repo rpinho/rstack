@@ -208,6 +208,24 @@ def test_launch_gates_warn_and_run(tmp_path):
     assert proc.returncode == 0 and 'harness_blocks unavailable' in proc.stderr
 
 
+def test_a_spec_with_process_listings_warns_and_runs(tmp_path):
+    job = 'fixture-process-listing'
+    proc, jobs, _ = launch(tmp_path, job, 'Find the job.\nRun `pgrep -fl foo` before retrying.\n',
+                           LAUNCH_DETACH='', LAUNCH_NOTIFY_COMMAND='')
+    assert proc.returncode == 0, proc.stderr
+    log = (jobs / (job + '.log')).read_text()
+    prompt = (jobs / (job + '.log.prompt')).read_text()
+    warning = '[launch.spec-process-listing] WARNING (fail-open, the work continues): Spec line(s) 2'
+    assert '=== attempt 1 model fixture-claude' in log
+    for output in (log, prompt, proc.stderr):
+        assert warning in output
+        assert 'pgrep -f JOBNAME | wc -l' in output
+    assert 'pgrep -fl foo' not in log
+    assert 'pgrep -fl foo' in prompt
+    rows = [r for r in ledger(tmp_path / 'state') if r['gate'] == 'launch.spec-process-listing']
+    assert [(r['job'], r['class'], r['outcome']) for r in rows] == [(job, 'fail-open', 'warn')]
+
+
 def test_a_lane_on_hold_still_refuses_and_names_its_fix(tmp_path):
     (tmp_path / 'runtime/lanes/fixture').mkdir(parents=True)
     (tmp_path / 'runtime/lanes/fixture/HOLD').write_text('PAUSED 11-16 by general: not doing this lane\n')

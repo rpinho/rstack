@@ -263,6 +263,13 @@ if [[ ${LAUNCH_DETACH:-} == tmux && -z ${LAUNCH_DETACHED:-} ]]; then
     print -u2 -- "launch.sh: $job ended without an exit line in $log"; exit 1
   fi
 fi
+# Check the full spec in the process that will run it, so a detached launch warns only once.
+spec_warn=$(python3 "$H/tools/spec_words.py" --warn-process-listing --job="$job" --lane="$lane" "$spec" 2>/dev/null) ||
+  spec_warn='[launch.spec-process-listing] WARNING (fail-open, the work continues): spec process-listing lint unavailable.'
+if [[ -n $spec_warn ]]; then
+  print -r -u2 -- "$spec_warn"
+  print -r -- "$spec_warn" >> "$log"
+fi
 # rounds.py has held this rule since the first c5 postmortem on 11-06: no repeat of a method that
 # just produced a dry streak, no reopening a closed dead end, no round 1 without reading the KB.
 # Nothing ever called it and no lane had written a single row, so every check read an empty ledger
@@ -439,9 +446,10 @@ json.dump(d, open(p, "w"), indent=2)' "$log.selection.json" "$round_warn" 2>/dev
     done
     [[ ! -f $lane_dir/GOAL.md ]] || { printf -- '--- LANE GOAL (%s, the owner'\''s words; agents never edit it) ---\n' "$lane"; cat "$lane_dir/GOAL.md"; printf '\n---\n\n'; }
     [[ -z $lessons ]] || { printf -- '--- LESSONS THIS LANE ALREADY PAID FOR ---\n%s\n---\n\n' "$lessons"; }
-    # 11-20 (general, RULE #1): what the gates used to refuse, this job now runs past and reads here.
-    if [[ -n $round_warn$yield_hold$cov_warn ]]; then
+    # Fail-open checks let the job run and carry their warnings into the prompt.
+    if [[ -n $spec_warn$round_warn$yield_hold$cov_warn ]]; then
       printf -- '--- HARNESS WARNINGS FOR THIS JOB (it runs anyway; act on them) ---\n'
+      [[ -z $spec_warn ]] || printf -- '%s\n' "$spec_warn"
       [[ -z $round_warn ]] || printf -- 'Round gate:\n%s\n' "$round_warn"
       [[ $round_warn != *'[rounds.baseline-drift]'* ]] || printf -- 'BASELINE DRIFT: a registered baseline no longer reproduces, so any comparison against it is flagged. Say so in REPORT.md and do not count a beat against it as new.\n'
       [[ -z $yield_hold ]] || printf -- 'Lane yield: %s\n' "$yield_hold"

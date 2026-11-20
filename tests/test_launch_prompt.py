@@ -123,6 +123,8 @@ def test_every_prompt_carries_the_rules_the_goal_and_the_lanes_lessons(tmp_path)
     proc, prompt = run(tmp_path, ASK, goal='Beat the printed constant. Nothing else counts.')
     assert proc.returncode == 0, proc.stderr
     assert 'Begin with prior art' in prompt, 'the rules, so prior art reaches every job'
+    assert "Before relaunching, count this job's processes with `pgrep -f JOBNAME | wc -l` only" in prompt
+    assert '[launch.spec-process-listing]' not in prompt
     assert 'Beat the printed constant' in prompt and "owner's words" in prompt
     assert prompt.index('Begin with prior art') < prompt.index(ASK), 'shared context comes first'
 

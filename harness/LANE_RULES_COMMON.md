@@ -15,6 +15,8 @@ STATUS.md or STATE.md what failed, by number, and what changes. "Same way" means
 stopping the work, whatever the parameters were. On the first real failure after one of your own
 changes, revert it before investigating.
 
+Before relaunching, count this job's processes with `pgrep -f JOBNAME | wc -l` only; never print process command lines (other sessions' commands would land in this log).
+
 **Log every run, win or not.** One line per run to this lane's `RESULTS.jsonl`:
 `log-result --ledger <lane>/RESULTS.jsonl --new yes|no --kind <kind> --what "<what changed and what came of it>" --link <path> --referee HOLDS|NONE`
 A passing verdict (HOLDS, ACCEPT, PASS) on a `--new yes` row also needs

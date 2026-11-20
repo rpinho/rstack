@@ -46,6 +46,15 @@ END = re.compile(r'^---\s*END (?:VERBATIM LANE POLICY|HARNESS COMPILER FAILURES|
 LESSONS = re.compile(r'^##\s+Shared lessons\s*$')
 HEADING = re.compile(r'^#{1,6}\s+\S')
 MANIFEST = re.compile(r'^[^:\[\]]{1,80}:\s*(\[.*\])\s*$')
+PROCESS_LISTING = re.compile(r"""
+    (?<![\w.-])
+    (?:
+        pgrep[ \t]+-(?:fl|lf|a)(?![\w-])
+        | ps[ \t]+(?:aux|-ef)(?![\w-])
+        | ps[ \t]+(?:-[A-Za-z]+[ \t]+|[0-9]+(?:,[0-9]+)*[ \t]+)*
+          -o[ \t]*['"]?(?:\w+[ \t]*,[ \t]*)*(?:command|args)(?![\w-])
+    )
+""", re.VERBOSE)
 
 
 def id_manifest(line):
@@ -101,13 +110,40 @@ def count(path):
     return len(job_specific(text).split())
 
 
+def process_listing_lines(text):
+    """Locate process listings in the full spec without returning any command text."""
+    return [number for number, line in enumerate(text.splitlines(), 1) if PROCESS_LISTING.search(line)]
+
+
+def warn_process_listing(spec, job, lane):
+    lines = process_listing_lines(spec.read_text(errors='replace'))
+    if not lines:
+        return
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import harness_blocks
+
+    line_numbers = ', '.join(map(str, lines))
+    harness_blocks.warn(
+        'launch.spec-process-listing',
+        f'Spec line(s) {line_numbers} can print process command lines. '
+        "Count only this job's processes with `pgrep -f JOBNAME | wc -l`.",
+        job=job, lane=lane, stream=sys.stdout,
+    )
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('spec', type=Path)
+    p.add_argument('--warn-process-listing', action='store_true', help='check process listings instead of counting words')
+    p.add_argument('--job', default='')
+    p.add_argument('--lane', default='')
     a = p.parse_args(argv)
     try:
-        print(count(a.spec))
+        if a.warn_process_listing:
+            warn_process_listing(a.spec, a.job, a.lane)
+        else:
+            print(count(a.spec))
     except OSError as e:
         print('spec unreadable: {}'.format(e), file=sys.stderr)
         return 2

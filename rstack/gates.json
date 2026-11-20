@@ -416,6 +416,20 @@
    }
   },
   {
+   "gate": "launch.spec-process-listing",
+   "files": [
+    "tools/launch.sh",
+    "harness/tools/spec_words.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "change": "warns about process command listings in the spec, logs the warning and adds it to the prompt",
+   "fix": "count only the job's processes with `pgrep -f JOBNAME | wc -l`",
+   "probe": {
+    "pytest": "tests/test_fail_open_gates.py::test_a_spec_with_process_listings_warns_and_runs"
+   }
+  },
+  {
    "gate": "launch.lane-hold",
    "files": [
     "tools/launch.sh"
