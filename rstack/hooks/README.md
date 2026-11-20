@@ -8,6 +8,7 @@ Claude Code PreToolUse guards. Each runs inside `_hookfail.run`, so an internal 
 - `block-main-tree-commit.py`: denies a `git commit` in a protected main checkout (and asks, rather than allows, on its own internal error) (`RSTACK_MAIN_TREES`). A session committed straight onto main while its worktree had the same files; the first version then guarded a moved path for four months, so it now reports a dead path.
 - `pod-deadline-gate.py`: refuses a pod whose start command does not end the pod itself within a day. "Remember to stop it" dies with the session; a pod that never shut off is the failure.
 - `pod-create-gate.py`: runs the repo's capacity-receipt gate (`tools/pod-create-gate.py`) fail-safe. An import error used to exit 1, which Claude Code treats as allow.
+- `claude-pace-gate.py` checks Agent spawns against the Claude weekly cap, warns on pacing, reserves the ceiling for the conductor and allows on read errors.
 - `conductor-inbox-gate.py`: denies direct SendMessage to the conductor session; workers use `relay`. Every wake replays the conductor's whole context to deliver what was usually an FYI.
 - `read-the-thread-first.py`: denies a browser click that sends an email unless the session pulled the page text in the last 30 minutes. Wrong replies were wrong about the question, not the voice; a screenshot does not count as a read.
 - `gate-pipe-guard.py`: denies a lint/test/typecheck gate piped into tail/head/grep without `set -o pipefail`. The pipe's exit code is the last command's, so a failing gate read as green and a broken PR merged.

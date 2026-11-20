@@ -35,6 +35,20 @@ LOW_JUDGMENT = ('mechanical', 'batch', 'cheap')   # roles where Sonnet is the pr
 WEEK_H = 168.0
 
 
+def load_allowance():
+    """Load the same usage reader from a checkout or the installed harness."""
+    from importlib.machinery import SourceFileLoader
+    from importlib.util import module_from_spec, spec_from_loader
+    here = Path(__file__).resolve().parent
+    for tool in (here / 'rstack/tools/allowance', here.parent / 'rstack/tools/allowance'):
+        if tool.is_file():
+            spec = spec_from_loader('allowance', SourceFileLoader('allowance', str(tool)))
+            module = module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    return None
+
+
 def _f(name, default):
     try:
         return float(os.environ.get(name) or default)
@@ -194,10 +208,11 @@ def lane_percent(lane, weekly, since, now, allowance=None, projects=None):
 
 def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, projects=None):
     """What a Claude pick may do. Returns dict(model, leave, notes, warning, opus_reason):
-    leave is a reason string when Claude must be left for a fallback route, else ''."""
+    leave is a reason string when Claude must be left for a fallback route, else ''.
+    pressure describes account usage independently of lane shares. Pacing includes used, rate and hours."""
     now = time.time() if now is None else now
     notes, leave, warning = [], '', ''
-    out = dict(model=model, leave='', notes=notes, warning='')
+    out = dict(model=model, leave='', notes=notes, warning='', pressure='normal')
     if not enabled():
         return out
     ceiling, warn, pace_off = _f('RH_CLAUDE_CEILING_PERCENT', CEILING), _f('RH_CLAUDE_WARN_PERCENT', WARN), \
@@ -209,12 +224,14 @@ def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, proj
         notes.append('claude Sonnet 5.5 preferred for the {} role'.format(role))
     weekly = allowance.claude_weekly(now) if allowance else None
     if not weekly:
+        out['pressure'] = 'unknown'
         notes.append('claude usage unknown: ceiling, pacing and shares not applied')
         return out
     used = float(weekly['weekly_used_percent'])
     resets = weekly.get('resets_at')
     hours = max((float(resets) - now) / 3600, 1.0) if resets else WEEK_H
     if used >= ceiling:
+        out['pressure'] = 'ceiling'
         out['leave'] = 'claude weekly at {:.0f}% >= {:g}% ceiling (the last {:g}% is general\'s)'.format(used, ceiling, 100 - ceiling)
         return out
     if used >= warn:
@@ -222,9 +239,11 @@ def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, proj
     rate, basis = burn_rate(allowance, now, used, hours)
     projected = used + rate * hours
     if projected > ceiling:
+        out.update(pressure='pacing', used=used, rate=rate, hours=hours)
         line = 'claude pacing: {:.0f}% + {:.1f}%/h ({}) x {:.0f} h to reset projects {:.0f}% > {:g}%'.format(
             used, rate, basis, hours, projected, ceiling)
         if projected >= pace_off:
+            out['pressure'] = 'pace-off'
             out['leave'] = line + '; on course for the wall, job leaves Claude'
             return out
         if is_opus(model) and sonnet_ok and not pinned:

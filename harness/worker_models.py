@@ -20,6 +20,7 @@ from bug_verdicts import maker
 from agent_executor import metered_refusal
 import agy_quota
 import claude_cap
+from claude_cap import load_allowance as _allowance
 import harness_blocks
 
 
@@ -133,19 +134,6 @@ def assigns_judgment_model(text):
 # used as overflow when that limit is tight. Explicit, never silent: only above RH_CLAUDE_OVERFLOW_PERCENT
 # (unset = off), read from the allowance reader, and the receipt and the log both say so.
 AGY_CLAUDE = {'claude-opus-5-5', 'claude-sonnet-5-5'}
-
-
-def _allowance():
-    from importlib.machinery import SourceFileLoader
-    from importlib.util import module_from_spec, spec_from_loader
-    here = Path(__file__).resolve().parent
-    for tool in (here / 'rstack/tools/allowance', here.parent / 'rstack/tools/allowance'):
-        if tool.is_file():
-            spec = spec_from_loader('allowance', SourceFileLoader('allowance', str(tool)))
-            module = module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module
-    return None
 
 
 def claude_overflow(executor, model):

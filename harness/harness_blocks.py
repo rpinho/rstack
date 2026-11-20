@@ -56,7 +56,7 @@ LEDGER = 'harness-blocks.jsonl'
 # bughunt.coverage, lane-yield.hold, launch.host-memguard, sweep.host-headroom and upstream.live-claim to
 # fail-open, so they left this set with the registry.
 FALLBACK_REFUSING = frozenset((
-    'bug-claims-check', 'codex-budget.npx',
+    'bug-claims-check', 'claude-pace-gate.limit', 'codex-budget.npx',
     'conductor-inbox-gate.py', 'contact-gate', 'egress-gate', 'email-voice-gate.py', 'friend-reply-gate.py',
     'general-inbox-gate.py', 'general-relay-check.py', 'guard-main-tree.py', 'lan-proxy.allowlist',
     'lane-no-questions.py', 'launch.host-peak-cap',

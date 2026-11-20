@@ -4,6 +4,37 @@
  "principle": "rstack/principles/harness-never-in-the-way.md",
  "gates": [
   {
+   "gate": "claude-pace-gate.limit",
+   "files": [
+    "rstack/hooks/claude-pace-gate.py"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "hard_line": "money",
+   "old": "interactive Agent calls did not check the Claude allowance",
+   "change": "reserve the weekly ceiling for general and deny non-general Opus at the pace-off projection",
+   "fix": "send it to Codex: tools/launch.sh JOB WORKDIR with AGENT_BACKEND=codex"
+  },
+  {
+   "gate": "claude-pace-gate.py",
+   "files": [
+    "rstack/hooks/claude-pace-gate.py"
+   ],
+   "class": "fail-open",
+   "kind": "hook",
+   "old": "interactive Agent calls had no pacing feedback",
+   "change": "warn on projected overuse and allow on errors",
+   "probe": {
+    "hook": "rstack/hooks/claude-pace-gate.py",
+    "event": {
+     "tool_name": "Agent",
+     "tool_input": {
+      "model": "opus"
+     }
+    }
+   }
+  },
+  {
    "gate": "trash-guard.py",
    "files": [
     "rstack/hooks/trash-guard.py"
