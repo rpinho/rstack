@@ -84,6 +84,11 @@ def test_an_unknown_gate_keeps_refusing_and_is_named_in_the_report(tmp_path, mon
 
 def test_a_block_later_rerun_overridden_or_retracted_is_a_harness_bug(tmp_path, monkeypatch):
     monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
+    # 11-20: general has decided every gate, so the pending case is simulated: a gate general has not
+    # decided yet counts as a harness bug when its block is later answered.
+    real_entry = harness_blocks.entry
+    monkeypatch.setattr(harness_blocks, 'entry', lambda name: dict(real_entry(name), pending='undecided')
+                        if name == 'launch.host-peak-cap' else real_entry(name))
     harness_blocks.record('launch.host-peak-cap', 'hard-line', 'peak', job='math_a')   # pending: counts
     harness_blocks.record('trash-guard.py', 'hard-line', 'rm -rf', job='math_b')       # a hard line held: does not
     harness_blocks.record('launch.load', 'fail-open', 'load', job='math_c')
@@ -207,8 +212,9 @@ def test_a_lane_on_hold_still_refuses_and_names_its_fix(tmp_path):
     (tmp_path / 'runtime/lanes/fixture').mkdir(parents=True)
     (tmp_path / 'runtime/lanes/fixture/HOLD').write_text('PAUSED 11-16 by general: not doing this lane\n')
     proc, jobs, env = launch(tmp_path, 'fixture-held', 'a job\n')
-    assert proc.returncode == 78 and 'pending general' in proc.stderr and 'Fix: general removes' in proc.stderr
-    assert ledger(tmp_path / 'state')[-1]['pending'] is True
+    # 11-20: general decided the HOLD keeps refusing, so it is a settled hard line, no longer pending.
+    assert proc.returncode == 78 and 'hard line: general-keep' in proc.stderr and 'Fix: general removes' in proc.stderr
+    assert 'pending' not in ledger(tmp_path / 'state')[-1]
 
 
 def test_an_unreadable_lane_registry_is_a_warning(tmp_path):

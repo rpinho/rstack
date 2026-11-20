@@ -42,7 +42,10 @@ import time
 
 CLASSES = ('hard-line', 'fail-open')
 # The only reasons a gate may refuse (Ricardo, 11-20). `pending` is a call left to general.
-HARD_LINES = ('money', 'credentials', 'send-as-ricardo', 'permanent-delete', 'egress', 'third-party-code')
+# 11-20: `general-keep` = a gate general reviewed under RULE #1 and decided keeps refusing (its `decided`
+# field says why). It is a settled hard line, not a harness bug, in the daily report.
+HARD_LINES = ('money', 'credentials', 'send-as-ricardo', 'permanent-delete', 'egress', 'third-party-code',
+              'general-keep')
 OUTCOMES = ('block', 'warn', 'rerun', 'override', 'retract', 'allowed-override')
 HARNESS_BUG = ('rerun', 'override', 'retract')
 REFUSE = 3

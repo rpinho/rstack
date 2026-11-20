@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "rule": "RULE #1 (Ricardo, 11-20): the harness never gets in the way of the work. Only hard lines may refuse: money, credentials, send-as-ricardo, permanent-delete, egress, third-party-code. Everything else is fail-open: warn, log, continue. `pending` = general decides; old behaviour kept meanwhile.",
+ "rule": "RULE #1 (Ricardo, 11-20): the harness never gets in the way of the work. Only hard lines may refuse: money, credentials, send-as-ricardo, permanent-delete, egress, third-party-code. Everything else is fail-open: warn, log, continue. `pending` = general decides; old behaviour kept meanwhile. `general-keep` = general decided it keeps refusing.",
  "principle": "rstack/principles/harness-never-in-the-way.md",
  "gates": [
   {
@@ -341,9 +341,9 @@
    "kind": "launcher",
    "old": "refuses a round when the lane target, lengths or size cap do not match the pinned challenge capture, or the capture changed",
    "change": "through the registry; logged",
-   "hard_line": "pending",
+   "hard_line": "general-keep",
    "fix": "fix SPEC.json against the capture (spec.py --lane L diff), then spec.py --lane L pin",
-   "pending": "Recommend keep: it refuses wasted spend on the wrong target (c5: 115 rounds), and names its fix."
+   "decided": "general 11-20: keep. it refuses wasted spend on the wrong target (c5: 115 rounds), and names its fix."
   },
   {
    "gate": "rounds.baseline-drift",
@@ -383,9 +383,9 @@
    "kind": "launcher",
    "old": "refuses every job of a lane with a HOLD file (exit 78)",
    "change": "through the registry; refusal logged with its fix",
-   "hard_line": "pending",
+   "hard_line": "general-keep",
    "fix": "general removes lanes/L/HOLD (tell-general decision)",
-   "pending": "Recommend keep: a HOLD is general's own decision recorded as state."
+   "decided": "general 11-20: keep. a HOLD is general's own decision recorded as state."
   },
   {
    "gate": "launch.lane-status",
@@ -396,9 +396,9 @@
    "kind": "launcher",
    "old": "refuses jobs of a retired/ended/held lane (exit 78)",
    "change": "through the registry; logged",
-   "hard_line": "pending",
+   "hard_line": "general-keep",
    "fix": "general reactivates the lane in lanes/REGISTRY.json",
-   "pending": "Recommend keep (an owner decision recorded as state), same as HOLD."
+   "decided": "general 11-20: keep. An owner decision recorded as state, same as HOLD."
   },
   {
    "gate": "launch.host-memguard",
@@ -423,9 +423,9 @@
    "kind": "launcher",
    "old": "refuses a --host job declaring a peak over 8 GB",
    "change": "through the registry; logged",
-   "hard_line": "pending",
+   "hard_line": "general-keep",
    "fix": "run it on a RunPod pod (rh pod), or stream the data and measure again",
-   "pending": "Recommend keep: the alternative it names (a pod) costs money and needs a person; the mem guard kills it anyway."
+   "decided": "general 11-20: keep. the alternative it names (a pod) costs money and needs a person; the mem guard kills it anyway."
   },
   {
    "gate": "sweep.disk-floor",
@@ -436,9 +436,9 @@
    "kind": "launcher",
    "old": "refuses a sweep below the disk floor on the worker machine",
    "change": "unchanged",
-   "hard_line": "pending",
+   "hard_line": "general-keep",
    "fix": "free disk on the worker host (move old runs to Trash) or lower min_free_gib in SWEEP.toml",
-   "pending": "Recommend keep: a full disk fails every lane on that machine."
+   "decided": "general 11-20: keep. a full disk fails every lane on that machine."
   },
   {
    "gate": "sweep.host-headroom",
@@ -463,9 +463,9 @@
    "kind": "launcher",
    "old": "refuses a sweep whose search_targets name friends who have not replied (Ricardo 11-11)",
    "change": "unchanged",
-   "hard_line": "pending",
+   "hard_line": "general-keep",
    "fix": "remove the people who have not replied from search_targets, or set engaged_only = false",
-   "pending": "Recommend keep: it is Ricardo's own rule about whom we work on, close to the contact gate."
+   "decided": "general 11-20: keep. it is Ricardo's own rule about whom we work on, close to the contact gate."
   },
   {
    "gate": "conductor-inbox-gate.py",
@@ -477,9 +477,9 @@
    "kind": "hook",
    "old": "denies SendMessage to the conductor; names relay/tell-general",
    "change": "through the registry (installed copy is general-inbox-gate.py)",
-   "hard_line": "pending",
+   "hard_line": "general-keep",
    "fix": "tell-general fyi|decision|break \"...\" (relay), not SendMessage",
-   "pending": "Recommend keep: a reroute, the message still arrives; a wake replays general's whole context."
+   "decided": "general 11-20: keep. a reroute, the message still arrives; a wake replays general's whole context."
   },
   {
    "gate": "general-inbox-gate.py",
@@ -490,9 +490,9 @@
    "kind": "hook",
    "old": "installed name of conductor-inbox-gate.py",
    "change": "same as conductor-inbox-gate.py",
-   "hard_line": "pending",
+   "hard_line": "general-keep",
    "fix": "tell-general fyi|decision|break \"...\" (relay), not SendMessage",
-   "pending": "Same as conductor-inbox-gate.py."
+   "decided": "general 11-20: keep. Same as conductor-inbox-gate.py."
   },
   {
    "gate": "lane-no-questions.py",
@@ -504,9 +504,9 @@
    "kind": "hook",
    "old": "denies a question card outside the conductor; ask_lint refuses mechanical asks to the owner",
    "change": "through the registry; logged",
-   "hard_line": "pending",
+   "hard_line": "general-keep",
    "fix": "decide it yourself, or tell-general decision \"...\" and keep working",
-   "pending": "Recommend keep: the refusal is what keeps a lane working (lanes sat for days on one card)."
+   "decided": "general 11-20: keep. the refusal is what keeps a lane working (lanes sat for days on one card)."
   },
   {
    "gate": "general-relay-check.py",
@@ -517,9 +517,9 @@
    "kind": "hook",
    "old": "blocks the conductor's stop once while a session report is unrelayed",
    "change": "through the registry (block_stop); logged",
-   "hard_line": "pending",
+   "hard_line": "general-keep",
    "fix": "relay each named session report to the owner, then finish",
-   "pending": "Recommend keep: it blocks once, never refuses work, and it is how reports reach Ricardo."
+   "decided": "general 11-20: keep. it blocks once, never refuses work, and it is how reports reach Ricardo."
   },
   {
    "gate": "poll-guard.py",
@@ -1139,9 +1139,9 @@
    "kind": "tool",
    "old": "kills a user process over the memory limit before it freezes the machine",
    "change": "unchanged",
-   "hard_line": "pending",
+   "hard_line": "general-keep",
    "fix": "stream the data, lower the job's peak, or run it on a pod",
-   "pending": "Recommend keep: the 11-07 M4 reset and the 11-10 m5 freeze killed every lane; it protects the work."
+   "decided": "general 11-20: keep. the 11-07 M4 reset and the 11-10 m5 freeze killed every lane; it protects the work."
   },
   {
    "gate": "upstream.live-claim",
@@ -1190,9 +1190,9 @@
    "kind": "hook",
    "old": "KB template: exit 2 on an edit to a tracked file in the main KB tree",
    "change": "unchanged (its own exit 2, not _hookfail.decide)",
-   "hard_line": "pending",
+   "hard_line": "general-keep",
    "fix": "edit in a session worktree, then land",
-   "pending": "Recommend fail-open (warn), like block-main-tree-commit: an edit in the main tree is reversible. A patch for the live KB copy is in the private audit."
+   "decided": "general 11-20: keep (against my fail-open recommendation). It names an equal path, the worktree, and main-tree edits break the land flow."
   }
  ],
  "exempt": {

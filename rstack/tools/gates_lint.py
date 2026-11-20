@@ -18,7 +18,10 @@ from pathlib import Path
 import re
 import sys
 
-HARD_LINES = ('money', 'credentials', 'send-as-ricardo', 'permanent-delete', 'egress', 'third-party-code')
+# 11-20: `general-keep` = a gate general reviewed under RULE #1 and decided keeps refusing (its `decided`
+# field says why). It is a settled hard line, not a harness bug, in the daily report.
+HARD_LINES = ('money', 'credentials', 'send-as-ricardo', 'permanent-delete', 'egress', 'third-party-code',
+              'general-keep')
 SIGNATURE = re.compile(r"permissionDecision|['\"]deny['\"]|['\"]decision['\"]:\s*['\"]block|REFUSED|refused|"
                        r"refuses|sys\.exit\((?:2|75|78)\)|\bexit 7[58]\b|return (?:REFUSED|7[58])\b")
 NAMES = (re.compile(r"_hookfail\.run\(\s*'([\w.-]+)'"), re.compile(r"harness_blocks\.gate\(\s*'([\w.-]+)'"),
