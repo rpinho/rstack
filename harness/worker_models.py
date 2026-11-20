@@ -199,6 +199,83 @@ def producer_families(made_by='', workdir='', lane_dir=''):
     return families, sources
 
 
+# 11-20 Ricardo: "If Codex is getting to the limit, you can just use my Claude. We have plenty of Claude...
+# You can run everything at Claude now." The default executor goes to the provider with the most subscription
+# headroom per hour left to its reset, read from the allowance reader. Explicit: the receipt and the log say
+# "executor claude: headroom 100% / 63h to reset vs codex 43% / 98h". RH_HEADROOM_ROUTING=0 turns it off.
+# agy publishes no figure, so it is never the default; it stays the 85% Claude brake (claude_overflow).
+PROVIDER_DEFAULT = {
+    'claude': {'batch': 'claude-sonnet-5-5', 'mechanical': 'claude-sonnet-5-5', 'cheap': 'claude-sonnet-5-5',
+               '*': 'claude-opus-5-5'},
+    'codex': {'review': 'gpt-6.2-astra', 'judge': 'gpt-6.2-astra', 'audit': 'gpt-6.2-astra', 'taste': 'gpt-6.2-astra',
+              'design': 'gpt-6.2-astra', 'ideation': 'gpt-6.2-astra', '*': 'gpt-6.2-sol'}}
+HEADROOM_HORIZON_H = 168   # a provider whose reset time is unknown is treated as a full week away
+
+
+def headroom(now=None):
+    """{provider: {used, hours, per_hour}} for claude and codex, from the allowance reader; {} if either is unread."""
+    allowance = _allowance()
+    if not allowance:
+        return {}
+    import time
+    now = time.time() if now is None else now
+    data = allowance.cached(now)
+    out = {}
+    for provider in ('claude', 'codex'):
+        row = data.get(provider)
+        if not isinstance(row, dict) or row.get('weekly_used_percent') is None:
+            return {}
+        resets = row.get('resets_at')
+        hours = max((float(resets) - now) / 3600, 1.0) if resets else HEADROOM_HORIZON_H
+        left = max(0.0, 100.0 - float(row['weekly_used_percent']))
+        out[provider] = dict(used=float(row['weekly_used_percent']), hours=hours, per_hour=left / hours,
+                             reset_known=bool(resets))
+    return out
+
+
+def headroom_line(order, rooms):
+    parts = ['{} {:.0f}% / {:.0f}h to reset{}'.format(p, 100 - rooms[p]['used'], rooms[p]['hours'],
+                                                       '' if rooms[p]['reset_known'] else ' (assumed)')
+             for p in order]
+    return 'executor {}: headroom {}'.format(order[0], parts[0].split(' ', 1)[1]) + ''.join(' vs ' + x for x in parts[1:])
+
+
+def headroom_pick(role, chosen, data, excluded, families, rooms):
+    """(model, provider, line) when the headroom choice moves the pick to another provider's default, else
+    (None, None, line); line is None when there is nothing to compare."""
+    route = data['routes'].get(chosen) or {}
+    if os.environ.get('RH_HEADROOM_ROUTING', '1') == '0' or route.get('cli') not in ('claude', 'codex') or not rooms:
+        return None, None, None
+    order = sorted(rooms, key=lambda p: rooms[p]['per_hour'], reverse=True)
+    for provider in order:
+        if provider == route.get('cli'):
+            return None, None, headroom_line([provider] + [p for p in order if p != provider], rooms)
+        pick = PROVIDER_DEFAULT[provider].get(role) or PROVIDER_DEFAULT[provider]['*']
+        r = data['routes'].get(pick)
+        if (isinstance(r, dict) and r.get('cli') == provider and pick not in excluded
+                and r.get('canonical') not in excluded and maker(pick, r.get('canonical')) not in families):
+            return pick, provider, headroom_line([provider] + [p for p in order if p != provider], rooms)
+    return None, None, None
+
+
+def codex_delegates_today(add=False):
+    """How many delegate picks went to a Codex route today; Sol and Astra draw on the Codex budget."""
+    base = Path(os.environ.get('RSTACK_STATE_DIR') or
+                Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'rstack').expanduser()
+    path = base / 'delegate' / 'codex-{}.count'.format(dt.date.today().isoformat())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a+') as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        stream.seek(0)
+        count = int(stream.read().strip() or 0)
+        if add:
+            stream.seek(0)
+            stream.truncate()
+            stream.write(str(count + 1))
+            count += 1
+    return count
+
+
 def runnable(executor):
     """The executors the calling launcher can actually run.
 
@@ -207,7 +284,8 @@ def runnable(executor):
     that runs more says so in RH_LAUNCHER_EXECUTORS (rstack tools/launch.sh does); otherwise a delegate must
     run on the executor this selection was asked for."""
     named = os.environ.get('RH_LAUNCHER_EXECUTORS', '')
-    return {e.strip() for e in named.split(',') if e.strip()} or {executor}
+    # Both launchers in use run claude: the lanes' _codex/launch.sh and rstack tools/launch.sh.
+    return {e.strip() for e in named.split(',') if e.strip()} or {executor, 'claude'}
 
 
 def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), executors=('codex', 'claude', 'agy')):
@@ -228,18 +306,23 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), exe
             continue
         if maker(m, route.get('canonical')) in families:
             continue
+        if route.get('cli') == 'codex' and codex_delegates_today() >= int(os.environ.get('RH_DELEGATE_CODEX_PER_DAY') or 6):
+            continue   # Sol and Astra draw on the Codex budget: at most this many delegate picks a day
         pool.append(m)
     if not pool:
         return None
     # Fewest graded outcomes first, so every delegate reaches n=5; the draw breaks ties.
     n = lambda m: (evidence.get(m) or {}).get('n', 0)
     pick = min(pool, key=lambda m: (n(m), hashlib.sha256((m + repr(draw)).encode()).hexdigest()))
+    if data['routes'][pick].get('cli') == 'codex':
+        codex_delegates_today(add=True)
     return pick, 'delegated share {:g} of {}: {} (everyday n={}) instead of the leaderboard pick {}'.format(
         share, role, pick, n(pick), top)
 
 
 def select(role, executor, model='', override='', path=None, made_by='', job='', lane='', explore='', pin='',
            workdir='', lane_dir=''):
+    requested = executor
     judgment_hint = ''
     if role == 'batch' and JUDGMENT_JOB.search(job):
         role = 'review'
@@ -294,17 +377,24 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     if explore and explore not in ranked:
         raise ValueError('--explore model is not in the role {} pool: {}'.format(role, explore))
     chosen = explore or model or eligible[0]
+    switched, executor_choice = None, None
+    if not (explore or model or pin):
+        switched, provider, executor_choice = headroom_pick(role, chosen, data, excluded,
+                                                            families if judging else frozenset(), headroom())
+        if switched:
+            chosen = switched
+            executor = provider
     delegated, delegate_skip = None, ''
     if judging and not families:
         delegate_skip = 'judging job with an unknown producer family: not delegated'
     elif not (explore or model or pin):
         delegated = delegate(role, data, excluded, made_by, chosen, int(uuid.uuid4().hex[:8], 16) / 2 ** 32,
                              families if judging else frozenset(),
-                             runnable(executor) & {'claude', 'codex', 'agy'})
+                             runnable(requested) & {'claude', 'codex', 'agy'})
         if delegated:
             chosen = delegated[0]
     route = data['routes'].get(chosen)
-    if delegated or (judging and families and chosen != (explore or model or ranked[0])):
+    if delegated or switched or (judging and families and chosen != (explore or model or ranked[0])):
         executor = route['cli']   # named in the receipt and the log below; not a silent swap
     if isinstance(route, dict) and (role in JUDGMENT or (not model and route.get('cli') in ('openrouter', 'gemini'))):
         executor = route.get('cli')
@@ -323,7 +413,8 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         raise ValueError(judgment_hint + 'role {} requires a different model family from {}'.format(role, made_by))
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9/_.:-]*', chosen):
         raise ValueError('invalid native model id')
-    overflow = claude_overflow(executor, chosen)
+    # The 85% brake moves Claude work to agy's Claude, only where the launcher can run agy.
+    overflow = claude_overflow(executor, chosen) if 'agy' in runnable(requested) else None
     receipt = dict(schema=1, selection_id=uuid.uuid4().hex, utc=dt.datetime.now(dt.timezone.utc).isoformat(),
         role=role, model=chosen, canonical=route['canonical'], executor=executor,
         roles_sha256=hashlib.sha256(raw).hexdigest(), roles_updated=data.get('updated'),
@@ -338,6 +429,9 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
             receipt['producer_family_source'] = family_sources
     if delegate_skip:
         receipt['delegate_skipped'] = delegate_skip
+    if executor_choice:
+        receipt['executor_choice'] = executor_choice + ('; leaderboard pick {} moved to {}'.format(
+            eligible[0] if not (explore or model) else chosen, switched) if switched else '')
     # 11-19: the receipt states what the pick rests on, everyday work first (n<5 = fewer than 5 graded tasks)
     # and the bench beside it, never instead of it.
     everyday = (data.get('evidence') or {}).get(row, {}).get(chosen) or {}
@@ -585,6 +679,9 @@ def main(argv=None):
             return 2
         args.receipt.write_text(json.dumps(receipt, sort_keys=True) + '\n')
         log_record(args.log, 'MODEL_SELECTION', receipt)
+        if receipt.get('executor_choice'):
+            with Path(args.log).open('a') as stream:
+                stream.write('{} job={}\n'.format(receipt['executor_choice'], args.job))
         if receipt.get('delegate'):
             with Path(args.log).open('a') as stream:
                 stream.write('{} job={}\n'.format(receipt['delegate'], args.job))

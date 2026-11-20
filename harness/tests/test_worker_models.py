@@ -507,6 +507,9 @@ def overflow_setup(tmp_path, monkeypatch, percent, limit='85'):
 
 def test_above_the_threshold_a_claude_job_overflows_to_agys_claude_and_says_so(tmp_path, monkeypatch):
     p = overflow_setup(tmp_path, monkeypatch, 91)
+    monkeypatch.delenv('RH_LAUNCHER_EXECUTORS', raising=False)
+    assert wm.select('batch', 'claude', path=p)['executor'] == 'claude'   # this launcher cannot run agy
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     got = wm.select('batch', 'claude', path=p)
     assert (got['model'], got['canonical']) == ('claude-opus-5-5', 'anthropic/claude-opus-5.5')
     assert (got['executor'], got['route_model']) == ('agy', 'claude-opus-5-5-high')
@@ -732,7 +735,8 @@ def test_a_delegate_runs_only_on_an_executor_the_launcher_can_run(tmp_path, monk
     monkeypatch.delenv('RH_LAUNCHER_EXECUTORS', raising=False)
     for _ in range(40):
         got = wm.select('batch', 'codex', path=p)
-        assert got['executor'] == 'codex' and got['model'].startswith('gpt-'), got
+        # Both launchers in use run claude; neither the lanes' launcher nor a codex job runs agy.
+        assert got['executor'] in ('codex', 'claude') and not got['model'].startswith('gemini'), got
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     seen = {wm.select('batch', 'codex', path=p)['executor'] for _ in range(60)}
     assert 'agy' in seen or 'claude' in seen
@@ -749,3 +753,64 @@ def test_retract_marks_a_job_grade_retracted_and_needs_a_reason(tmp_path, capsys
     rows = [_json.loads(l) for l in grades.read_text().splitlines()]
     assert rows[-1]['grade'] == 'retracted' and rows[-1]['retracted'] == 'fail' and rows[-1]['id'] == 'grade-s1'
     assert 'launcher' in rows[-1]['note']
+
+
+def headroom_roles(path):
+    routes = {'claude-opus-5-5': ('claude', 'anthropic/claude-opus-5.5'), 'claude-sonnet-5-5': ('claude', 'anthropic/claude-sonnet-5.5'),
+              'gpt-6.2-sol': ('codex', 'openai/gpt-6.2-sol'), 'gpt-6.2-astra': ('codex', 'openai/gpt-6.2-astra')}
+    path.write_text(json.dumps({'roles': {'batch': ['gpt-6.2-sol', 'claude-sonnet-5-5'],
+                                          'review': ['claude-opus-5-5', 'gpt-6.2-astra']},
+                                'routes': {m: {'cli': c, 'canonical': k} for m, (c, k) in routes.items()}}))
+    return path
+
+
+def stub_allowance(monkeypatch, claude, codex):
+    import time
+    now = time.time()
+    class Stub:
+        def cached(self, now=None):
+            return {'claude': {'weekly_used_percent': claude[0], 'resets_at': now_ + claude[1] * 3600},
+                    'codex': {'weekly_used_percent': codex[0], 'resets_at': now_ + codex[1] * 3600}}
+        def claude_weekly(self, now=None):
+            return {'weekly_used_percent': claude[0]}
+    now_ = now
+    monkeypatch.setattr(wm, '_allowance', lambda: Stub())
+    monkeypatch.setenv('RH_DELEGATE_SHARE', '0')
+    monkeypatch.delenv('RH_HEADROOM_ROUTING', raising=False)
+
+
+def test_claude_takes_codex_work_when_codex_is_tight(tmp_path, monkeypatch):
+    p = headroom_roles(tmp_path / 'roles.json')
+    stub_allowance(monkeypatch, claude=(0, 63), codex=(95, 100))
+    got = wm.select('batch', 'codex', path=p)
+    assert (got['model'], got['executor']) == ('claude-sonnet-5-5', 'claude')
+    assert got['executor_choice'].startswith('executor claude: headroom 100% / 63h to reset vs codex 5% / 100h')
+    assert 'moved to claude-sonnet-5-5' in got['executor_choice']
+
+
+def test_codex_takes_claude_work_when_claude_is_tight(tmp_path, monkeypatch):
+    p = headroom_roles(tmp_path / 'roles.json')
+    stub_allowance(monkeypatch, claude=(90, 20), codex=(10, 100))
+    got = wm.select('review', 'codex', path=p, made_by='gemini-4-argon-low')
+    assert (got['model'], got['executor']) == ('gpt-6.2-astra', 'codex')
+    assert got['executor_choice'].startswith('executor codex: headroom 90% / 100h')
+    monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
+    assert wm.select('review', 'codex', path=p, made_by='gemini-4-argon-low')['model'] == 'claude-opus-5-5'
+
+
+def test_the_85_percent_brake_still_sends_claude_to_agy(tmp_path, monkeypatch):
+    p = headroom_roles(tmp_path / 'roles.json')
+    stub_allowance(monkeypatch, claude=(90, 20), codex=(99, 100))
+    monkeypatch.setenv('RH_CLAUDE_OVERFLOW_PERCENT', '85')
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
+    got = wm.select('batch', 'codex', path=p)
+    assert got['model'] == 'claude-sonnet-5-5' and got['executor'] == 'agy'
+    assert got['route_model'] == 'claude-sonnet-5-5-high' and 'weekly at 90%' in got['overflow']
+
+
+def test_the_headroom_pick_keeps_the_referee_out_of_the_producers_family(tmp_path, monkeypatch):
+    from bug_verdicts import maker
+    p = headroom_roles(tmp_path / 'roles.json')
+    stub_allowance(monkeypatch, claude=(0, 63), codex=(95, 100))
+    got = wm.select('review', 'codex', path=p, made_by='claude-opus-5-5')
+    assert maker(got['model'], got['canonical']) != 'anthropic' and got['executor'] == 'codex'

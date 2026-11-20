@@ -171,8 +171,47 @@ def claude_weekly(now=None):
         return None
     if not (finite(pct) and finite(at)) or now - at > CLAUDE_USAGE_MAX_AGE_S or now < at - 300:
         return None
-    return dict(weekly_used_percent=pct, snapshot_at=datetime.fromtimestamp(at, timezone.utc).isoformat(),
-                snapshot_age_seconds=max(0, now - at), source=str(rec.get('source') or 'usage file'))
+    out = dict(weekly_used_percent=pct, snapshot_at=datetime.fromtimestamp(at, timezone.utc).isoformat(),
+               snapshot_age_seconds=max(0, now - at), source=str(rec.get('source') or 'usage file'))
+    resets = rec.get('resets_at')
+    try:
+        resets = float(resets) if isinstance(resets, (int, float)) else datetime.fromisoformat(str(resets)).timestamp()
+    except (TypeError, ValueError):
+        resets = None
+    if resets and finite(resets) and resets > now:
+        out['resets_at'] = resets
+    return out
+
+
+CACHE_MAX_AGE_S = 30 * 60
+
+
+def cached(now=None, max_age=CACHE_MAX_AGE_S):
+    """read_allowance over the discovered homes, reused for max_age seconds.
+
+    A full read walks the home folder and took 56 s on the m5 (11-20); the selector asks on every launch.
+    The Claude reading is re-read each time (one small file), so a fresh usage file counts at once."""
+    now = time.time() if now is None else now
+    path = state_dir() / 'allowance' / 'snapshot.json'
+    data = None
+    try:
+        data = json.loads(path.read_text())
+        if now - float(data.get('_read_at', 0)) > max_age:
+            data = None
+    except (OSError, ValueError, TypeError):
+        data = None
+    if data is None:
+        data = read_allowance(homes(), now)
+        data['_read_at'] = now
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix('.tmp')
+            tmp.write_text(json.dumps(data))
+            tmp.replace(path)
+        except OSError:
+            pass
+    data['claude'] = claude_weekly(now) or 'unavailable'
+    return data
 
 
 def agy_quota_latest():
