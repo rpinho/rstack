@@ -355,6 +355,11 @@ def main(argv=None):
     if args.cmd == 'class':
         print(gate_class(args.name))
         return 0
+    try:   # the host env file names the peers (RH_BLOCKS_PEERS), as for every scheduled harness job
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import settings  # noqa: F401
+    except Exception:
+        pass
     rows = read()
     for host in args.peer + [h for h in os.environ.get('RH_BLOCKS_PEERS', '').replace(',', ' ').split() if h]:
         rows += peer_rows(host)
