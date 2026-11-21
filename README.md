@@ -4,6 +4,21 @@
 
 **The stack I run AI research agents on: the map, the principles, and the machinery, in one place.**
 
+New to coding agents? Install the plugin and type `/onboard`.
+
+## Rule #0: rstack's goal is to delete itself
+
+> "We should have a process, which is to remove process... rstack should not be trying to survive. rstack should be trying to kill itself." (Ricardo, 11-21)
+
+rstack is like an NGO whose goal is to solve the problem and close. The model is actually smarter than the harness, and each new model release closes more of the gap. So the default answer to a new hook, gate, lint, skill or launcher step is no. Before picking a layer from poteto's hierarchy (architecture > compiler > CI/lint > bot rules > prose), check level 0: can the model just decide? Knowledge stays (the wiki, the lessons) and process goes. The hard lines below are exempt.
+
+- Every gate in [rstack/gates.json](rstack/gates.json) has `added`, `why` and `sunset`. `harness_blocks.py sunset --days 14` lists the ones that changed no outcome in 14 days.
+- A weekly [net-deletion](rstack/tools/net-deletion) line says whether rstack shrank: lines, hooks, skills, memories and gates removed against added.
+- On each new model release, an [ablation pass](docs/ablation.md) turns every sunset gate off for a day of real work and keeps only what measurably hurt.
+- First pass, [920fdbe](https://github.com/rpinho/rstack/commit/920fdbe): 7 hooks and 1,290 lines removed (net -141 with the sunset tools), gates 90 to 83. Principle: [rstack-deletes-itself](rstack/principles/rstack-deletes-itself.md).
+
+Prior art: Georgios Konstantopoulos, [Effective Swarm Riding for Engineers](https://www.paradigm.xyz/writing/swarms) ("Each new model cycle obliterates customization over the last cycle, so less is more"); Lauren Tan ([@poteto](https://x.com/poteto)), the pstack v0.15.46 pruning and the enforcement hierarchy.
+
 ## Rule #1: the harness never gets in the way
 
 > "Make sure the harness is not getting in our way. That should be rule number one of the harness or rstack." (Ricardo, 11-20)
