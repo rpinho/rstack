@@ -2,7 +2,9 @@
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 import json
+import os
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -351,3 +353,85 @@ def test_a_lane_blocked_on_the_owner_is_not_nudged_but_a_result_still_wakes_it(t
     assert nudge.decide(500, False, 'OK', 0, NOW, unread='/jobs/x.last.md', blocked=reason)   # a result still wakes it
     os.utime(lane / 'BLOCKED', (NOW - 13 * 3600, NOW - 13 * 3600))
     assert nudge.blocked_on(lane, NOW) is None                                             # lapses: cannot silence forever
+
+
+QUIET_NOW = 1795262400.0  # 2026-11-21T12:00Z
+FUTURE_QUIET = 'until 2026-11-23T03:00Z by general: Claude conservation\n'
+
+
+@pytest.fixture
+def quiet_lane(tmp_path, monkeypatch):
+    lanes = tmp_path / 'lanes'
+    lane = lanes / 'games'
+    lane.mkdir(parents=True)
+    monkeypatch.delenv('RH_LANE_REGISTRY', raising=False)
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
+    monkeypatch.delenv('RSTACK_ABLATE', raising=False)
+    monkeypatch.setattr(nudge.sys, 'argv', ['lane-nudge', '--lanes', str(lanes), '--skip', '',
+                                           '--state', str(tmp_path / 'state'), '--log', str(tmp_path / 'log'),
+                                           '--outputs', str(tmp_path / '{lane}_*.last.md')])
+    monkeypatch.setattr(nudge, 'cadence', lambda _: ({'games': {'status': 'STALLED'}}, None))
+    monkeypatch.setattr(nudge, 'panes', lambda *_: [('games', '%1', '/work')])
+    monkeypatch.setattr(nudge, 'idle_minutes', lambda *_: 120)
+    monkeypatch.setattr(nudge, 'time', SimpleNamespace(time=lambda: QUIET_NOW, sleep=lambda *_: None,
+                                                       strftime=nudge.time.strftime))
+    sends = []
+
+    def tmux(args, **kwargs):
+        if args[1] == 'send-keys':
+            sends.append(args[-1])
+        return SimpleNamespace(stdout='')
+
+    monkeypatch.setattr(nudge.subprocess, 'run', tmux)
+    return lane / 'QUIET', sends
+
+
+def test_future_quiet_skips_idle_nudges_and_logs_once_per_run(quiet_lane, tmp_path, monkeypatch):
+    marker, sends = quiet_lane
+    marker.write_text(FUTURE_QUIET)
+    monkeypatch.setattr(nudge, 'panes', lambda *_: [('games', '%1', '/work'), ('games', '%2', '/work')])
+    for _ in range(2):
+        nudge.main()
+    assert not sends
+    lines = (tmp_path / 'log').read_text().splitlines()
+    assert len(lines) == 2 and all('QUIET' in line and 'idle nudge skipped' in line for line in lines)
+    assert not (tmp_path / 'harness-blocks.jsonl').exists()
+
+
+@pytest.mark.parametrize('first_line, reason', [
+    ('until 2026-11-20T03:00Z by general: Claude conservation\n', 'marker expired'),
+    ('until next Monday by general: Claude conservation\n', 'expected until'),
+    (None, 'could not read marker'),
+])
+def test_invalid_quiet_nudges_and_warns_once_per_utc_day(quiet_lane, tmp_path, monkeypatch, first_line, reason):
+    marker, sends = quiet_lane
+    if first_line is None:
+        marker.mkdir()  # opening a directory as a file fails even under elevated privileges
+    else:
+        marker.write_text(first_line + FUTURE_QUIET)  # a valid second line cannot activate QUIET
+
+    nudge.main()
+    assert len(sends) == 2 and 'STALLED on cadence' in sends[0] and sends[1] == 'Enter'
+    nudge.main()
+    ledger = tmp_path / 'harness-blocks.jsonl'
+    rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+    assert len(rows) == 1
+    assert (rows[0]['gate'], rows[0]['class'], rows[0]['outcome'], rows[0]['lane']) == (
+        'lane-nudge.quiet', 'fail-open', 'warn', 'games')
+    assert reason in rows[0]['reason']
+    monkeypatch.setattr(nudge.time, 'time', lambda: QUIET_NOW + 86400)
+    nudge.main()
+    assert len(ledger.read_text().splitlines()) == 2
+    assert marker.exists()
+
+
+def test_a_fresh_job_output_still_wakes_a_quiet_lane(quiet_lane, tmp_path):
+    marker, sends = quiet_lane
+    marker.write_text(FUTURE_QUIET)
+    result = tmp_path / 'games_round.last.md'
+    result.write_text('Finished')
+    os.utime(result, (QUIET_NOW - 1800, QUIET_NOW - 1800))
+    nudge.main()
+    nudge.main()
+    assert len(sends) == 2 and nudge.RESULT_MSG.format(lane='games', path=result) == sends[0]
+    assert sends[1] == 'Enter'

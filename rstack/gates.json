@@ -73,6 +73,20 @@
    "change": "read the delivery ledger and public GitHub activity; warn and suppress stale cadence flags when a source is unavailable"
   },
   {
+   "gate": "lane-nudge.quiet",
+   "files": [
+    "harness/tools/lane-nudge/lane-nudge"
+   ],
+   "class": "fail-open",
+   "kind": "check",
+   "added": "2026-11-21",
+   "why": "An idle lane was nudged twice after it was idled to conserve Claude, until its session was added to the scheduler skip list.",
+   "sunset": true,
+   "last_changed_outcome": null,
+   "old": "silence idle nudges by adding the lane to the scheduler skip list",
+   "change": "honor a future QUIET expiry for idle nudges; warn and continue if the marker is expired, malformed or unreadable"
+  },
+  {
    "gate": "osascript-shim",
    "files": [
     "rstack/tools/osascript"
@@ -1448,7 +1462,6 @@
   "harness/tools/harness-sync/harness_sync.py": "installer: refuses to overwrite hand edits or install under a running job; nothing a lane runs waits on it",
   "harness/tools/conductor-inbox/install-conductor-inbox.sh": "installer script",
   "harness/settings.py": "mentions a refusal in a comment only",
-  "harness/tools/lane-nudge/lane-nudge": "reports a refused sweep; refuses nothing",
   "harness/tools/prior_art_receipt.py": "mentions refused sources in a comment only",
   "harness/tools/spec_words.py": "word counter for launch.spec-word-cap; refuses nothing itself",
   "harness/tools/baseline.py": "ledger validator: refuses to record a baseline that does not reproduce; no work waits on it",
