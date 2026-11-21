@@ -7,14 +7,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/rstack/hooks/block-main-tree-commit.py"
-          },
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/rstack/hooks/poll-guard.py"
-          },
-          {
-            "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/rstack/hooks/trash-guard.py"
           }
         ]

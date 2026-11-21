@@ -71,6 +71,9 @@ additionalContext) and the call goes ahead, and an internal error in it allows t
 Only a `hard-line` hook (money, credentials, sends in Ricardo's name, permanent deletes, egress,
 unsandboxed third-party code) or one the registry does not know yet still refuses, and its refusal
 carries the registry's `fix`. Every refusal and every warning is one line in harness-blocks.jsonl.
+
+Rule #0 (11-21): with RSTACK_ABLATE=1, run() allows a `sunset: true` hook without running its body and logs
+outcome `ablated` (docs/ablation.md). Hard-line hooks are `sunset: false` and always run.
 """
 import json
 import os
@@ -296,6 +299,19 @@ def run(name, body, triage=None, guards='this action', on_error='deny', fail_clo
         _CURRENT['event'] = event
     except Exception as exc:
         why = type(exc).__name__
+
+    # Rule #0 ablation day (docs/ablation.md): a `sunset: true` hook is switched off, so the call is allowed
+    # without running the check. A hard line (sunset false) and a hook the registry does not know still run.
+    hb = _blocks()
+    try:
+        ablated = hb is not None and hb.ablating(name)
+    except Exception:
+        ablated = False
+    if ablated:
+        job, lane = _who()
+        hb.record(name, 'fail-open', 'ablated: RSTACK_ABLATE=1, the check did not run', job=job, lane=lane,
+                  outcome='ablated')
+        return 0
 
     if event is not None:
         if timeout:

@@ -114,6 +114,124 @@ def test_the_daily_report_tells_general(tmp_path):
     assert told.read_text().startswith('--from harness-blocks fyi harness-blocks 24h:')
 
 
+# --- Rule #0 (11-21): the gates delete themselves unless they change an outcome ----------------------------
+def test_every_registry_entry_carries_its_sunset_fields():
+    for name, row in GATES.items():
+        assert row.get('added', '')[:2] == '20' and row.get('why') and 'last_changed_outcome' in row, name
+        assert row['sunset'] is (row['class'] != 'hard-line'), name
+
+
+def sunset_env(tmp_path, monkeypatch, gates):
+    reg = tmp_path / 'gates.json'
+    reg.write_text(json.dumps({'gates': gates}))
+    monkeypatch.setenv('RH_GATES_REGISTRY', str(reg))
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setattr(harness_blocks, '_REGISTRY', {})   # a fresh cache; the real one comes back afterwards
+
+
+def test_heeded_is_a_mark_without_a_job_and_the_report_dates_it(tmp_path, monkeypatch):
+    sunset_env(tmp_path, monkeypatch, [])
+    env = dict(os.environ, RSTACK_STATE_DIR=str(tmp_path / 'state'), RH_BLOCKS_PEERS='')
+    done = subprocess.run([sys.executable, str(REPO / 'harness/harness_blocks.py'), 'mark', '--gate', 'g.warned',
+                           '--outcome', 'heeded', '--reason', 'agent split the commit after the warning'],
+                          env=env, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    harness_blocks.record('g.other', 'fail-open', 'load', job='j1')                     # a warning, no change
+    harness_blocks.record('g.blocked', 'fail-open', 'x', job='j9', outcome='block')
+    harness_blocks.admitted('j9')                                                       # a rerun answers it
+    rows = harness_blocks.read()
+    assert [r['outcome'] for r in rows] == ['heeded', 'warn', 'block', 'rerun']
+    today = time.strftime('%Y-%m-%d', time.gmtime())
+    s = harness_blocks.summarize(rows)
+    assert s['last_changed'] == {'g.warned': today, 'g.blocked': today}
+    assert s['harness_bugs'] and all(b['gate'] != 'g.warned' for b in s['harness_bugs'])   # heeded is not a bug
+    bad = subprocess.run([sys.executable, str(REPO / 'harness/harness_blocks.py'), 'mark', '--outcome', 'rerun'],
+                         env=env, capture_output=True, text=True)
+    assert bad.returncode != 0                                                          # rerun still needs a job
+
+
+def test_sunset_lists_old_sunset_gates_that_changed_nothing(tmp_path, monkeypatch):
+    day = 86400
+    now = time.time()
+    iso = lambda ago: time.strftime('%Y-%m-%d', time.gmtime(now - ago * day))
+    gates = [
+        {'gate': 'old.silent', 'sunset': True, 'added': iso(30)},
+        {'gate': 'old.heeded', 'sunset': True, 'added': iso(30)},
+        {'gate': 'old.heeded-long-ago', 'sunset': True, 'added': iso(60)},
+        {'gate': 'new.silent', 'sunset': True, 'added': iso(3)},
+        {'gate': 'hard.line', 'sunset': False, 'added': iso(90)},
+        {'gate': 'no.date', 'sunset': True},
+    ]
+    sunset_env(tmp_path, monkeypatch, gates)
+    stamp = lambda ago: time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - ago * day))
+    rows = [dict(utc=stamp(1), gate='old.silent', outcome='warn'), dict(utc=stamp(2), gate='old.silent', outcome='warn'),
+            dict(utc=stamp(20), gate='old.silent', outcome='warn'),                       # outside the window
+            dict(utc=stamp(3), gate='old.heeded', outcome='heeded'),
+            dict(utc=stamp(40), gate='old.heeded-long-ago', outcome='heeded'),
+            dict(utc=stamp(1), gate='hard.line', outcome='warn')]
+    assert harness_blocks.sunset_candidates(rows, harness_blocks.registry(), 14, now) == [
+        ('old.heeded-long-ago', iso(60), 0), ('old.silent', iso(30), 2)]
+    path = harness_blocks.ledger_path()
+    path.parent.mkdir(parents=True)
+    path.write_text(''.join(json.dumps(r) + '\n' for r in rows))
+    env = dict(os.environ, RSTACK_STATE_DIR=str(tmp_path / 'state'), RH_GATES_REGISTRY=os.environ['RH_GATES_REGISTRY'],
+               RH_BLOCKS_PEERS='')
+    done = subprocess.run([sys.executable, str(REPO / 'harness/harness_blocks.py'), 'sunset', '--days', '14'],
+                          env=env, capture_output=True, text=True)
+    assert done.returncode == 0
+    assert [l.split('\t')[0] for l in done.stdout.splitlines()] == ['old.heeded-long-ago', 'old.silent']
+    assert '2 warning(s) in 14d' in done.stdout
+
+
+def test_ablation_allows_a_sunset_gate_and_never_a_hard_line(tmp_path, monkeypatch, capsys):
+    sunset_env(tmp_path, monkeypatch, [
+        {'gate': 'soft.check', 'class': 'fail-open', 'sunset': True},
+        {'gate': 'hard.check', 'class': 'hard-line', 'hard_line': 'money', 'sunset': False, 'fix': 'pay'}])
+    monkeypatch.setenv('RSTACK_ABLATE', '1')
+    assert harness_blocks.gate('soft.check', 'too long', job='j') is False
+    harness_blocks.warn('soft.check', 'a warning', job='j')
+    assert harness_blocks.gate('hard.check', 'spend', job='j') is True            # a hard line still refuses
+    assert harness_blocks.gate('unknown.check', 'x', job='j') is True             # so does a gate nobody classified
+    err = capsys.readouterr().err
+    assert 'soft.check' not in err and 'REFUSED' in err
+    assert [(r['gate'], r['outcome']) for r in ledger(tmp_path / 'state')] == [
+        ('soft.check', 'ablated'), ('soft.check', 'ablated'), ('hard.check', 'block'), ('unknown.check', 'block')]
+    monkeypatch.delenv('RSTACK_ABLATE')
+    assert harness_blocks.gate('soft.check', 'too long', job='j') is False
+    assert ledger(tmp_path / 'state')[-1]['outcome'] == 'warn'                    # off again: a warning, as before
+
+
+def test_a_hook_is_skipped_on_ablation_day_unless_it_is_a_hard_line(tmp_path):
+    hooks = REPO / 'rstack/hooks'
+    marker = tmp_path / 'ran'
+    for name in ('probe-soft.py', 'probe-hard.py'):
+        (tmp_path / name).write_text(
+            'import sys\nsys.path.insert(0, {!r})\nimport _hookfail\n'
+            'def body(event):\n    open({!r}, "a").write({!r})\n'
+            '    _hookfail.decide("deny", "refused by " + {!r})\n    return 0\n'
+            'sys.exit(_hookfail.run({!r}, body))\n'.format(str(hooks), str(marker), name, name, name))
+    reg = tmp_path / 'gates.json'
+    reg.write_text(json.dumps({'gates': [
+        {'gate': 'probe-soft.py', 'class': 'fail-open', 'sunset': True},
+        {'gate': 'probe-hard.py', 'class': 'hard-line', 'hard_line': 'money', 'sunset': False, 'fix': 'pay'}]}))
+    env = dict(os.environ, RH_GATES_REGISTRY=str(reg), RSTACK_STATE_DIR=str(tmp_path / 'state'), HOME=str(tmp_path),
+               RSTACK_ATTENDED='1')
+    event = json.dumps({'tool_name': 'Bash', 'tool_input': {'command': 'ls'}, 'session_id': 's', 'cwd': str(tmp_path)})
+    env['RSTACK_ABLATE'] = '1'
+    soft = subprocess.run([sys.executable, str(tmp_path / 'probe-soft.py')], input=event, env=env,
+                          capture_output=True, text=True)
+    assert soft.returncode == 0 and soft.stdout == '' and not marker.exists()    # allowed, the check never ran
+    hard = subprocess.run([sys.executable, str(tmp_path / 'probe-hard.py')], input=event, env=env,
+                          capture_output=True, text=True)
+    assert '"permissionDecision": "deny"' in hard.stdout and marker.read_text() == 'probe-hard.py'
+    assert [(r['gate'], r['outcome']) for r in ledger(tmp_path / 'state')] == [
+        ('probe-soft.py', 'ablated'), ('probe-hard.py', 'block')]
+    del env['RSTACK_ABLATE']
+    soft = subprocess.run([sys.executable, str(tmp_path / 'probe-soft.py')], input=event, env=env,
+                          capture_output=True, text=True)
+    assert 'fail-open' in soft.stdout and 'probe-soft.py' in marker.read_text()   # off ablation day it runs again
+
+
 def test_the_daily_tick_runs_the_report():
     daily = (REPO / 'leaderboard/daily.sh').read_text()
     assert 'harness_blocks.py" report --tell' in daily
@@ -132,13 +250,11 @@ def run_hook(path, stdin, env):
 def test_a_fail_open_hook_lets_real_work_through_and_survives_its_own_crash(name, row, tmp_path):
     probe = row['probe']
     env = dict(os.environ, RSTACK_STATE_DIR=str(tmp_path / 'state'), HOME=str(tmp_path),
-               RSTACK_MAIN_TREES=str(tmp_path / 'probe-lane'), RSTACK_UNATTENDED='1')
+               RSTACK_UNATTENDED='1')
     env.pop('RH_GATES_REGISTRY', None)
     (tmp_path / 'probe-lane').mkdir()
     event = dict(probe['event'], cwd=str(tmp_path / 'probe-lane'))
-    if name == 'results-report-guard.py':
-        event.pop('cwd')
-    for _ in range(3):   # poll-guard refuses the third identical check; every hook gets the same three
+    for _ in range(3):   # a hook that counts repeats must still let the third identical call through
         done = run_hook(probe['hook'], json.dumps(event), env)
         assert done.returncode == 0, done.stderr
         assert not any(d in done.stdout for d in DENIED), done.stdout
@@ -152,35 +268,12 @@ def test_a_fail_open_hook_lets_real_work_through_and_survives_its_own_crash(name
         assert rows[0]['gate'] == name
 
 
-def test_the_hooks_that_used_to_refuse_now_warn_in_the_ledger(tmp_path):
-    env = dict(os.environ, RSTACK_STATE_DIR=str(tmp_path), HOME=str(tmp_path), RSTACK_UNATTENDED='1')
-    for name in ('gate-pipe-guard.py', 'agent-stdin-guard.py', 'results-brief-guard.py'):
-        probe = GATES[name]['probe']
-        done = run_hook(probe['hook'], json.dumps(probe['event']), env)
-        assert done.returncode == 0 and 'fail-open' in done.stdout, (name, done.stdout, done.stderr)
-    warned = {r['gate'] for r in ledger(tmp_path) if r['outcome'] == 'warn'}
-    assert {'gate-pipe-guard.py', 'agent-stdin-guard.py', 'results-brief-guard.py'} <= warned
-
-
 def test_a_hard_line_hook_still_refuses_with_its_fix(tmp_path):
     env = dict(os.environ, RSTACK_STATE_DIR=str(tmp_path), HOME=str(tmp_path), RSTACK_UNATTENDED='1')
     event = {'tool_name': 'Bash', 'tool_input': {'command': 'rm -rf /tmp/some-dir'}, 'session_id': 's', 'cwd': '/tmp'}
     done = run_hook('rstack/hooks/trash-guard.py', json.dumps(event), env)
     assert '"permissionDecision": "deny"' in done.stdout and '/usr/bin/trash' in done.stdout
     assert [r['outcome'] for r in ledger(tmp_path)] == ['block']
-
-
-def test_a_sanctioned_model_override_is_allowed_and_logged(tmp_path):
-    env = dict(os.environ, RSTACK_STATE_DIR=str(tmp_path), HOME=str(tmp_path), RSTACK_UNATTENDED='1')
-    probe = GATES['model-instruction-gate']['probe']
-    done = run_hook(probe['hook'], json.dumps(probe['event']), env)
-    assert done.returncode == 0 and not any(d in done.stdout for d in DENIED)
-    assert [r['outcome'] for r in ledger(tmp_path)] == ['allowed-override']
-    bare = dict(probe['event'], tool_input={'command': 'tools/launch.sh referee-c5 lanes/c5 --role review '
-                                                       '--made-by gpt-6.2-sol --model claude-sonnet-5-5'})
-    done = run_hook(probe['hook'], json.dumps(bare), env)
-    assert done.returncode == 0 and 'fail-open' in done.stdout
-    assert ledger(tmp_path)[-1]['outcome'] == 'warn'
 
 
 # --- the launcher --------------------------------------------------------------------------------------------
@@ -579,3 +672,13 @@ def test_an_explore_outside_the_pool_runs_the_explored_model(tmp_path):
     receipt = json.loads((jobs / 'fixture-ex.log.selection.json').read_text())
     assert (receipt['source'], receipt['executor']) == ('explore', 'claude') and receipt['explore_outside_pool']
     assert [r['outcome'] for r in ledger(tmp_path / 'state') if r['gate'] == 'selector.explore-pool'] == ['warn']
+
+
+def test_gate_pipe_guard_warns_in_the_ledger(tmp_path):
+    env = dict(os.environ, RSTACK_STATE_DIR=str(tmp_path), HOME=str(tmp_path), RSTACK_UNATTENDED='1')
+    for name in ('gate-pipe-guard.py',):
+        probe = GATES[name]['probe']
+        done = run_hook(probe['hook'], json.dumps(probe['event']), env)
+        assert done.returncode == 0 and 'fail-open' in done.stdout, (name, done.stdout, done.stderr)
+    warned = {r['gate'] for r in ledger(tmp_path) if r['outcome'] == 'warn'}
+    assert {'gate-pipe-guard.py'} <= warned

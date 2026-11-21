@@ -8,6 +8,6 @@ A fixed release epoch bounds initial grace. Restarting a monitor does not reset 
 
 Lane-health notifications append to `RH_AGENT_ALERTS`, an on-disk agent queue. Payloads carry lane/check summaries, not log or dataset contents. A consuming agent must be scheduled separately; writing the queue does not itself wake a model. Pod/provider alerts use a separately configured notification adapter.
 
-`tools/event-watch` can wait for new paths, stale files, process exit, matching log lines and deadlines. It establishes an initial baseline and tracks offsets, so old lines do not repeatedly trigger. Optional notifications are off unless configured. `tools/poll-guard.py` allows two identical foreground status checks in a 30-minute window and denies the third. Background commands, mutations and `# poll-ok` bypass it; errors fail open. It is a backstop, not a polling ban.
+`tools/event-watch` can wait for new paths, stale files, process exit, matching log lines and deadlines. It establishes an initial baseline and tracks offsets, so old lines do not repeatedly trigger. Optional notifications are off unless configured.
 
 Code: [cadence.py](../harness/cadence.py), [lane_alerts.py](../harness/lane_alerts.py). Tests: [test_lane_health.py](../harness/tests/test_lane_health.py).

@@ -178,7 +178,6 @@ The next set of lessons came from running several agents, long jobs and phone-co
 - **A session lane has an identity.** Pin its conversation and project directory, start only missing lanes under a lock, and verify phone discovery as well as process health. Test updates against the behavior you need to preserve.
 - **Workers tell the conductor through a script.** `tell-conductor` (alias `tell-general`, in `harness/tools/conductor-inbox/`) files an FYI without waking the conductor, wakes it only for a decision, a human or a break, and quarantines detail that matches your terms file behind a one-line summary.
 - **Waiting sessions are surfaced, not discovered.** `rstack/tools/asks-waiting` lists sessions stopped on a question or a permission prompt, and untouched PRs, on every conductor turn.
-- **Briefs and reports carry the ask and the result.** `rstack/hooks/results-brief-guard.py` and `results-report-guard.py` hold every subagent brief to "You asked: X. I will: Y." plus "Done when:", and every report to "You asked: X. Shipped: Y".
 - **Text in your name is cut from your own messages.** `rh voice-cuts DRAFT` passes a draft built from your voice banks and records the pass the KB's voice-send gate checks.
 - **Research starts with prior art; cleanup starts with live references.** Reproduce the public baseline before improving it, and check deployment/configuration references before moving an apparently stale folder to the trash.
 

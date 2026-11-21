@@ -4,7 +4,6 @@ See rstack_hookcall.py for the four-part contract.
 """
 import json
 from pathlib import Path
-import subprocess
 
 import pytest
 
@@ -50,37 +49,6 @@ def test_wrapper_treats_a_raising_triage_as_guarded(tmp_path):
     allowed(hook, {'tool_name': 'Bash'})
 
 
-# ------------------------------------------------------------------------------ poll-guard
-
-def test_poll_guard_denies_the_third_identical_check(env):
-    h = HOOKS / 'poll-guard.py'
-    poll = bash('tail -5 train.log', session_id='s1')
-    allowed(h, poll, env=env)
-    allowed(h, bash('tail -20 train.log', session_id='s1'), env=env)   # same check, new literal
-    r = blocked(h, poll, env=env)
-    assert 'event-watch wait' in r['stdout']
-    allowed(h, bash('tail -5 train.log', session_id='other'), env=env)  # per session
-
-
-def test_poll_guard_never_blocks_the_escapes(env):
-    h = HOOKS / 'poll-guard.py'
-    for _ in range(4):
-        allowed(h, bash('tail -5 train.log # poll-ok', session_id='s2'), env=env)
-        allowed(h, {'tool_name': 'Bash', 'session_id': 's2',
-                    'tool_input': {'command': 'tail -5 train.log', 'run_in_background': True}}, env=env)
-        allowed(h, bash('git status', session_id='s2'), env=env)
-        allowed(h, bash('cat a.log > b.log', session_id='s2'), env=env)   # writes: not a poll
-
-
-def test_poll_guard_stays_open_but_not_silent(tmp_path):
-    h = HOOKS / 'poll-guard.py'
-    loud(h, 'not json')
-    state = tmp_path / 'state'
-    state.mkdir()
-    (state / 'poll-guard').write_text('a file where a directory should be')
-    loud(h, bash('tail -5 train.log'), env={'RSTACK_STATE_DIR': str(state)})
-
-
 # ----------------------------------------------------------------------------- trash-guard
 
 FINDER = 'osascript -e \'tell application "Finder" to delete POSIX file "/tmp/x"\''
@@ -94,56 +62,6 @@ def test_trash_guard():
     for bad in ({'tool_name': 'Bash', 'tool_input': FINDER},
                 '{"tool_name": "Bash", "tool_input": {"command": "ls"'):
         assert 'could not complete its check' in allowed(h, bad)['context']
-
-
-# ------------------------------------------------------------------ block-main-tree-commit
-
-def git(*args, cwd):
-    subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', *args],
-                   cwd=str(cwd), check=True, capture_output=True)
-
-
-@pytest.fixture
-def trees(tmp_path):
-    main = tmp_path / 'main'
-    main.mkdir()
-    git('init', '-q', '-b', 'main', cwd=main)
-    (main / 'a.txt').write_text('a')
-    git('add', 'a.txt', cwd=main)
-    git('commit', '-q', '-m', 'init', cwd=main)
-    wt = tmp_path / 'wt'
-    git('worktree', 'add', '-q', '-b', 'feature', str(wt), cwd=main)
-    return main, wt
-
-
-def test_main_tree_commit_refused_worktree_allowed(trees, tmp_path):
-    main, wt = trees
-    h = HOOKS / 'block-main-tree-commit.py'
-    env = {'RSTACK_MAIN_TREES': str(main), 'RSTACK_ATTENDED': '1', 'RSTACK_STATE_DIR': str(tmp_path / 'state')}
-    blocked(h, bash('git commit -m x', cwd=str(main)), env=env)
-    blocked(h, bash('cd {} && git commit -qm x'.format(main), cwd=str(tmp_path)), env=env)
-    blocked(h, bash('git -C {} commit -m x'.format(main), cwd=str(tmp_path)), env=env)
-    blocked(h, bash('cd {}&&git commit -qm x'.format(main), cwd=str(tmp_path)), env=env)   # no spaces
-    blocked(h, bash('cd {};git commit -qm x'.format(main), cwd=str(tmp_path)), env=env)
-    allowed(h, bash('git commit -m x', cwd=str(wt)), env=env)
-    allowed(h, bash('git log --oneline -5', cwd=str(main)), env=env)
-    allowed(h, bash('git merge --ff-only feature', cwd=str(main)), env=env)   # the land step
-    allowed(h, bash('echo "commit later"', cwd=str(main)), env=env)
-    r = blocked(h, {'tool_name': 'Bash', 'tool_input': 'git commit -m x'}, env=env)
-    assert r['decision'] == 'ask', 'a recoverable harm asks: ' + str(r)
-    loud(h, 'not json', env=env)
-
-
-def test_main_tree_guard_says_when_it_is_dead(tmp_path):
-    """It once guarded a path that had moved four months earlier, and nobody could tell."""
-    h = HOOKS / 'block-main-tree-commit.py'
-    r = allowed(h, bash('git commit -m x', cwd=str(tmp_path)),
-                env={'RSTACK_MAIN_TREES': str(tmp_path / 'moved-away')})
-    assert 'not a directory' in r['stderr']
-
-
-def test_main_tree_guard_unconfigured_allows():
-    allowed(HOOKS / 'block-main-tree-commit.py', bash('git commit -m x'), env={'RSTACK_MAIN_TREES': ''})
 
 
 # ------------------------------------------------------------------------- pod-deadline-gate
@@ -260,7 +178,7 @@ def test_read_the_thread_first(env):
 
 def test_every_hook_uses_the_failsafe_wrapper():
     # The wrapper's contract is PreToolUse (allow/deny/ask). A hook wired only to another event
-    # (results-report-guard on SubagentStop) degrades to letting the report through instead.
+    # would have to degrade to letting the call through instead.
     settings = json.loads((HOOKS / 'settings.example.json').read_text())
     pre = {Path(h['command'].split()[-1]).name for g in settings['hooks']['PreToolUse'] for h in g['hooks']}
     for hook in sorted(HOOKS.glob('*.py')):
@@ -283,53 +201,6 @@ def test_settings_example_names_only_hooks_that_exist():
 
 # ------------------------------------------------------------------- adopted from the laptop, 11-11
 
-def test_gate_pipe_guard(env):
-    h = HOOKS / 'gate-pipe-guard.py'
-    blocked(h, bash('python3 -m pytest -q | tail -3'), env=env)
-    blocked(h, bash('npm run lint 2>&1 | grep error'), env=env)
-    allowed(h, bash('set -o pipefail; python3 -m pytest -q | tail -3'), env=env)
-    allowed(h, bash('python3 -m pytest -q'), env=env)
-    allowed(h, bash('git log --oneline | head -5'), env=env)
-    loud(h, '[1]', env=env)                                   # broken, and nothing gate-like is piped
-    blocked(h, 'not json: pytest | tail', env=env)            # broken, and it looks like the real thing
-
-
-def test_agent_stdin_guard(env):
-    h = HOOKS / 'agent-stdin-guard.py'
-    blocked(h, bash('codex exec --skip-git-repo-check "do it"'), env=env)
-    blocked(h, bash('cd /tmp && claude -p "summarise"'), env=env)
-    blocked(h, bash('env A=1 timeout 600 codex exec "x"'), env=env)
-    allowed(h, bash('codex exec "do it" < /dev/null'), env=env)
-    allowed(h, bash('cat prompt.md | claude -p'), env=env)
-    allowed(h, bash("codex exec - <<'EOF'\nthe prompt\nEOF"), env=env)
-    allowed(h, bash('echo "run codex exec later" && grep "claude -p" notes.md'), env=env)
-    allowed(h, bash('codex exec --help'), env=env)
-    loud(h, '[1]', env=env)
-
-
-def test_results_brief_guard(env):
-    h = HOOKS / 'results-brief-guard.py'
-    agent = lambda prompt: {'tool_name': 'Agent', 'tool_input': {'prompt': prompt}}
-    blocked(h, agent('Find every caller of foo() and list them.'), env=env)
-    blocked(h, agent('You asked: the callers of foo(). I will: list them.'), env=env)   # no Done when
-    allowed(h, agent('You asked: the callers of foo(). I will: list them with file:line.\n'
-                     'Done when: every caller is listed.'), env=env)
-    allowed(h, agent('[followup] also check bar()'), env=env)
-    allowed(h, {'tool_name': 'SendMessage', 'tool_input': {'to': 'math', 'message': 'fixed'}}, env=env)
-    r = call(h, 'not json "Agent"', env=env)
-    assert r['decision'] == 'ask'                             # broken on a brief: asks, never allows
-
-
-def test_results_report_guard(tmp_path):
-    h = HOOKS / 'results-report-guard.py'
-    r = call(h, {'last_assistant_message': 'I read twelve files and ran the tests.'})
-    assert json.loads(r['stdout'])['decision'] == 'block'
-    assert call(h, {'last_assistant_message': 'You asked: X. Shipped: 3 fixes.'})['stdout'] == ''
-    assert call(h, {'last_assistant_message': 'activity only', 'stop_hook_active': True})['stdout'] == ''
-    r = call(h, 'not json')
-    assert r['stdout'] == '' and 'needs repair' in r['stderr']   # degrades, never suppresses a report
-
-
 def test_lane_no_questions(tmp_path):
     h = HOOKS / 'lane-no-questions.py'
     ask = lambda cwd: {'tool_name': 'AskUserQuestion', 'tool_input': {}, 'cwd': cwd}
@@ -341,8 +212,8 @@ def test_lane_no_questions(tmp_path):
 
 
 def test_unattended_turns_ask_into_deny(tmp_path):
-    h = HOOKS / 'results-brief-guard.py'
-    r = call(h, 'not json "Agent"', env={'RSTACK_UNATTENDED': '1', 'RSTACK_STATE_DIR': str(tmp_path)})
+    h = asker(tmp_path)
+    r = call(h, ev('/home/u/kb/general'), env={'RSTACK_UNATTENDED': '1', 'RSTACK_STATE_DIR': str(tmp_path)})
     assert r['decision'] == 'deny' and 'RSTACK_UNATTENDED=1' in r['stdout']
 
 
@@ -399,8 +270,19 @@ def test_an_unwritable_ledger_leaves_the_decision_alone(tmp_path):
 
 
 def test_allow_and_deny_are_untouched_and_not_ledgered(tmp_path):
-    h = HOOKS / 'gate-pipe-guard.py'
+    h = HOOKS / 'trash-guard.py'
     state = tmp_path / 'state'
     allowed(h, bash('ls'), env={'RSTACK_STATE_DIR': str(state)})
-    blocked(h, bash('python3 -m pytest -q ' + chr(124) + ' tail -3'), env={'RSTACK_STATE_DIR': str(state)})
+    blocked(h, bash(FINDER), env={'RSTACK_STATE_DIR': str(state)})
     assert not (state / 'hook-asks.jsonl').exists()
+
+
+def test_gate_pipe_guard(env):
+    h = HOOKS / 'gate-pipe-guard.py'
+    blocked(h, bash('python3 -m pytest -q | tail -3'), env=env)
+    blocked(h, bash('npm run lint 2>&1 | grep error'), env=env)
+    allowed(h, bash('set -o pipefail; python3 -m pytest -q | tail -3'), env=env)
+    allowed(h, bash('python3 -m pytest -q'), env=env)
+    allowed(h, bash('git log --oneline | head -5'), env=env)
+    loud(h, '[1]', env=env)                                   # broken, and nothing gate-like is piped
+    blocked(h, 'not json: pytest | tail', env=env)            # broken, and it looks like the real thing

@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""net-deletion: rstack's goal is to delete itself (Rule #0, 11-21). This counts what it is made of, keeps a
+dated snapshot, and says whether the last week removed more than it added.
+
+Counted, for this repo and any extra directories:
+  lines   code lines from `git ls-files` (not git: a walk), excluding tests/ and docs/; --code DIR adds more
+  hooks   files in rstack/hooks, plus the hook scripts wired in a settings.json given with --settings
+  skills  SKILL.md files under each --skills DIR
+  memory  *.md files under each --memory DIR (MEMORY.md, the index, is not one)
+  gates   entries in rstack/gates.json
+
+  net-deletion [--repo DIR] [--code DIR ...] [--settings FILE ...] [--skills DIR ...] [--memory DIR ...]
+               [--tell] [--date YYYY-MM-DD]
+
+Appends one snapshot to $RSTACK_STATE_DIR/net-deletion.jsonl (default ~/.local/state/rstack/) and prints one
+line: the change since the newest snapshot that is 7 or more days old, each count added vs removed, then a
+verdict. Each category votes by its net change; the verdict is NET-NEGATIVE when more of them shrank than
+grew (a tie goes to the net lines of code), NET-POSITIVE when more grew, NET-ZERO when nothing moved. With no
+snapshot that old yet it records the baseline and says so. --tell sends the same line with
+`tell-general fyi` when tell-general is on PATH. Reads only; nothing is deleted, nothing but the snapshot file is
+written. Exit 0 on every run that parses (a usage error is argparse's 2).
+"""
+import argparse
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
+
+CODE_SUFFIXES = {'.py', '.sh', '.zsh', '.bash', '.js', '.mjs', '.ts', '.tsx', '.swift', '.rb', '.go', '.rs'}
+SKIP_PARTS = {'tests', 'docs', '__pycache__', '.git', 'node_modules', '.venv'}
+CATEGORIES = ('lines', 'hooks', 'skills', 'memory', 'gates')
+HOOK_NOT = {'README.md', 'settings.example.json'}
+MIN_AGE_DAYS = 7
+
+
+def state_path():
+    base = os.environ.get('RSTACK_STATE_DIR') or str(
+        Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'rstack')
+    return Path(base).expanduser() / 'net-deletion.jsonl'
+
+
+def is_code(path):
+    if path.suffix in CODE_SUFFIXES:
+        return True
+    if not path.suffix:
+        try:
+            with open(path, 'rb') as fh:
+                return fh.read(2) == b'#!'
+        except OSError:
+            return False
+    return False
+
+
+def tracked(root):
+    """Relative paths git tracks under root; a plain walk when root is not a git checkout."""
+    try:
+        out = subprocess.run(['git', '-C', str(root), 'ls-files', '-z'], capture_output=True, timeout=60)
+        if out.returncode == 0:
+            return [p for p in out.stdout.decode(errors='replace').split('\0') if p]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return [p.relative_to(root).as_posix() for p in sorted(Path(root).rglob('*'))
+            if p.is_file() and not SKIP_PARTS & set(p.relative_to(root).parts)]
+
+
+def count_lines(root, label):
+    counts = {}
+    root = Path(root)
+    for rel in tracked(root):
+        path = root / rel
+        if SKIP_PARTS & set(Path(rel).parts) or not path.is_file() or path.is_symlink() or not is_code(path):
+            continue
+        try:
+            counts['{}:{}'.format(label, rel)] = len(path.read_bytes().splitlines())
+        except OSError:
+            continue
+    return counts
+
+
+def wired_hooks(settings):
+    """Script basenames named by the hook commands in a settings.json."""
+    try:
+        data = json.loads(Path(settings).expanduser().read_text())
+    except (OSError, ValueError):
+        return set()
+    names = set()
+    hooks = data.get('hooks') if isinstance(data, dict) else None
+    for groups in (hooks or {}).values():
+        for group in groups if isinstance(groups, list) else []:
+            for hook in group.get('hooks', []) if isinstance(group, dict) else []:
+                command = hook.get('command') if isinstance(hook, dict) else None
+                if not isinstance(command, str):
+                    continue
+                try:
+                    tokens = shlex.split(command)
+                except ValueError:
+                    tokens = command.split()
+                script = next((t for t in tokens if '/' in t or t.endswith(('.py', '.sh'))), command)
+                names.add(Path(script).name or command)
+    return names
+
+
+def snapshot(repo, code, settings, skills, memory, date):
+    repo = Path(repo).resolve()
+    lines = count_lines(repo, repo.name)
+    for extra in code:
+        lines.update(count_lines(Path(extra).expanduser().resolve(), Path(extra).expanduser().resolve().name))
+    hooks = set()
+    hook_dir = repo / 'rstack' / 'hooks'
+    if hook_dir.is_dir():
+        hooks |= {p.name for p in hook_dir.iterdir()
+                  if p.is_file() and p.name not in HOOK_NOT and not p.name.startswith(('.', '_'))}
+    for s in settings:
+        hooks |= wired_hooks(s)
+    skill_items = sorted(str(p) for d in skills for p in Path(d).expanduser().rglob('SKILL.md'))
+    memory_items = sorted(str(p) for d in memory for p in Path(d).expanduser().rglob('*.md') if p.name != 'MEMORY.md')
+    try:
+        reg = json.loads((repo / 'rstack' / 'gates.json').read_text())
+        gates = sorted(g['gate'] for g in reg.get('gates', []) if isinstance(g, dict) and g.get('gate'))
+    except (OSError, ValueError):
+        gates = []
+    return {'date': date, 'repo': str(repo), 'lines': lines, 'hooks': sorted(hooks),
+            'skills': skill_items, 'memory': memory_items, 'gates': gates}
+
+
+def read_snapshots(path):
+    rows = []
+    try:
+        for raw in path.read_text().splitlines():
+            try:
+                row = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get('date'):
+                rows.append(row)
+    except OSError:
+        pass
+    return rows
+
+
+def baseline(rows, today):
+    """The newest snapshot at least MIN_AGE_DAYS old, or None."""
+    limit = (dt.date.fromisoformat(today) - dt.timedelta(days=MIN_AGE_DAYS)).isoformat()
+    old = [r for r in rows if str(r['date']) <= limit]
+    return max(old, key=lambda r: r['date']) if old else None
+
+
+def delta(then, now):
+    """{category: (added, removed)}: lines are per-file growth and shrinkage; the others are items."""
+    out = {}
+    a, b = then.get('lines', {}), now.get('lines', {})
+    out['lines'] = (sum(max(b[k] - a.get(k, 0), 0) for k in b), sum(max(a[k] - b.get(k, 0), 0) for k in a))
+    for cat in CATEGORIES[1:]:
+        x, y = set(then.get(cat, [])), set(now.get(cat, []))
+        out[cat] = (len(y - x), len(x - y))
+    return out
+
+
+def verdict(change):
+    votes = [(a > r) - (a < r) for a, r in change.values()]
+    total = sum(votes)
+    if not any(votes):
+        return 'NET-ZERO'
+    if total == 0:   # the categories split evenly: the lines of code decide
+        total = votes[0]
+    return 'NET-NEGATIVE' if total < 0 else 'NET-POSITIVE' if total > 0 else 'NET-ZERO'
+
+
+def summary(then, now, change):
+    parts = ['{} +{}/-{}'.format(cat, *change[cat]) for cat in CATEGORIES]
+    return 'net-deletion {} to {}: {} (now {} lines, {} hooks, {} skills, {} memory files, {} gates): {}'.format(
+        then['date'], now['date'], ', '.join(parts), sum(now['lines'].values()), len(now['hooks']),
+        len(now['skills']), len(now['memory']), len(now['gates']), verdict(change))
+
+
+def tell(text):
+    tg = shutil.which('tell-general')
+    if not tg:
+        print('[net-deletion] tell-general is not on PATH; the line above was not sent', file=sys.stderr)
+        return False
+    try:
+        subprocess.run([tg, '--from', 'net-deletion', 'fyi', text], capture_output=True, text=True, timeout=60)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        print('[net-deletion] tell-general failed; the line above was not sent', file=sys.stderr)
+        return False
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--repo', default=str(Path(__file__).resolve().parents[2]))
+    p.add_argument('--code', action='append', default=[], help='another directory whose code lines count')
+    p.add_argument('--settings', action='append', default=[], help='a settings.json whose wired hooks count')
+    p.add_argument('--skills', action='append', default=[], help='a directory of skills (SKILL.md files)')
+    p.add_argument('--memory', action='append', default=[], help='a directory of memory files (*.md)')
+    p.add_argument('--tell', action='store_true', help='send the line with tell-general fyi')
+    p.add_argument('--date', default=dt.date.today().isoformat(), help='snapshot date (testing)')
+    a = p.parse_args(argv)
+    now = snapshot(a.repo, a.code, a.settings, a.skills, a.memory, a.date)
+    path = state_path()
+    rows = read_snapshots(path)
+    then = baseline(rows, a.date)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'a') as fh:
+            fh.write(json.dumps(now, sort_keys=True) + '\n')
+    except OSError as exc:
+        print('[net-deletion] could not write the snapshot ({})'.format(type(exc).__name__), file=sys.stderr)
+    if then is None:
+        text = ('net-deletion {}: baseline recorded ({} lines, {} hooks, {} skills, {} memory files, {} gates); '
+                'no snapshot {} or more days old yet, so no verdict'.format(
+                    a.date, sum(now['lines'].values()), len(now['hooks']), len(now['skills']),
+                    len(now['memory']), len(now['gates']), MIN_AGE_DAYS))
+    else:
+        text = summary(then, now, delta(then, now))
+    print(text)
+    if a.tell:
+        tell(text)
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except Exception as exc:   # a counting tool never fails a job
+        print('[net-deletion] internal error ({}); nothing was recorded'.format(type(exc).__name__), file=sys.stderr)
+        sys.exit(0)

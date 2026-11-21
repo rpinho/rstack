@@ -63,6 +63,7 @@ def public_cadence_lane(tmp_path, monkeypatch):
         'timestamp_field = "finished"\nsuccess_field = "ok"\n')
     (lane / 'DELIVERIES.jsonl').write_text('{"finished":"2026-11-19T23:00:00Z","ok":true,"kind":"pr"}\n')
     monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
+    monkeypatch.setenv('RH_GH', 'gh')   # the bare name these tests' fake subprocess.run expects
     return lane
 
 
@@ -135,6 +136,52 @@ def test_github_read_error_warns_without_a_cadence_flag(public_cadence_lane, mon
     ledger = public_cadence_lane.parent / 'harness-blocks.jsonl'
     entry = json.loads(ledger.read_text())
     assert (entry['gate'], entry['outcome']) == ('cadence.public-activity', 'warn')
+
+
+def test_gh_off_the_path_is_found_at_a_usual_location(public_cadence_lane, monkeypatch, capsys, tmp_path):
+    """The monitor job has a bare PATH: gh was a FileNotFoundError warning 144 times in 24 h."""
+    import cadence
+    import rh
+    event = {'type': 'PullRequestReviewEvent', 'public': True, 'actor': {'login': 'fixture-user'},
+             'created_at': '2026-11-20T17:51:53Z', 'payload': {'action': 'created'}}
+    fake = tmp_path / 'bin' / 'gh'
+    fake.parent.mkdir()
+    fake.write_text('#!/bin/sh\ncase "$*" in\n  *"--jq .login"*) printf "fixture-user\\n";;\n'
+                    "  *events/public*) printf '%s' '" + json.dumps([[event]]) + "';;\n"
+                    '  *) exit 1;;\nesac\n')
+    fake.chmod(0o755)
+    monkeypatch.delenv('RH_GH')
+    monkeypatch.setenv('PATH', str(tmp_path / 'nowhere'))
+    monkeypatch.setattr(cadence, 'GH_FALLBACKS', ())
+    assert cadence.gh_binary() == 'gh'   # nothing found: the old behaviour, not a crash
+    monkeypatch.setattr(cadence, 'GH_FALLBACKS', (str(tmp_path / 'absent/gh'), str(fake)))
+    assert cadence.gh_binary() == str(fake)
+    row = cadence.evaluate(public_cadence_lane, rh, '2026-11-20T18:00:00Z')
+    assert row['status'] == 'OK' and row['last_delivery'] == '2026-11-20T17:51:53+00:00'
+    assert 'could not read' not in capsys.readouterr().err
+    assert not (public_cadence_lane.parent / 'harness-blocks.jsonl').exists()
+    monkeypatch.setenv('RH_GH', str(tmp_path / 'other-gh'))
+    assert cadence.gh_binary() == str(tmp_path / 'other-gh')   # RH_GH wins
+
+
+def test_a_missing_gh_warns_once_per_lane_per_day(public_cadence_lane, monkeypatch, capsys, tmp_path):
+    import cadence
+    import rh
+    monkeypatch.delenv('RH_GH')
+    monkeypatch.setenv('PATH', str(tmp_path / 'nowhere'))
+    monkeypatch.setattr(cadence, 'GH_FALLBACKS', ())
+    for _ in range(3):
+        row = cadence.evaluate(public_cadence_lane, rh, '2026-11-20T18:00:00Z')
+        assert row['status'] == 'UNKNOWN'
+    assert capsys.readouterr().err.count('could not read public GitHub activity (FileNotFoundError)') == 1
+    ledger = public_cadence_lane.parent / 'harness-blocks.jsonl'
+    assert len(ledger.read_text().splitlines()) == 1
+    state = json.loads((public_cadence_lane.parent / 'cadence-public-warned.json').read_text())
+    assert list(state) == ['open-source|could not read public GitHub activity (FileNotFoundError)']
+    state_file = public_cadence_lane.parent / 'cadence-public-warned.json'
+    state_file.write_text(json.dumps({k: '2000-01-01' for k in state}))   # an old day: warns again
+    cadence.evaluate(public_cadence_lane, rh, '2026-11-20T18:00:00Z')
+    assert len(ledger.read_text().splitlines()) == 2
 
 
 def test_unreadable_delivery_ledger_still_uses_public_activity(public_cadence_lane, monkeypatch, capsys):

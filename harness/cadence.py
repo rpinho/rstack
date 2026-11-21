@@ -10,7 +10,9 @@ import glob
 import json
 import math
 from pathlib import Path
+import os
 import re
+import shutil
 import subprocess
 import time
 import harness_blocks
@@ -121,12 +123,55 @@ def delivery_time(lane, cfg, clock):
     return newest
 
 
+# ~/dev/.bin is where the M4 keeps gh (its only copy there); ~/.local/bin is first on the m5, as in launch.sh.
+GH_FALLBACKS = (os.path.expanduser('~/.local/bin/gh'), os.path.expanduser('~/dev/.bin/gh'),
+                '/opt/homebrew/bin/gh', '/usr/local/bin/gh')
+
+
+def gh_binary():
+    """The gh to run. A scheduled job has a bare PATH, and `gh` was then a FileNotFoundError warning 144 times
+    a day. RH_GH wins; then PATH (the bare name, so subprocess resolves it the same way); then the usual
+    install locations. Nothing found returns 'gh', which fails the way it always did."""
+    if os.environ.get('RH_GH'):
+        return os.environ['RH_GH']
+    if shutil.which('gh'):
+        return 'gh'
+    for path in GH_FALLBACKS:
+        if os.access(path, os.X_OK) and os.path.isfile(path):
+            return path
+    return 'gh'
+
+
+def warn_once_a_day(lane, reason):
+    """cadence.public-activity warns at most once per lane per day. The state file (day per lane and reason)
+    sits next to the harness-blocks ledger. A state file that cannot be read or written never hides a warning."""
+    path = harness_blocks.ledger_path().parent / 'cadence-public-warned.json'
+    today = dt.datetime.now(UTC).date().isoformat()
+    key = '{}|{}'.format(lane.name, reason)
+    try:
+        seen = json.loads(path.read_text())
+        if not isinstance(seen, dict):
+            seen = {}
+    except (OSError, ValueError):
+        seen = {}
+    if seen.get(key) == today:
+        return
+    harness_blocks.warn('cadence.public-activity', reason, lane=lane.name)
+    try:
+        seen = {k: v for k, v in seen.items() if v == today}
+        seen[key] = today
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(seen, sort_keys=True))
+    except OSError:
+        pass
+
+
 def github_delivery_time(clock, since=None):
     """Latest authored comment on our public PRs/issues, or public PR review."""
     deadline = time.monotonic() + 15
 
     def api(*args):
-        return subprocess.run(['gh', 'api', '--hostname', 'github.com', *args],
+        return subprocess.run([gh_binary(), 'api', '--hostname', 'github.com', *args],
                               check=True, capture_output=True, text=True,
                               timeout=max(0, deadline - time.monotonic())).stdout
 
@@ -184,14 +229,12 @@ def public_delivery_time(lane, cfg, clock):
         when = delivery_time(lane, cfg, clock)
     except (OSError, ValueError, OverflowError) as exc:
         complete = False
-        harness_blocks.warn('cadence.public-activity',
-                            'could not read the delivery ledger ({})'.format(type(exc).__name__), lane=lane.name)
+        warn_once_a_day(lane, 'could not read the delivery ledger ({})'.format(type(exc).__name__))
     try:
         activity = github_delivery_time(clock, since=when)
     except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError, AttributeError) as exc:
         complete = False
-        harness_blocks.warn('cadence.public-activity',
-                            'could not read public GitHub activity ({})'.format(type(exc).__name__), lane=lane.name)
+        warn_once_a_day(lane, 'could not read public GitHub activity ({})'.format(type(exc).__name__))
     else:
         if activity is not None:
             when = activity

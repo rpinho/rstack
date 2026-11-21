@@ -132,6 +132,8 @@ mechanism that enforces it, or an admission that there isn't one.
   verify a copy exists before removing anything you did not just create.
 - [**Architecture, not prose**](rstack/principles/architecture-not-prose.md): when a rule is broken
   twice, build a mechanism, not a firmer sentence.
+- [**rstack deletes itself**](rstack/principles/rstack-deletes-itself.md): anything that is not a hard
+  line stays only while it changes an outcome; [an ablation pass](docs/ablation.md) on each new model.
 - [**Short asks to the human**](rstack/principles/short-asks.md): a question they can answer, where
   they actually read.
 - [**The goal must not become process**](rstack/principles/goal-not-process.md): gates counted as

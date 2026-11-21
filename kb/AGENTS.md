@@ -72,7 +72,6 @@ Use an independent referee for science claims. See the [operations guide](docs/a
 
 - Route conductor wakes via [`tell-conductor`](../harness/tools/conductor-inbox/tell-conductor) (`tell-general`). `fyi` files quietly. `decision`, `human` and `break` wake it. The script uses `--summary` if detail matches `CONDUCTOR_QUARANTINE_TERMS`.
 - [`asks-waiting`](../rstack/tools/asks-waiting) lists sessions waiting on a person. Use `--prs` for untouched PRs and `--hook` for conductor turns.
-- [`results-brief-guard.py`](../rstack/hooks/results-brief-guard.py) requires `You asked: X. I will: Y.` and `Done when:`. [`results-report-guard.py`](../rstack/hooks/results-report-guard.py) requires `You asked: X. Shipped: Y` at stop.
 - `rh voice-cuts DRAFT` checks reuse of the owner's bank lines in [`voice_cuts.py`](../harness/voice_cuts.py). `.claude/hooks/voice-send-gate.py` checks its recorded pass. Exact-byte send approval still applies.
 
 ## The KB as a protector

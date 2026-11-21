@@ -1,7 +1,6 @@
 {
   "env": {
     "RSTACK_STATE_DIR": "~/.local/state/rstack",
-    "RSTACK_MAIN_TREES": "~/src/my-repo",
     "CONDUCTOR_NAME": "conductor",
     "CONDUCTOR_CWD_SUFFIX": "/src/conductor"
   },
@@ -12,23 +11,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/src/rstack/rstack/hooks/block-main-tree-commit.py"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/src/rstack/rstack/hooks/poll-guard.py"
-          },
-          {
-            "type": "command",
             "command": "python3 ~/src/rstack/rstack/hooks/trash-guard.py"
           },
           {
             "type": "command",
             "command": "python3 ~/src/rstack/rstack/hooks/gate-pipe-guard.py"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/src/rstack/rstack/hooks/agent-stdin-guard.py"
           }
         ]
       },
@@ -68,10 +55,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/src/rstack/rstack/hooks/results-brief-guard.py"
-          },
-          {
-            "type": "command",
             "command": "python3 ~/src/rstack/rstack/hooks/claude-pace-gate.py"
           }
         ]
@@ -82,16 +65,6 @@
           {
             "type": "command",
             "command": "python3 ~/src/rstack/rstack/hooks/lane-no-questions.py"
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/src/rstack/rstack/hooks/results-report-guard.py"
           }
         ]
       }

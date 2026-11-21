@@ -86,9 +86,7 @@ are in [`hooks/`](hooks/), with tests.
 | Hook | Refuses | Because |
 |---|---|---|
 | fail-safe wrapper (**here**) | nothing itself; makes every other hook refuse on its own internal error | A hook blocks only on one exit code or an explicit decision. Five of the hooks on this machine ended `except Exception: exit(0)`, so a crash let the call through, silently. |
-| poll guard (**here**) | a third identical foreground status check within 30 minutes of the last | Sessions agreed in prose to stop polling and kept doing it. Fail-open on purpose: it saves turns, not losses. |
 | trash guard (**here**) | a delete scripted through Finder; deletes go through `/usr/bin/trash` | Every deletion has to be recoverable, and Finder played the trash sound once per item. |
-| main-tree guard (**here**) | a commit straight onto the knowledge base's main tree (it denies; on its own internal error it asks) | A session read files from the main tree, then edited and committed there. The first version guarded a path that no longer existed and was dead for four months. |
 | pod gates (**here**) | creating a rented GPU machine without a self-termination deadline | A pod's only shutoff was a session remembering to stop it, and sessions die; now the start command carries its own kill. The first version of the gate crashed on unexpected input and let a pod through without one. |
 | conductor-inbox gate (**here**) | a lane messaging the conductor session directly | Every wake replays the conductor's whole context. Lanes file through the relay, which wakes it only for decisions. |
 | Conductor relay check (**here**) | the conductor ending a turn whose reply does not name every session whose report was injected (once; the second stop passes) | Injecting the reports did not make the conductor relay them (owner, 11-14: "poteto's hierarchy"). |
@@ -97,13 +95,12 @@ are in [`hooks/`](hooks/), with tests.
 | read the thread first (**here**) | sending an email reply unless the page text was read in the last 30 minutes | A screenshot is not reading. |
 | publish gate | a publication click or `gh` call that skips the publish checklist | Denies on every internal error. |
 | friend-reply gate, voice gate | sending to a friend without a passing lint in the last 20 minutes | Replies that ignored what the friend had just said. |
-| review-not-open | opening a long document on the owner's screen | Long documents go to a review page on the phone instead. |
 | title index | (injects) the knowledge base's page titles at session start | Sessions said "we never documented that" about pages that existed. |
 | context watch | (reports) context size at 500k, 750k and 900k tokens | So compaction is chosen at a good moment instead of happening mid-task. |
 
 In the X layer, [`grok-ask` and `grok-x-search`](tools/README.md#grok-ask) provide discovery: Grok finds and the browser reads exact text. [Posts go through the fixed Grok account](tools/README.md#grok-post); the browser only for likes and follows, handle checked first. The API remains available for gated bookmarks and explicit fallbacks.
 
-Three more hooks still fail open, besides the poll guard. Patches exist and were not applied, because nothing has
+Three more hooks still fail open. Patches exist and were not applied, because nothing has
 gone wrong through those holes, and I decided on 6 November not to build guards for failures that
 have not happened. That rule is [its own principle](principles/guards-need-a-real-failure.md).
 

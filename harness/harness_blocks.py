@@ -19,7 +19,7 @@ its refusals is in the ledger like any other.
 
 Every refusal AND every fail-open warning appends one line to
 $RSTACK_STATE_DIR/harness-blocks.jsonl (default ~/.local/state/rstack/): utc, host, gate, class, job,
-lane, outcome (block|warn|rerun|override|retract|allowed-override), reason, fix, and `pending` when the
+lane, outcome (block|warn|rerun|override|retract|heeded|ablated|allowed-override), reason, fix, and `pending` when the
 gate's class is still general's call. A write failure never changes the
 decision. The daily report counts a block that was later rerun, overridden or retracted as a harness
 bug, and sends general the top three blockers.
@@ -27,9 +27,17 @@ bug, and sends general the top three blockers.
   harness_blocks.py gate --gate NAME --reason TEXT [--fix CMD] [--job J] [--lane L]
         exit 0: carry on (a warning was logged); exit 3: refuse (a hard line; the fix was printed)
   harness_blocks.py mark --job J --outcome rerun|override|retract [--gate NAME] [--reason TEXT]
+  harness_blocks.py mark --gate NAME --outcome heeded --reason TEXT
+        heeded: a warning that made the agent change course. It is the proof a gate still changes outcomes
   harness_blocks.py admitted --job J        a job that was blocked before is now running: a rerun
   harness_blocks.py report [--days 1] [--peer HOST ...] [--tell]
+  harness_blocks.py sunset [--days 14]      sunset gates that changed no outcome in DAYS days (read-only, exit 0)
   harness_blocks.py class NAME              print a gate's class
+
+Rule #0 (11-21): rstack's goal is to delete itself. Every registry entry has `added`, `why`, `sunset` and
+`last_changed_outcome`; a `sunset: true` gate stays only while it changes an outcome (a heeded, rerun,
+override or retract row). Hard lines are `sunset: false`. docs/ablation.md: RSTACK_ABLATE=1 switches every
+`sunset: true` gate off for a day (gate() and _hookfail return "allow", outcome `ablated`).
 """
 import argparse
 import json
@@ -46,8 +54,11 @@ CLASSES = ('hard-line', 'fail-open')
 # field says why). It is a settled hard line, not a harness bug, in the daily report.
 HARD_LINES = ('money', 'credentials', 'send-as-ricardo', 'permanent-delete', 'egress', 'third-party-code',
               'general-keep')
-OUTCOMES = ('block', 'warn', 'rerun', 'override', 'retract', 'allowed-override')
+OUTCOMES = ('block', 'warn', 'rerun', 'override', 'retract', 'heeded', 'ablated', 'allowed-override')
 HARNESS_BUG = ('rerun', 'override', 'retract')
+# Outcomes that show a gate changed what happened: a heeded warning, or a block that was rerun, overridden
+# or retracted. The sunset report keeps a gate only while it has one of these.
+CHANGED = HARNESS_BUG + ('heeded',)
 REFUSE = 3
 LEDGER = 'harness-blocks.jsonl'
 # Used only when the registry cannot be read at all: these gates still refuse, every other gate fails
@@ -128,6 +139,15 @@ def refuses(name):
         return name in FALLBACK_REFUSING
 
 
+def ablating(name):
+    """RSTACK_ABLATE=1 (docs/ablation.md): this gate is switched off for the day. Only a `sunset: true` gate;
+    a hard line, an unclassified gate and one the registry cannot name always run. Never raises."""
+    try:
+        return os.environ.get('RSTACK_ABLATE') == '1' and entry(name).get('sunset') is True
+    except Exception:
+        return False
+
+
 def ledger_path():
     base = os.environ.get('RSTACK_STATE_DIR')
     if not base:
@@ -180,6 +200,9 @@ def gate(name, reason, fix='', job='', lane='', stream=None):
     except Exception:
         cls = 'hard-line' if name in FALLBACK_REFUSING else 'fail-open'
     fix = fix_for(name, fix)
+    if ablating(name):   # the day's ablation pass: allow, say nothing, keep the ledger row
+        record(name, cls, reason, job=job, lane=lane, outcome='ablated', fix=fix)
+        return False
     record(name, cls, reason, job=job, lane=lane, fix=fix)
     try:
         if cls == 'fail-open':
@@ -201,6 +224,9 @@ def gate(name, reason, fix='', job='', lane='', stream=None):
 def warn(name, reason, fix='', job='', lane='', stream=None):
     """A check that never refuses: log and print a warning."""
     stream = stream if stream is not None else sys.stderr
+    if ablating(name):
+        record(name, 'fail-open', reason, job=job, lane=lane, outcome='ablated', fix=fix)
+        return
     record(name, 'fail-open', reason, job=job, lane=lane, outcome='warn', fix=fix)
     try:
         print('[{}] WARNING (fail-open, the work continues): {}'.format(name, reason), file=stream)
@@ -209,9 +235,10 @@ def warn(name, reason, fix='', job='', lane='', stream=None):
 
 
 def mark(job, outcome, gate='', reason='', lane=''):
-    """A later event that shows an earlier block was the harness's fault: rerun, override, retract."""
-    if outcome not in HARNESS_BUG:
-        raise ValueError('outcome must be one of ' + ', '.join(HARNESS_BUG))
+    """A later event that shows an earlier block was the harness's fault (rerun, override, retract), or that
+    a warning changed what the agent did (heeded: no job needed)."""
+    if outcome not in CHANGED:
+        raise ValueError('outcome must be one of ' + ', '.join(CHANGED))
     return record(gate or '*', gate_class(gate) if gate else '-', reason or outcome, job=job, lane=lane, outcome=outcome)
 
 
@@ -274,8 +301,54 @@ def summarize(rows, now=None, days=1.0):
     unclassified = sorted({r.get('gate', '?') for r in recent if r.get('class') == 'unclassified'})
     overrides = len([r for r in recent if r.get('outcome') == 'allowed-override'])
     return dict(blocks=len(blocks), warns=len(warns), harness_bugs=bugs, top=top, unclassified=unclassified,
-                allowed_overrides=overrides,
+                allowed_overrides=overrides, last_changed=last_changed(rows),
                 by_gate_bugs=sorted({b.get('gate', '?') for b in bugs}))
+
+
+def _gates_named(reason):
+    """admitted() writes a rerun row under gate '*'; the gates it answers are in its reason."""
+    head = 'job ran after '
+    text = str(reason)
+    if not text.startswith(head) or ': ' not in text:
+        return []
+    return [g.strip() for g in text.split(': ', 1)[1].split(',') if g.strip()]
+
+
+def last_changed(rows):
+    """{gate: latest UTC date (YYYY-MM-DD) of a heeded, rerun, override or retract row for it}."""
+    out = {}
+    for r in rows:
+        if r.get('outcome') not in CHANGED:
+            continue
+        gates = _gates_named(r.get('reason')) if r.get('gate') == '*' else [r.get('gate')]
+        day = str(r.get('utc', ''))[:10]
+        for g in gates:
+            if g and day and day > out.get(g, ''):
+                out[g] = day
+    return out
+
+
+def sunset_candidates(rows, gates, days=14, now=None):
+    """Every `sunset: true` gate added more than `days` days ago with no heeded/rerun/override/retract row in
+    the last `days` days, as (gate, added, warnings in the window). Rule #0: it stays only while it changes
+    an outcome."""
+    now = time.time() if now is None else now
+    cutoff = time.strftime('%Y-%m-%d', time.gmtime(now - days * 86400))
+    changed = last_changed(rows)
+    since = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - days * 86400))
+    warned = {}
+    for r in rows:
+        if r.get('outcome') == 'warn' and str(r.get('utc', '')) >= since:
+            warned[r.get('gate')] = warned.get(r.get('gate'), 0) + 1
+    out = []
+    for name, row in sorted(gates.items()):
+        added = str(row.get('added') or '')
+        if row.get('sunset') is not True or not added or added >= cutoff:
+            continue
+        if changed.get(name, '') >= cutoff:
+            continue
+        out.append((name, added, warned.get(name, 0)))
+    return out
 
 
 def line(summary, days=1.0):
@@ -334,8 +407,8 @@ def main(argv=None):
     g.add_argument('--job', default='')
     g.add_argument('--lane', default='')
     m = sub.add_parser('mark')
-    m.add_argument('--job', required=True)
-    m.add_argument('--outcome', required=True, choices=HARNESS_BUG)
+    m.add_argument('--job', default='', help='required for rerun|override|retract; not for heeded')
+    m.add_argument('--outcome', required=True, choices=CHANGED)
     m.add_argument('--gate', default='')
     m.add_argument('--reason', default='')
     m.add_argument('--lane', default='')
@@ -346,12 +419,17 @@ def main(argv=None):
     r.add_argument('--days', type=float, default=1.0)
     r.add_argument('--peer', action='append', default=[], help='also read this ssh host\'s ledger')
     r.add_argument('--tell', action='store_true', help='send the line to general (tell-general fyi)')
+    s = sub.add_parser('sunset')
+    s.add_argument('--days', type=float, default=14)
+    s.add_argument('--peer', action='append', default=[], help='also read this ssh host\'s ledger')
     c = sub.add_parser('class')
     c.add_argument('name')
     args = p.parse_args(argv)
     if args.cmd == 'gate':
         return REFUSE if gate(args.gate, args.reason, args.fix, args.job, args.lane) else 0
     if args.cmd == 'mark':
+        if args.outcome != 'heeded' and not args.job:
+            p.error('--job is required for ' + args.outcome)
         mark(args.job, args.outcome, args.gate, args.reason, args.lane)
         return 0
     if args.cmd == 'admitted':
@@ -368,6 +446,11 @@ def main(argv=None):
     rows = read()
     for host in args.peer + [h for h in os.environ.get('RH_BLOCKS_PEERS', '').replace(',', ' ').split() if h]:
         rows += peer_rows(host)
+    if args.cmd == 'sunset':
+        for name, added, warns in sunset_candidates(rows, registry(), args.days):
+            print('{}\tadded {}\t{} warning(s) in {:g}d, no heeded/rerun/override/retract'.format(
+                name, added, warns, args.days))
+        return 0
     text = line(summarize(rows, days=args.days), args.days)
     print(text)
     if args.tell:
