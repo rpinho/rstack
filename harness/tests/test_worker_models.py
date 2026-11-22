@@ -1213,3 +1213,40 @@ def test_hydrogen_low_is_held_back_until_it_earns_its_place_over_medium():
     assert wm.prefer_hydrogen_medium(pool, ev(5, 0.8, 5, 0.8), cost) == pool          # tie, cheaper
     assert wm.prefer_hydrogen_medium(pool, ev(5, 0.8, 5, 0.8), {}) == ['gemini-4-neon-medium', med]
     assert wm.prefer_hydrogen_medium(pool, None, None) == pool                         # bad input never raises
+
+
+def test_a_model_trial_alternates_by_job_keeps_a_jobs_arm_and_stops_at_n(tmp_path, monkeypatch):
+    # 11-22 (Ricardo via general): Neon-medium vs Opus 5.5 on the next builder jobs, by turns, graded as usual.
+    p = cap_setup(tmp_path, monkeypatch, 10, hours=160, history=[(2, 9.5), (0, 10)])
+    data = json.loads(p.read_text())
+    data['roles']['builder'] = ['claude-opus-5-5', 'gpt-6.2-sol']
+    data['routes']['gemini-4-neon-medium'] = {'cli': 'agy', 'canonical': 'google/gemini-4-neon-medium'}
+    p.write_text(json.dumps(data))
+    (tmp_path / 'trial.json').write_text(json.dumps({'name': 't1', 'role': 'builder', 'n': 3,
+                                                     'models': ['gemini-4-neon-medium', 'claude-opus-5-5']}))
+    monkeypatch.setenv('RH_MODEL_TRIAL', str(tmp_path / 'trial.json'))
+    monkeypatch.setenv('RH_MODEL_TRIAL_LEDGER', str(tmp_path / 'trial.jsonl'))
+    monkeypatch.delenv('RH_DELEGATE_SHARE', raising=False)
+
+    def run(job, role='builder', executor='codex'):
+        log, receipt = tmp_path / (job + '.log'), tmp_path / (job + '.log.selection.json')
+        assert wm.main(['--role', role, '--executor', executor, '--roles-file', str(p), '--job', job,
+                        '--print-route', '--log', str(log), '--receipt', str(receipt)]) == 0
+        return json.loads(receipt.read_text())
+    got = [run(j) for j in ('a', 'b', 'c')]
+    assert [(r['model'], r['executor'], r['trial']) for r in got] == [
+        ('gemini-4-neon-medium', 'agy', 't1'), ('claude-opus-5-5', 'claude', 't1'), ('gemini-4-neon-medium', 'agy', 't1')]
+    assert 'model trial t1 (job 2 of 3)' in got[1]['delegate']
+    assert run('b')['model'] == 'claude-opus-5-5'          # a reselected job keeps its arm
+    assert 'trial' not in run('d', executor='claude')                          # n reached: back to the leaderboard and the draw
+    assert 'trial' not in run('e', role='batch', executor='claude')           # other roles are untouched
+    # the report reads grades and wall time beside each receipt
+    rec = json.loads((tmp_path / 'a.log.selection.json').read_text())
+    (tmp_path / 'everyday-grades.jsonl').write_text(json.dumps({'id': 'grade-' + rec['selection_id'], 'grade': 'pass'}) + '\n')
+    lines = wm.trial_report('t1', [tmp_path / 'trial.jsonl'], p)
+    assert any(l.startswith('gemini-4-neon-medium: 1 graded (pass 1') and '1 pending' in l for l in lines)
+    assert any(l.startswith('claude-opus-5-5: 0 graded') and '1 pending' in l for l in lines)
+
+
+def test_biology_draws_neon_as_a_delegate():
+    assert 'biology' in wm.DELEGATE_ROLES and 'biology' in wm.GEMINI_ROLES['neon']

@@ -155,12 +155,13 @@ def claude_overflow(executor, model):
 # below instead of the leaderboard's first pick, so they collect graded everyday outcomes. Explicit, never
 # silent: RH_DELEGATE_SHARE (0..1, unset = 0) turns it on, and the receipt and the log name the draw. Kimi is
 # left out: it exists only through OpenRouter, which is refused (no pay-as-you-go).
-DELEGATE_ROLES = ('review', 'judge', 'audit', 'mechanical', 'builder', 'batch')
+DELEGATE_ROLES = ('review', 'judge', 'audit', 'mechanical', 'builder', 'batch', 'biology')
 # 11-20 (Ricardo): Neon is the main Gemini (judgment roles, medium), Hydrogen the cheap one (batch and mechanical,
 # low or medium); Argon is in no pool and Carbon (Ultra only) stays out.
 DELEGATE_MODELS = ('gemini-4-neon-medium', 'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium',
                    'gpt-6.2-sol', 'gpt-6.2-astra', 'claude-sonnet-5-5')
-GEMINI_ROLES = {'neon': ('review', 'judge', 'audit', 'builder'), 'hydrogen': ('batch', 'mechanical')}
+# 11-22 (Ricardo via general): Neon also builds a record in biology.
+GEMINI_ROLES = {'neon': ('review', 'judge', 'audit', 'builder', 'biology'), 'hydrogen': ('batch', 'mechanical')}
 NEVER_PICKED = ('gemini-4-argon', 'gemini-4-carbon')   # no role, no delegate draw, no headroom move
 
 
@@ -420,10 +421,129 @@ def prefer_hydrogen_medium(pool, evidence, cost, min_n=5):
         return pool
 
 
+# 11-22 (Ricardo, via general: "Have we been using Gemini Neon? ... We need to test it."): a paired trial on
+# everyday work. ~/.config/rstack/model-trial.json = {"name": N, "role": ROLE, "models": [A, B], "n": 20} gives
+# the next n jobs of that role to A and B by turns, ahead of the delegate draw. A job keeps its arm when it is
+# selected again (a retry, a reroute). Graded as usual; `worker_models.py --trial-report` reads the results.
+# Trash the file to end the trial; nothing else reads it.
+def _trial():
+    path = Path(os.environ.get('RH_MODEL_TRIAL') or Path.home() / '.config/rstack/model-trial.json')
+    try:
+        t = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    ok = isinstance(t, dict) and t.get('name') and t.get('role') and len(t.get('models') or ()) >= 2
+    return t if ok else None
+
+
+def trial_ledger():
+    return Path(os.environ.get('RH_MODEL_TRIAL_LEDGER') or Path(os.environ.get('RSTACK_STATE_DIR') or
+                Path.home() / '.local/state/rstack') / 'model-trial.jsonl')
+
+
+def trial_rows(name, paths=None):
+    rows = []
+    for path in paths or [trial_ledger()]:
+        try:
+            lines = Path(path).read_text().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and (not name or row.get('trial') == name):
+                rows.append(row)
+    return rows
+
+
+def trial_pick(role, data, excluded, families, executors, quota, job):
+    """(model, note, trial name) when this job is one of the trial's, else None."""
+    t = _trial()
+    if not t or role != t['role'] or not job:
+        return None
+    rows = trial_rows(t['name'])
+    jobs = list(dict.fromkeys(r.get('job') for r in rows))
+    mine = next((r for r in rows if r.get('job') == job), None)
+    if not mine and len(jobs) >= int(t.get('n') or 20):
+        return None
+    k = jobs.index(job) + 1 if mine else len(jobs) + 1
+    models = list(t['models'])
+    first = mine['model'] if mine else models[(k - 1) % len(models)]
+    for m in [first] + [x for x in models if x != first]:
+        route = data['routes'].get(m)
+        if (not isinstance(route, dict) or route.get('cli') not in executors or m in excluded
+                or route.get('canonical') in excluded or maker(m, route.get('canonical')) in families):
+            continue
+        if route.get('cli') == 'agy' and quota and agy_quota.blocked_until(m, os.environ.get('LAUNCH_EFFORT'), table=quota):
+            continue
+        return m, 'model trial {} (job {} of {}): {} by turns{}'.format(
+            t['name'], k, int(t.get('n') or 20), m, '' if m == first else ' ({} unavailable)'.format(first)), t['name']
+    return None
+
+
+def trial_report(name, ledgers, roles_file=None):
+    """Lines: per model, graded jobs, pass/partial/fail, rate, median wall minutes and the leaderboard's cost."""
+    rows = trial_rows(name, ledgers)
+    latest = {}
+    for row in rows:
+        latest[row.get('job')] = row
+    try:
+        cost = (json.loads(Path(roles_file).read_text()).get('cost') or {}) if roles_file else {}
+    except (OSError, ValueError):
+        cost = {}
+    stats = {}
+    for job, row in latest.items():
+        s = stats.setdefault(row.get('model'), dict(pass_=0, partial=0, fail=0, other=0, pending=0, wall=[], role=row.get('role')))
+        try:
+            receipt = json.loads(Path(row['receipt']).read_text())
+        except (OSError, ValueError, KeyError):
+            s['pending'] += 1
+            continue
+        grade = None
+        try:
+            for line in Path(row['receipt']).with_name('everyday-grades.jsonl').read_text().splitlines():
+                try:
+                    g = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(g, dict) and g.get('id') == 'grade-' + str(receipt.get('selection_id')):
+                    grade = g.get('grade')
+        except OSError:
+            pass
+        finished = _finished(str(row['receipt'])[:-len('.selection.json')], receipt.get('selection_id'))
+        if finished and receipt.get('utc'):
+            s['wall'].append((finished - dt.datetime.fromisoformat(receipt['utc'])).total_seconds() / 60)
+        if grade == 'pass':
+            s['pass_'] += 1
+        elif grade in ('partial', 'fail'):
+            s[grade] += 1
+        elif grade:
+            s['other'] += 1
+        else:
+            s['pending'] += 1
+    out = []
+    for model, s in sorted(stats.items()):
+        graded = s['pass_'] + s['partial'] + s['fail']
+        wall = sorted(s['wall'])
+        c = ((cost.get(s['role']) or {}).get(model) or {}).get('pct_per_pass')
+        out.append('{}: {} graded (pass {}, partial {}, fail {}), rate {}, {} ungraded/retracted, {} pending; '
+                   'median wall {}; leaderboard cost {}'.format(
+                       model, graded, s['pass_'], s['partial'], s['fail'],
+                       '{:.2f}'.format((s['pass_'] + .5 * s['partial']) / graded) if graded else 'n/a',
+                       s['other'], s['pending'], '{:.0f} min'.format(wall[len(wall) // 2]) if wall else 'n/a',
+                       '{}%/pass'.format(c) if c is not None else 'n/a'))
+    return out
+
+
 def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), executors=('codex', 'claude', 'agy'),
-             quota=None, skipped=None):
+             quota=None, skipped=None, job=''):
     """(model, note) when this selection is one of the delegated share, else None. An agy model whose logged quota
     reset has not passed is left out of the pool (quota: agy_quota.blocked()), and `skipped` gets a line for it."""
+    trial = trial_pick(role, data, excluded, families, executors, quota, job)
+    if trial:
+        return trial
     try:
         share = float(os.environ.get('RH_DELEGATE_SHARE') or 0)
     except ValueError:
@@ -600,7 +720,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         delegated = delegate(role, data, excluded, made_by, chosen, int(uuid.uuid4().hex[:8], 16) / 2 ** 32,
                              families if judging else frozenset(),
                              runnable(requested, follows_route) & {'claude', 'codex', 'agy'},
-                             quota=quota, skipped=quota_skipped)
+                             quota=quota, skipped=quota_skipped, job=job)
         if delegated:
             chosen = delegated[0]
     route = data['routes'].get(chosen)
@@ -680,6 +800,8 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
                             or any(src.startswith('hunter ') for src in family_sources) else role)
     if delegated:
         receipt['delegate'] = delegated[1]
+        if len(delegated) > 2:
+            receipt['trial'] = delegated[2]
     if pin:
         receipt['model_pin'] = pin
     if judging:
@@ -917,8 +1039,14 @@ def main(argv=None):
                              'launcher error never counts against a model; the grade stays in the file, marked retracted')
     parser.add_argument('--reason', default='')
     parser.add_argument('--receipt-dir', type=Path)
+    parser.add_argument('--trial-report', metavar='NAME', help='the paired model trial\'s results ("" = all)')
+    parser.add_argument('--trial-ledger', type=Path, action='append', help='another Mac\'s model-trial.jsonl')
     args = parser.parse_args(argv)
     try:
+        if args.trial_report is not None:
+            for line in trial_report(args.trial_report, [trial_ledger()] + (args.trial_ledger or []), args.roles_file):
+                print(line)
+            return 0
         if args.retract:
             if not args.reason.strip():
                 raise ValueError('--retract needs --reason (why the grade is not the model\'s)')
@@ -1004,6 +1132,10 @@ def main(argv=None):
                 return 2
         args.receipt.write_text(json.dumps(receipt, sort_keys=True) + '\n')
         log_record(args.log, 'MODEL_SELECTION', receipt)
+        if receipt.get('trial') and str(args.receipt).endswith('.log.selection.json'):
+            log_record(trial_ledger(), '', dict(trial=receipt['trial'], job=args.job, lane=args.lane,
+                                                model=receipt['model'], role=receipt['role'], utc=receipt['utc'],
+                                                receipt=str(args.receipt.resolve())))
         if receipt.get('executor_choice'):
             with Path(args.log).open('a') as stream:
                 stream.write('{} job={}\n'.format(receipt['executor_choice'], args.job))
