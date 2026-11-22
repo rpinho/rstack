@@ -122,6 +122,19 @@ def test_check_flags_fetched_code_under_a_runnable_name_and_stray_checkouts(tmp_
     assert kinds == ['CHECKOUT_OUTSIDE_SANDBOX', 'THIRD_PARTY_UNRECEIPTED']
 
 
+def test_a_stage_dir_run_with_its_receipts_is_not_a_stray_checkout(tmp_path):
+    # 11-22, math: the kill stage ran third_party.py run --workdir <run>/kill, and the sweep's run-level check
+    # flagged kill/third_party/qv-8388dcf7892a/.git as CHECKOUT_OUTSIDE_SANDBOX.
+    j = job(tmp_path)
+    d = j / 'kill' / tp.DIR / 'qv-8388dcf7892a'
+    (d / '.git').mkdir(parents=True)
+    (d / tp.DIR / 'vendored').mkdir(parents=True)         # the repo's own third_party/ folder is theirs, not ours
+    (j / 'kill' / tp.RECEIPTS).write_text(json.dumps({'dir': 'third_party/qv-8388dcf7892a'}) + '\n')
+    assert tp.check(j) == []
+    (j / 'kill' / tp.RECEIPTS).write_text('')
+    assert [e.split(':')[0] for e in tp.check(j)] == ['THIRD_PARTY_UNRECEIPTED']
+
+
 def test_the_sweep_check_fails_a_run_with_fetched_code_left_runnable(tmp_path):
     import sweep
     run = tmp_path / 'run'

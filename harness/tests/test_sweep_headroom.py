@@ -169,6 +169,8 @@ def test_all_starts_next_lane_while_first_waits_or_fails(lane, cfg, first_failur
     root = lane.parent.parent
     other = lane.parent / 'zz'
     other.mkdir()
+    for which in (lane, other):
+        (which / 'SWEEP.toml').touch()   # --all skips a lane with none (11-22); load() is patched below
     next_started = threading.Event()
     visits = []
     def run(which, *args):

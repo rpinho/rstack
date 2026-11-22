@@ -1613,26 +1613,12 @@ def main(root, args, rh):
     for lane in lanes:
         if not lane.is_dir():
             continue
-        if (args.all and not (lane / 'SWEEP.toml').exists() and not (lane / 'INTAKE.toml').exists()
-                and any((lane / n).exists() for n in ('OUTREACH.toml', 'OUTREACH.jsonl'))):
-            # 11-12 (job-health's first run): lanes/general and lanes/x-history hold only outreach records,
-            # never a SWEEP.toml, so the daily `sweep --all` REFUSED them and exited 1 every day, which hid any
-            # real failure behind a constant one. An outreach-only lane is not a sweep lane; an empty or
-            # half-set-up lane still refuses.
-            print('SKIP {}: an outreach-only lane (no SWEEP.toml or INTAKE.toml)'.format(lane.name))
-            continue
         if args.all and not (lane / 'SWEEP.toml').exists():
-            # 11-17: open-source (PRs, not sweeps) gained INTAKE.toml and CADENCE.toml after the bio rename, and
-            # `sweep --all` then REFUSED it every run for its missing SWEEP.toml. A lane that is not a sweep lane
-            # says so in the registry ("sweep": false); a lane with no SWEEP.toml and no such declaration still refuses.
-            try:
-                import lane_registry
-                entry = lane_registry.load(root / 'lanes').lanes.get(lane.name, {})
-            except Exception:
-                entry = {}
-            if entry.get('sweep') is False:
-                print('SKIP {}: declared not a sweep lane in the lane registry ("sweep": false)'.format(lane.name))
-                continue
+            # 11-22 (rule #0): a lane with no SWEEP.toml is not a sweep lane, so --all skips it and says so. Two
+            # exceptions grew here (outreach-only lanes 11-12, a registry "sweep": false 11-17) and the third lane
+            # (games: QUIET and RULES.md only) still made the daily run exit 1. Named directly, it still refuses.
+            print('SKIP {}: no SWEEP.toml, so not a sweep lane'.format(lane.name))
+            continue
         try:
             pause = held(lane)
             if pause and args.all:

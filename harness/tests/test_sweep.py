@@ -389,34 +389,20 @@ class SweepTests(unittest.TestCase):
         self.assertIn('lane on hold', err)
         self.worker.assert_not_called()
 
-    def test_all_skips_an_outreach_only_lane(self):
-        """11-12: lanes/general and lanes/x-history hold only outreach records; --all refused them and exited 1 daily."""
-        (self.root / 'lanes/x-history').mkdir()
-        (self.root / 'lanes/x-history/OUTREACH.jsonl').write_text('')
+    def test_all_skips_a_lane_with_no_sweep_toml(self):
+        """11-12 outreach-only lanes, 11-17 open-source, 11-22 games: --all refused each and exited 1 daily."""
+        for name, files in (('x-history', ['OUTREACH.jsonl']), ('open-source', ['INTAKE.toml', 'CADENCE.toml']),
+                            ('games', ['QUIET', 'RULES.md'])):
+            (self.root / 'lanes' / name).mkdir()
+            for f in files:
+                (self.root / 'lanes' / name / f).write_text('')
         with patch.object(sweep, 'run_lane', side_effect=lambda lane, *_: 0), patch.object(sweep, 'guard'):
             rc, out, err = self.cli('sweep', '--all')
         self.assertEqual(rc, 0, err)
-        self.assertIn('SKIP x-history: an outreach-only lane', out)
+        for name in ('x-history', 'open-source', 'games'):
+            self.assertIn('SKIP {}: no SWEEP.toml'.format(name), out)
         rc, _, err = self.cli('sweep', 'x-history')
         self.assertNotEqual(rc, 0)            # named directly, a missing config is still a refusal
-
-    def test_all_skips_a_lane_declared_not_a_sweep_lane(self):
-        """11-17: open-source (PRs, not sweeps) has INTAKE.toml and CADENCE.toml but no SWEEP.toml; --all refused it.
-        A registry "sweep": false skips it; the same lane without the declaration still refuses."""
-        import json
-        lane = self.root / 'lanes/open-source'
-        lane.mkdir()
-        (lane / 'INTAKE.toml').write_text('')
-        (lane / 'CADENCE.toml').write_text('')
-        with patch.object(sweep, 'run_lane', side_effect=lambda lane, *_: 0), patch.object(sweep, 'guard'):
-            rc, out, err = self.cli('sweep', '--all')
-        self.assertNotEqual(rc, 0)            # undeclared: a half-set-up lane still refuses
-        (self.root / 'lanes/REGISTRY.json').write_text(json.dumps(
-            {'lanes': {'open-source': {'status': 'active', 'sweep': False}}}))
-        with patch.object(sweep, 'run_lane', side_effect=lambda lane, *_: 0), patch.object(sweep, 'guard'):
-            rc, out, err = self.cli('sweep', '--all')
-        self.assertEqual(rc, 0, err)
-        self.assertIn('SKIP open-source: declared not a sweep lane', out)
 
     def test_a_lane_before_its_close_still_sweeps(self):
         self.close(self.lane, (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=3))
@@ -429,6 +415,7 @@ class SweepTests(unittest.TestCase):
     def test_all_bad_preflight_does_not_block_valid_lane(self):
         other = self.root / 'lanes/broken'
         other.mkdir()
+        (other / 'SWEEP.toml').write_text('this is [not toml')   # a sweep lane whose config is broken
         with patch.object(sweep, 'guard'), patch.object(sweep, 'run_lane', return_value=0) as run:
             rc, _, err = self.cli('sweep', '--all')
         self.assertEqual(run.call_count, 1)

@@ -143,16 +143,19 @@ def check(job):
     errors = []
     if not job.is_dir():
         return errors
-    tp = job / DIR
-    receipted = {r.get('dir') for r in _rows(job / RECEIPTS)}
-    if tp.is_dir():
+    # 11-22: `run --workdir` may be a stage dir inside the job (math's kill stage ran it with --workdir kill/), so
+    # every outermost third_party/ folder counts, checked against the receipts in the folder beside it.
+    sandboxes = sorted(p for p in job.rglob(DIR) if p.is_dir() and DIR not in p.relative_to(job).parts[:-1])
+    for tp in sandboxes:
+        base = tp.parent
+        receipted = {r.get('dir') for r in _rows(base / RECEIPTS)}
         for d in sorted(p for p in tp.iterdir() if p.is_dir()):
-            if str(d.relative_to(job)) not in receipted:
+            if str(d.relative_to(base)) not in receipted:
                 errors.append('THIRD_PARTY_UNRECEIPTED: {} has no row in {}; fetch and run it with '
-                              'third_party.py run'.format(d.relative_to(job), RECEIPTS))
+                              'third_party.py run'.format(d.relative_to(job), (base / RECEIPTS).relative_to(job)))
     for g in job.rglob('.git'):
         rel = g.parent.relative_to(job)
-        if not rel.parts or rel.parts[0] != DIR:
+        if DIR not in rel.parts:
             errors.append('CHECKOUT_OUTSIDE_SANDBOX: git checkout at {}; third-party code runs only through '
                           'third_party.py run (pinned commit, no network, writes only the job dir)'.format(rel or '.'))
     fetched = {}
@@ -163,7 +166,7 @@ def check(job):
     if fetched:
         for f in job.rglob('*'):
             rel = f.relative_to(job)
-            if (rel.parts[0] == DIR or '.git' in rel.parts or not f.is_file() or f.is_symlink()
+            if (DIR in rel.parts or '.git' in rel.parts or not f.is_file() or f.is_symlink()
                     or f.suffix.lower() not in CODE_EXT or f.stat().st_size > 50_000_000):
                 continue
             digest = sha(f)
