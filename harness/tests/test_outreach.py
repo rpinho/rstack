@@ -751,3 +751,14 @@ def test_his_own_words_are_not_held_to_the_question_limits(env):
     rc, out = cli(env[0], 'lint', 'test', ident)[:2]
     assert rc == 0, out
     assert 'own words: at most 1 question(s); found 2' in out and 'own words: question addressed to nobody' in out
+
+
+def test_his_own_words_pass_approve_and_sent_reach_checks(env):
+    text = ('People split tasks into verifiable and not. Is biology verifiable? '
+            'If it is not, what makes them so sure it will be cracked?')
+    ident, _ = draft(env, text, to='@rpinho_sci', channel='x_post')
+    row = dict(outreach.current(env[1], rh)[ident], owner_wrote='dictated, verbatim', status='drafted')
+    rh.append(env[1] / 'OUTREACH.jsonl', row)
+    assert cli(env[0], 'lint', 'test', ident)[0] == 0
+    rc, out, err = cli(env[0], 'approve', 'test', ident, '--quote', outreach.STANDING_APPROVAL)
+    assert rc == 0, out + err

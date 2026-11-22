@@ -710,6 +710,13 @@ def novelty_findings(lane, row):
     return out
 
 
+def own_words_reach(row, failures):
+    """11-21: reach failures that are style limits (a question addressed to nobody) do not hold back his own words,
+    verbatim; lint marked those rows 'own words:'. Approval is still required; every other reach failure stands."""
+    own = row.get('owner_wrote') or any(str(w).startswith('own words:') for w in (row.get('lint') or {}).get('warnings', []))
+    return [f for f in failures if not (own and f.startswith('question addressed to nobody'))]
+
+
 def lint_rows(lane, selected, rh, allow_collision=None):
     cfg = settings(lane, rh)
     clock = time_of(rh.now())
@@ -1318,6 +1325,7 @@ def main(root, args, rh):
                                      'approval is no human in the loop')
                 if row['channel'] in X_PUBLIC:
                     failures, _ = x_checks(row, body(row), list(all_rows(root, rh)), time_of(rh.now()), selected, cfg)
+                    failures = own_words_reach(row, failures)
                     if failures:
                         raise ValueError('X reach changed; lint again: ' + '; '.join(failures))
             elif args.action == 'sent':
@@ -1330,6 +1338,7 @@ def main(root, args, rh):
                 if row['channel'] in X_PUBLIC and not row.get('gate_attempt'):
                     failures, _ = x_checks(row, body(row), list(all_rows(root, rh)), time_of(rh.now()),
                                            cfg=settings(lane, rh))
+                    failures = own_words_reach(row, failures)
                     if failures:
                         raise ValueError('X reach changed before sent: ' + '; '.join(failures))
                 if row['channel'] == 'email':
