@@ -619,6 +619,8 @@ exec env RH_JOB=${(q)${job:t}} ${(j: :)${(q)effort_env[@]}} nice -n 10 python3 $
     # overwrite rows written here with the host's copy, so it is excluded and a divergence is
     # reported instead of merged. For a job whose work dir is its own directory, RESULTS.jsonl is
     # that job's output and still comes home.
+    # 11-22: third_party.jsonl (third_party.py run's receipts) comes home too. Without it the controller has the
+    # checkout's folders but not their receipts, and the sweep's check failed math's kill stage for it.
     ledger=(); pull_check=()
     (( ! effort_percent )) || pull_check=(--checksum)
     [[ ${dir:A:h:t} != lanes ]] || ledger=(--exclude='/RESULTS.jsonl')  # the work dir IS a lane
@@ -627,6 +629,7 @@ exec env RH_JOB=${(q)${job:t}} ${(j: :)${(q)effort_env[@]}} nice -n 10 python3 $
       --include='*/' --include='STATUS.md' --include='REPORT.md' --include='PLAN.md' \
       --include='RESULTS.jsonl' --include='*.selection.json' --include='*.report.md' \
       --include='prior-art-*.json' \
+      --include='third_party.jsonl' \
       --include='CLAIM.md' --include='RESULT.md' --include='NOTE.md' --include='FREEZE.md' \
       --include='DATA.md' --include='VERDICT.md' --include='BASELINES.json' --include='RECHECK.csv' \
       --include='referee_*.md' \
