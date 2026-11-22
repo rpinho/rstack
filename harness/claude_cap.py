@@ -21,6 +21,7 @@ lane's worktree count too; a session in a directory without the lane's name does
 Chat and desktop use leaves no transcript, so the lane figures understate the total and the weekly figure
 stays the hard bound.
 """
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -54,6 +55,23 @@ def _f(name, default):
         return float(os.environ.get(name) or default)
     except ValueError:
         return default
+
+
+WINDOW_MAX_CEILING = 95.0   # the last 5% is always general's, so orchestration never dies at 100%
+
+
+def window(now=None):
+    """11-22 (Ricardo, via general: "You have 5 hours to spend the money."): a dated override that ends on its
+    own. ~/.config/rstack/claude-window.json = {"until": ISO, "ceiling": N, "pacing": false, "overflow": N,
+    "why": TEXT}. Until then the ceiling is N (at most 95), pacing is off when "pacing" is false, and the agy
+    overflow starts at "overflow". After `until`, or when the file is unreadable, it is ignored: no revert."""
+    path = Path(os.environ.get('RSTACK_CLAUDE_WINDOW') or Path.home() / '.config/rstack/claude-window.json')
+    try:
+        w = json.loads(path.read_text())
+        until = datetime.fromisoformat(str(w['until']).replace('Z', '+00:00')).timestamp()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {}
+    return w if isinstance(w, dict) and (time.time() if now is None else now) < until else {}
 
 
 def enabled():
@@ -217,6 +235,12 @@ def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, proj
         return out
     ceiling, warn, pace_off = _f('RH_CLAUDE_CEILING_PERCENT', CEILING), _f('RH_CLAUDE_WARN_PERCENT', WARN), \
         _f('RH_CLAUDE_PACE_OFF_PERCENT', PACE_OFF)
+    win = window(now)
+    if isinstance(win.get('ceiling'), (int, float)):
+        ceiling = min(float(win['ceiling']), WINDOW_MAX_CEILING)
+    pacing = win.get('pacing', True) is not False
+    if win:
+        notes.append('claude window until {}: ceiling {:g}%{}'.format(win['until'], ceiling, '' if pacing else ', pacing off'))
     # Within the leaderboard's Claude picks, Sonnet is preferred for low-judgment roles only; judgment roles keep
     # the leaderboard's pick (an explicit --model or spec pin is the operator's own choice).
     if is_opus(model) and role in LOW_JUDGMENT and sonnet_ok and not pinned:
@@ -238,7 +262,7 @@ def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, proj
         out['warning'] = 'claude weekly at {:.0f}%: warning from {:g}%, ceiling {:g}%'.format(used, warn, ceiling)
     rate, basis = burn_rate(allowance, now, used, hours)
     projected = used + rate * hours
-    if projected > ceiling:
+    if projected > ceiling and pacing:
         out.update(pressure='pacing', used=used, rate=rate, hours=hours)
         line = 'claude pacing: {:.0f}% + {:.1f}%/h ({}) x {:.0f} h to reset projects {:.0f}% > {:g}%'.format(
             used, rate, basis, hours, projected, ceiling)

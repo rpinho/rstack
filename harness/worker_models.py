@@ -139,6 +139,9 @@ AGY_CLAUDE = {'claude-opus-5-5', 'claude-sonnet-5-5'}
 def claude_overflow(executor, model):
     """(agy model, note) when a Claude job should overflow to agy's Claude; None leaves it unchanged."""
     limit = os.environ.get('RH_CLAUDE_OVERFLOW_PERCENT', '').strip()
+    win = claude_cap.window()
+    if isinstance(win.get('overflow'), (int, float)):
+        limit = str(win['overflow'])   # 11-22: a dated Claude window moves the agy brake with the ceiling
     if executor != 'claude' or model not in AGY_CLAUDE or not limit:
         return None
     allowance = _allowance()
