@@ -204,10 +204,11 @@ def gate_reviewer(model, reviewers):
     return any('-{}-'.format(r) in '-{}-'.format(model) for r in reviewers)
 
 
-def claude_fallback(role, data, excluded, families, requested, follows_route, chosen):
+def claude_fallback(role, data, excluded, families, requested, follows_route, chosen, hold=False):
     """Where a job goes when Claude is closed to it (ceiling, pacing, lane share): (model, executor, route_model),
     Codex's default for the role first (unless Codex is itself past 95%), then agy's Sonnet 5.5. Never a family
-    the job judges. None when neither is available."""
+    the job judges. None when neither is available. Under a Claude hold (a 0% lane share; 11-22, general) the
+    agy leg is agy's Gemini for the role (Neon, or Hydrogen for batch and mechanical), never agy's Claude."""
     run = runnable(requested, follows_route)
     allowance = _allowance()
     codex_full = False
@@ -221,6 +222,13 @@ def claude_fallback(role, data, excluded, families, requested, follows_route, ch
     if ('codex' in run and not codex_full and isinstance(r, dict) and r.get('cli') == 'codex'
             and pick not in excluded and r.get('canonical') not in excluded and maker(pick, r.get('canonical')) not in families):
         return pick, 'codex', None
+    if hold:
+        gemini = 'gemini-4-hydrogen-medium' if role in GEMINI_ROLES['hydrogen'] else 'gemini-4-neon-medium'
+        r = data['routes'].get(gemini)
+        if ('agy' in run and isinstance(r, dict) and r.get('cli') == 'agy' and gemini not in excluded
+                and r.get('canonical') not in excluded and maker(gemini, r.get('canonical')) not in families):
+            return gemini, 'agy', gemini
+        return None
     model = chosen if chosen in AGY_CLAUDE else claude_cap.SONNET
     r = data['routes'].get(model)
     if ('agy' in run and isinstance(r, dict) and model not in excluded
@@ -619,7 +627,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
                 raise ValueError('role {} selected {}: {}; a pinned or explicit model has no fallback'.format(
                     role, chosen, cap['leave']))
             cap_route = claude_fallback(role, data, excluded, families if judging else frozenset(), requested,
-                                        follows_route, chosen)
+                                        follows_route, chosen, hold=cap.get('hold', False))
             if not cap_route and codex_closed:
                 # 11-20 (general): Codex refused this job and Claude is past its ceiling or the lane's share, so the
                 # job queues (launch.sh) rather than taking Claude past the line.

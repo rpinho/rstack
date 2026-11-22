@@ -554,7 +554,9 @@ def admit(cfg, base, lane, now, prefix, prompt_tokens, weekly, interactive=False
         return 'previous successful run has unaccounted usage; reconcile its rollout before continuing'
     estimates = [r for r in rows if r.get('event') == 'estimate']
     estimate = estimates[-1] if estimates else None
-    if budget and len(history) >= 50:
+    # 11-22 (bio via general): counted over the last 24 h. It counted every call the lane ever made, so a lane
+    # past 50 lifetime calls was refused for good (open-source: 55 calls, none in the last day, refused 11-22).
+    if budget and len([r for r in history if now - 86400 < r['started_at'] <= now]) >= 50:
         if not estimate:
             return 'past 50 calls; record codex-budget estimate {} --calls N --tokens T'.format(lane)
         since = [r for r in history if estimate['ts'] <= r['started_at'] <= now]

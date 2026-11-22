@@ -182,6 +182,14 @@ def test_short_or_well_cached_prompts_do_not_trigger_fanout(isolated):
             assert cb.admit(cfg, base, lane, NOW, 'prefix', tokens, weekly()) is None
 
 
+def test_the_50_call_estimate_gate_counts_the_last_day_only(isolated):
+    # 11-22: open-source had 55 calls in its life and none that day, and was refused 'past 50 calls' for good.
+    _, _, cfg, _, _ = isolated
+    with cb.locked() as base:
+        seed(base, 'old', 55, start=NOW - 3 * 86400)
+        assert cb.admit(cfg, base, 'old', NOW, 'x', 1, weekly()) is None
+
+
 def test_estimate_gate_on_51_and_finite_estimate_exhaustion(isolated):
     _, _, cfg, _, _ = isolated
     with cb.locked() as base:

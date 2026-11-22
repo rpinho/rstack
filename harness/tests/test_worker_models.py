@@ -1054,6 +1054,26 @@ def test_at_the_ceiling_claude_is_refused_and_the_job_takes_codex_then_agy(tmp_p
     assert wm.select('batch', 'claude', path=p)['executor'] == 'claude'
 
 
+def test_a_claude_hold_falls_back_to_agys_gemini_not_agys_claude(tmp_path, monkeypatch):
+    # 11-22 (bio via general): Codex refused a builder job and the fallback took claude-sonnet-5-5 during a hold.
+    p = cap_setup(tmp_path, monkeypatch, 40, hours=160, history=[(2, 40), (0, 40)],
+                  shares={'default': {'max_week_percent': 0}})
+    data = json.loads(p.read_text())
+    data['routes'].update({m: {'cli': 'agy', 'canonical': 'google/' + m}
+                           for m in ('gemini-4-neon-medium', 'gemini-4-hydrogen-medium')})
+    data['roles']['builder'] = ['claude-opus-5-5']
+    p.write_text(json.dumps(data))
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'claude,agy')   # Codex closed or absent
+    got = wm.select('batch', 'claude', path=p)
+    assert (got['executor'], got['model'], got['route_model']) == ('agy', 'gemini-4-hydrogen-medium', 'gemini-4-hydrogen-medium')
+    got = wm.select('builder', 'claude', path=p, made_by='gpt-6.2-sol')
+    assert (got['executor'], got['model']) == ('agy', 'gemini-4-neon-medium')
+    # with Codex open the hold still takes Codex first
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
+    assert wm.select('batch', 'claude', path=p)['executor'] == 'codex'
+    # (the ceiling without a hold still takes agy's Claude: test_at_the_ceiling_..._then_agy)
+
+
 def test_a_referee_never_falls_back_into_the_family_it_judges(tmp_path, monkeypatch):
     p = cap_setup(tmp_path, monkeypatch, 85)
     data = json.loads(p.read_text())

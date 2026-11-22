@@ -264,6 +264,8 @@ def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, proj
             pct, note = lane_percent(lane, used, since, now, allowance, projects)
             if pct >= cap:
                 out['leave'] = 'lane {} used {} >= its {:g}% share ({})'.format(lane, note, cap, key)
+                # 11-22 (general): a 0% share is a Claude hold; its fallback leaves Claude altogether (agy Gemini).
+                out['hold'] = cap <= 0
                 return out
             notes.append('lane {} share: {} of {:g}% cap ({})'.format(lane, note, cap, key))
     return out
