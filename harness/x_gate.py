@@ -151,6 +151,7 @@ def candidates(root, payload=None, browser=False, clock=None, blocked=None):
                 continue
             cfg = outreach.settings(root / 'lanes' / row['lane'], Ledger)
             failures, _ = outreach.x_checks(row, text, everyone, clock, cfg=cfg, posting=True)
+            failures = outreach.own_words_reach(row, failures)   # 11-21: same style exemption as lint/approve
             if failures:
                 if blocked is not None:
                     blocked.extend(failures)
