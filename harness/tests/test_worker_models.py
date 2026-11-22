@@ -1272,3 +1272,17 @@ def test_a_dated_claude_window_raises_the_ceiling_turns_pacing_off_and_ends_on_i
     win.write_text(json.dumps({'until': '2026-01-01T00:00:00Z', 'ceiling': 95, 'pacing': False}))
     assert '>= 80% ceiling' in wm.select('batch', 'claude', path=p)['claude_cap']      # expired: back to 80
     assert wm.claude_overflow('claude', 'claude-opus-5-5')[0] == 'claude-opus-5-5-high'   # and the brake to 85
+
+
+def test_a_returned_review_job_owes_a_grade_however_it_was_picked(tmp_path, monkeypatch, capsys):
+    # 11-22: Astra is the leaderboard's own review pick, so its referee runs were never on the ungraded list.
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setattr(wm, 'UNGRADED_TODAY', [])
+    receipts = tmp_path / 'receipts'; receipts.mkdir()
+    for job, role in (('lane-a-ref', 'review'), ('lane-a-batch', 'batch')):
+        r = returned_delegate(receipts, job, 'lane-a', 25)
+        r.write_text(json.dumps(dict(json.loads(r.read_text()), role=role, source='leaderboard', model='gpt-6.2-astra')))
+    assert wm.main(['--sweep-ungraded', str(receipts)]) == 0
+    out = capsys.readouterr().out
+    assert 'ungraded after 24 h: lane-a-ref' in out and 'lane-a-batch' not in out
+    assert wm.gradeable({'source': 'explore', 'role': 'ideation'}) and not wm.gradeable({'source': 'leaderboard', 'role': 'builder'})

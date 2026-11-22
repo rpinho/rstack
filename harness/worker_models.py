@@ -900,6 +900,14 @@ def quota_failure(log, receipt):
 UNGRADED_HOURS = 24
 
 
+def gradeable(receipt):
+    """A returned job that owes a grade: a delegated pick, and (11-22, Ricardo via general) every judgment-role
+    job however it was picked. A referee or reviewer passes when its verdict held (the other referee, the exact
+    checker or a maintainer agreed) and fails when it was overturned; a consult passes when the session acted on
+    it. Before this only delegates were asked, so the leaderboard's own review picks (Astra) were never graded."""
+    return receipt.get('source') == 'delegate' or receipt.get('role') in JUDGMENT | {'referee'}
+
+
 def _grades(receipts_dir):
     done = set()
     try:
@@ -950,7 +958,7 @@ def ungraded(receipts_dir, lane='', skip_job='', now=None):
             r = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
-        if (not isinstance(r, dict) or r.get('source') != 'delegate' or r.get('job') == skip_job
+        if (not isinstance(r, dict) or not gradeable(r) or r.get('job') == skip_job
                 or (lane and r.get('lane') != lane) or 'grade-' + str(r.get('selection_id')) in done):
             continue
         finished = _finished(str(path)[:-len('.selection.json')], r.get('selection_id'))
@@ -1084,7 +1092,7 @@ def main(argv=None):
             return 0
         if args.record_ungraded:
             receipt = json.loads(args.receipt.read_text())
-            if receipt.get('source') == 'delegate' and 'grade-' + str(receipt.get('selection_id')) not in _grades(args.receipt.parent):
+            if gradeable(receipt) and 'grade-' + str(receipt.get('selection_id')) not in _grades(args.receipt.parent):
                 row = dict(id='grade-' + receipt['selection_id'], date=dt.date.today().isoformat(),
                            source_kind='everyday', job=receipt.get('job'), grade='ungraded',
                            model=receipt.get('route_model') or receipt['model'], role=receipt.get('role'),
