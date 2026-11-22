@@ -737,3 +737,17 @@ def test_the_incoming_text_and_recipient_reach_the_science_checker(env, tmp_path
     with patch.object(outreach.subprocess, 'run', fake_run):
         outreach.science_checks('t', [], 'en', (), (), 'their words', 'Contact Beta')
     assert payload['incoming'] == 'their words' and payload['to'] == 'Contact Beta'
+
+
+def test_his_own_words_are_not_held_to_the_question_limits(env):
+    # 11-21 (Ricardo: "There's still no post today"): his dictated line ended with two questions on purpose.
+    text = ('People split tasks into verifiable and not. Is biology verifiable? '
+            'If it is not, what makes them so sure it will be cracked?')
+    ident, _ = draft(env, text, to='@rpinho_sci', channel='x_post')
+    rc, out = cli(env[0], 'lint', 'test', ident)[:2]
+    assert rc != 0 and 'questions:' in out and 'addressed to nobody' in out   # a draft composed for him
+    row = dict(outreach.current(env[1], rh)[ident], owner_wrote='dictated, verbatim', status='drafted')
+    rh.append(env[1] / 'OUTREACH.jsonl', row)
+    rc, out = cli(env[0], 'lint', 'test', ident)[:2]
+    assert rc == 0, out
+    assert 'own words: at most 1 question(s); found 2' in out and 'own words: question addressed to nobody' in out

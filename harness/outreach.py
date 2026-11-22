@@ -343,7 +343,7 @@ def awaiting_reply(row, text, everyone, lane):
                                                                       last.isoformat()[:10])]
 
 
-def cut_check(row, text, cfg, checks):
+def cut_check(row, text, cfg, checks, cover=None):
     """Paper-cut (voice_cuts.py): the draft is built from the author's own messages, listed in
     DRAFT.cuts. On whenever banks are configured, unless the lane says voice_cuts = "off"."""
     if row.get('owner_wrote'):
@@ -373,6 +373,8 @@ def cut_check(row, text, cfg, checks):
     names = [n.strip() for n in os.environ.get('RH_SIGNATURE_NAMES', '').split(',') if n.strip()]
     found, stats = voice_cuts.check(text, cuts, incoming, banks, {k: cfg[k] for k in voice_cuts.defaults()}, names)
     checks['cuts'] += found
+    if cover is not None and stats and not found:
+        cover.update(word_cover=stats.get('word_cover', 0), pair_cover=stats.get('pair_cover', 0))
     if not found and stats.get('we_ok'):
         # xlint (here and in the email gate) has no .cuts file; it lets plural through only for a recorded WE-OK pass.
         voice_cuts.record_pass(row['draft_path'], text, stats)
@@ -725,7 +727,8 @@ def lint_rows(lane, selected, rh, allow_collision=None):
         except (OSError, UnicodeError):
             results[row['id']] = dict(ok=False, utc=rh.now(), checks={'draft': ['draft unreadable']})
             continue
-        cut_stats = cut_check(row, text, cfg, checks)
+        cover = {}
+        cut_stats = cut_check(row, text, cfg, checks, cover)
         checks['voice'] = voice(text, row['channel'])
         limit = cfg['question_limit'] if row['channel'] in ('email', 'linkedin') else cfg['x_question_limit']
         questions = URL.sub('', text).count('?')
@@ -844,6 +847,15 @@ def lint_rows(lane, selected, rh, allow_collision=None):
         if row['channel'] in X_PUBLIC:
             checks['reach'], reach_warnings = x_checks(row, text, everyone, clock, selected, cfg)
             warnings += reach_warnings
+        # 11-21 (Ricardo: "There's still no post today"): his own words, verbatim (every word and word pair from
+        # the lines he wrote or dictated, or owner_wrote), are not held to the style limits written for drafts
+        # composed for him. Two questions at the end of his dictated line were his choice. Approval is still
+        # required to send: that is the hard line, not the question count.
+        if row.get('owner_wrote') or (cover.get('word_cover', 0) >= 1 and cover.get('pair_cover', 0) >= 1):
+            style = checks['questions'] + [m for m in checks.get('reach', []) if m.startswith('question addressed to nobody')]
+            checks['questions'] = []
+            checks['reach'] = [m for m in checks.get('reach', []) if m not in style]
+            warnings += ['own words: ' + m for m in style]
         results[row['id']] = dict(warnings=warnings, ok=not any(checks.values()), utc=rh.now(), sha256=hashlib.sha256(text.encode('utf-8')).hexdigest(), checks=checks)
         if allow_collision:
             results[row['id']]['allow_collision'] = safe(allow_collision, 'collision reason')
