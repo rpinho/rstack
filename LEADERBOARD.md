@@ -294,6 +294,90 @@ A dated routing snapshot from selected local harness outcomes. The ranking is ev
 | judge | gemini-3.8-flash-medium | 6 | n<5 | 0 | - | - | 2026-11-21 |
 | judge | gemini-3.8-flash-low | 7 | n<5 | 0 | - | - | 2026-11-21 |
 | judge | gemini-4-neon-medium | 8 | n<5 | 0 | - | - | 2026-11-21 |
+| taste | claude-opus-5-5 | 1 | n<5 | 0 | - | - | 2026-11-22 |
+| taste | claude-fable-5-2 | 2 | n<5 | 0 | - | - | 2026-11-22 |
+| taste | gemini-3.8-flash-high | 3 | n<5 | 0 | - | - | 2026-11-22 |
+| taste | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | - | 2026-11-22 |
+| taste | gemini-3.8-flash-low | 5 | n<5 | 0 | - | - | 2026-11-22 |
+| taste | gemini-4-neon-medium | 6 | n<5 | 0 | - | - | 2026-11-22 |
+| review | gpt-6.2-astra | 1 | 1.0 | 7 | - | - | 2026-11-22 |
+| review | claude-sonnet-5-5 | 2 | 0.833 | 6 | - | - | 2026-11-22 |
+| review | claude-opus-5-5 | 3 | n<5 | 3 | 1.0 | - | 2026-11-22 |
+| review | claude-fable-5-2 | 4 | n<5 | 0 | - | - | 2026-11-22 |
+| review | gpt-6.2-sol | 5 | n<5 | 0 | - | - | 2026-11-22 |
+| review | gemini-3.8-flash-high | 6 | n<5 | 0 | 1.0 | - | 2026-11-22 |
+| review | gemini-3.8-flash-medium | 7 | n<5 | 0 | 1.0 | - | 2026-11-22 |
+| review | gemini-3.8-flash-low | 8 | n<5 | 0 | 1.0 | - | 2026-11-22 |
+| review | gemini-4-neon-medium | 9 | n<5 | 0 | 1.0 | - | 2026-11-22 |
+| review | gemini-4-hydrogen-medium | 10 | n<5 | 0 | 1.0 | - | 2026-11-22 |
+| review | gpt-5.6-sol | 11 | n<5 | 0 | 0.667 | - | 2026-11-22 |
+| review | gemini-4-argon-low | - | n<5 | 1 | - | - | 2026-11-22 |
+| review | gemini-4-argon-medium | - | 1.0 | 5 | 1.0 | - | 2026-11-22 |
+| review | google/gemini-4-argon | - | n<5 | 0 | 1.0 | - | 2026-11-22 |
+| review | google/gemini-4-hydrogen | - | n<5 | 0 | 0.5 | - | 2026-11-22 |
+| review | moonshotai/kimi-k3.1-pro | - | n<5 | 0 | 1.0 | - | 2026-11-22 |
+| mechanical | gpt-6.2-sol | 1 | n<5 | 0 | - | - | 2026-11-22 |
+| mechanical | claude-sonnet-5-5 | 2 | n<5 | 0 | - | - | 2026-11-22 |
+| mechanical | gemini-3.8-flash-high | 3 | n<5 | 0 | - | - | 2026-11-22 |
+| mechanical | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | - | 2026-11-22 |
+| mechanical | gemini-3.8-flash-low | 5 | n<5 | 0 | - | - | 2026-11-22 |
+| mechanical | gemini-4-hydrogen-low | 6 | n<5 | 0 | - | - | 2026-11-22 |
+| mechanical | gemini-4-hydrogen-medium | 7 | n<5 | 0 | - | - | 2026-11-22 |
+| builder | claude-opus-5-5 | 1 | 0.95 | 10 | - | - | 2026-11-22 |
+| builder | gemini-4-neon-medium | 2 | 1.0 | 7 | - | - | 2026-11-22 |
+| builder | gpt-6.2-sol | 3 | 0.6 | 5 | - | - | 2026-11-22 |
+| builder | gemini-3.8-flash-high | 4 | n<5 | 0 | - | - | 2026-11-22 |
+| builder | gemini-3.8-flash-medium | 5 | n<5 | 0 | - | - | 2026-11-22 |
+| builder | gemini-3.8-flash-low | 6 | n<5 | 0 | - | - | 2026-11-22 |
+| builder | claude-sonnet-5-5 | 7 | n<5 | 3 | - | - | 2026-11-22 |
+| builder | gemini-4-hydrogen-low | 8 | n<5 | 2 | - | - | 2026-11-22 |
+| builder | gpt-6.2-astra | 9 | n<5 | 1 | - | - | 2026-11-22 |
+| builder | gemini-4-argon-medium | - | n<5 | 1 | - | - | 2026-11-22 |
+| cheap | gpt-6-luna | 1 | n<5 | 0 | - | - | 2026-11-22 |
+| cheap | claude-haiku-5-5 | 2 | n<5 | 0 | - | - | 2026-11-22 |
+| cheap | gemini-3.8-flash-high | 3 | n<5 | 0 | - | - | 2026-11-22 |
+| cheap | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | - | 2026-11-22 |
+| cheap | gemini-3.8-flash-low | 5 | n<5 | 0 | - | - | 2026-11-22 |
+| cheap | gemini-4-hydrogen-low | 6 | n<5 | 0 | - | - | 2026-11-22 |
+| cheap | gemini-4-hydrogen-medium | 7 | n<5 | 0 | - | - | 2026-11-22 |
+| biology | claude-opus-5-5 | 1 | n<5 | 0 | - | - | 2026-11-22 |
+| biology | gpt-6.2-astra | 2 | n<5 | 0 | - | - | 2026-11-22 |
+| biology | gemini-3.8-flash-high | 3 | n<5 | 0 | - | - | 2026-11-22 |
+| biology | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | - | 2026-11-22 |
+| biology | gemini-3.8-flash-low | 5 | n<5 | 0 | - | - | 2026-11-22 |
+| biology | gemini-4-neon-medium | 6 | n<5 | 0 | - | - | 2026-11-22 |
+| batch | gpt-6.2-sol | 1 | 1.0 | inherited from gpt-6.1-sol (n=25); own n=5 | - | - | 2026-11-22 |
+| batch | gpt-6.2-astra | 2 | 0.917 | 6 | - | - | 2026-11-22 |
+| batch | claude-sonnet-5-5 | 3 | n<5 | 3 | - | - | 2026-11-22 |
+| batch | gemini-3.8-flash-high | 4 | n<5 | 0 | - | - | 2026-11-22 |
+| batch | gemini-3.8-flash-medium | 5 | n<5 | 0 | - | - | 2026-11-22 |
+| batch | gemini-3.8-flash-low | 6 | n<5 | 0 | - | - | 2026-11-22 |
+| batch | gemini-4-hydrogen-low | 7 | n<5 | 0 | - | - | 2026-11-22 |
+| batch | gemini-4-hydrogen-medium | 8 | n<5 | 4 | - | - | 2026-11-22 |
+| batch | gemini-4-argon-medium | - | n<5 | 1 | - | - | 2026-11-22 |
+| batch | gpt-6.1-sol | - | 1.0 | 25 | - | - | 2026-11-22 |
+| writing | claude-opus-5-5 | 1 | n<5 | 0 | - | - | 2026-11-22 |
+| ideation | claude-fable-5-2 | 1 | 1.0 | 11 | - | - | 2026-11-22 |
+| ideation | gpt-6.2-astra | 2 | n<5 | 0 | - | - | 2026-11-22 |
+| ideation | claude-opus-5-5 | 3 | n<5 | 2 | - | - | 2026-11-22 |
+| ideation | gemini-3.8-flash-high | 4 | n<5 | 0 | - | - | 2026-11-22 |
+| ideation | gemini-3.8-flash-medium | 5 | n<5 | 0 | - | - | 2026-11-22 |
+| ideation | gemini-3.8-flash-low | 6 | n<5 | 0 | - | - | 2026-11-22 |
+| ideation | gemini-4-neon-medium | 7 | n<5 | 0 | - | - | 2026-11-22 |
+| design | claude-opus-5-5 | 1 | n<5 | 0 | - | - | 2026-11-22 |
+| design | claude-fable-5-2 | 2 | n<5 | 3 | - | - | 2026-11-22 |
+| design | gemini-3.8-flash-high | 3 | n<5 | 0 | - | - | 2026-11-22 |
+| design | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | - | 2026-11-22 |
+| design | gemini-3.8-flash-low | 5 | n<5 | 0 | - | - | 2026-11-22 |
+| design | gemini-4-neon-medium | 6 | n<5 | 0 | - | - | 2026-11-22 |
+| judge | claude-opus-5-5 | 1 | n<5 | 0 | - | - | 2026-11-22 |
+| judge | gpt-6.2-astra | 2 | n<5 | 0 | - | - | 2026-11-22 |
+| judge | claude-fable-5-2 | 3 | n<5 | 2 | - | - | 2026-11-22 |
+| judge | gpt-6.2-sol | 4 | n<5 | 0 | - | - | 2026-11-22 |
+| judge | gemini-3.8-flash-high | 5 | n<5 | 0 | - | - | 2026-11-22 |
+| judge | gemini-3.8-flash-medium | 6 | n<5 | 0 | - | - | 2026-11-22 |
+| judge | gemini-3.8-flash-low | 7 | n<5 | 0 | - | - | 2026-11-22 |
+| judge | gemini-4-neon-medium | 8 | n<5 | 0 | - | - | 2026-11-22 |
 
 ## Routing before 2026-11-19 (held-outcome scores, bench included)
 
@@ -597,6 +681,7 @@ Selected local labels on a 0–4 scale, including proxy and operational outcomes
 | review | gpt-6.1-sol | 0, 4, 4, 4, 4 | 2026-11-17 |
 | review | gpt-6.2-astra | 4, 4, 4, 4, 4 | 2026-11-17 |
 | batch | claude-sonnet-5-5 | 2, 4 | 2026-11-20 |
+| batch | claude-sonnet-5-5 | 4 | 2026-11-22 |
 | batch | gemini-4-argon-medium | 4 | 2026-11-20 |
 | batch | gemini-4-hydrogen-medium | 2, 2, 4, 4 | 2026-11-20 |
 | batch | gpt-6.1-sol | 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 | 2026-11-04 |
@@ -604,16 +689,23 @@ Selected local labels on a 0–4 scale, including proxy and operational outcomes
 | batch | gpt-6.2-astra | 2, 4, 4, 4, 4, 4 | 2026-11-20 |
 | batch | gpt-6.2-sol | 4, 4 | 2026-11-20 |
 | batch | gpt-6.2-sol | 0 | 2026-11-21 |
+| batch | gpt-6.2-sol | 2, 2, 4 | 2026-11-22 |
 | builder | claude-opus-5-5 | 2, 4, 4, 4, 4, 4, 4, 4 | 2026-11-20 |
+| builder | claude-opus-5-5 | 4 | 2026-11-21 |
+| builder | claude-opus-5-5 | 4 | 2026-11-22 |
 | builder | claude-sonnet-5-5 | 2, 4, 4 | 2026-11-20 |
 | builder | gemini-4-argon-medium | 4 | 2026-11-20 |
 | builder | gemini-4-hydrogen-low | 2 | 2026-11-19 |
 | builder | gemini-4-hydrogen-low | 2 | 2026-11-20 |
 | builder | gemini-4-neon-medium | 4 | 2026-11-19 |
 | builder | gemini-4-neon-medium | 4, 4, 4, 4 | 2026-11-20 |
+| builder | gemini-4-neon-medium | 4 | 2026-11-21 |
+| builder | gemini-4-neon-medium | 4 | 2026-11-22 |
 | builder | gpt-6.2-astra | 4 | 2026-11-20 |
 | builder | gpt-6.2-sol | 0 | 2026-11-19 |
 | builder | gpt-6.2-sol | 2, 4 | 2026-11-20 |
+| builder | gpt-6.2-sol | 4 | 2026-11-21 |
+| builder | gpt-6.2-sol | 2 | 2026-11-22 |
 | design | claude-fable-5-2 | 4, 4 | 2026-11-13 |
 | design | claude-fable-5-2 | 4 | 2026-11-14 |
 | ideation | claude-fable-5-2 | 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 | 2026-11-13 |
@@ -639,6 +731,7 @@ Selected local labels on a 0–4 scale, including proxy and operational outcomes
 | review | gpt-5.6-sol | 0, 4, 4 | 2026-11-10 |
 | review | gpt-6.2-astra | 4 | 2026-11-19 |
 | review | gpt-6.2-astra | 4, 4, 4, 4, 4 | 2026-11-20 |
+| review | gpt-6.2-astra | 4 | 2026-11-22 |
 | review | moonshotai/kimi-k3.1-pro | 4, 4 | 2026-11-10 |
 
 Ranking method and limits: [leaderboard/README.md](leaderboard/README.md).
