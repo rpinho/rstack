@@ -61,6 +61,7 @@ def harness(tmp_path, lane='fixture'):
                # 11-20: a dead guard is kickstarted over ssh, and this ssh runs locally: never this Mac's guard.
                LAUNCH_MEMGUARD_KICK='true', LAUNCH_MEMGUARD_RECHECK_S='0',
                LAUNCH_REMOTE_EXECUTOR=str(REPO / 'harness/agent_executor.py'),
+               LAUNCH_REMOTE_JOBS=str(tmp_path / 'remote-jobs'),
                LAUNCH_REMOTE_ATTEMPTS=str(tmp_path / 'remote-attempts'), LAUNCH_REMOTE_POLL_S='0.2')
     env.pop('LAUNCH_RESUME', None)
     env.pop('SPEC_OVER_CAP', None)
@@ -111,6 +112,35 @@ def test_the_executor_runs_on_the_host_and_the_prompt_arrives_over_stdin(tmp_pat
     # The agent only ever sees the prompt the controller built, and it built it from the spec.
     assert ASK in (tmp_path / 'jobs/fixture-job.log.prompt').read_text()
     assert (tmp_path / 'jobs/fixture-job.last.md').exists()
+
+
+def test_effort_resume_uses_the_same_host_and_remaining_timeout(tmp_path):
+    jobs, env = harness(tmp_path)
+    with (jobs / 'fixture-job.md').open('a') as spec:
+        spec.write('Effort floor: 50%\n')
+    cli = Path(env['LAUNCH_CLAUDE'])
+    cli.write_text(f'#!{sys.executable}\n'
+                   'from pathlib import Path\n'
+                   'Path("REPORT.md").write_text("Shipped: nothing\\n")\n'
+                   'print(\'{"is_error":false,"subtype":"success","result":"fixture","total_cost_usd":0.25}\')\n')
+    # The SSH stub already writes directly into the controller's directory.
+    rsync = tmp_path / 'rsync'
+    rsync.write_text('#!/bin/sh\nexit 0\n')
+    rsync.chmod(0o755)
+    env.update(PATH=str(tmp_path) + os.pathsep + env['PATH'], LAUNCH_HOST='m5',
+               LAUNCH_TIMEOUT_SECONDS='14400', RH_HEADROOM_ROUTING='0', RH_DELEGATE_SHARE='0')
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path)],
+                          env=env, capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    receipt = json.loads((jobs / 'fixture-job.log.selection.json').read_text())['effort_floor']
+    runs = list((tmp_path / 'remote-attempts/fixture-job').glob('*/run.sh'))
+    assert len(runs) == 2
+    resume = next(run for run in runs if 'continue: you stopped' in (run.parent / 'prompt').read_text())
+    program = resume.read_text()
+    assert '--backend claude' in program and '--model fixture-claude' in program
+    assert 'RH_EFFORT_FLOOR_JOB=fixture-job' in program
+    assert f"--timeout-seconds {receipt['remaining_seconds']}" in program
+    assert 'RESUME (attempt 2)' in (resume.parent / 'prompt').read_text()
 
 
 def test_the_log_records_which_machine_ran_the_attempt(tmp_path):
@@ -369,7 +399,8 @@ def test_the_marker_lands_under_the_remote_home_and_not_in_a_directory_called_HO
     (tmp_path / 'jobs').mkdir(exist_ok=True)
     jobs, env = harness(tmp_path)
     proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(work)],
-                          env=dict(env, LAUNCH_HOST='m5'), capture_output=True, text=True,
+                          env=dict(env, LAUNCH_HOST='m5', LAUNCH_REMOTE_JOBS='', HOME=str(home)),
+                          capture_output=True, text=True,
                           timeout=120)
     assert proc.returncode == 0, proc.stderr
     block = staged(tmp_path)[0]

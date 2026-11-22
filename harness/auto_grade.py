@@ -11,6 +11,7 @@ Check lines, the call needs judgment, so the lane's reviewing model (the leaderb
 another family than the producer, never delegated) reads the spec and REPORT.md and answers
 PASS, PARTIAL or FAIL. If that cannot be had, the job stays "ungraded" (counted, outside the rate).
 An agy run that hit its quota is "ungraded" with note "quota" before any of this: infrastructure, not the model.
+An effort-floor continuation that also quits early with no result is partial, including on a non-delegated route.
 The row records the producer model and the grader (checks, or the reviewing model).
 
   auto_grade.py --receipt JOB.log.selection.json --log JOB.log --dir WORKDIR --spec JOB.md
@@ -159,6 +160,16 @@ def review(receipt, spec_text, workdir, roles_file=None):
     return found.group(1).lower(), model, ' '.join(text.split())[:300]
 
 
+def effort_floor_note(receipt):
+    floor = receipt.get('effort_floor')
+    if isinstance(floor, dict):
+        quit_at = floor.get('quit_at_seconds')
+        budget = floor.get('budget_seconds')
+        if type(quit_at) is int and type(budget) is int and 0 <= quit_at < budget:
+            return 'effort floor: quit at {:.2f}/{:.2f} min, no result'.format(quit_at / 60, budget / 60)
+    return ''
+
+
 def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, host=''):
     receipt = json.loads(Path(receipt_path).read_text())
     spec_text = Path(spec).read_text(errors='replace') if spec and Path(spec).is_file() else ''
@@ -185,12 +196,15 @@ def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, ho
         return row
     shipped = first_line(Path(workdir) / 'REPORT.md').startswith('Shipped:')
     restated = first_line(Path(workdir) / 'STATUS.md').startswith('You asked:')
-    checks = run_checks(run_text, workdir, host) if rc == 0 and shipped else []
+    floor_note = effort_floor_note(receipt) if rc == 0 else ''
+    checks = run_checks(run_text, workdir, host) if rc == 0 and shipped and not floor_note else []
     notes = ['exit {}'.format(rc), 'Shipped line ' + ('yes' if shipped else 'no'),
              'You asked line ' + ('yes' if restated else 'no')]
     notes += ['check {}: {}'.format('ok' if ok else 'FAILED', command[:80]) for command, ok in checks]
     grader = 'checks'
-    if rc != 0 or not shipped:
+    if floor_note:
+        result, grader, notes = 'partial', 'effort floor', [floor_note]
+    elif rc != 0 or not shipped:
         result = 'fail'
     elif checks:
         result = 'pass' if all(ok for _, ok in checks) and restated else 'partial'
@@ -221,7 +235,7 @@ def main(argv=None):
     a = p.parse_args(argv)
     try:
         receipt = json.loads(a.receipt.read_text())
-        if receipt.get('source') != 'delegate':
+        if receipt.get('source') != 'delegate' and not effort_floor_note(receipt):
             return 0
         if a.host and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,62}', a.host):
             raise ValueError('--host must be an ssh alias')

@@ -340,8 +340,38 @@ selector=${LAUNCH_SELECTOR:-$H/worker_models.py}
 # up in the prompt's absence rather than as a dead lane.
 lessons=$(rh --root "${LAUNCH_LANE_ROOT:-${LAUNCH_IDEA_ROOT:-${RH_ROOT:-$PWD/.runtime}}}" lessons for "$lane" -n "${LAUNCH_LESSONS:-12}" 2>/dev/null)
 start=1; [[ -n $LAUNCH_RESUME ]] && start=2
+effort_percent=0; effort_resumed=0; effort_started=
+effort_helper=$H/tools/effort_floor.py
+effort_warn() {
+  print -r -- "[launch.effort-floor] WARNING: $1" >> "$log"
+  refuses launch.effort-floor "$1" || true
+}
+effort_env=()
+if (( start == 1 )) && [[ ${RSTACK_ABLATE:-} != 1 ]]; then
+  effort_line=$(grep '^Effort floor:' "$spec" 2>/dev/null)
+  effort_rc=$?
+  if (( effort_rc == 0 )); then
+    if [[ $effort_line =~ '^Effort floor:[[:blank:]]*([1-9]|[1-8][0-9]|9[0-5])%[[:blank:]]*$' ]]; then
+      if (( LAUNCH_TIMEOUT_SECONDS == 0 )); then
+        effort_warn "Effort floor needs a positive LAUNCH_TIMEOUT_SECONDS"
+      elif effort_offsets=$(python3 "$effort_helper" snapshot "$dir" "$lane_dir" 2>&1); then
+        effort_percent=$match[1]
+        effort_env=("RH_EFFORT_FLOOR_JOB=$job")
+      else
+        effort_warn "$effort_offsets"
+      fi
+    else
+      effort_warn "expected one spec line 'Effort floor: N%' with N between 1 and 95"
+    fi
+  elif (( effort_rc != 1 )); then
+    effort_warn "could not read the effort floor from $spec"
+  fi
+fi
+resume_prompt() {
+  printf '\n\nRESUME (attempt %d): read STATUS.md, REPORT.md and existing files; continue completed work.\n' "$1"
+}
 codex_closed=; budget_warned=0
-for (( i = start; i <= 5; i++ )); do
+prepare_attempt() {
   # Set after the Codex wrapper refused this job on its cap (below): the selector then leaves Codex out.
   if [[ -n $codex_closed ]]; then export RH_CODEX_CLOSED=$codex_closed; else unset RH_CODEX_CLOSED; fi
   sel_exec=$backend
@@ -456,10 +486,22 @@ json.dump(d, open(p, "w"), indent=2)' "$log.selection.json" "$round_warn" 2>/dev
       [[ -z $cov_warn ]] || printf -- 'Bug-hunt coverage: %s\n' "$cov_warn"
       printf -- '---\n\n'
     fi
-    cat "$spec"; (( i > 1 )) && printf '\n\nRESUME (attempt %d): read STATUS.md, REPORT.md and existing files; continue completed work.\n' $i; } > "$log.prompt"
+    cat "$spec"; (( i > 1 )) && resume_prompt "$i"; } > "$log.prompt"
+}
+attempt_timeout=$LAUNCH_TIMEOUT_SECONDS
+for (( i = start; i <= 5 || effort_resumed; i++ )); do
+  if (( ! effort_resumed )); then
+    prepare_attempt
+    attempt_budget=${LAUNCH_CLAUDE_BUDGET:-1.00}
+  elif [[ -n $LAUNCH_RESUME ]]; then
+    # Keep the prompt and selected route from the original attempt.
+    resume_prompt "$i" >> "$log.prompt"
+  fi
   print -- "=== attempt $i model $m${LAUNCH_HOST:+ host $LAUNCH_HOST} $(date)" >> "$log"
   attempt_log="$log.attempt-$i"
   out=${spec:r}.last.md
+  if (( effort_percent )) && [[ -z $effort_started ]]; then effort_started=$SECONDS; fi
+  effort_pull_failed=0
   if [[ -z $LAUNCH_HOST ]]; then
     if [[ ${LAUNCH_PROVIDER:-} == openrouter ]]; then
       export OPENROUTER_API_KEY="$(cat "$HOME/.config/openrouter/key")" || exit 2
@@ -469,12 +511,13 @@ json.dump(d, open(p, "w"), indent=2)' "$log.selection.json" "$round_warn" 2>/dev
       export GEMINI_API_KEY="$(cat "$HOME/.config/gemini/api_key")" || exit 2
       [[ -n $GEMINI_API_KEY ]] || { print -u2 -- 'missing Gemini key'; exit 2; }
     fi
-    nice -n 10 python3 "$H/agent_executor.py" --backend "$backend" \
+    env "${effort_env[@]}" nice -n 10 python3 "$H/agent_executor.py" --backend "$backend" \
       --executable "$cx" --directory "$dir" --model "$m" --effort "$LAUNCH_EFFORT" \
-      --output "$out" --budget "${LAUNCH_CLAUDE_BUDGET:-1.00}" \
-      --allowed-tools "$LAUNCH_CLAUDE_TOOLS" --timeout-seconds "$LAUNCH_TIMEOUT_SECONDS" \
+      --output "$out" --budget "$attempt_budget" \
+      --allowed-tools "$LAUNCH_CLAUDE_TOOLS" --timeout-seconds "$attempt_timeout" \
       < "$log.prompt" 2>&1 | tee "$attempt_log" >> "$log"
     rc=$?   # pipefail: the executor's code, not tee's
+    effort_ended=$SECONDS
   else
     # A remote run uses the SAME absolute paths on both machines, and refuses when the work dir
     # is not there, rather than falling back to the remote $HOME and writing results nowhere.
@@ -546,7 +589,7 @@ $remote_auth
 mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
 mkdir -p $rmarks 2>/dev/null || true
 echo \$\$ > $rmarks/${(q)${job:t}}.pid 2>/dev/null || true
-exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)${LAUNCH_CLAUDE_BUDGET:-1.00}} --allowed-tools ${(q)LAUNCH_CLAUDE_TOOLS} --timeout-seconds ${(q)LAUNCH_TIMEOUT_SECONDS}"
+exec env RH_JOB=${(q)${job:t}} ${(j: :)${(q)effort_env[@]}} nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)attempt_budget} --allowed-tools ${(q)LAUNCH_CLAUDE_TOOLS} --timeout-seconds ${(q)attempt_timeout}"
     # 11-08: this was one foreground ssh, so the job lived exactly as long as the connection. A
     # network blip ended a 5 h job, and the controller's reset at 22:16 took every job on the host
     # with it. remote_run.py starts the executor detached THERE (nohup, files for stdio, a watcher
@@ -559,6 +602,7 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
     python3 "$H/tools/remote_run.py" --host "$LAUNCH_HOST" --job "${job:t}" \
       --log "$log" --prompt "$log.prompt" --command "$log.rcmd" --state "$log.remote.json"
     rc=$?
+    effort_ended=$SECONDS
     tail -c +$(( at + 1 )) "$log" > "$attempt_log"
     # Status has to keep working from the controller: the heavy outputs stay on the host and
     # only these few small bookkeeping files come back, so STATUS.md, REPORT.md, the receipts
@@ -575,10 +619,11 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
     # overwrite rows written here with the host's copy, so it is excluded and a divergence is
     # reported instead of merged. For a job whose work dir is its own directory, RESULTS.jsonl is
     # that job's output and still comes home.
-    ledger=()
+    ledger=(); pull_check=()
+    (( ! effort_percent )) || pull_check=(--checksum)
     [[ ${dir:A:h:t} != lanes ]] || ledger=(--exclude='/RESULTS.jsonl')  # the work dir IS a lane
     rsync -a --timeout=120 --max-size="${LAUNCH_PULL_MAX_SIZE:-4m}" -e "${LAUNCH_SSH:-ssh}" \
-      "${ledger[@]}" \
+      "${ledger[@]}" "${pull_check[@]}" \
       --include='*/' --include='STATUS.md' --include='REPORT.md' --include='PLAN.md' \
       --include='RESULTS.jsonl' --include='*.selection.json' --include='*.report.md' \
       --include='prior-art-*.json' \
@@ -586,13 +631,17 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
       --include='DATA.md' --include='VERDICT.md' --include='BASELINES.json' --include='RECHECK.csv' \
       --include='referee_*.md' \
       --include="${out:t}" \
-      --exclude='*' "$LAUNCH_HOST:$dir/" "$dir/" >> "$log.pull" 2>&1 ||
+      --exclude='*' "$LAUNCH_HOST:$dir/" "$dir/" >> "$log.pull" 2>&1 || {
       print -- "pull from $LAUNCH_HOST failed rc $? (outputs are on the host) $(date)" >> "$log"
+      effort_pull_failed=1
+    }
     # The executor's last message is written beside the spec, which for a lane job is not in the work dir
     # (_codex/JOB.last.md), so the pull above cannot bring it back.
     if [[ ${out:A} != ${dir:A}/* ]]; then
-      rsync -a --timeout=120 -e "${LAUNCH_SSH:-ssh}" "$LAUNCH_HOST:$out" "$out" >> "$log.pull" 2>&1 ||
+      rsync -a --timeout=120 "${pull_check[@]}" -e "${LAUNCH_SSH:-ssh}" "$LAUNCH_HOST:$out" "$out" >> "$log.pull" 2>&1 || {
         print -- "pull of ${out:t} from $LAUNCH_HOST failed $(date)" >> "$log"
+        [[ $backend != claude ]] || effort_pull_failed=1
+      }
     fi
     # A receipt binds the evidence it cites by path and hash: the X capture copy, or the
     # X_SEARCHES.jsonl copy for a dated none-row, in the run directory. Those file names are the
@@ -612,6 +661,7 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
       theirs=$(${=${LAUNCH_SSH:-ssh}} -o BatchMode=yes "$LAUNCH_HOST" \
         "shasum -a 256 ${(q)dir}/RESULTS.jsonl 2>/dev/null | cut -d' ' -f1" 2>/dev/null)
       if [[ -n $theirs && $theirs != $ours ]]; then
+        effort_pull_failed=1
         msg="ledger diverged: RESULTS.jsonl on $LAUNCH_HOST differs from this machine's for lane $lane. This machine stays authoritative; the host copy was NOT merged and is still there."
         print -- "LEDGER DIVERGED $LAUNCH_HOST $(date)" >> "$log"
         print -- "$msg" >> "$log"
@@ -627,11 +677,33 @@ exec env RH_JOB=${(q)${job:t}} nice -n 10 python3 $rexec --backend ${(q)backend}
   else
     print -- "exit $rc $(date)" >> "$log"
   fi
+  effort_elapsed=$(( effort_ended - effort_started ))
+  effort_left=$(( LAUNCH_TIMEOUT_SECONDS - (SECONDS - effort_started) ))
+  if (( effort_percent && rc == 0 && ! policy_flag &&
+        effort_elapsed * 100 < LAUNCH_TIMEOUT_SECONDS * effort_percent &&
+        (effort_resumed || effort_left > 0) )); then
+    if (( effort_pull_failed )); then
+      effort_warn "could not harvest the effort floor's inputs from $LAUNCH_HOST"
+    elif effort_next=$(python3 "$effort_helper" check "$dir" "$lane_dir" "$job" "$effort_offsets" \
+        "$effort_percent" "$effort_elapsed" "$effort_left" "$LAUNCH_TIMEOUT_SECONDS" "$effort_resumed" \
+        "$backend" "$attempt_budget" "$out" "$log.prompt" "$log.selection.json" 2>&1); then
+      if [[ -n $effort_next ]]; then
+        LAUNCH_RESUME=1; effort_resumed=1
+        attempt_timeout=$effort_left; attempt_budget=$effort_next
+        LC_ALL=C printf 'effort-floor resume at %.2f/%.2f min\n' \
+          "$(( effort_elapsed / 60.0 ))" "$(( LAUNCH_TIMEOUT_SECONDS / 60.0 ))" >> "$log"
+        continue
+      fi
+    else
+      effort_warn "$effort_next"
+    fi
+  fi
   if ! python3 "$selector" --log "$log" --receipt "$log.selection.json" --outcome "$rc" &&
      refuses launch.outcome-receipt "could not record the outcome of $job in its selection receipt" "python3 $selector --log $log --receipt $log.selection.json --outcome $rc"; then
     exit 2
   fi
   print -r -- "GRADE ON RETURN: python3 ${selector:A} --grade pass|partial|fail --note WHY --receipt ${log:A}.selection.json --log ${log:A}" >> "$log"
+  (( ! effort_resumed )) || break
   # 11-20 (general, RULE #1): codex-budget.limit. The Codex wrapper refused this job on a cap (exit 75 and its
   # REFUSED line), so nothing ran. The cap holds on Codex; the job is rerun on claude (80% ceiling and lane
   # shares, applied by the selector) or agy instead of failing. While neither has room (selector exit 5) the job

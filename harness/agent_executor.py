@@ -339,6 +339,31 @@ def run_agy(cmd, directory, output, timeout_seconds=0):
     return code
 
 
+def run_codex(cmd, args, env):
+    # Existing callers leave Codex's clock alone. An effort-floor job shares one wall budget
+    # across calls, including the first call when it uses all of that budget itself.
+    if not env.get('RH_EFFORT_FLOOR_JOB') or args.timeout_seconds <= 0:
+        return subprocess.call(cmd, cwd=args.directory, env=env)
+    def stopped(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    stop_signals = (signal.SIGTERM, signal.SIGHUP)
+    handlers = {sig: signal.signal(sig, stopped) for sig in stop_signals}
+    try:
+        with subprocess.Popen(cmd, cwd=args.directory, env=env, start_new_session=True) as proc:
+            try:
+                return proc.wait(timeout=args.timeout_seconds)
+            except subprocess.TimeoutExpired:
+                print('wall-clock cap of {:g}s reached; stopped'.format(args.timeout_seconds), file=sys.stderr)
+                return 124
+            finally:
+                if proc.poll() is None:
+                    _kill_tree(proc)
+    finally:
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--backend', choices=('codex', 'claude', 'agy'), required=True)
@@ -379,8 +404,8 @@ def main(argv=None):
             # Current Codex supports only Responses; Google exposes Chat Completions.
             with bridge() as base_url:
                 cmd[-1:-1] = ['-c', 'model_providers.gemini.base_url=' + json.dumps(base_url)]
-                return subprocess.call(cmd, cwd=a.directory, env=env)
-        return subprocess.call(cmd, cwd=a.directory, env=env)
+                return run_codex(cmd, a, env)
+        return run_codex(cmd, a, env)
     # Preserve the provider's JSON result, including usage and budget errors.
     expired = threading.Event()
     with a.output.open('wb') as out:

@@ -1023,6 +1023,20 @@
    }
   },
   {
+   "gate": "launch.effort-floor",
+   "files": [
+    "tools/launch.sh",
+    "harness/tools/effort_floor.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "added": "2026-11-22",
+   "why": "Four conjecture hunts returned with no result after 10 to 85 minutes of a four-hour budget.",
+   "sunset": true,
+   "last_changed_outcome": null,
+   "change": "An opted-in early exit with no result gets one continuation. Decision errors warn and keep the job's exit code."
+  },
+  {
    "gate": "auto-grade",
    "files": [
     "harness/auto_grade.py"

@@ -140,6 +140,9 @@ def main(argv=None):
             return 2
     row = dict(utc=a.utc or datetime.now(timezone.utc).isoformat(timespec='seconds'), new=a.new == 'yes',
                kind=a.kind, what=a.what, link=a.link, referee=a.referee)
+    job = os.environ.get('RH_EFFORT_FLOOR_JOB')
+    if job:
+        row['job'] = job
     if a.verdict:
         row['verdict'] = a.verdict
     if novelty:
