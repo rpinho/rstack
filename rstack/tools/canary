@@ -1,0 +1,357 @@
+#!/usr/bin/env python3
+"""canary: once an hour, one real minimal call per backend from the context the lanes run in.
+
+11-23: eight breaks in one day were all at the seams (a launchd context, a Keychain, a replaced binary, a dropped
+port), none in logic. Each probe makes one real call and records pass or fail in a JSONL ledger; a probe that goes
+from pass to fail pushes one short alert (again at most once a day while it stays down) and one when it recovers.
+
+  canary run [--only NAME ...]     run the configured probes (the LaunchAgent does this every hour)
+  canary report [--hours 24]       pass/fail counts per probe and per host from the ledger
+
+Probe names: claude, codex, agy, grok, handoff, x_read. A name with @tmux (claude@tmux, agy@tmux) runs the
+same call in a new window of the configured tmux session, the other context lanes launch from. A name with
+@executor (claude@executor, agy@executor) goes through harness agent_executor.py as launch.sh does, records
+the agy route it took, and fails on "agy unauthenticated from lanes". Do not run agy in a tmux pane directly:
+the executor's own fallbacks are the lanes' real path.
+Everything private (which probes, models, paths, the X query) is in the config file; see canary.json.example.
+Stdlib only, Python 3.9+.
+"""
+import argparse
+import concurrent.futures
+import fcntl
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+PROMPT = 'Reply with OK'
+DAY = 24 * 3600
+REASONS = (('authentication', 'Authentication required'), ('please sign in', 'sign-in required'),
+           ('sign in', 'sign-in required'), ('not logged in', 'Not logged in'), ('/login', 'Not logged in'),
+           ('time limit', 'time limit'), ('rate limit', 'rate limited'), ('429', 'rate limited'),
+           ('quota', 'quota'), ('command not found', 'binary not found'))
+
+
+def config_path():
+    return Path(os.environ.get('CANARY_CONFIG') or '~/.config/rstack/canary.json').expanduser()
+
+
+def state_dir():
+    return Path(os.environ.get('CANARY_STATE_DIR') or '~/.local/state/canary').expanduser()
+
+
+def load_config():
+    cfg = {'host': os.uname().nodename.split('.')[0], 'probes': ['claude', 'codex'], 'timeout': 120,
+           'tmux_session': 'base', 'claude_model': 'haiku', 'codex_model': '', 'codex_effort': 'low',
+           'agy_model': '', 'notify': 'notify-ricardo', 'fixture_dir': str(state_dir() / 'fixture'),
+           'gate_script': '', 'executor': '~/.local/share/research-harness/agent_executor.py', 'grok_host': 'local', 'x_read': {}}
+    p = config_path()
+    if p.exists():
+        cfg.update(json.loads(p.read_text()))
+    return cfg
+
+
+def clean(text, limit=100):
+    """One short plain line for the ledger and the phone: no URLs, no long token-like runs."""
+    text = re.sub(r'https?://\S+', '', text or '')
+    text = re.sub(r'[A-Za-z0-9_\-]{32,}', '<redacted>', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text[:limit]
+
+
+def why(text, code):
+    low = text.lower()
+    for needle, reason in REASONS:
+        if needle in low:
+            return reason
+    lines = [l for l in text.splitlines() if l.strip()]
+    return clean(lines[-1]) if lines else 'exit {}'.format(code)
+
+
+def tmux_bin():
+    return shutil.which('tmux')
+
+
+def run_box(argv, stdin_text, timeout, via, session):
+    """Run argv in a private temp dir; returns (code, answer, noise, timed_out). argv may hold {box}.
+    via 'tmux' starts it in a new window of the tmux server, as agent_executor does for agy."""
+    with tempfile.TemporaryDirectory(prefix='canary-') as box:
+        box = Path(box)
+        argv = [a.replace('{box}', str(box)) for a in argv]
+        (box / 'in').write_text(stdin_text or '')
+        if via == 'tmux':
+            tmux = tmux_bin()
+            if not tmux or subprocess.run([tmux, 'has-session', '-t', session], capture_output=True).returncode:
+                return 127, '', 'no tmux session named {}'.format(session), False
+            (box / 'run.sh').write_text(
+                'cd {b} || exit\n{c} < {b}/in > {b}/out 2> {b}/err\necho $? > {b}/rc.tmp && mv {b}/rc.tmp {b}/rc\n'.format(
+                    b=shlex.quote(str(box)), c=' '.join(shlex.quote(a) for a in argv)))
+            made = subprocess.run([tmux, 'new-window', '-d', '-P', '-F', '#{window_id}', '-t', session + ':',
+                                   '-n', 'canary-{}'.format(os.getpid()), '/bin/sh ' + shlex.quote(str(box / 'run.sh'))],
+                                  capture_output=True, text=True)
+            if made.returncode:
+                return 127, '', clean('tmux new-window failed: ' + made.stderr), False
+            window, began, expired = made.stdout.strip(), time.monotonic(), False
+            while not (box / 'rc').exists():
+                if time.monotonic() - began > timeout:
+                    expired = True
+                    subprocess.run([tmux, 'kill-window', '-t', window], capture_output=True)
+                    break
+                time.sleep(0.5)
+            try:
+                code = int((box / 'rc').read_text())
+            except (OSError, ValueError):
+                code = 124
+        else:
+            expired = False
+            try:
+                with open(box / 'in') as fin, open(box / 'out', 'w') as fout, open(box / 'err', 'w') as ferr:
+                    p = subprocess.Popen(argv, stdin=fin, stdout=fout, stderr=ferr, cwd=str(box), start_new_session=True)
+                    try:
+                        code = p.wait(timeout=timeout)
+                    except subprocess.TimeoutExpired:
+                        expired, code = True, 124
+                        try:
+                            os.killpg(p.pid, 9)
+                        except OSError:
+                            p.kill()
+                        p.wait()
+            except OSError as exc:
+                return 127, '', clean(str(exc)), False
+
+        def read(name):
+            try:
+                return (box / name).read_text(errors='replace')
+            except OSError:
+                return ''
+        answer = read('last') or read('out')
+        return code, answer, read('err'), expired
+
+
+def judge(code, answer, noise, expired, timeout):
+    """(ok, reason). Pass needs exit 0 and the word OK in the model's answer, not in what it echoes."""
+    if expired:
+        return False, 'timeout after {}s'.format(timeout)
+    text = answer
+    try:
+        data = json.loads(answer)
+        if isinstance(data, dict):
+            if data.get('is_error') or data.get('error'):
+                return False, why(json.dumps(data), code)
+            text = str(data.get('result') or data.get('response') or data.get('text') or answer)
+    except ValueError:
+        pass
+    combined = answer + '\n' + noise
+    if 'LAUNCH_URGENT=' in combined:   # the codex wrapper's weekly-budget gate: a spend limit, not a break
+        return True, 'skipped: weekly budget gate'
+    if code == 0 and re.search(r'\bOK\b', text):
+        if 'authentication required' in combined.lower():
+            return False, 'Authentication required'
+        return True, ''
+    return False, why(combined, code)
+
+
+def backend_argv(name, cfg):
+    exe = shutil.which(name) or name
+    if name == 'claude':   # as agent_executor.command('claude'): print mode, no settings, no MCP, no session
+        return [exe, '-p', '--model', cfg['claude_model'], '--effort', 'low', '--output-format', 'json',
+                '--max-budget-usd', '0.05', '--setting-sources', '', '--strict-mcp-config',
+                '--mcp-config', '{"mcpServers":{}}', '--disable-slash-commands', '--no-session-persistence'], PROMPT
+    if name == 'codex':    # as agent_executor: exec, no user config, read-only, the prompt on stdin
+        model = ['-m', cfg['codex_model']] if cfg.get('codex_model') else []
+        return [exe, 'exec', '--ignore-user-config', '--skip-git-repo-check', '--cd', '{box}', *model,
+                '-c', 'model_reasoning_effort=' + cfg['codex_effort'], '--sandbox', 'read-only',
+                '-o', '{box}/last', '-'], PROMPT
+    if name == 'agy':      # the prompt is an argument
+        model = ['--model', cfg['agy_model']] if cfg.get('agy_model') else []
+        return [exe, '-p', PROMPT, '--output-format', 'json', *model, '--disable-slash-commands'], ''
+    raise ValueError(name)
+
+
+def probe_executor(base, cfg):
+    """The lanes' real path: harness agent_executor.py, called as launch.sh calls it (prompt on stdin, output file)."""
+    model = {'claude': cfg['claude_model'], 'codex': cfg.get('codex_model'), 'agy': cfg.get('agy_model')}[base] or 'default'
+    effort = {'claude': 'low', 'codex': cfg['codex_effort'], 'agy': 'medium'}[base]
+    argv = [sys.executable, str(Path(cfg['executor']).expanduser()), '--backend', base,
+            '--executable', shutil.which(base) or base, '--directory', '{box}', '--model', model, '--effort', effort,
+            '--output', '{box}/last', '--budget', '0.05', '--timeout-seconds', str(cfg['timeout'] - 10)]
+    code, answer, noise, expired = run_box(argv, PROMPT, cfg['timeout'], 'direct', '')
+    route = re.search(r'agy route=(\w+)', noise)
+    if 'agy unauthenticated from lanes' in noise:
+        return False, 'agy unauthenticated from lanes'
+    ok, reason = judge(code, answer, noise, expired, cfg['timeout'])
+    return ok, ('route=' + route.group(1)) if ok and route else reason
+
+
+def probe_model(name, cfg):
+    base, _, via = name.partition('@')
+    argv, stdin = backend_argv(base, cfg)
+    return run_box(argv, stdin, cfg['timeout'], 'tmux' if via == 'tmux' else 'direct', cfg['tmux_session'])
+
+
+def probe_grok(cfg, query=None, schema='answer', host=None):
+    query = query or 'Return one object with the key answer set to OK.'
+    keys = state_dir() / 'schema-{}.json'.format(schema)   # grok-ask --schema takes a file holding the key list
+    keys.parent.mkdir(parents=True, exist_ok=True)
+    keys.write_text(json.dumps([schema]))
+    argv = [shutil.which('grok-ask') or 'grok-ask', '--timeout', str(cfg['timeout'] - 10), '--host',
+            host or cfg['grok_host'], '--schema', str(keys), query]
+    return run_box(argv, '', cfg['timeout'], 'direct', '')
+
+
+def probe_handoff(cfg):
+    """The handoff gate on a tiny manifest-plus-attachments fixture. Never sends; never touches the outbox."""
+    gate = Path(cfg['gate_script']).expanduser() if cfg.get('gate_script') else None
+    if not gate or not gate.exists():
+        return 127, '', 'no gate script here', False
+    fx = Path(cfg['fixture_dir']).expanduser()
+    (fx / 'canary').mkdir(parents=True, exist_ok=True)
+    item = fx / 'canary.md'
+    item.write_text('# canary\nfrom: mini\nto: laptop\npurpose: canary\nPaste prompt: Canary dry run, nothing to do.\n')
+    txt = fx / 'canary' / 'note.txt'
+    txt.write_text('Canary fixture. Plain text, nothing in it.\n')
+    pdf = fx / 'canary' / 'note.pdf'
+    if not pdf.exists() or pdf.stat().st_size == 0:
+        with open(pdf, 'wb') as out:
+            r = subprocess.run(['/usr/sbin/cupsfilter', str(txt)], stdout=out, stderr=subprocess.DEVNULL, timeout=60)
+        if r.returncode:
+            return 1, '', 'cupsfilter could not make the fixture PDF', False
+    code, out, err, expired = run_box(['bash', str(gate), str(item)], '', cfg['timeout'], 'direct', '')
+    return code, 'OK' if code == 0 else out, err + out, expired
+
+
+def run_probe(name, cfg):
+    began = time.monotonic()
+    try:
+        base = name.split('@')[0]
+        if base in ('claude', 'codex', 'agy') and name.endswith('@executor'):
+            ok, reason = probe_executor(base, cfg)
+        elif base in ('claude', 'codex', 'agy'):
+            ok, reason = judge(*probe_model(name, cfg), cfg['timeout'])
+        elif base == 'grok':
+            code, out, err, expired = probe_grok(cfg)
+            ok, reason = judge(code, out if code else 'OK', err + out, expired, cfg['timeout'])
+        elif base == 'x_read':
+            x = cfg.get('x_read') or {}
+            if not x.get('query'):
+                return None
+            code, out, err, expired = probe_grok(cfg, x['query'], x.get('schema', 'post_id'), x.get('host'))
+            has = code == 0 and out.strip() not in ('', '[]')
+            ok, reason = judge(code, 'OK' if has else out, err + out, expired, cfg['timeout'])
+            if code == 0 and not has:
+                ok, reason = False, 'read returned no rows'
+        elif base == 'handoff':
+            code, out, noise, expired = probe_handoff(cfg)
+            ok, reason = judge(code, out, noise, expired, cfg['timeout'])
+        else:
+            return None
+    except Exception as exc:   # a probe that cannot run is a failure to record, never a crash
+        ok, reason = False, clean('{}: {}'.format(type(exc).__name__, exc))
+    return dict(ts=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), host=cfg['host'], probe=name, ok=ok,
+                seconds=round(time.monotonic() - began, 1), reason=reason)
+
+
+def notify(cfg, message):
+    try:
+        subprocess.run([shutil.which(cfg['notify']) or cfg['notify'], clean(message, 140), 'canary'],
+                       capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print('canary: alert not sent: {}'.format(exc), file=sys.stderr)
+
+
+def transition(state, row, now):
+    """The alert to send for this row, or None. Mutates state[probe]: a first fail or pass->fail alerts, a
+    continuing fail alerts again after a day, a fail->pass says recovered."""
+    prev = state.get(row['probe'], {})
+    cur = dict(ok=row['ok'], since=prev.get('since', now) if prev.get('ok') == row['ok'] else now,
+               last_alert=prev.get('last_alert', 0))
+    msg = None
+    if not row['ok'] and (prev.get('ok', True) or now - prev.get('last_alert', 0) >= DAY):
+        msg, cur['last_alert'] = 'canary {}: {} failed: {}'.format(row['host'], row['probe'], row['reason']), now
+    elif row['ok'] and prev.get('ok') is False:
+        msg, cur['last_alert'] = 'canary {}: {} recovered'.format(row['host'], row['probe']), 0
+    state[row['probe']] = cur
+    return msg
+
+
+def cmd_run(args):
+    cfg = load_config()
+    names = args.only or cfg['probes']
+    root = state_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    with open(root / 'run.lock', 'w') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print('canary: another run is in progress')
+            return 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(names))) as pool:
+            rows = [r for r in pool.map(lambda n: run_probe(n, cfg), names) if r]
+        sp = root / 'state.json'
+        try:
+            state = json.loads(sp.read_text())
+        except (OSError, ValueError):
+            state = {}
+        now = time.time()
+        with open(root / 'canary.jsonl', 'a') as ledger:
+            for r in rows:
+                ledger.write(json.dumps(r) + '\n')
+                print('{} {} {} {}s {}'.format(r['host'], r['probe'], 'PASS' if r['ok'] else 'FAIL', r['seconds'], r['reason']))
+                msg = transition(state, r, now)
+                if msg:
+                    notify(cfg, msg)
+        sp.write_text(json.dumps(state))
+    return 0
+
+
+def cmd_report(args):
+    paths = [Path(p).expanduser() for p in args.ledger] or [state_dir() / 'canary.jsonl']
+    since = datetime.now(timezone.utc) - timedelta(hours=args.hours)
+    tally = {}
+    for p in paths:
+        for line in (p.read_text().splitlines() if p.exists() else []):
+            try:
+                r = json.loads(line)
+                when = datetime.strptime(r['ts'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+            except (ValueError, KeyError):
+                continue
+            if when >= since:
+                t = tally.setdefault((r['host'], r['probe']), dict(ok=0, fail=0, last=''))
+                t['ok' if r['ok'] else 'fail'] += 1
+                if not r['ok']:
+                    t['last'] = r['reason']
+    print('canary, last {} h'.format(args.hours))
+    for host in sorted({h for h, _ in tally}):
+        ok = sum(t['ok'] for (h, _), t in tally.items() if h == host)
+        bad = sum(t['fail'] for (h, _), t in tally.items() if h == host)
+        print('{}: {} pass, {} fail'.format(host, ok, bad))
+        for (h, probe), t in sorted(tally.items()):
+            if h == host:
+                print('  {:<14} {:>3} pass {:>3} fail{}'.format(probe, t['ok'], t['fail'],
+                                                              '  last: ' + t['last'] if t['fail'] else ''))
+    if not tally:
+        print('no rows')
+    return 0
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest='cmd', required=True)
+    r = sub.add_parser('run')
+    r.add_argument('--only', nargs='+')
+    q = sub.add_parser('report')
+    q.add_argument('--hours', type=float, default=24)
+    q.add_argument('--ledger', nargs='*', default=[], help='ledger files, e.g. copies from the other Mac')
+    a = p.parse_args(argv)
+    return cmd_run(a) if a.cmd == 'run' else cmd_report(a)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

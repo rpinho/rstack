@@ -1,0 +1,16 @@
+{
+  "host": "HOST_LABEL",
+  "probes": ["claude", "codex", "agy", "grok", "handoff", "claude@tmux", "claude@executor", "agy@executor", "x_read"],
+  "timeout": 120,
+  "tmux_session": "TMUX_SESSION",
+  "claude_model": "haiku",
+  "codex_model": "CODEX_MODEL",
+  "codex_effort": "low",
+  "agy_model": "AGY_MODEL",
+  "notify": "PUSH_COMMAND",
+  "executor": "PATH_TO_AGENT_EXECUTOR",
+  "fixture_dir": "~/.local/state/canary/fixture",
+  "gate_script": "PATH_TO_HANDOFF_GATE_SCRIPT",
+  "grok_host": "local",
+  "x_read": {"query": "One read-only question for the Grok bot about your own account", "schema": "post_id", "host": "local"}
+}
