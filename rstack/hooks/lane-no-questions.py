@@ -22,35 +22,14 @@ REASON = ('lane-no-questions: only the conductor shows question cards. If you wo
 
 
 def body(event):
-    if not str(event.get('tool_name', '')).endswith('AskUserQuestion'):
-        return 0
-    # Import inside the fail-safe body: a missing install must refuse, not crash
-    # before _hookfail can emit a deny. The same hook runs from repo or ~/.claude.
-    from pathlib import Path
-    source_tools = Path(__file__).resolve().parents[1] / 'tools'
-    if 'RSTACK_TOOLS' in os.environ:
-        tools = Path(os.environ['RSTACK_TOOLS']).expanduser()
-    elif (source_tools / 'ask_lint.py').is_file():
-        tools = source_tools
-    else:
-        tools = Path.home() / '.local/share/research-harness/rstack/tools'
-    sys.path.insert(0, str(tools))
-    from ask_lint import lint
-    for question in event.get('tool_input', {}).get('questions', []):
-        # Descriptions explain the option's work, often the agent's own plan.
-        # Only the question and option labels ask the owner to do something.
-        texts = [question.get('question', '')]
-        for option in question.get('options', []):
-            texts.append(option.get('label', ''))
-        messages = lint('\n'.join(texts))
-        if messages:
-            _hookfail.decide('deny', '\n'.join(messages))
-            return 0
-    if not _hookfail.is_conductor(event):   # one definition, shared with the ask default
+    # 11-22 (general, rule #0): the ask_lint check is gone from here. It refused the conductor's own cards as
+    # "mechanical, do it yourself", including two that were Ricardo's by rule (a first contact under his name,
+    # job-application prep). The conductor decides what to ask him; lanes still never show a card.
+    if str(event.get('tool_name', '')).endswith('AskUserQuestion') and not _hookfail.is_conductor(event):
         _hookfail.decide('deny', REASON)
     return 0
 
 
 if __name__ == '__main__':
     sys.exit(_hookfail.run('lane-no-questions.py', body, lambda raw, ev: 'AskUserQuestion' in raw,
-                           guards='mechanical owner asks and question cards outside the conductor'))
+                           guards='question cards outside the conductor'))

@@ -282,17 +282,25 @@ def summarize(rows, now=None, days=1.0):
     recent = [r for r in rows if str(r.get('utc', '')) >= cutoff]
     blocks = [r for r in recent if r.get('outcome') == 'block']
     warns = [r for r in recent if r.get('outcome') == 'warn']
-    bugs = []
+    bugs, answered = [], set()
     # A hard line that held and was then fixed and rerun is the system working. Every other block that a
     # rerun, override or retraction answered was in the way: fail-open and unclassified gates, and the
-    # gates whose class general has not decided yet (`pending`).
-    for b in blocks:
-        if b.get('class') == 'hard-line' and not b.get('pending'):
+    # gates whose class general has not decided yet (`pending`). 11-22 (general, rule #0: the report said
+    # "0 harness bugs" on a day full of them): a reroute or warning answered the same day counts too, and so
+    # does a manual override or a retraction on its own (a grade charged to a model for a harness error, a job
+    # relaunched with --model-override after the harness routed or failed it).
+    for b in blocks + warns:
+        if b.get('outcome') == 'block' and b.get('class') == 'hard-line' and not b.get('pending'):
             continue
         later = [r for r in rows if r.get('outcome') in HARNESS_BUG and r.get('job') and r.get('job') == b.get('job')
-                 and str(r.get('utc', '')) >= str(b.get('utc', '')) and r.get('gate') in ('*', b.get('gate'))]
+                 and str(r.get('utc', '')) >= str(b.get('utc', '')) and r.get('gate') in ('*', b.get('gate'))
+                 and (b.get('outcome') == 'block' or str(r.get('utc', ''))[:10] == str(b.get('utc', ''))[:10])]
         if later:
             bugs.append(dict(b, answered_by=later[0].get('outcome')))
+            answered.update(id(r) for r in later)
+    for r in recent:
+        if r.get('outcome') in ('override', 'retract') and r.get('job') and id(r) not in answered:
+            bugs.append(dict(r, answered_by=r['outcome']))
     count = {}
     for r in blocks + warns:
         key = r.get('gate', '?')
@@ -354,8 +362,8 @@ def sunset_candidates(rows, gates, days=14, now=None):
 def line(summary, days=1.0):
     s = summary
     top = ', '.join('{} ({})'.format(g, n) for g, n in s['top']) or 'none'
-    text = 'harness-blocks {}h: {} block(s), {} fail-open warning(s); {} harness bug(s) (blocked, then rerun, ' \
-           'overridden or retracted){}; top blockers: {}'.format(
+    text = 'harness-blocks {}h: {} block(s), {} fail-open warning(s); {} harness bug(s) (refused or rerouted, then ' \
+           'rerun, overridden or retracted){}; top blockers: {}'.format(
                int(days * 24), s['blocks'], s['warns'], len(s['harness_bugs']),
                ' in ' + ', '.join(s['by_gate_bugs']) if s['by_gate_bugs'] else '', top)
     if s.get('allowed_overrides'):

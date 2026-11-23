@@ -31,10 +31,10 @@ cannot establish whether the declaration is true.
 
 `lint_review_item` checks the review title, note and checkbox labels, including
 an optional saved `his_only` reason. Inline tags apply to their individual
-field. The `lane-no-questions.py` hook checks each question plus its option
-labels before its existing conductor restriction. Option descriptions are not
-owner instructions and are ignored. A question tag covers that question's
-options, but does not exempt another question.
+field. Since 11-22 the `lane-no-questions.py` question hook no longer runs
+this lint: it refused the conductor's own cards, including decisions that are
+the owner's by rule. Option descriptions are not owner instructions and are
+ignored.
 
 `harness-sync` ships the lint from committed source into
 `~/.local/share/research-harness/rstack/tools/ask_lint.py`. Private wrappers

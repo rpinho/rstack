@@ -38,8 +38,6 @@ os.environ['RH_ROOT'] = str(_RUNTIME)
 os.environ['AGENT_BACKEND'] = 'codex'
 # Test drafts live under the system temp dir, which outreach refuses for real drafts.
 os.environ['RH_DRAFT_TEMP_OK'] = '1'
-# 11-22: a live dated Claude window on this Mac (claude_cap.window) must not change the ceiling tests.
-os.environ['RSTACK_CLAUDE_WINDOW'] = '/nonexistent/claude-window.json'
 FIXTURE = Path(__file__).parent / 'tests/fixtures/check.py'
 os.environ['RH_VOICE_COMMAND'] = shlex.join([sys.executable, str(FIXTURE), 'voice'])
 os.environ['RH_SCIENCE_CHECK_COMMAND'] = shlex.join([sys.executable, str(FIXTURE), 'science'])

@@ -730,17 +730,16 @@
   {
    "gate": "lane-no-questions.py",
    "files": [
-    "rstack/hooks/lane-no-questions.py",
-    "rstack/tools/ask_lint.py"
+    "rstack/hooks/lane-no-questions.py"
    ],
    "class": "hard-line",
    "kind": "hook",
    "hard_line": "general-keep",
    "added": "2026-11-11",
-   "why": "Denies a question card outside the conductor; ask_lint refuses mechanical asks to the owner.",
+   "why": "Denies a question card outside the conductor (lanes sat for days on one card). 11-22: no longer lints the conductor's asks.",
    "sunset": false,
    "last_changed_outcome": null,
-   "old": "denies a question card outside the conductor; ask_lint refuses mechanical asks to the owner",
+   "old": "denies a question card outside the conductor",
    "change": "through the registry; logged",
    "fix": "decide it yourself, or tell-general decision \"...\" and keep working",
    "decided": "general 11-20: keep. the refusal is what keeps a lane working (lanes sat for days on one card)."

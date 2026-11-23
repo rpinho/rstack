@@ -139,15 +139,13 @@ AGY_CLAUDE = {'claude-opus-5-5', 'claude-sonnet-5-5'}
 def claude_overflow(executor, model):
     """(agy model, note) when a Claude job should overflow to agy's Claude; None leaves it unchanged."""
     limit = os.environ.get('RH_CLAUDE_OVERFLOW_PERCENT', '').strip()
-    win = claude_cap.window()
-    if isinstance(win.get('overflow'), (int, float)):
-        limit = str(win['overflow'])   # 11-22: a dated Claude window moves the agy brake with the ceiling
     if executor != 'claude' or model not in AGY_CLAUDE or not limit:
         return None
     allowance = _allowance()
     weekly = allowance.claude_weekly() if allowance else None
-    if not weekly or weekly['weekly_used_percent'] < float(limit):
-        return None
+    if not weekly or weekly['weekly_used_percent'] < max(float(limit), claude_cap.SPEND_DOWN_CEILING
+                                                         if claude_cap.spend_down(weekly) else 0):
+        return None   # 11-22: in the spend-down hours the agy brake moves with the ceiling
     effort = os.environ.get('LAUNCH_EFFORT', '')
     tier = effort if effort in ('low', 'medium', 'high') else 'high'
     return model + '-' + tier, 'claude overflow via agy (weekly at {:g}%)'.format(weekly['weekly_used_percent'])
@@ -1080,6 +1078,7 @@ def main(argv=None):
                                           job=row['job'], grade='retracted', model=row.get('model'), role=row.get('role'),
                                           retracted=row.get('grade'), note=' '.join(args.reason.split())[:300]))
                 print('retracted {} {} ({}): {}'.format(row['job'], row.get('grade'), row.get('model'), args.reason))
+                harness_blocks.mark(row['job'], 'retract', 'auto-grade', args.reason)   # 11-22: counted as a harness bug
             clear_ungraded(args.retract)
             return 0
         if args.sweep_ungraded:

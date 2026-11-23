@@ -21,7 +21,6 @@ lane's worktree count too; a session in a directory without the lane's name does
 Chat and desktop use leaves no transcript, so the lane figures understate the total and the weekly figure
 stays the hard bound.
 """
-from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -57,21 +56,20 @@ def _f(name, default):
         return default
 
 
-WINDOW_MAX_CEILING = 95.0   # the last 5% is always general's, so orchestration never dies at 100%
+# 11-22 (Ricardo: "You have 5 hours to spend the money."): in the last hours before the weekly reset the
+# ceiling rises to 95% and pacing is off on its own; the last 5% stays general's. Unused allowance is lost at
+# the reset, so holding it back then only gets in the way (RULE #1). RH_CLAUDE_SPEND_DOWN_HOURS sets the window.
+SPEND_DOWN_H = 6.0
+SPEND_DOWN_CEILING = 95.0
 
 
-def window(now=None):
-    """11-22 (Ricardo, via general: "You have 5 hours to spend the money."): a dated override that ends on its
-    own. ~/.config/rstack/claude-window.json = {"until": ISO, "ceiling": N, "pacing": false, "overflow": N,
-    "why": TEXT}. Until then the ceiling is N (at most 95), pacing is off when "pacing" is false, and the agy
-    overflow starts at "overflow". After `until`, or when the file is unreadable, it is ignored: no revert."""
-    path = Path(os.environ.get('RSTACK_CLAUDE_WINDOW') or Path.home() / '.config/rstack/claude-window.json')
+def spend_down(weekly, now=None):
+    """True in the last RH_CLAUDE_SPEND_DOWN_HOURS hours before the weekly reset `weekly` names."""
     try:
-        w = json.loads(path.read_text())
-        until = datetime.fromisoformat(str(w['until']).replace('Z', '+00:00')).timestamp()
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return {}
-    return w if isinstance(w, dict) and (time.time() if now is None else now) < until else {}
+        left = (float(weekly['resets_at']) - (time.time() if now is None else now)) / 3600
+    except (KeyError, TypeError, ValueError):
+        return False
+    return 0 <= left <= _f('RH_CLAUDE_SPEND_DOWN_HOURS', SPEND_DOWN_H)
 
 
 def enabled():
@@ -235,12 +233,6 @@ def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, proj
         return out
     ceiling, warn, pace_off = _f('RH_CLAUDE_CEILING_PERCENT', CEILING), _f('RH_CLAUDE_WARN_PERCENT', WARN), \
         _f('RH_CLAUDE_PACE_OFF_PERCENT', PACE_OFF)
-    win = window(now)
-    if isinstance(win.get('ceiling'), (int, float)):
-        ceiling = min(float(win['ceiling']), WINDOW_MAX_CEILING)
-    pacing = win.get('pacing', True) is not False
-    if win:
-        notes.append('claude window until {}: ceiling {:g}%{}'.format(win['until'], ceiling, '' if pacing else ', pacing off'))
     # Within the leaderboard's Claude picks, Sonnet is preferred for low-judgment roles only; judgment roles keep
     # the leaderboard's pick (an explicit --model or spec pin is the operator's own choice).
     if is_opus(model) and role in LOW_JUDGMENT and sonnet_ok and not pinned:
@@ -254,6 +246,11 @@ def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, proj
     used = float(weekly['weekly_used_percent'])
     resets = weekly.get('resets_at')
     hours = max((float(resets) - now) / 3600, 1.0) if resets else WEEK_H
+    pacing = True
+    if spend_down(weekly, now):
+        ceiling, pacing = max(ceiling, SPEND_DOWN_CEILING), False
+        notes.append('claude spend-down: {:.1f} h to the weekly reset, ceiling {:g}% and pacing off'.format(
+            (float(resets) - now) / 3600, ceiling))
     if used >= ceiling:
         out['pressure'] = 'ceiling'
         out['leave'] = 'claude weekly at {:.0f}% >= {:g}% ceiling (the last {:g}% is general\'s)'.format(used, ceiling, 100 - ceiling)

@@ -150,43 +150,10 @@ def question_event(text, **question):
                 tool_input=dict(questions=[dict(question=text, **question)]))
 
 
-def test_conductor_cannot_delegate_mechanical_steps():
-    result = blocked(HOOKS / 'lane-no-questions.py', question_event('upload the PDF'), env=CONDUCTOR)
-    assert 'do it yourself: upload the PDF' in result['stdout']
-    allowed(HOOKS / 'lane-no-questions.py', question_event('read and OK the reply'), env=CONDUCTOR)
-    allowed(HOOKS / 'lane-no-questions.py', question_event('sign in to GitLab'), env=CONDUCTOR)
-    blocked(HOOKS / 'lane-no-questions.py', question_event(
-        'click the magic link to log in [his-only: auth]'), env=CONDUCTOR)
-    allowed(HOOKS / 'lane-no-questions.py', question_event(
-        'enter the 2FA code [his-only: password]'), env=CONDUCTOR)
-    allowed(HOOKS / 'lane-no-questions.py', question_event(
-        'sign in with your password to GitLab'), env=CONDUCTOR)
-
-
-def test_question_option_labels_are_also_owner_text():
-    event = question_event('Choose the next action', options=[
-        dict(label='paste this into the form', description='I will continue')])
-    result = blocked(HOOKS / 'lane-no-questions.py', event, env=CONDUCTOR)
-    assert 'do it yourself: paste this into the form' in result['stdout']
-
-
-@pytest.mark.parametrize('description', [
-    'upload everything myself', 'I upload everything myself', "I'll paste it",
-    'The agent will upload everything', 'paste this into the form',
-])
-def test_question_choice_ignores_work_descriptions(description):
-    event = question_event('Which submission approach do you prefer?', options=[
-        dict(label='Agent handles submission', description=description),
-        dict(label='Keep as a draft', description='I will save the draft')])
-    allowed(HOOKS / 'lane-no-questions.py', event, env=CONDUCTOR)
-
-
-def test_question_tag_covers_options_but_not_other_questions():
-    event = question_event('Authenticate [his-only: password]', options=[
-        dict(label='enter the 2FA code', description='I will continue afterward')])
-    allowed(HOOKS / 'lane-no-questions.py', event, env=CONDUCTOR)
-    event['tool_input']['questions'].append(dict(question='upload the PDF'))
-    blocked(HOOKS / 'lane-no-questions.py', event, env=CONDUCTOR)
+def test_the_question_hook_no_longer_lints_the_conductors_asks():
+    # 11-22 (general): it refused cards that were Ricardo's by rule. ask_lint still serves notify-ricardo and review-add.
+    allowed(HOOKS / 'lane-no-questions.py', question_event('upload the PDF'), env=CONDUCTOR)
+    allowed(HOOKS / 'lane-no-questions.py', question_event('Open the first GitHub issue in your name?'), env=CONDUCTOR)
 
 
 def test_tagged_lane_question_still_obeys_conductor_rule():
@@ -196,6 +163,3 @@ def test_tagged_lane_question_still_obeys_conductor_rule():
     assert 'only the conductor' in result['stdout']
 
 
-def test_question_lint_errors_refuse():
-    for bad in ('upload the PDF [his-only: routine]', None):
-        blocked(HOOKS / 'lane-no-questions.py', question_event(bad), env=CONDUCTOR)

@@ -389,6 +389,12 @@ if [[ -z ${RH_LAUNCHER_EXECUTORS:-} ]]; then
       print -- "executors on ${LAUNCH_HOST:-this host}: $RH_LAUNCHER_EXECUTORS (the others are not installed there) $(date)" >> "$log"
   fi
 fi
+# 11-22 (general): a relaunch with --model-override after an attempt of this job today is a person overruling
+# the harness's routing. It is recorded, and the daily report counts it as a harness bug.
+if [[ -n ${LAUNCH_MODEL_OVERRIDE:-} && -n $log.selection.json*(N.mh-24[1]) ]]; then
+  python3 "$hblocks" mark --job "${job:t}" --lane "$lane" --outcome override --gate selector \
+    --reason "relaunched with --model-override: $LAUNCH_MODEL_OVERRIDE" >/dev/null 2>&1 || true
+fi
 codex_closed=; budget_warned=0
 prepare_attempt() {
   # Set after the Codex wrapper refused this job on its cap (below): the selector then leaves Codex out.

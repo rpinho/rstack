@@ -96,7 +96,8 @@ def test_a_block_later_rerun_overridden_or_retracted_is_a_harness_bug(tmp_path, 
     harness_blocks.admitted('math_b')
     harness_blocks.mark('math_c', 'retract', reason='worker_models --retract')
     s = harness_blocks.summarize(harness_blocks.read())
-    assert [b['gate'] for b in s['harness_bugs']] == ['launch.host-peak-cap']
+    # 11-22: a fail-open warning answered the same day (here a retraction) is a harness bug too
+    assert [b['gate'] for b in s['harness_bugs']] == ['launch.host-peak-cap', 'launch.load']
     assert s['blocks'] == 2 and s['warns'] == 1
     text = harness_blocks.line(s)
     assert 'top blockers: launch.host-peak-cap (1), launch.load (1), trash-guard.py (1)' in text
@@ -682,3 +683,17 @@ def test_gate_pipe_guard_warns_in_the_ledger(tmp_path):
         assert done.returncode == 0 and 'fail-open' in done.stdout, (name, done.stdout, done.stderr)
     warned = {r['gate'] for r in ledger(tmp_path) if r['outcome'] == 'warn'}
     assert {'gate-pipe-guard.py'} <= warned
+
+
+def test_a_manual_override_or_a_retraction_alone_is_a_harness_bug(tmp_path, monkeypatch):
+    # 11-22 (general): today's agy job (no ledger row: died, graded FAIL, relaunched with --model-override) and
+    # the retracted grade were invisible, so the report said 0 harness bugs.
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
+    harness_blocks.mark('ddbench_scan_1122', 'retract', 'auto-grade', 'agy not installed on the M4')
+    harness_blocks.mark('ddbench_scan_1122', 'override', 'selector', 'relaunched with --model-override')
+    harness_blocks.record('selector.claude-ceiling', 'fail-open', 'ceiling', job='bio_x', outcome='warn')
+    harness_blocks.mark('bio_x', 'override', 'selector.claude-ceiling', 'general: no pause')
+    s = harness_blocks.summarize(harness_blocks.read())
+    assert sorted((b['gate'], b['answered_by']) for b in s['harness_bugs']) == [
+        ('auto-grade', 'retract'), ('selector', 'override'), ('selector.claude-ceiling', 'override')]
+    assert '3 harness bug(s) (refused or rerouted, then rerun, overridden or retracted)' in harness_blocks.line(s)

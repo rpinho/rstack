@@ -1252,27 +1252,25 @@ def test_biology_draws_neon_as_a_delegate():
     assert 'biology' in wm.DELEGATE_ROLES and 'biology' in wm.GEMINI_ROLES['neon']
 
 
-def test_a_dated_claude_window_raises_the_ceiling_turns_pacing_off_and_ends_on_its_own(tmp_path, monkeypatch):
-    # 11-22 (Ricardo via general): "You have 5 hours to spend the money." 81% used, reset at 03:00Z.
-    p = cap_setup(tmp_path, monkeypatch, 85, hours=5, history=[(2, 70), (0, 85)])
-    win = tmp_path / 'window.json'
-    monkeypatch.setenv('RSTACK_CLAUDE_WINDOW', str(win))
-    got = wm.select('batch', 'claude', path=p)
-    assert got['executor'] == 'codex' and '>= 80% ceiling' in got['claude_cap']      # no window: the 80% stop
-    until = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=5)).isoformat()
-    win.write_text(json.dumps({'until': until, 'ceiling': 99, 'pacing': False, 'overflow': 95}))
+def test_the_last_hours_before_the_reset_spend_down_on_their_own(tmp_path, monkeypatch):
+    # 11-22 (Ricardo via general): "You have 5 hours to spend the money." No dated file, no manual step.
+    p = cap_setup(tmp_path, monkeypatch, 85, hours=4, history=[(2, 70), (0, 85)])
     data = json.loads(p.read_text())
     data['roles']['builder'] = ['claude-opus-5-5']
     p.write_text(json.dumps(data))
     got = wm.select('builder', 'claude', path=p, made_by='gpt-6.2-sol')
     assert (got['executor'], got['model']) == ('claude', 'claude-opus-5-5')           # no Sonnet move, no leave
-    assert 'ceiling 95%, pacing off' in got['claude_cap']                             # capped at 95: general's 5%
+    assert 'spend-down' in got['claude_cap'] and 'ceiling 95%' in got['claude_cap']
     monkeypatch.setenv('RH_CLAUDE_OVERFLOW_PERCENT', '85')
     assert wm.claude_overflow('claude', 'claude-opus-5-5') is None                     # 85% brake moved to 95
-    win.write_text(json.dumps({'until': '2026-01-01T00:00:00Z', 'ceiling': 95, 'pacing': False}))
-    assert '>= 80% ceiling' in wm.select('batch', 'claude', path=p)['claude_cap']      # expired: back to 80
-    assert wm.claude_overflow('claude', 'claude-opus-5-5')[0] == 'claude-opus-5-5-high'   # and the brake to 85
-
+    (tmp_path / "b").mkdir()
+    p96 = cap_setup(tmp_path / "b", monkeypatch, 96, hours=4)
+    assert '>= 95% ceiling' in wm.select('batch', 'claude', path=p96)['claude_cap']     # general's last 5%
+    (tmp_path / "c").mkdir()
+    p = cap_setup(tmp_path / "c", monkeypatch, 85, hours=30, history=[(2, 84), (0, 85)])
+    assert '>= 80% ceiling' in wm.select('batch', 'claude', path=p)['claude_cap']      # earlier in the week: 80
+    monkeypatch.setenv('RH_CLAUDE_OVERFLOW_PERCENT', '85')   # cap_setup clears it
+    assert wm.claude_overflow('claude', 'claude-opus-5-5')[0] == 'claude-opus-5-5-high'
 
 def test_a_returned_review_job_owes_a_grade_however_it_was_picked(tmp_path, monkeypatch, capsys):
     # 11-22: Astra is the leaderboard's own review pick, so its referee runs were never on the ungraded list.
