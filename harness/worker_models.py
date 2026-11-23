@@ -427,14 +427,25 @@ def prefer_hydrogen_medium(pool, evidence, cost, min_n=5):
 # the next n jobs of that role to A and B by turns, ahead of the delegate draw. A job keeps its arm when it is
 # selected again (a retry, a reroute). Graded as usual; `worker_models.py --trial-report` reads the results.
 # Trash the file to end the trial; nothing else reads it.
+# 11-23 (Ricardo via general: "Keep using Neon. People just rave about it."): the 11-22 trial drew one job in a
+# day, because it covered builder only and lanes launch most builder jobs with --explore, which skipped it. Now
+# "roles": [...] runs the trial in several roles with n jobs EACH, "@leaderboard" as an arm means the model the
+# job would have run anyway (so a review job pits Neon against the review pick, not Opus), and an --explore job
+# joins the trial too. An explicit --model or a spec's model pin is still the operator's choice and never enters.
+TRIAL_TOP = '@leaderboard'
+
+
 def _trial():
     path = Path(os.environ.get('RH_MODEL_TRIAL') or Path.home() / '.config/rstack/model-trial.json')
     try:
         t = json.loads(path.read_text())
     except (OSError, ValueError):
         return None
-    ok = isinstance(t, dict) and t.get('name') and t.get('role') and len(t.get('models') or ()) >= 2
-    return t if ok else None
+    if not isinstance(t, dict):
+        return None
+    roles = t.get('roles') or ([t['role']] if t.get('role') else [])
+    ok = t.get('name') and isinstance(roles, list) and roles and len(t.get('models') or ()) >= 2
+    return dict(t, roles=roles) if ok else None
 
 
 def trial_ledger():
@@ -459,28 +470,31 @@ def trial_rows(name, paths=None):
     return rows
 
 
-def trial_pick(role, data, excluded, families, executors, quota, job):
-    """(model, note, trial name) when this job is one of the trial's, else None."""
+def trial_pick(role, data, excluded, families, executors, quota, job, top=''):
+    """(model, note, trial name) when this job is one of the trial's, else None. n counts per role."""
     t = _trial()
-    if not t or role != t['role'] or not job:
+    if not t or role not in t['roles'] or not job:
         return None
     rows = trial_rows(t['name'])
-    jobs = list(dict.fromkeys(r.get('job') for r in rows))
     mine = next((r for r in rows if r.get('job') == job), None)
+    jobs = list(dict.fromkeys(r.get('job') for r in rows if r.get('role', role) == role))
     if not mine and len(jobs) >= int(t.get('n') or 20):
         return None
-    k = jobs.index(job) + 1 if mine else len(jobs) + 1
-    models = list(t['models'])
+    k = jobs.index(job) + 1 if mine and job in jobs else len(jobs) + 1
+    # An arm listed twice gets two turns in each cycle (11-23: Neon at volume, 'models': [neon, neon, @leaderboard]).
+    models = [top if m == TRIAL_TOP else m for m in t['models'] if m != TRIAL_TOP or top]
+    if len(set(models)) < 2:
+        return None                    # the job's own pick is the trial model: nothing to compare here
     first = mine['model'] if mine else models[(k - 1) % len(models)]
-    for m in [first] + [x for x in models if x != first]:
+    for m in [first] + list(dict.fromkeys(x for x in models if x != first)):
         route = data['routes'].get(m)
         if (not isinstance(route, dict) or route.get('cli') not in executors or m in excluded
                 or route.get('canonical') in excluded or maker(m, route.get('canonical')) in families):
             continue
         if route.get('cli') == 'agy' and quota and agy_quota.blocked_until(m, os.environ.get('LAUNCH_EFFORT'), table=quota):
             continue
-        return m, 'model trial {} (job {} of {}): {} by turns{}'.format(
-            t['name'], k, int(t.get('n') or 20), m, '' if m == first else ' ({} unavailable)'.format(first)), t['name']
+        return m, 'model trial {} ({} job {} of {}): {} by turns{}'.format(
+            t['name'], role, k, int(t.get('n') or 20), m, '' if m == first else ' ({} unavailable)'.format(first)), t['name']
     return None
 
 
@@ -496,7 +510,8 @@ def trial_report(name, ledgers, roles_file=None):
         cost = {}
     stats = {}
     for job, row in latest.items():
-        s = stats.setdefault(row.get('model'), dict(pass_=0, partial=0, fail=0, other=0, pending=0, wall=[], role=row.get('role')))
+        s = stats.setdefault((row.get('role') or '', row.get('model')),
+                             dict(pass_=0, partial=0, fail=0, other=0, pending=0, wall=[], role=row.get('role')))
         try:
             receipt = json.loads(Path(row['receipt']).read_text())
         except (OSError, ValueError, KeyError):
@@ -525,13 +540,13 @@ def trial_report(name, ledgers, roles_file=None):
         else:
             s['pending'] += 1
     out = []
-    for model, s in sorted(stats.items()):
+    for (role, model), s in sorted(stats.items()):
         graded = s['pass_'] + s['partial'] + s['fail']
         wall = sorted(s['wall'])
         c = ((cost.get(s['role']) or {}).get(model) or {}).get('pct_per_pass')
-        out.append('{}: {} graded (pass {}, partial {}, fail {}), rate {}, {} ungraded/retracted, {} pending; '
+        out.append('{} {}: {} graded (pass {}, partial {}, fail {}), rate {}, {} ungraded/retracted, {} pending; '
                    'median wall {}; leaderboard cost {}'.format(
-                       model, graded, s['pass_'], s['partial'], s['fail'],
+                       role, model, graded, s['pass_'], s['partial'], s['fail'],
                        '{:.2f}'.format((s['pass_'] + .5 * s['partial']) / graded) if graded else 'n/a',
                        s['other'], s['pending'], '{:.0f} min'.format(wall[len(wall) // 2]) if wall else 'n/a',
                        '{}%/pass'.format(c) if c is not None else 'n/a'))
@@ -542,7 +557,7 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), exe
              quota=None, skipped=None, job=''):
     """(model, note) when this selection is one of the delegated share, else None. An agy model whose logged quota
     reset has not passed is left out of the pool (quota: agy_quota.blocked()), and `skipped` gets a line for it."""
-    trial = trial_pick(role, data, excluded, families, executors, quota, job)
+    trial = trial_pick(role, data, excluded, families, executors, quota, job, top=top)
     if trial:
         return trial
     try:
@@ -724,6 +739,11 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
                              quota=quota, skipped=quota_skipped, job=job)
         if delegated:
             chosen = delegated[0]
+    elif explore and not (model or pin):
+        delegated = trial_pick(role, data, excluded, families if judging else frozenset(),
+                               runnable(requested, follows_route) & {'claude', 'codex', 'agy'}, quota, job, top=chosen)
+        if delegated:
+            chosen = delegated[0]
     route = data['routes'].get(chosen)
     if (delegated or switched or gate or (quota_skipped and chosen != ranked[0])
             or (judging and families and chosen != (explore or model or ranked[0]))):
@@ -794,7 +814,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     receipt = dict(schema=1, selection_id=uuid.uuid4().hex, utc=dt.datetime.now(dt.timezone.utc).isoformat(),
         role=role, model=chosen, canonical=route['canonical'], executor=executor,
         roles_sha256=hashlib.sha256(raw).hexdigest(), roles_updated=data.get('updated'),
-        model_override=override, source='explore' if explore else 'override' if model else 'delegate' if delegated else 'leaderboard', job=job, lane=lane, made_by=made_by)
+        model_override=override, source='delegate' if delegated else 'explore' if explore else 'override' if model else 'leaderboard', job=job, lane=lane, made_by=made_by)
     # 11-20: what the Codex wrapper is told this call is (launch.sh exports it as RSTACK_CALL_ROLE). A referee
     # (an independent judgment role, or a referee batch on a hunter's claims) may use the referee bucket.
     receipt['call_role'] = ('referee' if role in INDEPENDENT | {'referee'}

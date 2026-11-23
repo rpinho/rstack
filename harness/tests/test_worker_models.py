@@ -1236,7 +1236,7 @@ def test_a_model_trial_alternates_by_job_keeps_a_jobs_arm_and_stops_at_n(tmp_pat
     got = [run(j) for j in ('a', 'b', 'c')]
     assert [(r['model'], r['executor'], r['trial']) for r in got] == [
         ('gemini-4-neon-medium', 'agy', 't1'), ('claude-opus-5-5', 'claude', 't1'), ('gemini-4-neon-medium', 'agy', 't1')]
-    assert 'model trial t1 (job 2 of 3)' in got[1]['delegate']
+    assert 'model trial t1 (builder job 2 of 3)' in got[1]['delegate']
     assert run('b')['model'] == 'claude-opus-5-5'          # a reselected job keeps its arm
     assert 'trial' not in run('d', executor='claude')                          # n reached: back to the leaderboard and the draw
     assert 'trial' not in run('e', role='batch', executor='claude')           # other roles are untouched
@@ -1244,8 +1244,48 @@ def test_a_model_trial_alternates_by_job_keeps_a_jobs_arm_and_stops_at_n(tmp_pat
     rec = json.loads((tmp_path / 'a.log.selection.json').read_text())
     (tmp_path / 'everyday-grades.jsonl').write_text(json.dumps({'id': 'grade-' + rec['selection_id'], 'grade': 'pass'}) + '\n')
     lines = wm.trial_report('t1', [tmp_path / 'trial.jsonl'], p)
-    assert any(l.startswith('gemini-4-neon-medium: 1 graded (pass 1') and '1 pending' in l for l in lines)
-    assert any(l.startswith('claude-opus-5-5: 0 graded') and '1 pending' in l for l in lines)
+    assert any(l.startswith('builder gemini-4-neon-medium: 1 graded (pass 1') and '1 pending' in l for l in lines)
+    assert any(l.startswith('builder claude-opus-5-5: 0 graded') and '1 pending' in l for l in lines)
+
+
+def test_the_trial_runs_in_several_roles_against_each_jobs_own_pick_and_takes_explore_jobs(tmp_path, monkeypatch):
+    # 11-23 (Ricardo via general: "Keep using Neon."): the 11-22 trial drew one job in a day. Builder only, and
+    # lanes launch builder work with --explore, which skipped it.
+    p = cap_setup(tmp_path, monkeypatch, 10, hours=160, history=[(2, 9.5), (0, 10)])
+    data = json.loads(p.read_text())
+    data['roles']['builder'] = ['claude-opus-5-5', 'gpt-6.2-sol']
+    data['roles']['review'] = ['gpt-6.2-astra', 'claude-opus-5-5']
+    data['routes']['gemini-4-neon-medium'] = {'cli': 'agy', 'canonical': 'google/gemini-4-neon-medium'}
+    p.write_text(json.dumps(data))
+    (tmp_path / 'trial.json').write_text(json.dumps({'name': 't2', 'roles': ['builder', 'review'], 'n': 2,
+                                                     'models': ['gemini-4-neon-medium', '@leaderboard']}))
+    monkeypatch.setenv('RH_MODEL_TRIAL', str(tmp_path / 'trial.json'))
+    monkeypatch.setenv('RH_MODEL_TRIAL_LEDGER', str(tmp_path / 'trial.jsonl'))
+    monkeypatch.delenv('RH_DELEGATE_SHARE', raising=False)
+
+    def run(job, *extra, role='builder', executor='claude'):
+        log, receipt = tmp_path / (job + '.log'), tmp_path / (job + '.log.selection.json')
+        assert wm.main(['--role', role, '--executor', executor, '--roles-file', str(p), '--job', job, *extra,
+                        '--print-route', '--log', str(log), '--receipt', str(receipt)]) == 0
+        return json.loads(receipt.read_text())
+    a = run('a', '--explore', 'gpt-6.2-sol')                      # an explore job joins: Neon's turn first
+    assert (a['model'], a['trial'], a['source']) == ('gemini-4-neon-medium', 't2', 'delegate')
+    b = run('b', '--explore', 'gpt-6.2-sol')                      # the other arm is what the job would have run
+    assert (b['model'], b['trial']) == ('gpt-6.2-sol', 't2')
+    assert 'trial' not in run('c', '--explore', 'gpt-6.2-sol')    # builder n reached
+    r1 = run('r1', '--made-by', 'claude-opus-5-5', role='review', executor='codex')
+    r2 = run('r2', '--made-by', 'claude-opus-5-5', role='review', executor='codex')
+    assert [(r['model'], r.get('trial')) for r in (r1, r2)] == [('gemini-4-neon-medium', 't2'), ('gpt-6.2-astra', 't2')]
+    assert wm.gradeable(a) and wm.gradeable(r1)                   # every trial job owes a grade
+    pinned = run('d', '--model', 'gpt-6.2-sol', '--model-override', 'operator choice', executor='codex')
+    assert 'trial' not in pinned                                  # an explicit model is never taken
+    # an arm listed twice gets two turns in three
+    (tmp_path / 'trial.json').write_text(json.dumps({'name': 't3', 'roles': ['builder'], 'n': 6,
+                                                     'models': ['gemini-4-neon-medium', 'gemini-4-neon-medium', '@leaderboard']}))
+    assert [run('w%d' % i, '--explore', 'gpt-6.2-sol')['model'] for i in range(6)] == [
+        'gemini-4-neon-medium', 'gemini-4-neon-medium', 'gpt-6.2-sol'] * 2
+    lines = wm.trial_report('t2', [tmp_path / 'trial.jsonl'], p)
+    assert sum(l.startswith('review ') for l in lines) == 2 and sum(l.startswith('builder ') for l in lines) == 2
 
 
 def test_biology_draws_neon_as_a_delegate():
