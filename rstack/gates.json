@@ -1511,6 +1511,21 @@
    "last_changed_outcome": null,
    "old": "nothing: lanes wrote UV_CACHE_DIR=$PWD/.uv-cache into their specs",
    "change": "warn at launch, naming the spec; the launcher sets the shared cache"
+  },
+  {
+   "gate": "agy.auth",
+   "files": [
+    "harness/agent_executor.py"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "added": "2026-11-23",
+   "why": "agy lost login-Keychain trust from tmux after a binary update; when direct, tmux and Aqua gui all ask to sign in, record a harness-blocks warn row so the failure is visible.",
+   "sunset": true,
+   "last_changed_outcome": null,
+   "old": "direct then tmux only; no harness-blocks warning row on auth failure",
+   "change": "direct -> tmux -> Aqua gui LaunchAgent fallback; writes a fail-open warn row and fails with the clear sign-in message when no route authenticates",
+   "fix": "run `agy` with no arguments in a GUI Terminal to sign in"
   }
  ],
  "exempt": {

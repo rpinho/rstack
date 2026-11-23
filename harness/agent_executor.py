@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build explicit backend commands; inherit authentication from the caller."""
 import argparse
+import itertools
 import json
 import os
 import re
@@ -36,6 +37,8 @@ DEFAULT_TOOLS = 'Read,Write,Edit'
 METERED = {'openrouter': 'RH_ALLOW_OPENROUTER', 'gemini': 'RH_ALLOW_GEMINI_API'}
 AGY_EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 AGY_SIGN_IN = "agy needs Ricardo's one-time interactive sign-in (run `agy` with no arguments, in a terminal)"
+AGY_UNAUTH = 'agy unauthenticated from lanes: direct, tmux and gui all asked to sign in'
+_AGY_GUI_SEQ = itertools.count(1)
 
 
 def metered_refusal(provider, env=None):
@@ -210,7 +213,7 @@ def _tmux():
     return None
 
 
-def _agy_tmux(cmd, directory, timeout_seconds, poll=0.5):
+def _agy_tmux(cmd, directory, timeout_seconds, poll=None):
     """Run agy in a new window of the host's tmux session, which holds the Keychain the GUI login
     unlocked, and read its result from files. None when there is no such session to relay through.
 
@@ -221,7 +224,7 @@ def _agy_tmux(cmd, directory, timeout_seconds, poll=0.5):
     import shlex
     import shutil
     import tempfile
-    import time
+    poll = float(os.environ.get('RH_AGY_POLL', '0.5')) if poll is None else poll
     tmux = _tmux()
     session = os.environ.get('RH_AGY_TMUX_SESSION', 'base')
     if not tmux or subprocess.run([tmux, 'has-session', '-t', session], capture_output=True).returncode:
@@ -231,8 +234,9 @@ def _agy_tmux(cmd, directory, timeout_seconds, poll=0.5):
         box = Path(box)
         prompt_at = cmd.index('-p') + 1
         (box / 'prompt').write_text(cmd[prompt_at])
-        args = ' '.join(shlex.quote(a) for a in [exe, *cmd[1:prompt_at]]) + ' "$(cat {})" '.format(
-            shlex.quote(str(box / 'prompt'))) + ' '.join(shlex.quote(a) for a in cmd[prompt_at + 1:])
+        tail = ' ' + ' '.join(shlex.quote(a) for a in cmd[prompt_at + 1:]) if cmd[prompt_at + 1:] else ''
+        args = (' '.join(shlex.quote(a) for a in [exe, *cmd[1:prompt_at]])
+                + ' "$(cat {})"'.format(shlex.quote(str(box / 'prompt'))) + tail)
         (box / 'run.sh').write_text(
             'cd {d} || {{ echo 2 > {b}/rc.tmp; mv {b}/rc.tmp {b}/rc; exit; }}\n'
             'RSTACK_UNATTENDED=1 {a} < /dev/null > {b}/out 2> {b}/err\n'
@@ -267,8 +271,196 @@ def _agy_tmux(cmd, directory, timeout_seconds, poll=0.5):
                     close()
                     break
                 time.sleep(poll)
+            err = (box / 'err').read_bytes() if (box / 'err').exists() else b''
+            if len(err) > seen:
+                chunk = err[seen:]
+                if b'authentication required' in err.lower():
+                    signed_out = True
+                else:
+                    sys.stderr.buffer.write(chunk)
+                    sys.stderr.buffer.flush()
         finally:
             signal.signal(signal.SIGTERM, previous)
+        data = (box / 'out').read_bytes() if (box / 'out').exists() else b''
+        try:
+            code = int((box / 'rc').read_text())
+        except (OSError, ValueError):
+            code = 1
+        err = (box / 'err').read_bytes() if (box / 'err').exists() else b''
+        return data, code, signed_out, expired, err
+
+
+def _launchctl():
+    import shutil
+    for candidate in (os.environ.get('RH_AGY_LAUNCHCTL'), shutil.which('launchctl'), '/bin/launchctl'):
+        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _kill_pid_tree(pid):
+    """Stop a detached agent pid (and its process group when distinct from ours)."""
+    try:
+        pgid = os.getpgid(pid)
+    except (OSError, ProcessLookupError):
+        return
+    own_pgid = os.getpgrp()
+    targets = []
+    if pgid != own_pgid:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            return
+    else:
+        try:
+            out = subprocess.run(['pgrep', '-P', str(pid)], capture_output=True, text=True, timeout=5)
+            targets = [int(p) for p in out.stdout.split() if p.isdigit()]
+        except (OSError, subprocess.SubprocessError):
+            targets = []
+        targets.append(pid)
+        for p in targets:
+            try:
+                os.kill(p, signal.SIGTERM)
+            except (OSError, ProcessLookupError):
+                pass
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            break
+        time.sleep(0.05)
+    if pgid != own_pgid:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+    else:
+        for p in targets:
+            try:
+                os.kill(p, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+
+
+def _agy_gui(cmd, directory, timeout_seconds, poll=None):
+    """Run agy via a one-shot LaunchAgent bootstrapped into the user's Aqua session (gui/<uid>),
+    which holds the login Keychain even when an agy binary update drops tmux's Keychain trust.
+    None when launchctl is absent or cannot bootstrap into gui/<uid>."""
+    import plistlib
+    import shlex
+    import shutil
+    import tempfile
+    poll = float(os.environ.get('RH_AGY_POLL', '0.5')) if poll is None else poll
+    launchctl = _launchctl()
+    if not launchctl:
+        return None
+    exe = shutil.which(cmd[0]) or cmd[0]
+    uid = os.getuid()
+    domain = 'gui/{}'.format(uid)
+    label = 'com.ricardo.agy-call.{}.{}'.format(os.getpid(), next(_AGY_GUI_SEQ))
+    target = '{}/{}'.format(domain, label)
+    path_parts = [p for p in os.environ.get('PATH', '').split(':') if p]
+    for extra in (str(Path.home() / '.local/bin'), '/opt/homebrew/bin', '/usr/bin', '/bin'):
+        if extra not in path_parts:
+            path_parts.append(extra)
+    run_path = ':'.join(path_parts)
+    with tempfile.TemporaryDirectory(prefix='rh-agy-gui-') as tmp:
+        box = Path(tmp)
+        os.chmod(box, 0o700)
+        prompt_at = cmd.index('-p') + 1
+        prompt_file = box / 'prompt'
+        prompt_file.write_text(cmd[prompt_at])
+        os.chmod(prompt_file, 0o600)
+        tail = ' ' + ' '.join(shlex.quote(a) for a in cmd[prompt_at + 1:]) if cmd[prompt_at + 1:] else ''
+        args = (' '.join(shlex.quote(a) for a in [exe, *cmd[1:prompt_at]])
+                + ' "$(cat {})"'.format(shlex.quote(str(prompt_file))) + tail)
+        run_sh = box / 'run.sh'
+        run_sh.write_text(
+            '#!/bin/sh\n'
+            'export PATH={p}\n'
+            'echo $$ > {b}/sh.pid.tmp && mv {b}/sh.pid.tmp {b}/sh.pid\n'
+            'cd {d} || {{ echo 2 > {b}/rc.tmp; mv {b}/rc.tmp {b}/rc; exit 2; }}\n'
+            'child=\n'
+            'trap \'[ -n "$child" ] && kill -TERM "$child" 2>/dev/null; exit 143\' TERM INT HUP\n'
+            'RSTACK_UNATTENDED=1 {a} < /dev/null > {b}/out 2> {b}/err &\n'
+            'child=$!\n'
+            'echo "$child" > {b}/pid.tmp && mv {b}/pid.tmp {b}/pid\n'
+            'wait "$child"\n'
+            'echo $? > {b}/rc.tmp && mv {b}/rc.tmp {b}/rc\n'.format(
+                p=shlex.quote(run_path), d=shlex.quote(str(directory)), a=args, b=shlex.quote(str(box))))
+        os.chmod(run_sh, 0o700)
+        plist_path = box / (label + '.plist')
+        plist_path.write_bytes(plistlib.dumps({
+            'Label': label,
+            'ProgramArguments': ['/bin/sh', str(run_sh)],
+            'RunAtLoad': True,
+            'LimitLoadToSessionType': 'Aqua',
+        }))
+        os.chmod(plist_path, 0o600)
+
+        booted_out = False
+
+        def cleanup(kill_procs=False):
+            nonlocal booted_out
+            if not booted_out:
+                booted_out = True
+                try:
+                    subprocess.run([launchctl, 'bootout', target], capture_output=True, timeout=15)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            if kill_procs:
+                for name in ('pid', 'sh.pid'):
+                    try:
+                        pid = int((box / name).read_text().strip())
+                    except (OSError, ValueError):
+                        continue
+                    _kill_pid_tree(pid)
+
+        try:
+            boot = subprocess.run([launchctl, 'bootstrap', domain, str(plist_path)],
+                                  capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            cleanup(kill_procs=True)
+            return None
+        if boot.returncode:
+            cleanup(kill_procs=False)
+            return None
+
+        def on_term(signum, _frame):
+            cleanup(kill_procs=True)
+            raise SystemExit(128 + signum)
+
+        previous = signal.signal(signal.SIGTERM, on_term)
+        signed_out = expired = False
+        began, seen = time.monotonic(), 0
+        try:
+            while not (box / 'rc').exists():
+                err = (box / 'err').read_bytes() if (box / 'err').exists() else b''
+                if len(err) > seen:
+                    chunk, seen = err[seen:], len(err)
+                    if b'authentication required' in err.lower():
+                        signed_out = True
+                        break
+                    sys.stderr.buffer.write(chunk)
+                    sys.stderr.buffer.flush()
+                if timeout_seconds > 0 and time.monotonic() - began > timeout_seconds:
+                    expired = True
+                    break
+                time.sleep(poll)
+            err = (box / 'err').read_bytes() if (box / 'err').exists() else b''
+            if len(err) > seen:
+                chunk = err[seen:]
+                if b'authentication required' in err.lower():
+                    signed_out = True
+                else:
+                    sys.stderr.buffer.write(chunk)
+                    sys.stderr.buffer.flush()
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+            cleanup(kill_procs=signed_out or expired or not (box / 'rc').exists())
         data = (box / 'out').read_bytes() if (box / 'out').exists() else b''
         try:
             code = int((box / 'rc').read_text())
@@ -302,21 +494,50 @@ def log_agy_quota(cmd, text):
         print('agent_executor: could not log the agy quota error: {}'.format(exc), file=sys.stderr)
 
 
+def _warn_agy_auth(reason=AGY_UNAUTH):
+    """RULE #1: log a fail-open warning row when no agy route authenticates."""
+    try:
+        here = str(Path(__file__).resolve().parent)
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import harness_blocks
+        harness_blocks.warn('agy.auth', reason, fix=AGY_SIGN_IN)
+    except Exception:
+        pass
+
+
+def agy_chain(cmd, directory, timeout_seconds=0):
+    """Try direct, then tmux, then Aqua gui when agy asks to authenticate.
+
+    Returns (route, data, code, signed_out, expired, err, relayed). `route` is 'direct', 'tmux',
+    'gui', or None when no route authenticated."""
+    data, code, signed_out, expired, err = _agy_direct(cmd, directory, timeout_seconds)
+    route, relayed = 'direct', False
+    if signed_out:
+        again = _agy_tmux(cmd, directory, timeout_seconds)
+        if again is not None:
+            relayed = True
+            route = 'tmux'
+            data, code, signed_out, expired, err = again
+    if signed_out:
+        again = _agy_gui(cmd, directory, timeout_seconds)
+        if again is not None:
+            relayed = True
+            route = 'gui'
+            data, code, signed_out, expired, err = again
+    if signed_out:
+        route = None
+    return route, data, code, signed_out, expired, err, relayed
+
+
 def run_agy(cmd, directory, output, timeout_seconds=0):
     """Run agy print mode; its JSON result goes to `output`.
 
-    Direct first; if agy asks to authenticate, again through the tmux session that can read the Keychain.
-    That relay is the same call in another place, never another model. The two failures stay apart:
-    no session to relay through means no keychain access here; asked again there means signed out."""
-    data, code, signed_out, expired, err = _agy_direct(cmd, directory, timeout_seconds)
-    relayed = False
-    if signed_out:
-        again = _agy_tmux(cmd, directory, timeout_seconds)
-        if again is None:
-            print('agent_executor: ' + AGY_NO_KEYCHAIN, file=sys.stderr)
-            return 76
-        relayed = True
-        data, code, signed_out, expired, err = again
+    Direct first; if agy asks to authenticate, relay through tmux, then a one-shot Aqua LaunchAgent
+    (gui/<uid>) that can read the login Keychain. That relay is the same call in another place, never
+    another model. When no route authenticates, log a harness_blocks warn row and fail with a clear
+    sign-in message."""
+    route, data, code, signed_out, expired, err, relayed = agy_chain(cmd, directory, timeout_seconds)
     Path(output).write_bytes(data)
     sys.stdout.buffer.write(data)
     sys.stdout.buffer.flush()
@@ -329,11 +550,17 @@ def run_agy(cmd, directory, output, timeout_seconds=0):
     if quota:
         log_agy_quota(cmd, error or err.decode(errors='replace'))
     if signed_out or 'authentication' in error.lower():
-        print('agent_executor: ' + (AGY_SIGN_IN if relayed or not signed_out else AGY_NO_KEYCHAIN), file=sys.stderr)
-        return 77 if relayed or not signed_out else 76
+        _warn_agy_auth()
+        if relayed or not signed_out:
+            print('agent_executor: {}; {}'.format(AGY_UNAUTH, AGY_SIGN_IN), file=sys.stderr)
+            return 77
+        print('agent_executor: {} ({})'.format(AGY_UNAUTH, AGY_NO_KEYCHAIN), file=sys.stderr)
+        return 76
     if expired:
         print('wall-clock cap of {:g}s reached; stopped'.format(timeout_seconds), file=sys.stderr)
         return 124
+    if route:
+        print('agent_executor: agy route=' + route, file=sys.stderr)
     if code == 0 and (not isinstance(result, dict) or result.get('status') == 'ERROR' or error):
         print('agy returned an error result' + (': ' + error if error else ''), file=sys.stderr)
         return 1

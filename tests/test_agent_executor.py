@@ -299,20 +299,65 @@ KEYCHAIN_AGY = (
     'print(json.dumps({"status": "SUCCESS", "response": "via tmux: " + sys.argv[2], "error": ""}))\n')
 
 
-def agy_run(tmp_path, body, timeout='0', **env):
+FAKE_LAUNCHCTL = (
+    'import json, os, plistlib, subprocess, sys\n'
+    'from pathlib import Path\n'
+    'a = sys.argv[1:]\n'
+    'log = os.environ.get("FAKE_LAUNCHCTL_LOG")\n'
+    'def rec(row):\n'
+    '    if log:\n'
+    '        with open(log, "a") as fh:\n'
+    '            fh.write(json.dumps(row) + "\\n")\n'
+    'if a[:1] == ["bootstrap"]:\n'
+    '    domain, plist_path = a[1], a[2]\n'
+    '    raw = Path(plist_path).read_bytes()\n'
+    '    pl = plistlib.loads(raw)\n'
+    '    rec({"cmd": "bootstrap", "domain": domain, "argv": a, "plist": pl, "raw": raw.decode("utf-8", "replace")})\n'
+    '    if os.environ.get("FAKE_GUI_SESSION") != "1":\n'
+    '        sys.stderr.write("Bootstrap failed: 5: Input/output error\\n")\n'
+    '        sys.exit(5)\n'
+    '    p = subprocess.Popen(pl["ProgramArguments"], start_new_session=True, stdin=subprocess.DEVNULL,\n'
+    '                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n'
+    '                         env=dict(os.environ, IN_GUI_AGENT="1"))\n'
+    '    (Path(sys.argv[0]).parent / (pl["Label"] + ".pid")).write_text(str(p.pid))\n'
+    '    sys.exit(0)\n'
+    'if a[:1] == ["bootout"]:\n'
+    '    target = a[1]\n'
+    '    rec({"cmd": "bootout", "target": target, "argv": a})\n'
+    '    label = target.rsplit("/", 1)[-1]\n'
+    '    pf = Path(sys.argv[0]).parent / (label + ".pid")\n'
+    '    if pf.exists() and os.environ.get("FAKE_BOOTOUT_NO_KILL") != "1":\n'
+    '        import signal\n'
+    '        try:\n'
+    '            os.killpg(int(pf.read_text()), signal.SIGKILL)\n'
+    '        except OSError:\n'
+    '            pass\n'
+    '    sys.exit(0)\n'
+    'sys.exit(1)\n')
+
+
+def agy_run(tmp_path, body, timeout='0', prompt='the prompt', exe_name=None, **env):
     import os
     repo = Path(__file__).resolve().parents[1]
-    fake = tmp_path / 'fake-agy'
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir(exist_ok=True)
+    fake = bin_dir / 'agy'
     fake.write_text('#!' + sys.executable + '\n' + body)
     fake.chmod(0o755)
-    tmux = tmp_path / 'fake-tmux'
+    tmux = bin_dir / 'tmux'
     tmux.write_text('#!' + sys.executable + '\n' + FAKE_TMUX)
     tmux.chmod(0o755)
+    launchctl = bin_dir / 'launchctl'
+    launchctl.write_text('#!' + sys.executable + '\n' + FAKE_LAUNCHCTL)
+    launchctl.chmod(0o755)
+    path = str(bin_dir) + ':' + os.environ.get('PATH', '')
+    run_env = dict(os.environ, HOME=str(tmp_path), PATH=path, RH_AGY_TMUX=str(tmux),
+                   RH_AGY_POLL='0.05', RSTACK_STATE_DIR=str(tmp_path / 'state'))
+    run_env.update(env)
     return subprocess.run([sys.executable, str(repo/'harness/agent_executor.py'), '--backend', 'agy',
-        '--executable', str(fake), '--model', 'gemini-fixture', '--effort', 'low',
+        '--executable', exe_name or str(fake), '--model', 'gemini-fixture', '--effort', 'low',
         '--directory', str(tmp_path), '--output', str(tmp_path/'last'), '--timeout-seconds', timeout],
-        input='the prompt', env=dict(os.environ, HOME=str(tmp_path), RH_AGY_TMUX=str(tmux), **env),
-        capture_output=True, text=True, timeout=30)
+        input=prompt, env=run_env, capture_output=True, text=True, timeout=30)
 
 
 def test_without_the_keychain_and_no_tmux_session_agy_says_where_to_run_it(tmp_path):
@@ -332,6 +377,77 @@ def test_a_signed_out_agy_stops_at_once_and_names_ricardos_sign_in(tmp_path):
     proc = agy_run(tmp_path, KEYCHAIN_AGY, FAKE_TMUX_SESSION='1', SIGNED_OUT='1')
     assert proc.returncode == 77
     assert "agy needs Ricardo's one-time interactive sign-in" in proc.stderr
+
+
+def test_auth_line_on_direct_and_tmux_falls_through_to_gui_and_returns_output(tmp_path):
+    import os
+    gui_only_agy = (
+        'import json, os, sys, time\n'
+        'if os.environ.get("IN_GUI_AGENT") != "1":\n'
+        '    sys.stderr.write("Authentication required. Please visit the URL to log in:\\n")\n'
+        '    sys.stderr.flush(); time.sleep(60)\n'
+        'print(json.dumps({"status": "SUCCESS", "response": "via gui: " + sys.argv[2], "error": ""}))\n')
+    lctl_log = tmp_path / 'launchctl.jsonl'
+    secret_prompt = 'check $PROMPT_NOT_IN_ARGV line'
+    proc = agy_run(tmp_path, gui_only_agy, prompt=secret_prompt, exe_name='agy',
+                   FAKE_TMUX_SESSION='1', FAKE_GUI_SESSION='1', FAKE_LAUNCHCTL_LOG=str(lctl_log))
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads((tmp_path / 'last').read_text())['response'] == 'via gui: ' + secret_prompt
+    assert 'agy route=gui' in proc.stderr
+    events = [json.loads(line) for line in lctl_log.read_text().splitlines()]
+    assert [e['cmd'] for e in events] == ['bootstrap', 'bootout']
+    boot, out = events
+    uid = os.getuid()
+    assert boot['domain'] == 'gui/{}'.format(uid)
+    pl = boot['plist']
+    assert pl['Label'].startswith('com.ricardo.agy-call.')
+    assert pl['LimitLoadToSessionType'] == 'Aqua' and pl['RunAtLoad'] is True
+    assert secret_prompt not in boot['raw'] and all(secret_prompt not in a for a in boot['argv'])
+    assert out['target'] == 'gui/{}/{}'.format(uid, pl['Label'])
+
+
+def test_gui_timeout_boots_out_and_kills_agent_tree(tmp_path):
+    import os
+    agent_pid_file = tmp_path / 'agent.pid'
+    child_pid_file = tmp_path / 'child.pid'
+    hang_gui_agy = (
+        'import os, subprocess, sys, time\n'
+        'from pathlib import Path\n'
+        'if os.environ.get("IN_GUI_AGENT") != "1":\n'
+        '    sys.stderr.write("Authentication required.\\n"); sys.stderr.flush(); time.sleep(60)\n'
+        'c = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])\n'
+        'Path({!r}).write_text(str(os.getpid()))\n'
+        'Path({!r}).write_text(str(c.pid))\n'
+        'time.sleep(60)\n'.format(str(agent_pid_file), str(child_pid_file)))
+    lctl_log = tmp_path / 'launchctl.jsonl'
+    proc = agy_run(tmp_path, hang_gui_agy, timeout='1.0', exe_name='agy',
+                   FAKE_GUI_SESSION='1', FAKE_BOOTOUT_NO_KILL='1', FAKE_LAUNCHCTL_LOG=str(lctl_log))
+    assert proc.returncode == 124, proc.stderr
+    assert 'wall-clock cap' in proc.stderr
+    events = [json.loads(line) for line in lctl_log.read_text().splitlines()]
+    assert [e['cmd'] for e in events] == ['bootstrap', 'bootout']
+    assert events[1]['target'] == 'gui/{}/{}'.format(os.getuid(), events[0]['plist']['Label'])
+    for pf in (agent_pid_file, child_pid_file):
+        pid = int(pf.read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+
+
+def test_all_agy_routes_failing_gives_clear_message_and_warn_row(tmp_path):
+    lctl_log = tmp_path / 'launchctl.jsonl'
+    proc = agy_run(tmp_path, KEYCHAIN_AGY, exe_name='agy',
+                   FAKE_TMUX_SESSION='1', FAKE_GUI_SESSION='1', SIGNED_OUT='1',
+                   FAKE_LAUNCHCTL_LOG=str(lctl_log))
+    assert proc.returncode == 77, proc.stderr
+    expected = 'agy unauthenticated from lanes: direct, tmux and gui all asked to sign in'
+    assert expected in proc.stderr
+    events = [json.loads(line) for line in lctl_log.read_text().splitlines()]
+    assert [e['cmd'] for e in events] == ['bootstrap', 'bootout']
+    rows = [json.loads(l) for l in (tmp_path / 'state' / 'harness-blocks.jsonl').read_text().splitlines()]
+    auth_rows = [r for r in rows if r['gate'] == 'agy.auth']
+    assert len(auth_rows) == 1
+    assert auth_rows[0]['class'] == 'fail-open' and auth_rows[0]['outcome'] == 'warn'
+    assert expected in auth_rows[0]['reason']
 
 
 def test_an_agy_result_is_saved_and_an_error_result_fails(tmp_path):
