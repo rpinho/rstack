@@ -365,6 +365,15 @@ effort_warn() {
   refuses launch.effort-floor "$1" || true
 }
 effort_env=()
+# 11-23 (general, disk): one package cache per host, shared by every job, instead of a copy in each job's work
+# dir (21 GB of per-job .uv-cache dirs in the m5's ~/jobs). uv clones from its cache on APFS, so a job's venv
+# costs almost nothing beyond it. The executor gets these; a workspace-write Codex sandbox may write them.
+cache_env=("UV_CACHE_DIR=${RH_UV_CACHE_DIR:-$HOME/.cache/uv}" "PIP_CACHE_DIR=${RH_PIP_CACHE_DIR:-$HOME/.cache/pip}"
+           "npm_config_cache=${RH_NPM_CACHE_DIR:-$HOME/.cache/npm}")
+if grep -qE '(^|[^A-Za-z_])(UV_CACHE_DIR|PIP_CACHE_DIR|npm_config_cache)=["'"'"']?(\$PWD|\.\.?/|\.uv-cache|cache)' "$spec" 2>/dev/null; then
+  refuses launch.job-cache "$spec points a package cache inside the job's work dir, so this job keeps its own copy of every package" \
+    "drop that line from the spec (and the lane's template): the launcher sets the shared cache" || true
+fi
 if (( start == 1 )) && [[ ${RSTACK_ABLATE:-} != 1 ]]; then
   effort_line=$(grep '^Effort floor:' "$spec" 2>/dev/null)
   effort_rc=$?
@@ -554,7 +563,7 @@ for (( i = start; i <= 5 || effort_resumed; i++ )); do
       export GEMINI_API_KEY="$(cat "$HOME/.config/gemini/api_key")" || exit 2
       [[ -n $GEMINI_API_KEY ]] || { print -u2 -- 'missing Gemini key'; exit 2; }
     fi
-    env "${effort_env[@]}" nice -n 10 python3 "$H/agent_executor.py" --backend "$backend" \
+    env "${cache_env[@]}" "${effort_env[@]}" nice -n 10 python3 "$H/agent_executor.py" --backend "$backend" \
       --executable "$cx" --directory "$dir" --model "$m" --effort "$LAUNCH_EFFORT" \
       --output "$out" --budget "$attempt_budget" \
       --allowed-tools "$LAUNCH_CLAUDE_TOOLS" --timeout-seconds "$attempt_timeout" \
@@ -632,7 +641,7 @@ $remote_auth
 mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
 mkdir -p $rmarks 2>/dev/null || true
 echo \$\$ > $rmarks/${(q)${job:t}}.pid 2>/dev/null || true
-exec env RH_JOB=${(q)${job:t}} ${(j: :)${(q)effort_env[@]}} nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)attempt_budget} --allowed-tools ${(q)LAUNCH_CLAUDE_TOOLS} --timeout-seconds ${(q)attempt_timeout}"
+exec env RH_JOB=${(q)${job:t}} ${(j: :)${(q)cache_env[@]}} ${(j: :)${(q)effort_env[@]}} nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)attempt_budget} --allowed-tools ${(q)LAUNCH_CLAUDE_TOOLS} --timeout-seconds ${(q)attempt_timeout}"
     # 11-08: this was one foreground ssh, so the job lived exactly as long as the connection. A
     # network blip ended a 5 h job, and the controller's reset at 22:16 took every job on the host
     # with it. remote_run.py starts the executor detached THERE (nohup, files for stdio, a watcher

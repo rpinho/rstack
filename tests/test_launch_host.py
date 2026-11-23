@@ -684,3 +684,16 @@ def test_a_job_is_refused_below_the_disk_floor_on_the_host_and_runs_above_it(tmp
     proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path), '--host', 'm5'],
                           env=env, capture_output=True, text=True, timeout=120)
     assert proc.returncode == 0, proc.stderr
+
+
+def test_the_executor_gets_the_shared_caches_and_a_spec_with_its_own_cache_is_named(tmp_path):
+    # 11-23 (general, disk): 21 GB of per-job .uv-cache dirs; the specs told each worker to keep its own.
+    jobs, env = harness(tmp_path)
+    spec = jobs / 'fixture-job.md'
+    spec.write_text(spec.read_text() + '\nSet UV_CACHE_DIR="$PWD/.uv-cache" before uv sync.\n')
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path), '--host', 'm5'],
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr                       # RULE #1: a warning, and it runs
+    assert '[launch.job-cache] WARNING' in proc.stderr and 'inside the job' in proc.stderr
+    program, _ = staged(tmp_path)
+    assert 'UV_CACHE_DIR=' in program and '/.cache/uv' in program and 'PIP_CACHE_DIR=' in program

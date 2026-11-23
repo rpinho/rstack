@@ -1484,6 +1484,20 @@
    "change": "new; refuses through the registry",
    "fix": "free space on the run host (venvs, clean clones and caches of finished jobs; unused colima images), or LAUNCH_DISK_FLOOR_GB=N",
    "decided": "general 11-23: keep. a full disk failed jobs, the grades mirror and ledgers overnight; refusing a new job costs less."
+  },
+  {
+   "gate": "launch.job-cache",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "fail-open",
+   "kind": "launcher",
+   "added": "2026-11-23",
+   "why": "A job spec that puts the package cache inside its work dir leaves a full copy of every package per job (21 GB of per-job .uv-cache dirs in the m5's ~/jobs on 11-23, when the disk ran out).",
+   "sunset": true,
+   "last_changed_outcome": null,
+   "old": "nothing: lanes wrote UV_CACHE_DIR=$PWD/.uv-cache into their specs",
+   "change": "warn at launch, naming the spec; the launcher sets the shared cache"
   }
  ],
  "exempt": {

@@ -98,6 +98,10 @@ def command(backend, executable, model, effort, directory, output, budget='1.00'
         # sandbox off. launch.sh forwards both settings to remote runs.
         if mode == 'workspace-write' and os.environ.get('LAUNCH_CODEX_NETWORK') == '1':
             guard += ['-c', 'sandbox_workspace_write.network_access=true']
+        # 11-23: the shared package caches launch.sh sets live outside the work dir; the sandbox may write them.
+        caches = [os.environ[k] for k in ('UV_CACHE_DIR', 'PIP_CACHE_DIR', 'npm_config_cache') if os.environ.get(k)]
+        if mode == 'workspace-write' and caches:
+            guard += ['-c', 'sandbox_workspace_write.writable_roots=' + json.dumps(caches)]
         provider = os.environ.get('LAUNCH_PROVIDER', '')
         if provider not in ('', 'openrouter', 'gemini'):
             raise ValueError('unsupported LAUNCH_PROVIDER')

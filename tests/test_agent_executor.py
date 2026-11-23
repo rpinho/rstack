@@ -407,3 +407,13 @@ def test_codex_runs_without_an_openai_api_key_or_base_url(tmp_path):
     assert done.returncode == 0, done.stderr
     got = json.loads(seen.read_text())
     assert 'OPENAI_API_KEY' not in got and 'OPENAI_BASE_URL' not in got and got['KEEP_ME'] == '1'
+
+
+def test_a_workspace_sandbox_may_write_the_shared_package_caches(monkeypatch):
+    # 11-23: launch.sh sets one cache per host, outside the work dir.
+    monkeypatch.setenv('LAUNCH_CODEX_SANDBOX', 'workspace-write')
+    monkeypatch.setenv('UV_CACHE_DIR', '/h/.cache/uv')
+    monkeypatch.delenv('PIP_CACHE_DIR', raising=False)
+    monkeypatch.delenv('npm_config_cache', raising=False)
+    cmd = command('codex', 'codex', 'gpt-6.2-sol', 'high', '/w', '/w/out')
+    assert 'sandbox_workspace_write.writable_roots=["/h/.cache/uv"]' in cmd
