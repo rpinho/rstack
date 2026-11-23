@@ -42,6 +42,7 @@ import pods
 import publish_lint
 import uuid
 import xml.etree.ElementTree as ET
+from paper_search import arxiv_search_query
 
 ROOT = Path(__file__).resolve().parent
 # Standalone callers can choose a lane-specific science model in INTAKE.toml.
@@ -324,28 +325,9 @@ def feed_hits(payload, source_type='paper'):
                        source_type=source_type, summary=entry.findtext('description', ''))
 
 
-ARXIV_FIELDS = ('all:', 'ti:', 'abs:', 'au:', 'cat:', 'co:', 'jr:', 'rn:', 'id:')
-
-
-def arxiv_search_query(query):
-    """Field-qualify a bare phrase.
-
-    Unfielded queries can produce off-topic hits. A query that already names a field is
-    passed through untouched; a bare phrase becomes an AND of all:"term" clauses, the same
-    shape the keywords fallback uses.
-    """
-    low = query.lower()
-    if any(f in low for f in ARXIV_FIELDS):
-        return query
-    terms = [t for t in re.split(r'\s+', query.replace('"', '').strip()) if t and t.upper() not in ('AND', 'OR', 'NOT')]
-    if not terms:
-        return query
-    return ' AND '.join('all:"{}"'.format(t) for t in terms)
-
-
 def fetch_sources(cfg):
     """Each yielded item is (source, hits, error). Zero-hit reads still count."""
-    queries = [arxiv_search_query(q) for q in cfg.get('arxiv_queries', [])]
+    queries = list(filter(None, map(arxiv_search_query, cfg.get('arxiv_queries', []))))
     if not queries and cfg.get('keywords'):
         queries = [' OR '.join('all:"{}"'.format(k.replace('"', '')) for k in cfg['keywords'])]
     for query_index, query in enumerate(queries):

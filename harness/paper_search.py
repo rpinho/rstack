@@ -33,8 +33,9 @@ import urllib.request
 from pathlib import Path
 
 try:  # as a package (harness.paper_search) and as a loose module (tools/ scripts add harness/)
-    from . import settings
+    from . import harness_blocks, settings
 except ImportError:  # pragma: no cover - exercised by the standalone tools
+    import harness_blocks
     import settings
 
 AGENT = 'research-harness-paper-search/1'
@@ -71,6 +72,35 @@ BUDGETS = {
     'opencitations': (10000.0 / DAY, 10.0),   # no key, no published limit; be modest anyway
 }
 ORDER = ['openalex', 'semanticscholar', 'europepmc', 'arxiv', 'crossref']
+
+ARXIV_FIELD = re.compile(r'\b(?:all|ti|abs|au|cat|co|jr|rn|id):', re.I)
+ARXIV_STOPWORDS = frozenset("""
+    about after again also among an and are around as at be because been before being between
+    both but by can could did do does during each find for from had has have how if improve in
+    into is it its later may method might more most must nor not of off on once only onto or
+    other our over same search should so
+    some such than that the their them then there these they this those through too under
+    to until up upon use used using very was were what when where whether which while who why will
+    with would you your
+    beat beats comparator joint lane matched public reproduce resolve test
+""".split())
+
+
+def arxiv_search_query(query):
+    """Preserve fielded syntax and turn free text into a short conjunction."""
+    if ARXIV_FIELD.search(query):
+        return query
+    terms = {}
+    for term in re.findall(r'[^\W_]+(?:[-.][^\W_]+)*', query):
+        word = term.casefold()
+        if len(term) > 1 and word not in ARXIV_STOPWORDS and not term.isdecimal():
+            terms.setdefault(word, term)
+    # Prioritize acronyms and compounds, then longer words. Preserve the original order
+    # of the selected terms. Four clauses keep a strict AND from becoming too narrow.
+    ranked = sorted(terms, key=lambda word: (
+        terms[word].isupper() or '-' in word or '.' in word, len(word)), reverse=True)
+    selected = set(ranked[:4])
+    return ' AND '.join(f'all:"{term}"' for word, term in terms.items() if word in selected)
 
 
 def budget(name):
@@ -127,12 +157,14 @@ def cached(kind, query, n, now=None):
     return row
 
 
-def store(kind, query, n, source, hits, now=None):
+def store(kind, query, n, source, hits, now=None, tried=()):
     now = time.time() if now is None else now
     path = _cache_path(kind, query, n)
     path.parent.mkdir(parents=True, exist_ok=True)
     row = {'kind': kind, 'query': query, 'n': n, 'source': source, 'hits': hits,
            'at': now, 'fetched_utc': dt.datetime.fromtimestamp(now, dt.timezone.utc).isoformat()}
+    if tried:
+        row['tried'] = tried
     tmp = path.with_suffix('.tmp-%d' % os.getpid())
     tmp.write_text(json.dumps(row))
     os.replace(tmp, path)  # atomic: a reader never sees half a row
@@ -217,13 +249,24 @@ def europepmc(query, n):
 
 def arxiv(query, n):
     import xml.etree.ElementTree as ET
+    search_query = arxiv_search_query(query)
+    if not search_query:
+        raise ValueError('no distinctive search terms')
     url = 'https://export.arxiv.org/api/query?' + urllib.parse.urlencode(
-        {'search_query': 'all:"%s"' % query.replace('"', ' '), 'max_results': n})
+        {'search_query': search_query, 'max_results': n})
     feed = get(url, parse=lambda r: ET.fromstring(r.read()))
-    ns = {'a': 'http://www.w3.org/2005/Atom'}
-    return [_meta(e.findtext('a:id', '', ns).strip(), ' '.join(e.findtext('a:title', '', ns).split()),
-                  e.findtext('a:published', '', ns)) for e in feed.findall('a:entry', ns)
-            if e.findtext('a:id', '', ns).strip()]
+    atom = '{http://www.w3.org/2005/Atom}'
+    if feed.tag != atom + 'feed':
+        raise ValueError('expected an Atom feed')
+    hits = []
+    for entry in feed.findall(atom + 'entry'):
+        paper_id = entry.findtext(atom + 'id', '').strip()
+        if '/api/errors' in paper_id:
+            raise ValueError(entry.findtext(atom + 'summary', 'arXiv API error').strip())
+        if paper_id:
+            hits.append(_meta(paper_id, ' '.join(entry.findtext(atom + 'title', '').split()),
+                              entry.findtext(atom + 'published', '')))
+    return hits
 
 
 def crossref(query, n):
@@ -252,45 +295,38 @@ class Answer(object):
 
 
 def search(query, n=6, order=None, kind='search', now=None):
-    """Hits for a free-text query, from the first source that answers.
-
-    A cache hit costs nothing and spends no token. A source with no tokens left, or one that
-    rate-limits or fails, is recorded in the note and the next source is tried. When every
-    source fails the last error is raised, because a failed search must not produce a receipt
-    that looks like a search finding nothing.
-    """
+    """Return the first nonempty answer and the outcome of every attempted source."""
     row = cached(kind, query, n, now=now)
-    if row is not None:
+    if row is not None and row['hits']:
+        tried = row.get('tried') or [f"{row['source']}: searched: {len(row['hits'])} results"]
         return Answer(row['hits'], row['source'],
-                      'cached %s answer from %s, fetched %s (TTL %d days)' % (
-                          kind, row['source'], row.get('fetched_utc', '?'),
-                          int(ttl_seconds() / DAY)))
-    tried, error = [], None
+                      f"cached {kind} answer, fetched {row.get('fetched_utc', '?')}. "
+                      + '; '.join(tried), tried)
+    tried = []
     for name in (order or ORDER):
+        label = LABELS[name]
         if not take(name, now=now):
-            tried.append('%s: daily budget spent here, not asked' % LABELS[name])
+            tried.append(f'{label}: unavailable: local request budget exhausted')
             continue
         try:
             hits = [h for h in ADAPTERS[name](query, n) if h]
         except urllib.error.HTTPError as e:
-            retry = int((e.headers or {}).get('retry-after') or 0)
-            tried.append('%s: HTTP %d%s' % (LABELS[name], e.code,
-                                            ', retry-after %ds' % retry if retry else ''))
-            error = e
+            retry = (e.headers or {}).get('Retry-After') or (e.headers or {}).get('retry-after')
+            detail = f', Retry-After: {retry}' if retry else ''
+            tried.append(f'{label}: unavailable: HTTP {e.code}{detail}')
             continue
-        except Exception as e:  # a parse error or a connection failure is also just a miss
-            tried.append('%s: %s' % (LABELS[name], str(e)[:120] or type(e).__name__))
-            error = e
+        except Exception as e:
+            tried.append(f'{label}: unavailable: {type(e).__name__}: {str(e)[:120]}')
             continue
-        store(kind, query, n, LABELS[name], hits, now=now)
-        note = '%s relevance search, top %d' % (LABELS[name], len(hits))
-        if tried:
-            note += ' (after %s)' % '; '.join(tried)
-        return Answer(hits, LABELS[name], note, tried)
-    if error is not None:
-        error.tried = tried
-        raise error
-    raise RuntimeError('no paper source was asked: ' + '; '.join(tried))
+        if not hits:
+            tried.append(f'{label}: unavailable: empty response')
+            continue
+        tried.append(f'{label}: searched: {len(hits)} results')
+        store(kind, query, n, label, hits, now=now, tried=tried)
+        return Answer(hits, label, '; '.join(tried), tried)
+    note = 'All paper sources unavailable. ' + '; '.join(tried)
+    harness_blocks.warn('paper-search.unavailable', note)
+    return Answer([], None, note, tried)
 
 
 # --- forward citations -------------------------------------------------------------------

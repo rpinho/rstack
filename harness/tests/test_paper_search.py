@@ -10,6 +10,7 @@ import json
 import sys
 import time
 import urllib.error
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,8 @@ def isolated(tmp_path, monkeypatch):
     second one to run would quietly pass on a cache hit."""
     monkeypatch.setenv('RH_PAPER_CACHE', str(tmp_path / 'cache'))
     monkeypatch.setenv('RH_PAPER_CACHE_TTL_DAYS', '30')
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.delenv('RSTACK_ABLATE', raising=False)
     monkeypatch.delenv('RH_PAPER_CONTACT', raising=False)
     monkeypatch.delenv('RH_OPENALEX_KEY', raising=False)
     monkeypatch.delenv('RH_SEMANTIC_SCHOLAR_KEY', raising=False)
@@ -78,7 +81,25 @@ def test_the_daily_quota_falls_through_to_semantic_scholar_not_to_crossref(monke
     assert answer.source == 'Semantic Scholar'
     assert answer.hits == ['https://doi.org/10.2/s2']
     assert seen == ['api.openalex.org', 'api.semanticscholar.org']
-    assert 'OpenAlex: HTTP 429, retry-after 37971s' in answer.note
+    assert answer.tried == ['OpenAlex: unavailable: HTTP 429, Retry-After: 37971',
+                            'Semantic Scholar: searched: 1 results']
+    again = ps.search('a harmless query', 3)
+    assert again.tried == answer.tried
+    assert seen == ['api.openalex.org', 'api.semanticscholar.org']
+
+
+def test_arxiv_uses_a_short_conjunction_for_a_question(monkeypatch):
+    def urlopen(req, timeout):
+        params = urllib.parse.parse_qs(urllib.parse.urlsplit(req.full_url).query)
+        assert params['search_query'] == [
+            'all:"TESS" AND all:"transits" AND all:"Gaussian" AND all:"processes"']
+        assert params['max_results'] == ['20']
+        return io.StringIO(ARXIV_FEED)
+
+    monkeypatch.setattr(ps.urllib.request, 'urlopen', urlopen)
+    question = 'Could TESS find transits with Gaussian processes and data from space?'
+    answer = ps.search(question, 20, order=['arxiv'])
+    assert answer.hits == ['https://arxiv.org/abs/2501.00001v1']
 
 
 @pytest.mark.parametrize('n_failing,source,host', [
@@ -94,20 +115,39 @@ def test_the_order_is_openalex_s2_europepmc_arxiv_then_crossref(monkeypatch, n_f
     assert seen == hosts[:n_failing] + [host]
 
 
-def test_a_source_that_answers_nothing_is_an_answer_not_a_failure(monkeypatch):
+def test_an_empty_source_falls_through(monkeypatch):
     monkeypatch.setitem(BODIES, 'api.openalex.org', {'results': []})
     seen = stub(monkeypatch)
     answer = ps.search('nothing matches this', 3)
-    assert (answer.source, answer.hits) == ('OpenAlex', [])
-    assert seen == ['api.openalex.org']  # no source after it is asked
+    assert answer.source == 'Semantic Scholar'
+    assert answer.tried[0] == 'OpenAlex: unavailable: empty response'
+    assert seen == ['api.openalex.org', 'api.semanticscholar.org']
 
 
-def test_every_source_failing_raises_so_no_receipt_claims_an_empty_search(monkeypatch):
-    hosts = ['api.openalex.org', 'api.semanticscholar.org', 'ebi.ac.uk', 'export.arxiv.org',
-             'api.crossref.org']
-    stub(monkeypatch, fail={h: (503, 0) for h in hosts})
-    with pytest.raises(urllib.error.HTTPError):
-        ps.search('a harmless query', 3)
+def test_all_sources_unavailable_warns_and_returns_an_unavailable_answer(monkeypatch, capsys):
+    def urlopen(req, timeout):
+        host = urllib.parse.urlsplit(req.full_url).hostname
+        if host == 'api.openalex.org':
+            raise urllib.error.HTTPError(req.full_url, 429, 'limited',
+                                         {'Retry-After': 'Mon, 23 Nov 2026 23:59:59 GMT'}, None)
+        if host == 'export.arxiv.org':
+            return io.StringIO('<feed xmlns="http://www.w3.org/2005/Atom"/>')
+        return io.StringIO('not JSON')
+
+    monkeypatch.setattr(ps.urllib.request, 'urlopen', urlopen)
+    # An old zero-hit cache entry must not mask the live source outcomes.
+    ps.store('search', 'a harmless query', 3, 'arXiv', [])
+    answer = ps.search('a harmless query', 3)
+    assert (answer.source, answer.hits) == (None, [])
+    assert answer.note.startswith('All paper sources unavailable.')
+    assert 'OpenAlex: unavailable: HTTP 429, Retry-After: Mon, 23 Nov 2026 23:59:59 GMT' in answer.note
+    assert 'arXiv: unavailable: empty response' in answer.note
+    assert 'Crossref: unavailable: JSONDecodeError' in answer.note
+    assert len(answer.tried) == 5
+    row, = ps.harness_blocks.read()
+    assert (row['gate'], row['class'], row['outcome']) == ('paper-search.unavailable', 'fail-open', 'warn')
+    assert 'All paper sources unavailable' in row['reason']
+    assert 'All paper sources unavailable' in capsys.readouterr().err
 
 
 def test_a_repeat_lookup_is_served_from_the_cache_and_spends_nothing(monkeypatch):
@@ -151,7 +191,7 @@ def test_a_budget_another_process_has_spent_skips_the_source(monkeypatch):
     answer = ps.search('a harmless query', 3, now=now)
     assert answer.source == 'Semantic Scholar'
     assert seen == ['api.semanticscholar.org']     # OpenAlex is not even asked
-    assert 'OpenAlex: daily budget spent here, not asked' in answer.note
+    assert 'OpenAlex: unavailable: local request budget exhausted' in answer.note
 
 
 def test_the_budget_refills_over_time(monkeypatch):
@@ -194,10 +234,11 @@ def test_the_polite_pool_address_is_sent_only_when_the_operator_sets_one(monkeyp
     assert 'mailto:papers@example.org' in urls[1][1]
 
 
-def test_a_contact_that_is_not_an_address_is_refused(monkeypatch):
+def test_invalid_contact_marks_the_sources_unavailable(monkeypatch):
     monkeypatch.setenv('RH_PAPER_CONTACT', 'not an address')
-    with pytest.raises(ValueError):
-        ps.search('a harmless query', 3)
+    answer = ps.search('a harmless query', 3)
+    assert len(answer.tried) == 5
+    assert all('unavailable: ValueError: RH_PAPER_CONTACT' in status for status in answer.tried)
 
 
 def test_an_api_key_is_sent_where_each_source_wants_it(monkeypatch):
@@ -276,11 +317,10 @@ def test_a_rate_limited_citing_call_falls_back_to_the_doi(monkeypatch):
     assert 'OpenAlex: HTTP 429' in cites.note
 
 
-def test_the_raised_error_names_the_sources_that_were_asked(monkeypatch):
-    hosts = ['api.openalex.org', 'api.semanticscholar.org', 'ebi.ac.uk', 'export.arxiv.org',
-             'api.crossref.org']
-    stub(monkeypatch, fail={h: (429, 0) for h in hosts})
-    with pytest.raises(urllib.error.HTTPError) as caught:
-        ps.search('a harmless query', 3)
-    assert len(caught.value.tried) == 5
-    assert 'OpenAlex: HTTP 429' in caught.value.tried[0]
+def test_an_arxiv_atom_error_is_unavailable(monkeypatch):
+    feed = ('<feed xmlns="http://www.w3.org/2005/Atom"><entry>'
+            '<id>http://arxiv.org/api/errors#bad_query</id><summary>bad query</summary></entry></feed>')
+    monkeypatch.setattr(ps.urllib.request, 'urlopen', lambda *a, **k: io.StringIO(feed))
+    answer = ps.search('a harmless query', order=['arxiv'])
+    assert answer.hits == []
+    assert answer.tried == ['arXiv: unavailable: ValueError: bad query']

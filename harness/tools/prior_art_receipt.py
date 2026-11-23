@@ -4,8 +4,8 @@
 Runs GitHub, papers (paper_search: OpenAlex, Semantic Scholar, Europe PMC, arXiv, then
 Crossref, through one shared cache and quota), and leaderboard searches.
 X uses only captured metadata from RH_XCAPTURE_ROOT/x_capture/KEY.jsonl.
-Missing X captures are explicitly skipped; the unchanged promote policy still
-requires captured X evidence. Failed network searches never produce a receipt.
+Missing X captures are explicitly skipped. Paper source failures are recorded as
+unavailable; promotion still requires a complete receipt.
 
 The positional CLI is compatible with team_queue/pa_receipt.py callers:
   prior_art_receipt.py KEY PRIOR_ART_MD --baseline TEXT --query Q [--paper-query Q]
@@ -78,20 +78,6 @@ def _gh(q, n):
                           capture_output=True, text=True, timeout=60)
 
 
-PAPER_SRC = ['OpenAlex']   # which source actually answered; it goes into the receipt
-PAPER_NOTE = ['']          # and what it took to get there, including sources that refused
-
-
-def papers(q, n=6):
-    # 11-07: the chain, the 30-day cache and the quota shared between lanes all live in
-    # harness/paper_search.py, so every lane and every other paper lookup gets the same fix.
-    # Before that this function was OpenAlex with Crossref behind it and no cache, and one lane
-    # spending the 1,000/day allowance locked every other lane out for ten hours.
-    answer = paper_search.search(q, n)
-    PAPER_SRC[0], PAPER_NOTE[0] = answer.source, answer.note
-    return answer.hits
-
-
 def boards(q, n=4):
     hits = []
     for kind in ('spaces', 'datasets'):
@@ -145,19 +131,25 @@ def overlap(query):
     leaderboard searches as an idea receipt, run once on the lane's problem statement. A source that
     fails is recorded as unavailable with its reason; this never raises for a failed search."""
     runs = (('github', lambda: github(query, 5, tries=1), 'GitHub repository search; date = last push.'),
-            ('papers', lambda: papers(query), None),
+            ('papers', lambda: paper_search.search(query), None),
             ('leaderboards', lambda: boards(query), 'Hugging Face spaces/datasets and GitHub "<q> benchmark" repos.'))
     sources = {}
     for name, run, note in runs:
         try:
-            urls = run()
+            result = run()
         except Exception as exc:  # offline, rate-limited, signed out: record it, never block the lane
             sources[name] = dict(status='unavailable', reason=f'{type(exc).__name__}: {str(exc)[:200]}', hits=[])
             continue
+        urls = result.hits if name == 'papers' else result
         hits = [dict(title=paper_search.META.get(u, {}).get('title'), url=u,
                      date=paper_search.META.get(u, {}).get('date')) for u in dict.fromkeys(urls)]
-        sources[name] = dict(status='hits' if hits else 'none', hits=hits,
-                             note=note or PAPER_NOTE[0])
+        source = dict(status='hits' if hits else 'none', hits=hits, note=note)
+        if name == 'papers':
+            source.update(status='hits' if hits else 'unavailable', source=result.source,
+                          note=result.note, source_statuses=result.tried)
+            if not hits:
+                source['reason'] = result.note
+        sources[name] = source
     states = {v['status'] for v in sources.values()}
     status = 'unavailable' if states == {'unavailable'} else 'hits' if 'hits' in states else 'none'
     return dict(schema=1, check='overlap', query=query, searched_at=now(), status=status, sources=sources)
@@ -173,18 +165,19 @@ def main(argv=None):
     md = Path(a.md).expanduser()
     x = x_entry(a.key)
     pq = a.paper_query or a.query
-    gh = github(a.query); pp = papers(pq); lb = boards(a.query)
+    gh = github(a.query); pp = paper_search.search(pq); lb = boards(a.query)
     receipt = dict(schema=1, baseline=a.baseline.strip(), sources=dict(
         github=entry(a.query, gh, f'GitHub repository search, top {len(gh)} by best match.'),
         x=x,
-        papers=entry(pq, pp, f'{PAPER_NOTE[0]}; the worker reads them before modelling.',
-                     source=PAPER_SRC[0]),
+        papers=entry(pq, pp.hits, pp.note, status='hits' if pp.hits else 'unavailable',
+                     source=pp.source, source_statuses=pp.tried),
         leaderboards=entry(a.query, lb, 'Hugging Face spaces/datasets search and GitHub "<q> benchmark" repos.')))
     text = md.read_text() if md.exists() else ''
     text = re.sub(r'^```rh-prior-art[^\S\n]*\n.*?^```[^\S\n]*(?:\n|$)', '\n', text, flags=re.M | re.S).rstrip()
     md.write_text(text + '\n\n```rh-prior-art\n' + json.dumps(receipt, indent=1) + '\n```\n')
     print(md, {k: v['status'] for k, v in receipt['sources'].items()})
-    print('paper source:', PAPER_SRC[0])
+    print('paper source:', pp.source or 'unavailable')
+    print(pp.note)
     print('X:', x['note'])
     return 0
 

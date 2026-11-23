@@ -1262,6 +1262,19 @@
    "change": "uses the default model, warned"
   },
   {
+   "gate": "paper-search.unavailable",
+   "files": [
+    "harness/paper_search.py"
+   ],
+   "class": "fail-open",
+   "kind": "tool",
+   "added": "2026-11-23",
+   "why": "Every paper source failed or returned an empty response.",
+   "sunset": true,
+   "last_changed_outcome": null,
+   "change": "Returns the per-source outcomes and lets the job continue."
+  },
+  {
    "gate": "sweep.worker-model-pin",
    "files": [
     "harness/sweep.py"

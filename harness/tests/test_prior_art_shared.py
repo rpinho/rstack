@@ -33,6 +33,7 @@ def offline(monkeypatch, tmp_path):
     # at this test's own directory: otherwise these tests would write to the real cache, and the
     # second test to ask for a query would pass on a cache hit instead of exercising the search.
     monkeypatch.setenv('RH_PAPER_CACHE', str(tmp_path / 'paper-cache'))
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
     monkeypatch.delenv('RH_PAPER_CONTACT', raising=False)
 
 
@@ -56,11 +57,12 @@ def test_rate_limited_openalex_falls_through_to_the_next_source(monkeypatch, cod
     monkeypatch.setattr(receipt.urllib.request, 'urlopen', urlopen)
     sleep = Mock(side_effect=AssertionError('fallback must not wait for quota reset'))
     monkeypatch.setattr('time.sleep', sleep)
-    assert receipt.papers('a harmless query', 2) == [
+    answer = receipt.paper_search.search('a harmless query', 2)
+    assert answer.hits == [
         'https://doi.org/10.1234/example', 'https://www.semanticscholar.org/paper/q']
     assert len(calls) == 2
-    assert receipt.PAPER_SRC[0] == 'Semantic Scholar'
-    assert f'OpenAlex: HTTP {code}' in receipt.PAPER_NOTE[0]
+    assert answer.source == 'Semantic Scholar'
+    assert f'OpenAlex: unavailable: HTTP {code}' in answer.note
     sleep.assert_not_called()
 
 
@@ -72,14 +74,36 @@ def test_crossref_is_still_the_last_resort(monkeypatch):
         assert 'api.crossref.org' in req.full_url
         return response({'message': {'items': [{'DOI': '10.1234/example'}, {'title': ['no DOI']}]}})
     monkeypatch.setattr(receipt.urllib.request, 'urlopen', urlopen)
-    assert receipt.papers('a harmless query', 2) == ['https://doi.org/10.1234/example']
-    assert receipt.PAPER_SRC[0] == 'Crossref'
+    answer = receipt.paper_search.search('a harmless query', 2)
+    assert answer.hits == ['https://doi.org/10.1234/example']
+    assert answer.source == 'Crossref'
 
 
-def test_paper_failure_does_not_invent_results(monkeypatch):
-    monkeypatch.setattr(receipt.urllib.request, 'urlopen', Mock(side_effect=urllib.error.HTTPError('url', 403, 'denied', {}, None)))
-    with pytest.raises(urllib.error.HTTPError):
-        receipt.papers('query')
+def test_paper_failure_is_recorded_in_output_and_receipt(tmp_path, monkeypatch, capsys):
+    capture(tmp_path, monkeypatch)
+    mock_searches(monkeypatch)
+    normal_urlopen = receipt.urllib.request.urlopen
+
+    def urlopen(req, timeout):
+        if 'huggingface.co' in req.full_url:
+            return normal_urlopen(req, timeout)
+        if 'export.arxiv.org' in req.full_url:
+            return io.StringIO('<feed xmlns="http://www.w3.org/2005/Atom"/>')
+        raise urllib.error.HTTPError(req.full_url, 429, 'limited', {'Retry-After': '28800'}, None)
+
+    monkeypatch.setattr(receipt.urllib.request, 'urlopen', urlopen)
+    md = tmp_path / 'PRIOR_ART.md'
+    assert receipt.main(['topic', str(md), '--baseline', 'method 42', '--query', 'topic query']) == 0
+    data = json.loads(md.read_text().split('```rh-prior-art\n')[1].split('\n```')[0])
+    papers = data['sources']['papers']
+    assert papers['status'] == 'unavailable' and papers['hits'] == []
+    assert 'OpenAlex: unavailable: HTTP 429, Retry-After: 28800' in papers['source_statuses']
+    assert 'arXiv: unavailable: empty response' in papers['source_statuses']
+    output = capsys.readouterr()
+    assert 'All paper sources unavailable' in output.out
+    assert all(status in output.out for status in papers['source_statuses'])
+    with pytest.raises(ValueError, match='prior-art papers:'):
+        idea_policy.prior_art(md)
 
 
 def mock_searches(monkeypatch):
@@ -119,6 +143,7 @@ def test_team_caller_cli_and_receipt_append(tmp_path, monkeypatch, paper_query):
     assert idea_policy.prior_art(md)['baseline'] == 'Method A, score 42'
     data = json.loads(md.read_text().split('```rh-prior-art\n')[1].split('\n```')[0])
     assert data['sources']['papers']['query'] == (paper_query or 'topic query')
+    assert data['sources']['papers']['source_statuses'] == ['OpenAlex: searched: 1 results']
     frozen = Path(data['sources']['x']['capture_path'])
     assert frozen.read_bytes() == cap.read_bytes()
     cap.write_text('later browser capture\n')
