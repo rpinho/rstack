@@ -956,7 +956,9 @@ def ungraded(receipts_dir, lane='', skip_job='', now=None):
             r = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
-        if (not isinstance(r, dict) or not gradeable(r) or r.get('job') == skip_job
+        # 11-23: receipts with no job field (the schema before the 11-19 grading gate) never owed a grade; one
+        # of them stopped the whole nightly sweep with KeyError 'job' once judgment roles owed grades (53e55eb).
+        if (not isinstance(r, dict) or 'job' not in r or not gradeable(r) or r.get('job') == skip_job
                 or (lane and r.get('lane') != lane) or 'grade-' + str(r.get('selection_id')) in done):
             continue
         finished = _finished(str(path)[:-len('.selection.json')], r.get('selection_id'))

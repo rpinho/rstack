@@ -1288,11 +1288,25 @@ def test_a_returned_review_job_owes_a_grade_however_it_was_picked(tmp_path, monk
 
 def test_a_one_off_ceiling_raise_ends_on_its_own(tmp_path, monkeypatch):
     # 11-22 (Ricardo via general, 95% with 2 h left): "honestly, you could spend it." 99% until the reset only.
+    p = cap_setup(tmp_path, monkeypatch, 96, hours=2)
+    monkeypatch.setenv('RH_CLAUDE_CEILING_PERCENT', '99')
+    monkeypatch.setenv('RH_CLAUDE_CEILING_UNTIL', (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).isoformat())
+    assert wm.select('batch', 'claude', path=p)['executor'] == 'claude'                 # 96% < 97%
+    # 11-23: 99% put general out at 100% overnight; a raise stops at 97%, so the last 3% is always general's.
     p = cap_setup(tmp_path, monkeypatch, 97, hours=2)
     monkeypatch.setenv('RH_CLAUDE_CEILING_PERCENT', '99')
     monkeypatch.setenv('RH_CLAUDE_CEILING_UNTIL', (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).isoformat())
-    assert wm.select('batch', 'claude', path=p)['executor'] == 'claude'                 # 97% < 99%
+    assert '>= 97% ceiling' in wm.select('batch', 'claude', path=p)['claude_cap']
     monkeypatch.setenv('RH_CLAUDE_CEILING_UNTIL', '2026-01-01T00:00:00Z')
     assert '>= 95% ceiling' in wm.select('batch', 'claude', path=p)['claude_cap']      # expired: the rule is back
     monkeypatch.setenv('RH_CLAUDE_CEILING_UNTIL', 'not a date')
     assert '>= 95% ceiling' in wm.select('batch', 'claude', path=p)['claude_cap']      # unreadable: default
+
+
+def test_an_old_receipt_with_no_job_never_stops_the_ungraded_sweep(tmp_path):
+    # 11-23: a pre-grading-gate receipt (no job field) for a judgment role raised KeyError 'job' in the nightly
+    # sweep, so no later receipt was swept.
+    (tmp_path / 'old_1103.log.selection.json').write_text(json.dumps(
+        {'source': 'leaderboard', 'role': 'review', 'model': 'gpt-6.2-astra', 'selection_id': 'a' * 32}))
+    (tmp_path / 'old_1103.log').write_text('MODEL_OUTCOME ' + json.dumps({'selection_id': 'a' * 32, 'finished': '2026-11-03T12:00:00+00:00'}) + '\n')
+    assert wm.ungraded(tmp_path) == []

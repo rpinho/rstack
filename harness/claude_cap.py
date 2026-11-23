@@ -65,6 +65,9 @@ def _f(name, default):
 # the reset, so holding it back then only gets in the way (RULE #1). RH_CLAUDE_SPEND_DOWN_HOURS sets the window.
 SPEND_DOWN_H = 6.0
 SPEND_DOWN_CEILING = 95.0
+# 11-23 (general): a one-off raise to 99% let the account reach 100% at 20:38 ET on 11-22, and general (the
+# conductor) was dead until Ricardo logged in the next morning. The last 3% stays general's on any night.
+MAX_CEILING = 97.0
 
 
 def ceiling_knob(now=None):
@@ -78,7 +81,7 @@ def ceiling_knob(now=None):
                 return CEILING
         except ValueError:
             return CEILING
-    return _f('RH_CLAUDE_CEILING_PERCENT', CEILING)
+    return min(_f('RH_CLAUDE_CEILING_PERCENT', CEILING), MAX_CEILING)
 
 
 def spend_down(weekly, now=None):

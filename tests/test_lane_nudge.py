@@ -435,3 +435,66 @@ def test_a_fresh_job_output_still_wakes_a_quiet_lane(quiet_lane, tmp_path):
     nudge.main()
     assert len(sends) == 2 and nudge.RESULT_MSG.format(lane='games', path=result) == sends[0]
     assert sends[1] == 'Enter'
+
+
+# ---- 11-23: the weekly-reset wake ------------------------------------------------------------------------------
+
+RESET = 1_800_000_000.0     # a reset on the minute
+
+
+def reset_args(tmp_path, usage, **kw):
+    a = dict(usage=str(usage), reset_skip='', tmux='tmux', prefix='claude-', log=str(tmp_path / 'log'), dry=False)
+    a.update(kw)
+    return SimpleNamespace(**a)
+
+
+def write_usage(usage, *resets):
+    from datetime import datetime, timezone
+    usage.mkdir(parents=True, exist_ok=True)
+    iso = [datetime.fromtimestamp(t, timezone.utc).isoformat() for t in resets]
+    (usage / 'claude.json').write_text(json.dumps({'weekly_percent': 5.0, 'resets_at': iso[-1]}))
+    (usage / 'claude-history.jsonl').write_text(''.join(json.dumps({'resets_at': r}) + '\n' for r in iso[:-1]))
+
+
+def test_the_reset_that_just_passed_is_known_from_the_next_one_alone(tmp_path):
+    write_usage(tmp_path / 'u', RESET + 7 * 86400 - 0.4)              # claude-usage already moved on, jittered
+    assert nudge.reset_due(nudge.usage_resets(tmp_path / 'u'), 0, RESET + 600) == RESET
+    assert nudge.reset_due({RESET}, 0, RESET + 60) is None              # not before reset + 5 min
+    assert nudge.reset_due({RESET}, RESET, RESET + 600) is None         # announced once
+    assert nudge.reset_due({RESET}, 0, RESET + 13 * 3600) is None       # 13 h late: not announced
+
+
+def test_after_the_reset_every_idle_session_is_woken_once_conductor_included(tmp_path, monkeypatch):
+    usage, state = tmp_path / 'u', tmp_path / 'state'
+    state.mkdir()
+    write_usage(usage, RESET, RESET + 7 * 86400)
+    registry = SimpleNamespace(lane_of_session=lambda s: s, status=lambda l: 'retired' if l == 'old' else 'active')
+    monkeypatch.setattr(nudge, 'panes', lambda *_: [('general', '%1', '/'), ('math', '%2', '/'), ('old', '%3', '/'),
+                                                    ('busy', '%4', '/')])
+    typed = []
+
+    def run(cmd, **kw):
+        if cmd[1] == 'capture-pane':
+            return SimpleNamespace(stdout='esc to interrupt' if cmd[4] == '%4' else '> ')
+        if '-l' in cmd:
+            typed.append((cmd[3], cmd[-1]))
+        return SimpleNamespace(stdout='')
+    monkeypatch.setattr(nudge.subprocess, 'run', run)
+    monkeypatch.setattr(nudge.time, 'sleep', lambda _: None)
+    a = reset_args(tmp_path, usage)
+    nudge.reset_wake(a, registry, state, RESET - 3600)                  # first run: records, wakes nobody
+    assert typed == [] and json.loads((state / 'weekly-reset.json').read_text())['done'] == RESET - 7 * 86400
+    nudge.reset_wake(a, registry, state, RESET + 120)                   # too early
+    assert typed == []
+    nudge.reset_wake(a, registry, state, RESET + 400)
+    assert [p for p, _ in typed] == ['%1', '%2'] and 'weekly limit reset' in typed[0][1]
+    nudge.reset_wake(a, registry, state, RESET + 2000)                  # once per reset
+    assert len(typed) == 2
+
+
+def test_missing_usage_wakes_nobody_and_never_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(nudge, 'panes', lambda *_: pytest.fail('no reset known, no panes read'))
+    state = tmp_path / 'state'
+    state.mkdir()
+    (state / 'weekly-reset.json').write_text(json.dumps({'done': 0}))
+    nudge.reset_wake(reset_args(tmp_path, tmp_path / 'nothing'), None, state, RESET)

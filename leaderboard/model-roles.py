@@ -769,7 +769,7 @@ def mini_only(observation):
 def feed_only(observation):
     """True when every graded row behind `observation` came from another machine's grades feed."""
     fed = sum(int(f.get('n', 0)) for f in (observation.get('feed') or {}).values())
-    return not observation or (fed > 0 and fed >= observation.get('n', 0))
+    return fed > 0 and fed >= observation.get('n', 0)
 
 
 def public(data, path, observations=(), previous=None):
@@ -798,7 +798,8 @@ def public(data, path, observations=(), previous=None):
             if model not in {native for _, native in MODELS.values()}:
                 # 11-23: a model graded only in the laptop's feed (google/gemini-4-neon, x-ai/grok-4.7 through the
                 # API) is ranked for routing but has no public row; this machine's own unknown ids still refuse.
-                if feed_only(role_scores.get(model, {})) and feed_only(role_bench.get(model, {})):
+                seen = [o for o in (role_scores.get(model), role_bench.get(model)) if o]
+                if model not in ranked and seen and all(feed_only(o) for o in seen):
                     hidden_feed = True
                     continue
                 raise ValueError('unknown public model')

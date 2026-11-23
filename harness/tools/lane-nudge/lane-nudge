@@ -14,6 +14,11 @@ last real turn (a user or assistant message) in the session's Claude Code transc
 no pane ever looked idle and nothing was nudged for three days. Lanes marked EXEMPT or UNCONFIGURED by cadence,
 and names in --skip, are never nudged. --dry prints decisions and types nothing. Run one copy per Mac that hosts
 lane sessions; each scans its own tmux (pass --tmux when tmux is not on the scheduler's PATH).
+
+After the Claude weekly reset (read from the usage snapshot claude-usage writes) it types one resume prompt into
+every idle Claude session, the conductor included and --skip ignored, once per reset. --reset-only does only that,
+for a launchd job every 5 minutes. 11-22: the account reached 100% at 20:38 ET, every session stopped, and the
+conductor's wake-up was a session cron that could not fire, so nothing resumed until morning.
 """
 import argparse
 import fcntl
@@ -38,6 +43,87 @@ MSG = ("Harness check (lane-nudge): lane {lane} is {why}, and this session has b
        "running. Start the next round from the lane's idea queue now, put bounded work on background jobs, and arm "
        "a watcher on every job so you wake on results. If you are blocked on a human decision, send it through the "
        "conductor inbox and keep working on something else.")
+
+
+RESET_MSG = ("Harness check (lane-nudge): the Claude weekly limit reset at {at}. If this session stopped at the "
+             "limit, resume now: read your state or handoff file and continue your open work.")
+RESET_DELAY = 5 * 60          # wake 5 minutes after the reset, not on its first second
+RESET_STALE = 12 * 3600       # a reset noticed more than 12 h late is not announced
+
+
+def usage_resets(usage_dir):
+    """Weekly reset times (epoch, to the minute) named by the usage snapshot and its history, and one week before
+    each, so the reset that just passed is known even after claude-usage has moved on to the next one."""
+    d = Path(os.path.expanduser(usage_dir))
+    rows = []
+    try:
+        rows.append(json.loads((d / 'claude.json').read_text()))
+    except (OSError, ValueError):
+        pass
+    try:
+        for line in (d / 'claude-history.jsonl').read_text().splitlines()[-500:]:
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                pass
+    except OSError:
+        pass
+    out = set()
+    for r in rows:
+        try:
+            t = datetime.fromisoformat(str(r['resets_at']).replace('Z', '+00:00')).timestamp()
+        except (KeyError, TypeError, ValueError):
+            continue
+        t = round(t / 60) * 60
+        out.update((t, t - 7 * 86400))
+    return out
+
+
+def reset_due(resets, done, now, delay=RESET_DELAY, stale=RESET_STALE):
+    """The latest reset at least `delay` s ago that is newer than `done` and under `stale` s old, else None."""
+    passed = [t for t in resets if t + delay <= now]
+    t = max(passed) if passed else None
+    return t if t is not None and t > done and now - t < stale else None
+
+
+def reset_wake(a, registry, state, now):
+    """One resume prompt per idle Claude session, once per weekly reset. The first run only records the last
+    reset, so installing it wakes nobody."""
+    sf = state / 'weekly-reset.json'
+    with open(state / 'weekly-reset.lock', 'w') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return                                  # the other copy is announcing it
+        resets = usage_resets(a.usage)
+        try:
+            done = float(json.loads(sf.read_text())['done'])
+        except (OSError, ValueError, KeyError, TypeError):
+            if not a.dry:
+                sf.write_text(json.dumps({'done': max([t for t in resets if t <= now], default=0), 'at': now}))
+            return
+        t = reset_due(resets, done, now)
+        if t is None:
+            return
+        at = datetime.fromtimestamp(t, timezone.utc).strftime('%Y-%m-%d %H:%MZ')
+        skip = {s for s in a.reset_skip.split(',') if s}
+        for session, pane, _ in panes(a.tmux, a.prefix):
+            lane = registry.lane_of_session(session)
+            if session in skip or registry.status(lane) in ('retired', 'ended', 'held'):
+                continue
+            tail = subprocess.run([a.tmux, 'capture-pane', '-p', '-t', pane, '-S', '-15'],
+                                  capture_output=True, text=True).stdout
+            if RUNNING.search(tail):
+                say(a.log, f'{a.prefix}{session}: weekly reset {at}, already running', a.dry)
+                continue
+            say(a.log, f'{a.prefix}{session}: weekly-reset wake ({at})', a.dry)
+            if a.dry:
+                continue
+            subprocess.run([a.tmux, 'send-keys', '-t', pane, '-l', '--', RESET_MSG.format(at=at)])
+            time.sleep(1)
+            subprocess.run([a.tmux, 'send-keys', '-t', pane, 'Enter'])
+        if not a.dry:
+            sf.write_text(json.dumps({'done': t, 'at': now}))
 
 
 RESULT_MSG = ("Harness check (lane-nudge): a job result for lane {lane} landed after your last turn and nothing woke "
@@ -286,6 +372,11 @@ def main():
     ap.add_argument('--outputs', default=os.environ.get('LANE_NUDGE_OUTPUTS', ''),
                     help='comma-separated globs of finished-job outputs, {lane} for the lane name; one newer than '
                          "the session's last turn nudges it even while a watcher shell runs")
+    ap.add_argument('--usage', default=os.environ.get('LANE_NUDGE_USAGE', '~/.local/state/rstack/usage'),
+                    help="claude-usage's folder (claude.json, claude-history.jsonl), for the weekly reset")
+    ap.add_argument('--reset-skip', default=os.environ.get('LANE_NUDGE_RESET_SKIP', ''),
+                    help='comma-separated sessions not woken after the weekly reset (--skip does not apply)')
+    ap.add_argument('--reset-only', action='store_true', help='only the weekly-reset wake, then exit')
     ap.add_argument('--dry', action='store_true')
     a = ap.parse_args()
     skip = {s for s in a.skip.split(',') if s}
@@ -293,6 +384,12 @@ def main():
     state = Path(a.state)
     state.mkdir(parents=True, exist_ok=True)
     registry = lane_registry.load(a.lanes)
+    try:
+        reset_wake(a, registry, state, time.time())
+    except Exception as exc:                        # RULE #1: the wake never stops the idle nudges
+        say(a.log, f'weekly-reset wake failed: {exc!r}', a.dry)
+    if a.reset_only:
+        return
     cad, error = cadence(a.rh)
     failed = report_failure(error, state, a.alert, a.dry)
     if failed:
