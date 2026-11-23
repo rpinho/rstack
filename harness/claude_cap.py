@@ -26,6 +26,10 @@ import os
 from pathlib import Path
 import re
 import time
+try:
+    import settings  # noqa: F401  11-22: loads the harness env file, so the Agent hook sees the selector's knobs
+except ImportError:
+    pass
 
 CEILING = 80.0
 WARN = 70.0
@@ -61,6 +65,20 @@ def _f(name, default):
 # the reset, so holding it back then only gets in the way (RULE #1). RH_CLAUDE_SPEND_DOWN_HOURS sets the window.
 SPEND_DOWN_H = 6.0
 SPEND_DOWN_CEILING = 95.0
+
+
+def ceiling_knob(now=None):
+    """RH_CLAUDE_CEILING_PERCENT, or the default once RH_CLAUDE_CEILING_UNTIL (ISO UTC) has passed, so a one-off
+    raise ends on its own (11-22, Ricardo at 95% with 2 h to the reset: "honestly, you could spend it")."""
+    until = os.environ.get('RH_CLAUDE_CEILING_UNTIL', '').strip()
+    if until:
+        try:
+            import datetime as _dt
+            if (time.time() if now is None else now) >= _dt.datetime.fromisoformat(until.replace('Z', '+00:00')).timestamp():
+                return CEILING
+        except ValueError:
+            return CEILING
+    return _f('RH_CLAUDE_CEILING_PERCENT', CEILING)
 
 
 def spend_down(weekly, now=None):
@@ -231,7 +249,7 @@ def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, proj
     out = dict(model=model, leave='', notes=notes, warning='', pressure='normal')
     if not enabled():
         return out
-    ceiling, warn, pace_off = _f('RH_CLAUDE_CEILING_PERCENT', CEILING), _f('RH_CLAUDE_WARN_PERCENT', WARN), \
+    ceiling, warn, pace_off = ceiling_knob(now), _f('RH_CLAUDE_WARN_PERCENT', WARN), \
         _f('RH_CLAUDE_PACE_OFF_PERCENT', PACE_OFF)
     # Within the leaderboard's Claude picks, Sonnet is preferred for low-judgment roles only; judgment roles keep
     # the leaderboard's pick (an explicit --model or spec pin is the operator's own choice).

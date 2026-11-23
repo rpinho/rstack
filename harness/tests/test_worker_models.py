@@ -1284,3 +1284,15 @@ def test_a_returned_review_job_owes_a_grade_however_it_was_picked(tmp_path, monk
     out = capsys.readouterr().out
     assert 'ungraded after 24 h: lane-a-ref' in out and 'lane-a-batch' not in out
     assert wm.gradeable({'source': 'explore', 'role': 'ideation'}) and not wm.gradeable({'source': 'leaderboard', 'role': 'builder'})
+
+
+def test_a_one_off_ceiling_raise_ends_on_its_own(tmp_path, monkeypatch):
+    # 11-22 (Ricardo via general, 95% with 2 h left): "honestly, you could spend it." 99% until the reset only.
+    p = cap_setup(tmp_path, monkeypatch, 97, hours=2)
+    monkeypatch.setenv('RH_CLAUDE_CEILING_PERCENT', '99')
+    monkeypatch.setenv('RH_CLAUDE_CEILING_UNTIL', (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).isoformat())
+    assert wm.select('batch', 'claude', path=p)['executor'] == 'claude'                 # 97% < 99%
+    monkeypatch.setenv('RH_CLAUDE_CEILING_UNTIL', '2026-01-01T00:00:00Z')
+    assert '>= 95% ceiling' in wm.select('batch', 'claude', path=p)['claude_cap']      # expired: the rule is back
+    monkeypatch.setenv('RH_CLAUDE_CEILING_UNTIL', 'not a date')
+    assert '>= 95% ceiling' in wm.select('batch', 'claude', path=p)['claude_cap']      # unreadable: default
