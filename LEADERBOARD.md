@@ -832,15 +832,23 @@ Selected local labels on a 0–4 scale, including proxy and operational outcomes
 | review | claude-sonnet-5-5 | 4, 4 | 2026-11-19 |
 | review | claude-sonnet-5-5 | 0, 4, 4, 4 | 2026-11-20 |
 | review | gemini-3.8-flash-high | 4 | 2026-11-19 |
+| review | gemini-3.8-flash-high | 0 | 2026-11-23 |
 | review | gemini-3.8-flash-low | 4 | 2026-11-19 |
+| review | gemini-3.8-flash-low | 0 | 2026-11-23 |
 | review | gemini-3.8-flash-medium | 4 | 2026-11-19 |
+| review | gemini-3.8-flash-medium | 0 | 2026-11-23 |
 | review | gemini-4-argon-low | 4 | 2026-11-19 |
 | review | gemini-4-argon-medium | 4, 4 | 2026-11-19 |
 | review | gemini-4-argon-medium | 4, 4, 4, 4 | 2026-11-20 |
+| review | gemini-4-argon-medium | 0 | 2026-11-23 |
 | review | gemini-4-hydrogen-medium | 4 | 2026-11-19 |
+| review | gemini-4-hydrogen-medium | 0 | 2026-11-23 |
 | review | gemini-4-neon-medium | 4 | 2026-11-19 |
+| review | gemini-4-neon-medium | 0 | 2026-11-23 |
 | review | google/gemini-4-argon | 4 | 2026-11-10 |
+| review | google/gemini-4-argon | 0 | 2026-11-23 |
 | review | google/gemini-4-hydrogen | 0, 4 | 2026-11-16 |
+| review | google/gemini-4-hydrogen | 0, 0 | 2026-11-23 |
 | review | gpt-5.6-sol | 0, 4, 4 | 2026-11-10 |
 | review | gpt-6.2-astra | 4 | 2026-11-19 |
 | review | gpt-6.2-astra | 4, 4, 4, 4, 4 | 2026-11-20 |
