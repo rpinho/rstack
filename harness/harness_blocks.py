@@ -306,7 +306,9 @@ def summarize(rows, now=None, days=1.0):
         key = r.get('gate', '?')
         count[key] = count.get(key, 0) + 1
     top = sorted(count.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
-    unclassified = sorted({r.get('gate', '?') for r in recent if r.get('class') == 'unclassified'})
+    # Only a gate that refused or warned is one to register; a rerun, override or retraction mark names what
+    # answered it (11-22: the marks for that day's harness bugs listed selector and sweep.* as unclassified).
+    unclassified = sorted({r.get('gate', '?') for r in blocks + warns if r.get('class') == 'unclassified'})
     overrides = len([r for r in recent if r.get('outcome') == 'allowed-override'])
     return dict(blocks=len(blocks), warns=len(warns), harness_bugs=bugs, top=top, unclassified=unclassified,
                 allowed_overrides=overrides, last_changed=last_changed(rows),

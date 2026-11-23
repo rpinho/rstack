@@ -697,3 +697,4 @@ def test_a_manual_override_or_a_retraction_alone_is_a_harness_bug(tmp_path, monk
     assert sorted((b['gate'], b['answered_by']) for b in s['harness_bugs']) == [
         ('auto-grade', 'retract'), ('selector', 'override'), ('selector.claude-ceiling', 'override')]
     assert '3 harness bug(s) (refused or rerouted, then rerun, overridden or retracted)' in harness_blocks.line(s)
+    assert s['unclassified'] == []          # the marks themselves are not gates to register
