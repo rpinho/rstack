@@ -222,31 +222,63 @@ def gate_reviewer(model, reviewers):
     return any('-{}-'.format(r) in '-{}-'.format(model) for r in reviewers)
 
 
-def claude_fallback(role, data, excluded, families, requested, follows_route, chosen, hold=False):
-    """Where a job goes when Claude is closed to it (ceiling, pacing, lane share): (model, executor, route_model),
-    Codex's default for the role first (unless Codex is itself past 95%), then agy's Sonnet 5.5. Never a family
-    the job judges. None when neither is available. Under a Claude hold (a 0% lane share; 11-22, general) the
-    agy leg is agy's Gemini for the role (Neon, or Hydrogen for batch and mechanical), never agy's Claude."""
-    run = runnable(requested, follows_route)
-    allowance = _allowance()
-    codex_full = False
+# 11-23 (general: "the Codex week is at 85%"): while Codex's weekly figure is at or above RH_CODEX_TIGHT_PERCENT
+# (80), work leaving Claude tries Gemini before Codex. It goes back to Codex first by itself after Codex's reset.
+CODEX_TIGHT = 80.0
+
+
+def codex_week_percent():
+    """Codex's weekly used percent from the allowance cache, or None when it cannot be read."""
     try:
+        allowance = _allowance()
         row = (allowance.cached(__import__('time').time()) or {}).get('codex') if allowance else None
-        codex_full = bool(row) and float(row.get('weekly_used_percent') or 0) >= 95
+        return float(row.get('weekly_used_percent') or 0) if row else None
     except (AttributeError, TypeError, ValueError, OSError):
-        pass
-    pick = PROVIDER_DEFAULT['codex'].get(role) or PROVIDER_DEFAULT['codex']['*']
-    r = data['routes'].get(pick)
-    if ('codex' in run and not codex_full and isinstance(r, dict) and r.get('cli') == 'codex'
-            and pick not in excluded and r.get('canonical') not in excluded and maker(pick, r.get('canonical')) not in families):
-        return pick, 'codex', None
-    if hold:
+        return None
+
+
+def codex_tight(pct=None):
+    pct = codex_week_percent() if pct is None else pct
+    try:
+        limit = float(os.environ.get('RH_CODEX_TIGHT_PERCENT') or CODEX_TIGHT)
+    except ValueError:
+        limit = CODEX_TIGHT
+    return pct is not None and pct >= limit
+
+
+def claude_fallback(role, data, excluded, families, requested, follows_route, chosen, hold=False):
+    """Where a job goes when Claude is closed to it (ceiling, pacing, budget line, lane share): (model, executor,
+    route_model). Codex's default for the role first (unless Codex is past 95%), then agy's Sonnet 5.5; while the
+    Codex week is tight (codex_tight), agy's Gemini for the role comes before Codex. Never a family the job judges.
+    None when nothing is available. Under a Claude hold (a 0% lane share; 11-22, general) the agy leg is agy's
+    Gemini for the role (Neon, or Hydrogen for batch and mechanical), never agy's Claude."""
+    run = runnable(requested, follows_route)
+    pct = codex_week_percent()
+    codex_full = pct is not None and pct >= 95
+
+    def codex_leg():
+        pick = PROVIDER_DEFAULT['codex'].get(role) or PROVIDER_DEFAULT['codex']['*']
+        r = data['routes'].get(pick)
+        if ('codex' in run and not codex_full and isinstance(r, dict) and r.get('cli') == 'codex'
+                and pick not in excluded and r.get('canonical') not in excluded
+                and maker(pick, r.get('canonical')) not in families):
+            return pick, 'codex', None
+        return None
+
+    def gemini_leg():
         gemini = 'gemini-4-hydrogen-high' if role in GEMINI_ROLES['hydrogen'] else 'gemini-4-neon-high'
         r = data['routes'].get(gemini)
         if ('agy' in run and isinstance(r, dict) and r.get('cli') == 'agy' and gemini not in excluded
                 and r.get('canonical') not in excluded and maker(gemini, r.get('canonical')) not in families):
             return gemini, 'agy', gemini
         return None
+
+    for leg in ((gemini_leg, codex_leg) if codex_tight(pct) else (codex_leg,)):
+        got = leg()
+        if got:
+            return got
+    if hold:
+        return gemini_leg()
     model = chosen if chosen in AGY_CLAUDE else claude_cap.SONNET
     r = data['routes'].get(model)
     if ('agy' in run and isinstance(r, dict) and model not in excluded
@@ -474,7 +506,9 @@ def trial_pick(role, data, excluded, families, executors, quota, job, top=''):
     # 11-23 (general): "role_models": {role: [...]} gives a role its own arms (Fable 1 in 6 in review and judge).
     arms = (t.get('role_models') or {}).get(role) or t['models']
     models = [top if m == TRIAL_TOP else m for m in arms if m != TRIAL_TOP or top]
-    if len(set(models)) < 2:
+    # 11-23 (general): a trial whose every arm is one model (Neon-high, for volume) still runs, unless that model
+    # is already the job's own pick.
+    if len(set(models)) < 2 and (not models or models[0] == top):
         return None                    # the job's own pick is the trial model: nothing to compare here
     first = mine['model'] if mine else models[(k - 1) % len(models)]
     for m in [first] + list(dict.fromkeys(x for x in models if x != first)):
@@ -586,6 +620,9 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), exe
         pool.append(m)
     if not pool:
         return None
+    # 11-23 (general): Claude's default delegation leans on Gemini while the Codex week is tight.
+    if force and codex_tight() and any(data['routes'][m].get('cli') == 'agy' for m in pool):
+        pool = [m for m in pool if data['routes'][m].get('cli') != 'codex']
     n = lambda m: (evidence.get(m) or {}).get('n', 0)
     if 'gemini-4-argon-medium' in pool and len(pool) > 1 and int(hashlib.sha256(
             ('argon' + repr(draw)).encode()).hexdigest()[:8], 16) / 2 ** 32 >= ARGON_SHARE:

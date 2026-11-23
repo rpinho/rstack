@@ -1422,3 +1422,41 @@ def test_the_daily_line_gives_each_session_and_lane_its_claude_share(tmp_path, m
     assert text.startswith('Claude this week: 20% of the weekly limit, the budget line is at ')
     assert 'general 10.0%, adaptyv-c4 6.0%, bio 4.0%' in text, text
     assert 'ahead of it' in text
+
+
+def test_while_the_codex_week_is_tight_work_leaving_claude_tries_gemini_first(tmp_path, monkeypatch):
+    # 11-23 (general): "the Codex week is at 85% ... until that reset, Gemini first and Codex second".
+    p = cap_setup(tmp_path, monkeypatch, 80)
+    data = json.loads(p.read_text())
+    data['routes']['gemini-4-hydrogen-high'] = {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-high'}
+    data['roles']['builder'] = ['claude-opus-5-5']
+    data['routes']['gemini-4-neon-high'] = {'cli': 'agy', 'canonical': 'google/gemini-4-neon-high'}
+    p.write_text(json.dumps(data))
+    monkeypatch.setattr(wm, 'codex_week_percent', lambda: 85.0)
+    got = wm.select('batch', 'claude', path=p)                         # past the Claude ceiling
+    assert (got['executor'], got['model']) == ('agy', 'gemini-4-hydrogen-high'), got
+    monkeypatch.setenv('RH_CLAUDE_DELEGATE_DEFAULT', '1')
+    for _ in range(6):
+        assert wm.select('builder', 'claude', path=p)['executor'] == 'agy'
+    monkeypatch.setattr(wm, 'codex_week_percent', lambda: 10.0)        # after Codex's reset: Codex first again
+    monkeypatch.setenv('RH_CLAUDE_DELEGATE_DEFAULT', '0')
+    got = wm.select('batch', 'claude', path=p)
+    assert (got['executor'], got['model']) == ('codex', 'gpt-6.2-sol')
+
+
+def test_a_trial_of_one_model_still_runs_when_the_jobs_pick_is_another(tmp_path, monkeypatch):
+    # 11-23 (general): the neon-1123 trial's third arm left Claude, so every arm is Neon-high.
+    p = cap_setup(tmp_path, monkeypatch, 10, hours=160, history=[(2, 9.5), (0, 10)])
+    data = json.loads(p.read_text())
+    data['roles']['builder'] = ['claude-opus-5-5']
+    data['routes']['gemini-4-neon-high'] = {'cli': 'agy', 'canonical': 'google/gemini-4-neon-high'}
+    p.write_text(json.dumps(data))
+    (tmp_path / 'trial.json').write_text(json.dumps({'name': 't1', 'roles': ['builder'], 'n': 3,
+                                                     'models': ['gemini-4-neon-high'] * 3}))
+    monkeypatch.setenv('RH_MODEL_TRIAL', str(tmp_path / 'trial.json'))
+    monkeypatch.setenv('RH_MODEL_TRIAL_LEDGER', str(tmp_path / 'trial.jsonl'))
+    got = wm.select('builder', 'claude', path=p, job='j1')
+    assert got['model'] == 'gemini-4-neon-high' and got['trial'] == 't1' and 'model trial t1' in got['delegate']
+    data['roles']['builder'] = ['gemini-4-neon-high']                  # the job's own pick: nothing to compare
+    p.write_text(json.dumps(data))
+    assert 'trial' not in wm.select('builder', 'agy', path=p, job='j2')
