@@ -482,7 +482,9 @@ def trial_pick(role, data, excluded, families, executors, quota, job, top=''):
         return None
     k = jobs.index(job) + 1 if mine and job in jobs else len(jobs) + 1
     # An arm listed twice gets two turns in each cycle (11-23: Neon at volume, 'models': [neon, neon, @leaderboard]).
-    models = [top if m == TRIAL_TOP else m for m in t['models'] if m != TRIAL_TOP or top]
+    # 11-23 (general): "role_models": {role: [...]} gives a role its own arms (Fable 1 in 6 in review and judge).
+    arms = (t.get('role_models') or {}).get(role) or t['models']
+    models = [top if m == TRIAL_TOP else m for m in arms if m != TRIAL_TOP or top]
     if len(set(models)) < 2:
         return None                    # the job's own pick is the trial model: nothing to compare here
     first = mine['model'] if mine else models[(k - 1) % len(models)]

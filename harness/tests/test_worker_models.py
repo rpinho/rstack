@@ -1284,6 +1284,18 @@ def test_the_trial_runs_in_several_roles_against_each_jobs_own_pick_and_takes_ex
                                                      'models': ['gemini-4-neon-medium', 'gemini-4-neon-medium', '@leaderboard']}))
     assert [run('w%d' % i, '--explore', 'gpt-6.2-sol')['model'] for i in range(6)] == [
         'gemini-4-neon-medium', 'gemini-4-neon-medium', 'gpt-6.2-sol'] * 2
+    # a role can have its own arms: Fable 1 in 6 in review only
+    (tmp_path / 'trial.json').write_text(json.dumps({'name': 't4', 'roles': ['builder', 'review'], 'n': 6,
+        'models': ['gemini-4-neon-medium', '@leaderboard'],
+        'role_models': {'review': ['gemini-4-neon-medium', 'gemini-4-neon-medium', '@leaderboard',
+                                     'gemini-4-neon-medium', 'claude-fable-5-2', '@leaderboard']}}))
+    data = json.loads(p.read_text())
+    data['routes'].setdefault('claude-fable-5-2', {'cli': 'claude', 'canonical': 'anthropic/claude-fable-5.2'})
+    p.write_text(json.dumps(data))
+    got = [run('v%d' % i, '--made-by', 'gpt-6.2-sol', role='review', executor='codex')['model'] for i in range(6)]
+    assert got.count('gemini-4-neon-medium') == 3 and got.count('claude-fable-5-2') == 1, got
+    assert [run('u%d' % i, '--explore', 'gpt-6.2-sol')['model'] for i in range(2)] == [
+        'gemini-4-neon-medium', 'gpt-6.2-sol']                       # builder keeps the common arms
     lines = wm.trial_report('t2', [tmp_path / 'trial.jsonl'], p)
     assert sum(l.startswith('review ') for l in lines) == 2 and sum(l.startswith('builder ') for l in lines) == 2
 
