@@ -766,6 +766,12 @@ def mini_only(observation):
     return dict(observation, n=n, rate=round(min(max((rate * n_all - fk) / n, 0), 1), 3) if n else None), True
 
 
+def feed_only(observation):
+    """True when every graded row behind `observation` came from another machine's grades feed."""
+    fed = sum(int(f.get('n', 0)) for f in (observation.get('feed') or {}).values())
+    return not observation or (fed > 0 and fed >= observation.get('n', 0))
+
+
 def public(data, path, observations=(), previous=None):
     """Allowlist fields. Unranked observations use '-' in the routing order column."""
     date = dt.datetime.fromisoformat(data['updated'].replace('Z', '+00:00')).date().isoformat()
@@ -790,6 +796,11 @@ def public(data, path, observations=(), previous=None):
         for model in list(ranked) + sorted((set(role_scores) | set(role_bench)) - set(ranked)):
             safe_cell(model)
             if model not in {native for _, native in MODELS.values()}:
+                # 11-23: a model graded only in the laptop's feed (google/gemini-4-neon, x-ai/grok-4.7 through the
+                # API) is ranked for routing but has no public row; this machine's own unknown ids still refuse.
+                if feed_only(role_scores.get(model, {})) and feed_only(role_bench.get(model, {})):
+                    hidden_feed = True
+                    continue
                 raise ValueError('unknown public model')
             observation, fed = mini_only(role_scores.get(model, {}))
             hidden_feed = hidden_feed or fed

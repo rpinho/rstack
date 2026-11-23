@@ -94,6 +94,20 @@ def test_a_laptop_feed_raises_the_combined_count_keeps_the_split_and_skips_unkno
     assert '| 0.917 | 6 |' in page.read_text()
 
 
+def test_a_model_graded_only_in_the_feed_has_no_public_row_and_never_stops_the_page(tmp_path):
+    # 11-23: the laptop's API-route ids (google/gemini-4-neon) are not public models; the first scorer run with
+    # the feed refused the whole page over them.
+    data = {'updated': '2026-11-23T12:00:00Z', 'roles': {'builder': ['gpt-6.2-sol']},
+            'evidence': {'builder': {'google/gemini-4-neon': {'n': 8, 'rate': 0.938, 'feed': {'laptop': {'n': 8, 'k': 7.5}}}}},
+            'bench': {'mechanical': {'x-ai/grok-4.7': {'n': 16, 'rate': 0.969, 'feed': {'laptop': {'n': 16, 'k': 15.5}}}}}}
+    page = tmp_path / 'LEADERBOARD.md'
+    mr.public(data, page)
+    assert 'gemini-4-neon |' not in page.read_text() and 'grok' not in page.read_text()
+    data['evidence']['builder']['google/gemini-4-neon']['n'] = 9                 # one row of this machine's own
+    with pytest.raises(ValueError, match='unknown public model'):
+        mr.public(data, page)
+
+
 def test_this_machines_rows_come_from_the_scorer_ledger_and_stage_as_an_item(tmp_path):
     ledger = tmp_path / 'ledger.jsonl'
     rows = [mr.obs('receipt-everyday', 'a', 'openai/gpt-6.2-sol', 'batch', 'held', '2026-11-21', ['x'], 'e'),
