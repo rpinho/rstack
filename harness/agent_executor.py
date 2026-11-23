@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 
 
 def _kill_tree(proc):
@@ -345,6 +346,11 @@ def run_codex(cmd, args, env):
     if not env.get('RH_EFFORT_FLOOR_JOB') or args.timeout_seconds <= 0:
         return subprocess.call(cmd, cwd=args.directory, env=env)
     def stopped(signum, _frame):
+        # 11-23 (math_leanshadow_1123): a job exited 143 and nothing recorded which process got the signal.
+        # This line says it was the executor, not Codex, and when, so the sender can be matched in the logs.
+        print('agent_executor: received {} at {} (pid {}, parent {}); stopping Codex'.format(
+            signal.Signals(signum).name, time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            os.getpid(), os.getppid()), file=sys.stderr, flush=True)
         raise SystemExit(128 + signum)
 
     stop_signals = (signal.SIGTERM, signal.SIGHUP)
