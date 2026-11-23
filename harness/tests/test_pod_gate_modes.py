@@ -178,3 +178,45 @@ def test_cli_json_additional_context_and_malformed_input(tmp_path):
         assert 'rh pods enqueue' in output['additionalContext']
     audit = tmp_path/'audit.jsonl'
     assert len(audit.read_text().splitlines()) == 4
+
+
+def test_the_runpod_month_cap_refuses_new_pods_past_it_unless_the_lane_writes_a_reason(tmp_path, monkeypatch):
+    # 11-23 (Ricardo): RunPod $1,050 on November's card; about $300 a month from now on.
+    import datetime as _dt
+    configure(mode='audit')
+    monkeypatch.setenv('RH_RUNPOD_MONTH_CAP_USD', '300')
+    monkeypatch.setenv('RH_LANES_ROOT', str(tmp_path / 'lanes'))
+    monkeypatch.setattr(gate, 'month_spend', lambda now=None: (894.15, None))
+    code, message = gate.gate(event(), tmp_path)
+    assert code == 2 and '$894 spent this month' in message and 'RUNPOD_OVER_CAP' in message
+    (tmp_path / 'lanes/team').mkdir(parents=True)
+    (tmp_path / 'lanes/team/RUNPOD_OVER_CAP').write_text('2020-01-01 by general: an old reason\n')
+    assert gate.gate(event(), tmp_path)[0] == 2                          # yesterday's line does not count
+    today = _dt.date.today().isoformat()
+    (tmp_path / 'lanes/team/RUNPOD_OVER_CAP').write_text(today + ' by general: GPU-only fold the m5 cannot run\n')
+    code, message = gate.gate(event(), tmp_path)
+    assert code == 0 and 'allowed by override' in message and 'GPU-only fold' in row()['over_cap_override']
+    monkeypatch.setattr(gate, 'month_spend', lambda now=None: (120.0, None))
+    (tmp_path / 'lanes/team/RUNPOD_OVER_CAP').unlink()
+    assert gate.gate(event(), tmp_path)[0] == 0                          # under the cap
+    monkeypatch.setattr(gate, 'month_spend', lambda now=None: (None, 'billing unreadable (URLError)'))
+    code, message = gate.gate(event(), tmp_path)
+    assert code == 0 and 'not checked (allowed)' in message              # RULE #1: unreadable is a warning
+
+
+def test_month_spend_reads_runpod_billing_and_caches_it(tmp_path, monkeypatch):
+    import io
+    import settings
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
+    monkeypatch.setattr(settings, 'runpod_api_key', lambda: 'k')
+    calls = []
+
+    def fake(req, timeout):
+        calls.append(req.full_url)
+        assert req.headers['Authorization'] == 'Bearer k'
+        return io.BytesIO(json.dumps({'records': [{'totalAmount': 412.5}], 'metadata': {}}).encode())
+    import urllib.request
+    monkeypatch.setattr(urllib.request, 'urlopen', fake)
+    assert gate.month_spend(1_795_000_000) == (412.5, None)
+    assert gate.month_spend(1_795_000_100) == (412.5, None) and len(calls) == 1   # cached for 10 min
+    assert 'bucketSize=month' in calls[0]

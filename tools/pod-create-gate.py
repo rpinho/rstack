@@ -110,6 +110,70 @@ def shape(event):
     return lane, vcpus, count
 
 
+# 11-23 (Ricardo: "I don't plan to spend as much on RunPod unless I do get a side gig"; November's card had RunPod
+# $1,050): new pods stop once the month's RunPod spend reaches RH_RUNPOD_MONTH_CAP_USD (default 300). The m5 goes
+# first; pods only for what it cannot run. Spend is RunPod's own month-to-date total (GET /v2/billing), cached 10 min.
+# Unreadable billing is a warning and the pod goes ahead (RULE #1). A lane goes past the cap only with a line
+# "YYYY-MM-DD by WHO: REASON" for today in lanes/<lane>/RUNPOD_OVER_CAP, and the override is in the audit row.
+SPEND_CACHE_S = 600
+
+
+def month_cap():
+    value = os.environ.get('RH_RUNPOD_MONTH_CAP_USD', '300').strip().lower()
+    if value in ('off', 'none', ''):
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return 300.0
+
+
+def month_spend(now=None):
+    """(month-to-date USD, None) from RunPod billing, or (None, why) when it cannot be read. Never raises."""
+    now = time.time() if now is None else now
+    month = dt.datetime.fromtimestamp(now, dt.timezone.utc).strftime('%Y-%m')
+    cache = Path(os.environ.get('RSTACK_STATE_DIR') or Path.home() / '.local/state/rstack').expanduser() / 'runpod-month-spend.json'
+    try:
+        c = json.loads(cache.read_text())
+        if c.get('month') == month and now - float(c['at']) < SPEND_CACHE_S:
+            return float(c['usd']), None
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    try:
+        import urllib.request
+        import settings
+        key = settings.runpod_api_key()
+        if not key:
+            return None, 'no RunPod API key'
+        req = urllib.request.Request('https://api.runpod.io/v2/billing?bucketSize=month&lastN=1',
+                                     headers={'Authorization': 'Bearer ' + key})
+        with urllib.request.urlopen(req, timeout=8) as response:
+            data = json.load(response)
+        usd = float(data['records'][-1]['totalAmount'])
+    except Exception as exc:             # never echo the exception: a request can carry the key
+        return None, 'billing unreadable ({})'.format(type(exc).__name__)
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(dict(month=month, usd=usd, at=now)))
+    except OSError:
+        pass
+    return usd, None
+
+
+def over_cap_reason(lane, now=None):
+    """Today's override line for this lane, or ''."""
+    if not lane:
+        return ''
+    lanes = Path(os.environ.get('RH_LANES_ROOT') or Path.home() / '.local/share/research-harness/lanes').expanduser()
+    try:
+        line = (lanes / lane / 'RUNPOD_OVER_CAP').read_text().splitlines()[0].strip()
+    except (OSError, IndexError):
+        return ''
+    today = dt.datetime.fromtimestamp(time.time() if now is None else now).date().isoformat()
+    m = re.match(r'^(\d{4}-\d{2}-\d{2}) by (\S.*?): (\S.*)$', line)
+    return line if m and m.group(1) == today else ''
+
+
 def append_audit(row):
     AUDIT.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(AUDIT), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -145,11 +209,29 @@ def gate(event, root=HARNESS, now=None, malformed=False):
             status = 'unreadable'
     would_deny = lane not in EXCLUDED and status != 'PASS'
     deny = mode == 'enforce' and lane in enforce_lanes and would_deny
+    cap, spend_note, over = month_cap(), '', ''
+    if cap is not None:
+        usd, why = month_spend(now)
+        if usd is None:
+            spend_note = 'RunPod month cap: {}, so the ${:g} cap was not checked (allowed).'.format(why, cap)
+        elif usd >= cap:
+            over = over_cap_reason(lane, now)
+            if over:
+                spend_note = 'RunPod month cap: ${:.0f} this month is over the ${:g} cap; allowed by override: {}'.format(usd, cap, over)
+            else:
+                deny = True
+                spend_note = ('RunPod month cap: ${:.0f} spent this month, at or over the ${:g} cap. Run it on the m5, '
+                              'or write "{} by WHO: REASON" in lanes/{}/RUNPOD_OVER_CAP.').format(
+                                  usd, cap, dt.datetime.fromtimestamp(now).date().isoformat(), lane or 'LANE')
     row = dict(utc=dt.datetime.fromtimestamp(now, dt.timezone.utc).isoformat().replace('+00:00', 'Z'),
                lane=lane, shape=resources, receipt_status=status, mode=mode,
                would_enforce='deny' if would_deny else 'allow', decision='deny' if deny else 'allow')
     if config_error:
         row['config_status'] = config_error
+    if spend_note:
+        row['month_cap'] = spend_note
+    if over:
+        row['over_cap_override'] = over
     log_error = False
     try:
         append_audit(row)
@@ -164,6 +246,8 @@ def gate(event, root=HARNESS, now=None, malformed=False):
         context += ' ' + config_error + '.'
     if log_error:
         context += ' WARNING: pod gate audit log could not be written.'
+    if spend_note:
+        context = spend_note + ' ' + context
     return (2, 'Pod refused: ' + context) if deny else (0, context)
 
 

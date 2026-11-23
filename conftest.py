@@ -23,6 +23,8 @@ os.environ['RH_POLICY_EXCLUDED'] = 'restricted-a,restricted-b'
 os.environ['RH_OVERLAP'] = 'off'
 # The launcher's disk floor reads the real disk; tests that exercise it set their own.
 os.environ['LAUNCH_DISK_FLOOR_GB'] = '0'
+# The pod gate's RunPod month cap reads the provider's billing; tests never call a provider.
+os.environ['RH_RUNPOD_MONTH_CAP_USD'] = 'off'
 os.environ['RH_REAP_EXCLUDED'] = 'restricted-a,restricted-b'
 for key in ('RH_ROLES_FILE', 'RH_MODEL_OVERRIDE_LOG', 'MODEL_OVERRIDE_REASON', 'LAUNCH_MADE_BY',
             'RH_CONTACTS', 'RH_DECIDED_BY', 'CLAUDE_CODE_SESSION_ID', 'RH_EVIDENCE_ROOT',
