@@ -112,3 +112,23 @@ def test_tell_sends_the_one_line_through_tell_general(tmp_path):
     done = subprocess.run([sys.executable, str(TOOL), '--repo', str(repo), '--date', '2026-11-15', '--tell'],
                           env=env, capture_output=True, text=True, timeout=60)
     assert done.returncode == 0 and 'tell-general is not on PATH' in done.stderr
+
+
+def test_disk_per_lane_is_reported_beside_the_verdict_and_never_votes(tmp_path, monkeypatch, capsys):
+    # 11-23 (general): the m5 ran out of disk; a weekly line per lane, like this one.
+    from importlib.machinery import SourceFileLoader
+    from importlib.util import module_from_spec, spec_from_loader
+    spec = spec_from_loader('nd', SourceFileLoader('nd', str(TOOL)))
+    nd = module_from_spec(spec)
+    spec.loader.exec_module(nd)
+    jobs = tmp_path / 'jobs'
+    for name, size in (('hunt-a', 3), ('hunt-b', 2), ('bio-c', 1)):
+        (jobs / name).mkdir(parents=True)
+        (jobs / name / 'blob').write_bytes(b'x' * size * 1024 * 1024)
+    sizes = nd.disk([str(jobs)])
+    assert set(sizes) == {'jobs:hunt', 'jobs:bio'} and sizes['jobs:hunt'] > sizes['jobs:bio']
+    then = {'date': '2026-11-16', 'disk': {'jobs:hunt': 0, 'jobs:bio': sizes['jobs:bio']}}
+    big = {'date': '2026-11-23', 'disk': {'jobs:hunt': 5 * 2 ** 30, 'jobs:bio': sizes['jobs:bio']}}
+    text = nd.disk_text(then, big, 'm5')
+    assert text.startswith('; disk on m5: ') and 'grew most: jobs:hunt +5.0 GB' in text
+    assert nd.disk(['/nonexistent-root']) is None
