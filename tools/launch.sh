@@ -133,6 +133,24 @@ if [[ $load == <-> ]] && (( load > ${LAUNCH_MAX_LOAD:-30} )) && [[ -z $FORCE_LAU
    refuses launch.load "load $load on $load_where (over ${LAUNCH_MAX_LOAD:-30})" "wait for the load to fall, or LAUNCH_MAX_LOAD=N"; then
   exit 75
 fi
+# 11-23 (general): the m5 fell to 142 MB free overnight and jobs, the grades mirror and job ledgers failed with
+# ENOSPC. A new job starts only when the volume that holds its work dir on the run host has LAUNCH_DISK_FLOOR_GB
+# (default 30) free. Nothing running is stopped (games, saves). Unreadable is a warning and the job runs.
+disk_cmd="d=${(q)dir}; while [ ! -e \"\$d\" ]; do d=\$(dirname \"\$d\"); done; df -Pk \"\$d\" | awk 'NR==2{print \$4}'"
+if [[ -n $LAUNCH_HOST ]]; then
+  disk_free=$(${=${LAUNCH_SSH:-ssh}} -o BatchMode=yes -o ConnectTimeout=20 "$LAUNCH_HOST" "$disk_cmd" 2>/dev/null)
+else
+  disk_free=$(sh -c "$disk_cmd" 2>/dev/null)
+fi
+if [[ $disk_free == <-> ]]; then
+  if (( disk_free < ${LAUNCH_DISK_FLOOR_GB:-30} * 1048576 )) && [[ -z $FORCE_LAUNCH ]] &&
+     refuses launch.disk-floor "$(( disk_free / 1048576 )) GB free under $dir on ${LAUNCH_HOST:-this machine}, below the ${LAUNCH_DISK_FLOOR_GB:-30} GB floor" \
+       "free space there first (venvs, clean clones and caches of finished jobs; unused colima images), or LAUNCH_DISK_FLOOR_GB=N"; then
+    exit 75
+  fi
+else
+  print -u2 -- "[launch.disk-floor] cannot read free disk under $dir on ${LAUNCH_HOST:-this machine}; running anyway (RULE #1)"
+fi
 artifacts=${LAUNCH_ARTIFACT_DIR:-$PWD/.runtime/jobs}
 # Sweep passes a relative spec path; standalone jobs use the configured artifacts dir. An absolute
 # job is the spec's own path without .md (the lanes' wrapper resolves a sweep's relative path to it).

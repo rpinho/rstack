@@ -668,3 +668,19 @@ def test_without_the_line_or_with_an_explicit_setting_the_sandbox_is_untouched(t
                                   env_extra={'LAUNCH_CODEX_SANDBOX': 'workspace-write'})
     program, _ = staged(tmp_path / 'b')
     assert 'export LAUNCH_CODEX_SANDBOX=workspace-write' in program, proc.stderr + log
+
+
+def test_a_job_is_refused_below_the_disk_floor_on_the_host_and_runs_above_it(tmp_path):
+    # 11-23 (general): the m5 reached 142 MB free overnight; ledgers and jobs failed with ENOSPC.
+    jobs, env = harness(tmp_path)
+    env.pop('FORCE_LAUNCH')
+    env['LAUNCH_DISK_FLOOR_GB'] = '100000000'            # no disk has 100 PB free
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path), '--host', 'm5'],
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 75, proc.stderr
+    assert 'below the 100000000 GB floor' in proc.stderr and 'on m5' in proc.stderr
+    assert 'df -Pk' in Path(env['SSH_LOG']).read_text()   # measured on the host, not here
+    env['LAUNCH_DISK_FLOOR_GB'] = '0'
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path), '--host', 'm5'],
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr

@@ -74,7 +74,7 @@ FALLBACK_REFUSING = frozenset((
     'launch.lane-hold', 'launch.lane-status', 'mem-guard', 'no-laptop-shell.py', 'osascript-shim',
     'outreach.send', 'pod-create-gate.py', 'pod-deadline-gate.py', 'protected-paths',
     'read-the-thread-first.py', 'result-gates', 'rounds.wrong-target', 'science-publish-gate.py',
-    'selector.metered', 'sweep.disk-floor', 'sweep.engaged-only', 'third_party.run',
+    'selector.metered', 'sweep.disk-floor', 'launch.disk-floor', 'sweep.engaged-only', 'third_party.run',
     'trash-guard.py', 'voice-lint', 'voice-send-gate.py', 'x-api-bypass-guard',
     'x-handle-guard', 'x-policy', 'x-submit-gate',
 ))

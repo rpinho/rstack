@@ -1467,6 +1467,23 @@
    "change": "unchanged (its own exit 2, not _hookfail.decide)",
    "fix": "edit in a session worktree, then land",
    "decided": "general 11-20: keep (against my fail-open recommendation). It names an equal path, the worktree, and main-tree edits break the land flow."
+  },
+  {
+   "gate": "launch.disk-floor",
+   "files": [
+    "tools/launch.sh"
+   ],
+   "class": "hard-line",
+   "kind": "launcher",
+   "hard_line": "general-keep",
+   "added": "2026-11-23",
+   "why": "Refuses a new job when the run host has under LAUNCH_DISK_FLOOR_GB (30) free where the work dir lives. general, 11-23: the m5 reached 142 MB free overnight and jobs and ledgers failed with ENOSPC.",
+   "sunset": false,
+   "last_changed_outcome": null,
+   "old": "none (rule #0 left no disk check in launch.sh)",
+   "change": "new; refuses through the registry",
+   "fix": "free space on the run host (venvs, clean clones and caches of finished jobs; unused colima images), or LAUNCH_DISK_FLOOR_GB=N",
+   "decided": "general 11-23: keep. a full disk failed jobs, the grades mirror and ledgers overnight; refusing a new job costs less."
   }
  ],
  "exempt": {
