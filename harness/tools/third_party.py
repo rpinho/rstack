@@ -15,6 +15,10 @@ network), then runs CMD there under macOS sandbox-exec: no network at all, file 
 run appends a receipt row to JOB/third_party.jsonl (url, commit, dir, command, rc). There is no unsandboxed
 fallback: without sandbox-exec it refuses.
 
+    third_party.py fetch --workdir JOB --url URL --commit SHA40
+
+checks out the exact commit with a detached HEAD and prints the path for inspection without running repository code.
+
     third_party.py check JOB
 
 is the controller's check (sweep.py calls it on every run directory). It fails when
@@ -181,9 +185,11 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     sub = p.add_subparsers(dest='cmd', required=True)
     r = sub.add_parser('run')
-    r.add_argument('--workdir', required=True, type=Path)
-    r.add_argument('--url', required=True)
-    r.add_argument('--commit', required=True)
+    f = sub.add_parser('fetch', help='check out a pinned repository for inspection')
+    for parser in (r, f):
+        parser.add_argument('--workdir', required=True, type=Path)
+        parser.add_argument('--url', required=True)
+        parser.add_argument('--commit', required=True)
     r.add_argument('--subdir')
     r.add_argument('--timeout', type=float)
     r.add_argument('argv', nargs=argparse.REMAINDER)
@@ -194,8 +200,20 @@ def main(argv=None):
         errs = check(a.workdir)
         print('\n'.join(errs) or 'THIRD-PARTY-OK')
         return 1 if errs else 0
-    cmd = a.argv[1:] if a.argv[:1] == ['--'] else a.argv
     try:
+        if a.cmd == 'fetch':
+            dest = fetch(a.workdir, a.url, a.commit)
+            if git('rev-parse', '--symbolic-full-name', 'HEAD', cwd=dest) != 'HEAD':
+                raise ValueError('CHECKOUT_ATTACHED: {} must have a detached HEAD at {}'.format(dest, a.commit))
+            # 11-23 review: without a receipt row the sweep's check() fails the run as THIRD_PARTY_UNRECEIPTED,
+            # so a checkout pinned only to read it would fail its job. The row says it was fetched, never run.
+            row = dict(utc=now(), url=a.url, commit=a.commit, dir=str(dest.relative_to(a.workdir)), command=None,
+                       rc=None, kind='fetch: inspected only, no code run')
+            with open(a.workdir / RECEIPTS, 'a') as fh:
+                fh.write(json.dumps(row) + '\n')
+            print(dest)
+            return 0
+        cmd = a.argv[1:] if a.argv[:1] == ['--'] else a.argv
         return run(a.workdir, a.url, a.commit, cmd, a.subdir, a.timeout)
     except (ValueError, RuntimeError) as e:
         print(e, file=sys.stderr)

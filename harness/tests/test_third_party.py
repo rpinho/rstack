@@ -27,10 +27,10 @@ print('done', what)
 '''
 
 
-def repo(tmp_path):
+def repo(tmp_path, script=SCRIPT):
     r = tmp_path / 'upstream'
     r.mkdir()
-    (r / 'tool.py').write_text(SCRIPT)
+    (r / 'tool.py').write_text(script)
     for args in (['init', '-q'], ['add', '.'], ['-c', 'user.email=t@example.com', '-c', 'user.name=t',
                                                 'commit', '-qm', 'tool']):
         subprocess.run(['git', *args], cwd=r, check=True)
@@ -42,6 +42,47 @@ def job(tmp_path):
     j = tmp_path / 'job'
     j.mkdir()
     return j
+
+
+@pytest.fixture
+def bare_repo(tmp_path, monkeypatch):
+    monkeypatch.setenv('GIT_ALLOW_PROTOCOL', 'file')
+    script = "from pathlib import Path\nPath(__file__).with_name('executed').touch()\n"
+    url, sha = repo(tmp_path, script)
+    subprocess.run(['git', '-c', 'user.email=t@example.com', '-c', 'user.name=t',
+                    'commit', '--allow-empty', '-qm', 'newer default HEAD'], cwd=tmp_path / 'upstream', check=True)
+    bare = tmp_path / 'fixture.git'
+    subprocess.run(['git', 'clone', '-q', '--bare', url, str(bare)], check=True)
+    return bare.as_uri(), sha, script
+
+
+def test_fetch_cli_checks_out_a_pinned_commit_without_running_it(tmp_path, bare_repo):
+    url, sha, script = bare_repo
+    j = job(tmp_path)
+    cmd = [sys.executable, str(Path(tp.__file__).resolve()), 'fetch', '--workdir', str(j), '--url', url, '--commit']
+
+    short = subprocess.run([*cmd, sha[:12]], capture_output=True, text=True)
+    assert short.returncode == 2
+    assert 'UNPINNED: --commit must be a full 40-character commit sha' in short.stderr
+    assert not (j / tp.DIR).exists()
+
+    result = subprocess.run([*cmd, sha], capture_output=True, text=True, check=True)
+    dest = j / tp.DIR / ('fixture-' + sha[:12])
+    assert result.stdout.strip() == str(dest)
+    assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=dest, text=True).strip() == sha
+    detached = subprocess.run(['git', 'symbolic-ref', '-q', 'HEAD'], cwd=dest, capture_output=True)
+    assert detached.returncode == 1
+    assert (dest / 'tool.py').read_text() == script
+    # 11-23 review: a fetch-only checkout carries a receipt, so the sweep's check passes it.
+    assert tp.check(j) == []
+    row = json.loads((j / tp.RECEIPTS).read_text().splitlines()[-1])
+    assert row['command'] is None and row['kind'].startswith('fetch')
+    assert not (dest / 'executed').exists()
+
+    subprocess.run(['git', 'checkout', '-qb', 'inspection'], cwd=dest, check=True)
+    attached = subprocess.run([*cmd, sha], capture_output=True, text=True)
+    assert attached.returncode == 2
+    assert 'CHECKOUT_ATTACHED' in attached.stderr
 
 
 @needs_sandbox
