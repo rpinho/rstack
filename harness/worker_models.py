@@ -545,18 +545,21 @@ def trial_report(name, ledgers, roles_file=None):
 
 
 def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), executors=('codex', 'claude', 'agy'),
-             quota=None, skipped=None, job=''):
+             quota=None, skipped=None, job='', force=False):
     """(model, note) when this selection is one of the delegated share, else None. An agy model whose logged quota
-    reset has not passed is left out of the pool (quota: agy_quota.blocked()), and `skipped` gets a line for it."""
-    trial = trial_pick(role, data, excluded, families, executors, quota, job, top=top)
-    if trial:
-        return trial
+    reset has not passed is left out of the pool (quota: agy_quota.blocked()), and `skipped` gets a line for it.
+    force (11-23, Claude off by default in this role): every draw, no trial, no Claude delegate, and no Codex
+    per-day count (the Codex wrapper's own cap still holds)."""
+    if not force:
+        trial = trial_pick(role, data, excluded, families, executors, quota, job, top=top)
+        if trial:
+            return trial
     try:
-        share = float(os.environ.get('RH_DELEGATE_SHARE') or 0)
+        share = 1.0 if force else float(os.environ.get('RH_DELEGATE_SHARE') or 0)
     except ValueError:
         raise ValueError('RH_DELEGATE_SHARE must be a number from 0 to 1')
     roles = [r.strip() for r in (os.environ.get('RH_DELEGATE_ROLES') or ','.join(DELEGATE_ROLES)).split(',')]
-    if share <= 0 or role not in roles or draw >= share:
+    if not force and (share <= 0 or role not in roles or draw >= share):
         return None
     evidence = (data.get('evidence') or {}).get(ROLE_ROWS.get(role, role) if role not in data['roles'] else role, {})
     pool = []
@@ -564,6 +567,8 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), exe
         route = data['routes'].get(m)
         gem = re.match(r'gemini-4-(\w+)', m)
         if gem and role not in GEMINI_ROLES.get(gem.group(1), ()):
+            continue
+        if force and isinstance(route, dict) and route.get('cli') == 'claude':
             continue
         if (m == top or not isinstance(route, dict) or route.get('cli') not in executors
                 or m in excluded or route.get('canonical') in excluded):
@@ -576,7 +581,7 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), exe
             if skipped is not None:
                 skipped.append(agy_quota.skip_note(m, held))
             continue
-        if route.get('cli') == 'codex' and codex_delegates_today() >= int(os.environ.get('RH_DELEGATE_CODEX_PER_DAY') or 6):
+        if not force and route.get('cli') == 'codex' and codex_delegates_today() >= int(os.environ.get('RH_DELEGATE_CODEX_PER_DAY') or 6):
             continue   # Sol and Astra draw on the Codex budget: at most this many delegate picks a day
         pool.append(m)
     if not pool:
@@ -587,8 +592,11 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), exe
         pool.remove('gemini-4-argon-medium')   # Argon only in ARGON_SHARE of its draws
     # Fewest graded outcomes first, so every delegate reaches n=5; the draw breaks ties.
     pick = min(pool, key=lambda m: (n(m), hashlib.sha256((m + repr(draw)).encode()).hexdigest()))
-    if data['routes'][pick].get('cli') == 'codex':
+    if data['routes'][pick].get('cli') == 'codex' and not force:
         codex_delegates_today(add=True)
+    if force:
+        return pick, ('Claude off by default for {} (Ricardo 11-23: "run more on Codex and on Gemini"): {} '
+                      '(everyday n={}) instead of the leaderboard pick {}').format(role, pick, n(pick), top)
     return pick, 'delegated share {:g} of {}: {} (everyday n={}) instead of the leaderboard pick {}'.format(
         share, role, pick, n(pick), top)
 
@@ -736,6 +744,25 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
                                runnable(requested, follows_route) & {'claude', 'codex', 'agy'}, quota, job, top=chosen)
         if delegated:
             chosen = delegated[0]
+    # 11-23 (Ricardo via general: "We're already at 21%, and it's Monday... run more on Codex and on Gemini"):
+    # an unpinned Claude pick in builder, mechanical, batch, review, judge or audit goes to the Codex and Gemini
+    # delegates, fewest graded outcomes first. A trial's own turn, a pin, a gate or an explicit model stays.
+    top_route = data['routes'].get(chosen)
+    if (isinstance(top_route, dict) and top_route.get('cli') == 'claude' and claude_cap.delegate_default(role)
+            and not (explore or model or pin or gate) and not (delegated and len(delegated) > 2)):
+        if judging and not families:
+            delegate_skip = 'Claude off by default for {}, but the producer family is unknown: stays on {}'.format(
+                role, chosen)
+        else:
+            open_to = runnable(requested, follows_route) & ({'agy'} if codex_closed else {'codex', 'agy'})
+            forced = delegate(role, data, excluded, made_by, chosen, int(uuid.uuid4().hex[:8], 16) / 2 ** 32,
+                              families if judging else frozenset(), open_to, quota=quota, skipped=quota_skipped,
+                              job=job, force=True)
+            if forced:
+                chosen, delegated = forced[0], forced
+            else:
+                delegate_skip = 'Claude off by default for {}, but no Codex or Gemini delegate is open: stays on {}'.format(
+                    role, chosen)
     floor = gemini_floor(chosen, data)
     if floor:
         chosen, floor_note = floor

@@ -9,6 +9,12 @@ code, applied by worker_models.select() to every Claude pick, and the receipt sa
   pacing    weekly + burn %/h x hours to reset > 80: Opus is moved to Sonnet; at >= RH_CLAUDE_PACE_OFF_PERCENT
             (100: on course to hit the wall) the job leaves Claude. Burn is the slope of
             usage/claude-history.jsonl (written by claude-usage) over the last 6 h, else this week's average.
+  line      (11-23) weekly above a straight line from 0% at the week's start to (ceiling - RH_CLAUDE_KEEP_BACK_PERCENT,
+            3) at the reset: an unpinned job leaves Claude until the line catches up; a pinned one stays, noted.
+            RH_CLAUDE_BUDGET_LINE=0 turns it off. Off in the spend-down hours, like pacing.
+  default   (11-23) a Claude pick in builder, mechanical, batch, review, judge or audit (RH_CLAUDE_OFF_ROLES) goes to
+            the Codex and Gemini delegates instead, unless it is pinned (worker_models.select); RH_CLAUDE_DELEGATE_DEFAULT=0
+            turns it off. Claude keeps Ricardo-facing writing, browser work with his logins and pinned referees.
   Sonnet   preferred Claude model for mechanical/batch/cheap picks only; judgment roles keep the leaderboard's pick.
   shares    ~/.config/rstack/claude-shares.json: {"LANE": {"max_week_percent": N, "models": ["sonnet"]}, "default": {...}}.
 
@@ -25,6 +31,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import time
 try:
     import settings  # noqa: F401  11-22: loads the harness env file, so the Agent hook sees the selector's knobs
@@ -91,6 +98,28 @@ def spend_down(weekly, now=None):
     except (KeyError, TypeError, ValueError):
         return False
     return 0 <= left <= _f('RH_CLAUDE_SPEND_DOWN_HOURS', SPEND_DOWN_H)
+
+
+KEEP_BACK = 3.0
+# 11-23 (Ricardo via general): Claude only for Ricardo-facing writing, browser work with his logins and sealed
+# cross-lab referees (those are pinned); every other pick in these roles goes to Codex and Gemini.
+OFF_CLAUDE_ROLES = ('builder', 'mechanical', 'batch', 'review', 'judge', 'audit')
+
+
+def delegate_default(role):
+    """True when an unpinned Claude pick in this role goes to the Codex and Gemini delegates instead."""
+    if not enabled() or os.environ.get('RH_CLAUDE_DELEGATE_DEFAULT', '1') == '0':
+        return False
+    roles = os.environ.get('RH_CLAUDE_OFF_ROLES')
+    roles = [r.strip() for r in roles.split(',')] if roles is not None else OFF_CLAUDE_ROLES
+    return role in roles
+
+
+def budget_line(ceiling, resets, now):
+    """(line %, end %): where weekly usage may be now on a straight line to (ceiling - keep back) at the reset."""
+    end = max(0.0, ceiling - _f('RH_CLAUDE_KEEP_BACK_PERCENT', KEEP_BACK))
+    elapsed = WEEK_H * 3600 - (float(resets) - now)
+    return end * min(1.0, max(0.0, elapsed / (WEEK_H * 3600))), end
 
 
 def enabled():
@@ -241,6 +270,73 @@ def lane_percent(lane, weekly, since, now, allowance=None, projects=None):
     return pct, '{:.1f}% of {:g}% weekly (token-weighted transcripts, interactive worktree sessions included)'.format(pct, weekly)
 
 
+def _label(name, lanes):
+    """A transcript project dir as a short session or lane name."""
+    n = _norm(name)
+    n = re.sub(r'^users-[a-z0-9]+-', '', n)
+    m = re.search(r'-([a-z0-9]+)-jobs-', '-' + n)
+    if m:
+        n = m.group(1) + '-jobs'
+    elif re.search(r'worktrees-[a-z0-9-]*?kb-', n):      # a session worktree of a notes repo: its name
+        n = re.split(r'worktrees-[a-z0-9-]*?kb-', n, 1)[1]
+    elif '-lanes-' in '-' + n:
+        n = ('-' + n).split('-lanes-', 1)[1]
+    n = re.sub(r'^claude-', '', re.sub(r'(-\d{8}(-\d{6})?)+$', '', n)) or 'home'
+    hit = [l for l in lanes if n == l or n.startswith(l + '-')]
+    return max(hit, key=len) if hit else n
+
+
+def lanes_text(allowance, now=None, projects=None, lanes_root=None, top=8):
+    """One line: the weekly figure, the budget line, and each session's or lane's token-weighted share."""
+    now = time.time() if now is None else now
+    weekly = allowance.claude_weekly(now) if allowance else None
+    if not weekly:
+        return 'Claude by lane: usage unknown, no line today'
+    used, resets = float(weekly['weekly_used_percent']), weekly.get('resets_at')
+    since = float(resets) - WEEK_H * 3600 if resets else now - WEEK_H * 3600
+    root = Path(lanes_root or os.environ.get('RH_LANES_ROOT') or Path.home() / '.local/share/research-harness/lanes')
+    try:
+        lanes = sorted((_norm(p.name) for p in root.iterdir() if p.is_dir()), key=len)
+    except OSError:
+        lanes = []
+    groups = {}
+    for name, w in lane_weights(since, projects).items():
+        k = _label(name, lanes)
+        groups[k] = groups.get(k, 0.0) + w
+    total = sum(groups.values())
+    text = 'Claude this week: {:.0f}% of the weekly limit'.format(used)
+    if resets:
+        line, end = budget_line(ceiling_knob(now), resets, now)
+        text += ', the budget line is at {:.1f}% ({:g}% by the reset; {})'.format(
+            line, end, 'ahead of it: unpinned Claude work goes to Codex and Gemini' if used > line else 'on or under it')
+    if not total:
+        return text + '. No transcripts since the week began.'
+    rows = sorted(groups.items(), key=lambda kv: -kv[1])
+    shown = ', '.join('{} {:.1f}%'.format(k, used * w / total) for k, w in rows[:top])
+    rest = sum(w for _, w in rows[top:])
+    return text + '. By session or lane (token-weighted Claude Code transcripts; chat and desktop use not seen): ' + \
+        shown + (', {} others {:.1f}%'.format(len(rows) - top, used * rest / total) if rest else '') + '.'
+
+
+def main(argv=None):
+    import argparse
+    p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    sub_ = p.add_subparsers(dest='cmd', required=True)
+    r = sub_.add_parser('lanes', help="this week's Claude share per session or lane, one line")
+    r.add_argument('--tell', action='store_true', help='send the line to general (tell-general fyi)')
+    a = p.parse_args(argv)
+    text = lanes_text(load_allowance())
+    print(text)
+    if a.tell:
+        import subprocess
+        tg = os.environ.get('RH_TELL_GENERAL') or str(Path.home() / '.local/bin/tell-general')
+        try:
+            subprocess.run([tg, '--from', 'claude-lanes', 'fyi', text], capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            print('[claude-lanes] tell-general unavailable; the line is above', file=sys.stderr)
+    return 0
+
+
 # ---- the decision ----------------------------------------------------------------------------------------
 
 def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, projects=None):
@@ -293,6 +389,17 @@ def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, proj
             notes.append(line + '; Opus downshifted to Sonnet 5.5')
         else:
             notes.append(line + '; already Sonnet')
+    # 11-23: the straight-line budget. Ahead of it, unpinned work waits off Claude until the line catches up.
+    if pacing and resets and os.environ.get('RH_CLAUDE_BUDGET_LINE', '1') != '0':
+        line, end = budget_line(ceiling, resets, now)
+        if used > line:
+            note = ('claude budget line: {:.0f}% used, the line is at {:.1f}% ({:g}% by the reset, {:g}% kept back '
+                    'under the {:g}% ceiling)').format(used, line, end, ceiling - end, ceiling)
+            out.update(pressure='line', used=used, hours=hours, line=line, line_note=note)
+            if not pinned:
+                out['leave'] = note + '; ahead of the line, so the job leaves Claude'
+                return out
+            notes.append(note + '; pinned, so it stays on Claude')
     # per-lane share
     key, share = share_for(lane)
     if share:
@@ -311,3 +418,7 @@ def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, proj
                 return out
             notes.append('lane {} share: {} of {:g}% cap ({})'.format(lane, note, cap, key))
     return out
+
+
+if __name__ == '__main__':
+    sys.exit(main())

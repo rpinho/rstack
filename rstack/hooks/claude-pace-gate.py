@@ -35,6 +35,11 @@ def check(event):
         if _hookfail.is_conductor(event):
             return
         reason, fix = cap['leave'], CODEX
+    elif pressure == 'line':
+        if not opus or _hookfail.is_conductor(event):
+            return
+        reason = cap['line_note'] + '. Use model sonnet, or send build work to Codex.'
+        fix = ''
     elif pressure == 'pace-off' and opus and not _hookfail.is_conductor(event):
         reason, fix = cap['leave'], 'Use model sonnet or ' + CODEX
     elif opus or (pressure == 'pace-off' and model in ('sonnet', 'haiku')):

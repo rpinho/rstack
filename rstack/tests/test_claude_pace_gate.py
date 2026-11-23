@@ -16,7 +16,7 @@ HOOK = REPO / 'rstack/hooks/claude-pace-gate.py'
 @pytest.fixture
 def env(tmp_path):
     return {'HOME': str(tmp_path), 'PATH': os.environ['PATH'], 'RSTACK_STATE_DIR': str(tmp_path / 'state'),
-            'CONDUCTOR_CWD_SUFFIX': '/work/general'}
+            'CONDUCTOR_CWD_SUFFIX': '/work/general', 'RH_CLAUDE_BUDGET_LINE': '0'}
 
 
 def reading(env, percent, rate=0, age=30):
@@ -171,3 +171,12 @@ def test_installed_layout_and_policy_import_failure(env):
     block, warning = ledger(env)
     assert block['outcome'] == 'block'
     assert warning['outcome'] == 'warn' and 'ImportError' in warning['reason']
+
+
+def test_ahead_of_the_budget_line_an_opus_agent_is_told_and_allowed(env):
+    # 11-23: 72% with 20 h to the reset is ahead of the straight line to 77% (67.8%). A warning, never a deny.
+    env['RH_CLAUDE_BUDGET_LINE'] = '1'
+    reading(env, 72)
+    out, _ = spawn(env, 'opus')
+    assert 'budget line: 72% used' in out['additionalContext'] and 'permissionDecision' not in out
+    assert spawn(env, 'sonnet') == ({}, '')

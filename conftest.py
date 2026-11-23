@@ -25,6 +25,9 @@ os.environ['RH_OVERLAP'] = 'off'
 os.environ['LAUNCH_DISK_FLOOR_GB'] = '0'
 # The pod gate's RunPod month cap reads the provider's billing; tests never call a provider.
 os.environ['RH_RUNPOD_MONTH_CAP_USD'] = 'off'
+# 11-23: the Claude budget line and the Codex/Gemini default change most selections; their own tests turn them on.
+os.environ['RH_CLAUDE_BUDGET_LINE'] = '0'
+os.environ['RH_CLAUDE_DELEGATE_DEFAULT'] = '0'
 os.environ['RH_REAP_EXCLUDED'] = 'restricted-a,restricted-b'
 for key in ('RH_ROLES_FILE', 'RH_MODEL_OVERRIDE_LOG', 'MODEL_OVERRIDE_REASON', 'LAUNCH_MADE_BY',
             'RH_CONTACTS', 'RH_DECIDED_BY', 'CLAUDE_CODE_SESSION_ID', 'RH_EVIDENCE_ROOT',

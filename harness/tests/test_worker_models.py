@@ -1360,3 +1360,65 @@ def test_an_old_receipt_with_no_job_never_stops_the_ungraded_sweep(tmp_path):
         {'source': 'leaderboard', 'role': 'review', 'model': 'gpt-6.2-astra', 'selection_id': 'a' * 32}))
     (tmp_path / 'old_1103.log').write_text('MODEL_OUTCOME ' + json.dumps({'selection_id': 'a' * 32, 'finished': '2026-11-03T12:00:00+00:00'}) + '\n')
     assert wm.ungraded(tmp_path) == []
+
+
+def test_claude_is_off_by_default_in_build_and_review_roles_unless_pinned(tmp_path, monkeypatch):
+    # 11-23 (Ricardo via general): "We're already at 21%, and it's Monday... run more on Codex and on Gemini".
+    p = cap_setup(tmp_path, monkeypatch, 10, hours=160, history=[(2, 9.5), (0, 10)])
+    data = json.loads(p.read_text())
+    data['roles'].update({r: ['claude-opus-5-5'] for r in ('builder', 'mechanical', 'judge', 'taste')})
+    data['routes'].update({m: {'cli': 'agy', 'canonical': 'google/' + m} for m in
+                           ('gemini-4-neon-high', 'gemini-4-hydrogen-high')})
+    p.write_text(json.dumps(data))
+    monkeypatch.setenv('RH_CLAUDE_DELEGATE_DEFAULT', '1')
+    monkeypatch.setenv('RH_DELEGATE_CODEX_PER_DAY', '0')            # the per-day delegate count does not apply here
+    for role in ('builder', 'mechanical', 'batch', 'review', 'judge'):
+        got = wm.select(role, 'claude', path=p, made_by='gpt-6.2-sol' if role in wm.INDEPENDENT else '')
+        assert got['executor'] in ('codex', 'agy') and 'Claude off by default' in got['delegate'], (role, got)
+        assert got['source'] == 'delegate', role
+    got = wm.select('taste', 'claude', path=p)                       # Ricardo-facing writing keeps Claude
+    assert got['executor'] == 'claude'
+    got = wm.select('review', 'claude', path=p, made_by='gpt-6.2-sol', pin='sealed cross-lab referee')
+    assert got['executor'] == 'claude' and got['model'] == 'claude-opus-5-5'
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'claude')            # nowhere to go: stays, and says so
+    got = wm.select('builder', 'claude', path=p)
+    assert got['executor'] == 'claude' and 'no Codex or Gemini delegate is open' in got['delegate_skipped']
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
+    monkeypatch.setenv('RH_CLAUDE_DELEGATE_DEFAULT', '0')
+    assert wm.select('builder', 'claude', path=p)['executor'] == 'claude'
+
+
+def test_ahead_of_the_straight_line_budget_unpinned_claude_work_leaves(tmp_path, monkeypatch):
+    # 11-23: 21% on Monday afternoon. 77% by the reset (80% ceiling, 3% kept back): 38 h in, the line is 17.4%.
+    monkeypatch.setenv('RH_CLAUDE_BUDGET_LINE', '1')
+    p = cap_setup(tmp_path, monkeypatch, 21, hours=130, history=[(2, 20.5), (0, 21)])
+    got = wm.select('batch', 'claude', path=p)
+    assert got['executor'] == 'codex' and 'budget line: 21% used, the line is at 17.4%' in got['claude_cap']
+    assert '77% by the reset' in got['claude_cap']
+    got = wm.select('batch', 'claude', path=p, pin='sealed referee')
+    assert got['executor'] == 'claude' and 'pinned, so it stays' in got['claude_cap']
+    p = cap_setup(tmp_path, monkeypatch, 15, hours=130, history=[(2, 14.5), (0, 15)])
+    assert wm.select('batch', 'claude', path=p)['executor'] == 'claude'      # under the line
+    monkeypatch.setenv('RH_CLAUDE_KEEP_BACK_PERCENT', '30')                  # 50% by the reset: 11.3% now
+    assert wm.select('batch', 'claude', path=p)['executor'] == 'codex'
+    monkeypatch.setenv('RH_CLAUDE_BUDGET_LINE', '0')
+    assert wm.select('batch', 'claude', path=p)['executor'] == 'claude'
+
+
+def test_the_daily_line_gives_each_session_and_lane_its_claude_share(tmp_path, monkeypatch):
+    import time
+    p = cap_setup(tmp_path, monkeypatch, 20, hours=130)
+    proj = tmp_path / 'projects'
+    lanes = tmp_path / 'lanes'
+    for lane in ('bio', 'adaptyv-c4'):
+        (lanes / lane).mkdir(parents=True)
+    stamp = dt.datetime.now(dt.timezone.utc).isoformat()
+    for name, tokens in (('-Users-x--worktrees-notes-kb-general', 2500), ('-Users-x--worktrees-notes-kb-claude-adaptyv-c4-v2', 1500),
+                         ('-Users-x--local-state-bio-jobs-hunt-h2-ref', 500), ('-Users-x--local-state-bio-jobs-hunt-h3-ref', 500)):
+        (proj / name).mkdir(parents=True)
+        (proj / name / 's.jsonl').write_text(json.dumps({'timestamp': stamp, 'uuid': name, 'message': {
+            'id': name, 'model': 'claude-sonnet-5-5', 'usage': {'input_tokens': tokens}}}) + '\n')
+    text = wm.claude_cap.lanes_text(wm._allowance(), projects=proj, lanes_root=lanes)
+    assert text.startswith('Claude this week: 20% of the weekly limit, the budget line is at ')
+    assert 'general 10.0%, adaptyv-c4 6.0%, bio 4.0%' in text, text
+    assert 'ahead of it' in text

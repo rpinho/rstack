@@ -178,4 +178,13 @@ Ricardo: Claude must never reach 100% (general runs on it), Sonnet is the defaul
   `max_week_percent` and `models`, with a `default`. Measured from Claude Code transcripts (token-weighted, Opus x5,
   fraction of all transcripts since the week began x the weekly percent). Limits: a session in a directory not
   named for the lane is unattributed; chat and desktop use leaves no transcript. The weekly figure stays the hard bound.
+- Budget line (11-23, Ricardo: "We're already at 21%, and it's Monday"): weekly usage above a straight line from 0%
+  at the week's start to the ceiling minus `RH_CLAUDE_KEEP_BACK_PERCENT` (3) at the reset sends unpinned Claude work
+  to the same fallback until the line catches up; a pinned job stays, noted. `RH_CLAUDE_BUDGET_LINE=0` turns it off.
+- Codex and Gemini by default (11-23): an unpinned Claude pick in builder, mechanical, batch, review, judge or audit
+  (`RH_CLAUDE_OFF_ROLES`) goes to the delegate pool without Claude (Neon-high, Hydrogen-high, Argon-medium, Sol,
+  Astra; fewest graded outcomes first). Claude keeps Ricardo-facing writing, browser work with his logins and pinned
+  referees. `RH_CLAUDE_DELEGATE_DEFAULT=0` turns it off.
+- `claude_cap.py lanes [--tell]`: one line a day with the weekly figure, the line, and each session's or lane's
+  token-weighted share (same transcript limits as lane shares).
 - `RH_CLAUDE_CAP=0` turns all of it off.
