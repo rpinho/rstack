@@ -159,11 +159,27 @@ def claude_overflow(executor, model):
 DELEGATE_ROLES = ('review', 'judge', 'audit', 'mechanical', 'builder', 'batch', 'biology')
 # 11-20 (Ricardo): Neon is the main Gemini (judgment roles, medium), Hydrogen the cheap one (batch and mechanical,
 # low or medium); Argon is in no pool and Carbon (Ultra only) stays out.
-DELEGATE_MODELS = ('gemini-4-neon-medium', 'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium',
+DELEGATE_MODELS = ('gemini-4-neon-high', 'gemini-4-hydrogen-high', 'gemini-4-argon-medium',
                    'gpt-6.2-sol', 'gpt-6.2-astra', 'claude-sonnet-5-5')
 # 11-22 (Ricardo via general): Neon also builds a record in biology.
-GEMINI_ROLES = {'neon': ('review', 'judge', 'audit', 'builder', 'biology'), 'hydrogen': ('batch', 'mechanical')}
-NEVER_PICKED = ('gemini-4-argon', 'gemini-4-carbon')   # no role, no delegate draw, no headroom move
+GEMINI_ROLES = {'neon': ('review', 'judge', 'audit', 'builder', 'biology'), 'hydrogen': ('batch', 'mechanical'),
+                'argon': ('review', 'judge', 'audit', 'builder', 'biology')}
+NEVER_PICKED = ('gemini-4-carbon',)   # no role, no delegate draw, no headroom move
+# 11-23 (Ricardo: "just do median for all of them, and for Neon and Hydrogen, we should try high"): no Gemini job
+# runs below medium; a -low pick (an old ranking, an explicit --model) runs at -medium, and the receipt says so.
+# Argon-medium builds a record from a small share of the delegated draws in its roles (its weekly agy quota is
+# the smallest: exhausted after 9 jobs on 11-20).
+GEMINI_LOW = re.compile(r'^(gemini-[\w.]+(?:-[a-z]+)?)-low$')
+ARGON_SHARE = 0.2
+
+
+def gemini_floor(model, data):
+    """(model at medium, note) for a Gemini model below medium whose medium tier has a route, else None."""
+    m = GEMINI_LOW.match(model or '')
+    if not m or not isinstance((data.get('routes') or {}).get(m.group(1) + '-medium'), dict):
+        return None
+    up = m.group(1) + '-medium'
+    return up, 'gemini floor: {} runs as {} (Ricardo 11-23: no Gemini below medium)'.format(model, up)
 
 
 # A spec that needs its model (a sealed referee, a cross-family check) says so in one line, and is never delegated:
@@ -225,7 +241,7 @@ def claude_fallback(role, data, excluded, families, requested, follows_route, ch
             and pick not in excluded and r.get('canonical') not in excluded and maker(pick, r.get('canonical')) not in families):
         return pick, 'codex', None
     if hold:
-        gemini = 'gemini-4-hydrogen-medium' if role in GEMINI_ROLES['hydrogen'] else 'gemini-4-neon-medium'
+        gemini = 'gemini-4-hydrogen-high' if role in GEMINI_ROLES['hydrogen'] else 'gemini-4-neon-high'
         r = data['routes'].get(gemini)
         if ('agy' in run and isinstance(r, dict) and r.get('cli') == 'agy' and gemini not in excluded
                 and r.get('canonical') not in excluded and maker(gemini, r.get('canonical')) not in families):
@@ -393,33 +409,6 @@ def codex_closed_pick(role, data, ranked, excluded, families):
                 and r.get('canonical') not in excluded and maker(m, r.get('canonical')) not in families)
     first = PROVIDER_DEFAULT['claude'].get(role) or PROVIDER_DEFAULT['claude']['*']
     return next((m for m in [first] + list(ranked) if open_to(m)), None)
-
-
-HYDROGEN_LOW, HYDROGEN_MEDIUM = 'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium'
-
-
-def prefer_hydrogen_medium(pool, evidence, cost, min_n=5):
-    """11-20: Hydrogen-medium is drawn before Hydrogen-low until low earns it on everyday work. Low leaves the
-    pool while medium has under `min_n` graded tasks (medium is tried first), and again once both have enough
-    unless low's everyday rate beats medium's, or ties it at a lower cost per passed task. Never raises and
-    never empties a pool: a missing figure keeps both."""
-    try:
-        if HYDROGEN_LOW not in pool or HYDROGEN_MEDIUM not in pool:
-            return pool
-        low, med = evidence.get(HYDROGEN_LOW) or {}, evidence.get(HYDROGEN_MEDIUM) or {}
-        if (med.get('n') or 0) < min_n:
-            return [m for m in pool if m != HYDROGEN_LOW]
-        if (low.get('n') or 0) < min_n:
-            return pool               # medium is established; low gets its n=5 to earn the place
-        lr, mr = low.get('rate'), med.get('rate')
-        if lr is None or mr is None:
-            return pool
-        lc = ((cost or {}).get(HYDROGEN_LOW) or {}).get('pct_per_pass')
-        mc = ((cost or {}).get(HYDROGEN_MEDIUM) or {}).get('pct_per_pass')
-        earned = lr > mr or (lr == mr and lc is not None and mc is not None and lc < mc)
-        return pool if earned else [m for m in pool if m != HYDROGEN_LOW]
-    except (AttributeError, TypeError):
-        return pool
 
 
 # 11-22 (Ricardo, via general: "Have we been using Gemini Neon? ... We need to test it."): a paired trial on
@@ -593,8 +582,9 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), exe
     if not pool:
         return None
     n = lambda m: (evidence.get(m) or {}).get('n', 0)
-    pool = prefer_hydrogen_medium(pool, evidence, (data.get('cost') or {}).get(
-        ROLE_ROWS.get(role, role) if role not in data['roles'] else role, {}))
+    if 'gemini-4-argon-medium' in pool and len(pool) > 1 and int(hashlib.sha256(
+            ('argon' + repr(draw)).encode()).hexdigest()[:8], 16) / 2 ** 32 >= ARGON_SHARE:
+        pool.remove('gemini-4-argon-medium')   # Argon only in ARGON_SHARE of its draws
     # Fewest graded outcomes first, so every delegate reaches n=5; the draw breaks ties.
     pick = min(pool, key=lambda m: (n(m), hashlib.sha256((m + repr(draw)).encode()).hexdigest()))
     if data['routes'][pick].get('cli') == 'codex':
@@ -746,8 +736,11 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
                                runnable(requested, follows_route) & {'claude', 'codex', 'agy'}, quota, job, top=chosen)
         if delegated:
             chosen = delegated[0]
+    floor = gemini_floor(chosen, data)
+    if floor:
+        chosen, floor_note = floor
     route = data['routes'].get(chosen)
-    if (delegated or switched or gate or (quota_skipped and chosen != ranked[0])
+    if (delegated or switched or gate or floor or (quota_skipped and chosen != ranked[0])
             or (judging and families and chosen != (explore or model or ranked[0]))):
         executor = route['cli']   # named in the receipt and the log below; not a silent swap
     # 11-20: an explored model runs on its own CLI when the launcher can run it, as a delegate does; before, a
@@ -835,6 +828,9 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         receipt['claude_cap'] = '; '.join(cap['notes'])
         if cap['warning']:
             receipt['claude_warning'] = cap['warning']
+    if floor:
+        receipt['gemini_floor'] = floor[1]
+        print('worker model: ' + floor[1], file=sys.stderr)
     if codex_closed:
         receipt['codex_refused'] = codex_closed
     if explore_outside:

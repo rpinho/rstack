@@ -56,14 +56,14 @@ def lanes_env(tmp_path, roles, **extra):
     return jobs, env
 
 
-AGY_ROLES = {'roles': {'batch': ['gemini-4-hydrogen-low']},
-             'routes': {'gemini-4-hydrogen-low': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-low'}}}
+AGY_ROLES = {'roles': {'batch': ['gemini-4-hydrogen-high']},
+             'routes': {'gemini-4-hydrogen-high': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-high'}}}
 
 
 def test_an_agy_route_runs_detached_through_the_launcher_and_comes_back_graded(tmp_path):
     """The whole lane path: detached into tmux, agy executor, receipt, exit line, auto-grade row, registry."""
     agy = stub(tmp_path / 'fake-agy', 'import json, sys\n' + DONE +
-               'assert "--model" in sys.argv and "gemini-4-hydrogen-low" in sys.argv\n'
+               'assert "--model" in sys.argv and "gemini-4-hydrogen-high" in sys.argv\n'
                'print(json.dumps({"response": "done", "status": "OK"}))\n')
     tm, state = fake_tmux(tmp_path)
     jobs, env = lanes_env(tmp_path, AGY_ROLES, AGENT_BACKEND='agy', LAUNCH_AGY=str(agy), LAUNCH_DETACH='tmux',
@@ -76,10 +76,10 @@ def test_an_agy_route_runs_detached_through_the_launcher_and_comes_back_graded(t
     assert proc.returncode == 0, proc.stderr + (state / 'job-fixture-agy.out').read_text()
     assert (state / 'job-fixture-agy.cmd').exists()   # it ran in its own session, not under the caller
     log = (jobs / 'fixture-agy.log').read_text()
-    assert '=== attempt 1 model gemini-4-hydrogen-low' in log and '"response": "done"' in log
+    assert '=== attempt 1 model gemini-4-hydrogen-high' in log and '"response": "done"' in log
     assert any(line.startswith('exit 0 ') for line in log.splitlines())
     receipt = json.loads((jobs / 'fixture-agy.log.selection.json').read_text())
-    assert (receipt['executor'], receipt['model'], receipt['role']) == ('agy', 'gemini-4-hydrogen-low', 'batch')
+    assert (receipt['executor'], receipt['model'], receipt['role']) == ('agy', 'gemini-4-hydrogen-high', 'batch')
     assert 'GRADE ON RETURN' in log
     entry = dict(line.split('=', 1) for line in (tmp_path / 'registry/fixture-agy.finished').read_text().splitlines())
     assert entry['restarts'] == '2' and entry['path'] and entry['dir'] == str(work)
@@ -89,7 +89,7 @@ def test_a_delegated_agy_job_is_auto_graded_at_return(tmp_path):
     agy = stub(tmp_path / 'fake-agy', 'import json\n' + DONE + 'print(json.dumps({"response": "done"}))\n')
     roles = {'roles': {'batch': ['gpt-6.2-sol']}, 'routes': {
         'gpt-6.2-sol': {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'},
-        'gemini-4-hydrogen-low': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-low'}}}
+        'gemini-4-hydrogen-high': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-high'}}}
     jobs, env = lanes_env(tmp_path, roles, LAUNCH_AGY=str(agy), RH_DELEGATE_SHARE='1',
                           RH_LAUNCHER_EXECUTORS='agy', RH_HEADROOM_ROUTING='0')
     (jobs / 'fixture-d.md').write_text('Write out.txt.\nCheck: test -f out.txt\n')
@@ -99,7 +99,7 @@ def test_a_delegated_agy_job_is_auto_graded_at_return(tmp_path):
     receipt = json.loads((jobs / 'fixture-d.log.selection.json').read_text())
     assert (receipt['source'], receipt['executor']) == ('delegate', 'agy')
     row = json.loads((jobs / 'everyday-grades.jsonl').read_text().splitlines()[-1])
-    assert (row['grade'], row['grader'], row['producer']) == ('pass', 'checks', 'gemini-4-hydrogen-low')
+    assert (row['grade'], row['grader'], row['producer']) == ('pass', 'checks', 'gemini-4-hydrogen-high')
 
 
 CLAUDE_ROLES = {'roles': {'batch': ['fixture-claude']},
@@ -199,8 +199,8 @@ def test_the_selector_is_offered_only_executors_the_host_has(tmp_path):
     # 11-22 (general): ddbench_scan_1122 was delegated to agy on the M4, which has no agy, died in 1 s and was
     # graded FAIL for Hydrogen. Here Codex is the missing CLI: the delegate draw would pick gpt-6.2-sol on codex.
     agy = stub(tmp_path / 'fake-agy', 'import json\n' + DONE + 'print(json.dumps({"response": "done"}))\n')
-    roles = {'roles': {'batch': ['gemini-4-hydrogen-low']}, 'routes': {
-        'gemini-4-hydrogen-low': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-low'},
+    roles = {'roles': {'batch': ['gemini-4-hydrogen-high']}, 'routes': {
+        'gemini-4-hydrogen-high': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-high'},
         'gpt-6.2-sol': {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'}}}
     bare = tmp_path / 'bin'
     bare.mkdir()
@@ -213,5 +213,5 @@ def test_the_selector_is_offered_only_executors_the_host_has(tmp_path):
                           capture_output=True, text=True, timeout=120)
     assert proc.returncode == 0, proc.stderr
     receipt = json.loads((jobs / 'fixture-x.log.selection.json').read_text())
-    assert (receipt['executor'], receipt['model']) == ('agy', 'gemini-4-hydrogen-low')
+    assert (receipt['executor'], receipt['model']) == ('agy', 'gemini-4-hydrogen-high')
     assert 'executors on this host: agy' in (jobs / 'fixture-x.log').read_text()

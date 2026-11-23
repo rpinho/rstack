@@ -57,14 +57,15 @@ def test_bench_rows_never_rank_and_show_in_their_own_column(tmp_path, monkeypatc
 
 def test_neon_is_the_judgment_candidate_hydrogen_the_batch_one_and_argon_is_in_no_pool():
     # 11-20 (Ricardo): Neon main Gemini at medium for judgment roles; Hydrogen cheap/fast for batch and
-    # mechanical at low or medium; Argon dropped from every role; Carbon (Ultra only) never a candidate.
+    # mechanical; 11-23: both at high or medium, never low. Argon dropped from every role; Carbon (Ultra only) never a candidate.
     for role, pool in mr.CANDIDATES.items():
         assert not any('argon' in m or 'carbon' in m for m in pool), role
         gemini4 = [m for m in pool if 'gemini-4' in m]
         if role in ('batch', 'mechanical', 'cheap'):
-            assert gemini4 == ['google/gemini-4-hydrogen-low', 'google/gemini-4-hydrogen-medium'], role
+            assert gemini4 == ['google/gemini-4-hydrogen-high', 'google/gemini-4-hydrogen-medium'], role
         else:
-            assert gemini4 == ['google/gemini-4-neon-medium'], role
+            assert gemini4 == ['google/gemini-4-neon-high', 'google/gemini-4-neon-medium'], role
+        assert not any(m.endswith('-low') for m in pool), role       # 11-23: no Gemini below medium
 
 
 def test_argon_is_never_ranked_in_any_role_even_with_graded_history(tmp_path, monkeypatch):

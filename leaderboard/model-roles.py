@@ -61,6 +61,8 @@ MODELS = {'anthropic/claude-opus-5.5': ('claude', 'claude-opus-5-5'),
  # Gemini API routes above, whose history stays as it is. Low and medium are both candidates: effort is chosen
  # like everything else, from graded real lane work at each effort (Ricardo 11-19: "Those are synthetic tests.
  # I wouldn't use synthetic tests as the guidance... It's everyday work.").
+ 'google/gemini-4-neon-high': ('agy', 'gemini-4-neon-high'),
+ 'google/gemini-4-hydrogen-high': ('agy', 'gemini-4-hydrogen-high'),
  'google/gemini-4-neon-medium': ('agy', 'gemini-4-neon-medium'),
  'google/gemini-4-argon-medium': ('agy', 'gemini-4-argon-medium'),
  'google/gemini-4-hydrogen-medium': ('agy', 'gemini-4-hydrogen-medium'),
@@ -120,14 +122,19 @@ ROLES = tuple(SEED)
 # Owner, 2026-11-18: "Spending OpenRouter money on Google is a waste".
 # 11-19: Google on the agy subscription is not metered, so its Flash tiers enter as candidates: after every
 # seed, with no evidence, and moved only by the same Wilson rule as any other model. No winner is picked here.
-AGY_FLASH = ['google/gemini-3.8-flash-high', 'google/gemini-3.8-flash-medium', 'google/gemini-3.8-flash-low']
+AGY_FLASH = ['google/gemini-3.8-flash-high', 'google/gemini-3.8-flash-medium']
 # 11-20 (Ricardo: "yes, of course"): Neon is the main Gemini, so it is the candidate for judgment roles, at
 # medium; Hydrogen is the cheap, fast one, for batch and mechanical work, at low or medium. Argon (the older main
 # model, ~3.5x Sol's cost per task, weekly quota exhausted) is out of every pool, and Carbon (Ultra only) stays
 # out. This changes who is a candidate, never the rank: ranks still come only from graded everyday work.
-AGY_NEON = ['google/gemini-4-neon-medium']
-AGY_HYDROGEN = ['google/gemini-4-hydrogen-low', 'google/gemini-4-hydrogen-medium']
-GEMINI4_DROPPED = ('google/gemini-4-argon', 'google/gemini-4-argon-low', 'google/gemini-4-argon-medium')
+# 11-23 (Ricardo: "just do median for all of them, and for Neon and Hydrogen, we should try high"): no Gemini tier
+# below medium is a candidate or keeps a rank; Neon and Hydrogen run at high as well as medium, each its own row.
+# Argon-medium has a route again but no rank: the selector draws it for a small share of delegated work.
+AGY_NEON = ['google/gemini-4-neon-high', 'google/gemini-4-neon-medium']
+AGY_HYDROGEN = ['google/gemini-4-hydrogen-high', 'google/gemini-4-hydrogen-medium']
+GEMINI_BELOW_FLOOR = ('google/gemini-3.8-flash-low', 'google/gemini-4-neon-low', 'google/gemini-4-hydrogen-low',
+                      'google/gemini-4-argon-low')
+GEMINI4_DROPPED = ('google/gemini-4-argon', 'google/gemini-4-argon-medium') + GEMINI_BELOW_FLOOR
 HYDROGEN_ROLES = ('batch', 'mechanical', 'cheap')
 AGY_GEMINI4 = AGY_NEON + AGY_HYDROGEN
 AGY_CANDIDATES = AGY_FLASH + AGY_GEMINI4

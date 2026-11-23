@@ -588,11 +588,11 @@ def test_the_receipt_shows_everyday_rate_and_n_first_and_the_bench_apart(tmp_pat
 
 def delegate_roles(path):
     routes = {'claude-opus-5-5': ('claude', 'anthropic/claude-opus-5.5'), 'gpt-6.2-sol': ('codex', 'openai/gpt-6.2-sol'),
-              'gemini-4-hydrogen-low': ('agy', 'google/gemini-4-hydrogen-low'),
-              'gemini-4-neon-medium': ('agy', 'google/gemini-4-neon-medium')}
+              'gemini-4-hydrogen-high': ('agy', 'google/gemini-4-hydrogen-high'),
+              'gemini-4-neon-high': ('agy', 'google/gemini-4-neon-high')}
     path.write_text(json.dumps({'roles': {'review': ['claude-opus-5-5', 'gpt-6.2-sol'], 'batch': ['claude-opus-5-5']},
         'routes': {m: {'cli': c, 'canonical': k} for m, (c, k) in routes.items()},
-        'evidence': {'review': {'gemini-4-hydrogen-low': {'n': 3, 'rate': 1.0}}}}))
+        'evidence': {'review': {'gemini-4-hydrogen-high': {'n': 3, 'rate': 1.0}}}}))
     return path
 
 
@@ -601,8 +601,8 @@ def test_a_delegated_share_goes_to_the_delegate_with_fewest_graded_outcomes_and_
     monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     got = wm.select('review', 'codex', path=p, made_by='gpt-6')
-    assert got['source'] == 'delegate' and got['model'] == 'gemini-4-neon-medium' and got['executor'] == 'agy'
-    assert got['delegate'] == ('delegated share 1 of review: gemini-4-neon-medium (everyday n=0) instead of the '
+    assert got['source'] == 'delegate' and got['model'] == 'gemini-4-neon-high' and got['executor'] == 'agy'
+    assert got['delegate'] == ('delegated share 1 of review: gemini-4-neon-high (everyday n=0) instead of the '
                                'leaderboard pick claude-opus-5-5')
     # Never to the job's own maker for judgment, and only in the delegated roles.
     assert wm.select('review', 'codex', path=p, made_by='gemini-3')['model'] == 'gpt-6.2-sol'
@@ -701,10 +701,10 @@ def test_a_lane_with_an_ungraded_returned_job_still_launches(fake_home):
 def family_roles(path):
     routes = {'claude-opus-5-5': ('claude', 'anthropic/claude-opus-5.5'), 'claude-sonnet-5-5': ('claude', 'anthropic/claude-sonnet-5.5'),
               'gpt-6.2-sol': ('codex', 'openai/gpt-6.2-sol'), 'gpt-6.2-astra': ('codex', 'openai/gpt-6.2-astra'),
-              'gemini-4-hydrogen-low': ('agy', 'google/gemini-4-hydrogen-low'), 'gemini-4-neon-medium': ('agy', 'google/gemini-4-neon-medium'),
-              'gemini-4-hydrogen-medium': ('agy', 'google/gemini-4-hydrogen-medium')}
-    path.write_text(json.dumps({'roles': {'review': ['gemini-4-hydrogen-low', 'claude-opus-5-5', 'gpt-6.2-astra'],
-                                          'batch': ['gemini-4-hydrogen-low', 'gpt-6.2-sol']},
+              'gemini-4-hydrogen-medium': ('agy', 'google/gemini-4-hydrogen-medium'), 'gemini-4-neon-high': ('agy', 'google/gemini-4-neon-high'),
+              'gemini-4-hydrogen-high': ('agy', 'google/gemini-4-hydrogen-high')}
+    path.write_text(json.dumps({'roles': {'review': ['gemini-4-hydrogen-medium', 'claude-opus-5-5', 'gpt-6.2-astra'],
+                                          'batch': ['gemini-4-hydrogen-medium', 'gpt-6.2-sol']},
                                 'routes': {m: {'cli': c, 'canonical': k} for m, (c, k) in routes.items()}}))
     return path
 
@@ -921,10 +921,10 @@ def science_gate(tmp_path, monkeypatch):
     gate.write_text("#!/usr/bin/env python3\nREVIEWERS = ('fable', 'claude-science', 'opus', 'astra')\nMIN_ACCEPTS = 2\n")
     monkeypatch.setenv('RH_SCIENCE_PUBLISH_GATE', str(gate))
     routes = {'claude-sonnet-5-5': ('claude', 'anthropic/claude-sonnet-5.5'), 'claude-opus-5-5': ('claude', 'anthropic/claude-opus-5.5'),
-              'gemini-4-neon-medium': ('agy', 'google/gemini-4-neon-medium'), 'gpt-6.2-astra': ('codex', 'openai/gpt-6.2-astra'),
+              'gemini-4-neon-high': ('agy', 'google/gemini-4-neon-high'), 'gpt-6.2-astra': ('codex', 'openai/gpt-6.2-astra'),
               'gpt-6.2-sol': ('codex', 'openai/gpt-6.2-sol'), 'claude-fable-5-2': ('claude', 'anthropic/claude-fable-5.2')}
     p = tmp_path / 'roles.json'
-    p.write_text(json.dumps({'roles': {'review': ['claude-sonnet-5-5', 'gemini-4-neon-medium', 'claude-opus-5-5', 'gpt-6.2-astra']},
+    p.write_text(json.dumps({'roles': {'review': ['claude-sonnet-5-5', 'gemini-4-neon-high', 'claude-opus-5-5', 'gpt-6.2-astra']},
                              'routes': {m: {'cli': c, 'canonical': k} for m, (c, k) in routes.items()}}))
     return p
 
@@ -1060,14 +1060,14 @@ def test_a_claude_hold_falls_back_to_agys_gemini_not_agys_claude(tmp_path, monke
                   shares={'default': {'max_week_percent': 0}})
     data = json.loads(p.read_text())
     data['routes'].update({m: {'cli': 'agy', 'canonical': 'google/' + m}
-                           for m in ('gemini-4-neon-medium', 'gemini-4-hydrogen-medium')})
+                           for m in ('gemini-4-neon-high', 'gemini-4-hydrogen-high')})
     data['roles']['builder'] = ['claude-opus-5-5']
     p.write_text(json.dumps(data))
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'claude,agy')   # Codex closed or absent
     got = wm.select('batch', 'claude', path=p)
-    assert (got['executor'], got['model'], got['route_model']) == ('agy', 'gemini-4-hydrogen-medium', 'gemini-4-hydrogen-medium')
+    assert (got['executor'], got['model'], got['route_model']) == ('agy', 'gemini-4-hydrogen-high', 'gemini-4-hydrogen-high')
     got = wm.select('builder', 'claude', path=p, made_by='gpt-6.2-sol')
-    assert (got['executor'], got['model']) == ('agy', 'gemini-4-neon-medium')
+    assert (got['executor'], got['model']) == ('agy', 'gemini-4-neon-high')
     # with Codex open the hold still takes Codex first
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     assert wm.select('batch', 'claude', path=p)['executor'] == 'codex'
@@ -1174,12 +1174,11 @@ def test_claude_usage_keeps_a_history_for_pacing(tmp_path):
     assert rows == [{'at': 1000 + 15 * 86400, 'weekly_percent': 9.0}]
 
 
-def test_argon_and_carbon_are_never_delegated_in_any_role(tmp_path, monkeypatch):
-    """11-20 (Ricardo): Argon is in no pool (older main model, ~3.5x Sol's cost, weekly quota exhausted); Carbon is Ultra-only.
-    Neon is a judgment-role delegate and Hydrogen a batch/mechanical one."""
+def test_gemini_delegates_run_at_high_or_medium_argon_takes_a_small_share_and_carbon_none(tmp_path, monkeypatch):
+    """11-23 (Ricardo: "just do median for all of them, and for Neon and Hydrogen, we should try high")."""
     routes = {m: {'cli': 'agy', 'canonical': 'google/' + m} for m in (
-        'gemini-4-argon-low', 'gemini-4-argon-medium', 'gemini-4-carbon-medium', 'gemini-4-neon-medium',
-        'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium')}
+        'gemini-4-argon-low', 'gemini-4-argon-medium', 'gemini-4-carbon-medium', 'gemini-4-neon-high',
+        'gemini-4-neon-medium', 'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium', 'gemini-4-hydrogen-high')}
     routes['gpt-6.2-sol'] = {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'}
     roles = {r: ['gpt-6.2-sol'] for r in wm.DELEGATE_ROLES}
     p = tmp_path / 'roles.json'
@@ -1190,30 +1189,29 @@ def test_argon_and_carbon_are_never_delegated_in_any_role(tmp_path, monkeypatch)
     monkeypatch.setenv('RH_DELEGATE_CODEX_PER_DAY', '0')
     seen = {}
     for role in wm.DELEGATE_ROLES:
-        for _ in range(25):
+        for _ in range(40):
             got = wm.select(role, 'codex', path=p, made_by='claude-opus-5-5' if role in wm.INDEPENDENT else '')
-            seen.setdefault(role, set()).add(got['model'])
-    assert not any('argon' in m or 'carbon' in m for models in seen.values() for m in models), seen
+            seen.setdefault(role, []).append(got['model'])
+    flat = [m for ms in seen.values() for m in ms]
+    assert not any(m.endswith('-low') or 'carbon' in m for m in flat), set(flat)
     for role in ('review', 'judge', 'audit', 'builder'):
-        assert seen[role] <= {'gemini-4-neon-medium', 'gpt-6.2-sol'}, (role, seen[role])
+        assert set(seen[role]) <= {'gemini-4-neon-high', 'gemini-4-argon-medium', 'gpt-6.2-sol'}, (role, set(seen[role]))
     for role in ('batch', 'mechanical'):
-        assert seen[role] <= {'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium', 'gpt-6.2-sol'}, (role, seen[role])
-    assert 'gemini-4-neon-medium' in seen['review'] and 'gemini-4-hydrogen-medium' in seen['batch']
+        assert set(seen[role]) <= {'gemini-4-hydrogen-high', 'gpt-6.2-sol'}, (role, set(seen[role]))
+    argon = sum(m == 'gemini-4-argon-medium' for r in ('review', 'judge', 'audit', 'builder') for m in seen[r])
+    assert 0 < argon < 0.45 * 160, argon                       # a small share, not every draw
 
 
-def test_hydrogen_low_is_held_back_until_it_earns_its_place_over_medium():
-    low, med = wm.HYDROGEN_LOW, wm.HYDROGEN_MEDIUM
-    pool = ['gemini-4-neon-medium', low, med]
-    ev = lambda ln, lr, mn, mr: {low: dict(n=ln, rate=lr), med: dict(n=mn, rate=mr)}
-    assert wm.prefer_hydrogen_medium(pool, ev(0, None, 0, None), {}) == ['gemini-4-neon-medium', med]
-    assert wm.prefer_hydrogen_medium(pool, ev(0, None, 5, 0.8), {}) == pool            # medium established: low may try
-    assert wm.prefer_hydrogen_medium(pool, ev(5, 0.7, 5, 0.8), {}) == ['gemini-4-neon-medium', med]
-    assert wm.prefer_hydrogen_medium(pool, ev(5, 0.9, 5, 0.8), {}) == pool            # low earned it on the record
-    cost = {low: dict(pct_per_pass=0.2), med: dict(pct_per_pass=0.5)}
-    assert wm.prefer_hydrogen_medium(pool, ev(5, 0.8, 5, 0.8), cost) == pool          # tie, cheaper
-    assert wm.prefer_hydrogen_medium(pool, ev(5, 0.8, 5, 0.8), {}) == ['gemini-4-neon-medium', med]
-    assert wm.prefer_hydrogen_medium(pool, None, None) == pool                         # bad input never raises
-
+def test_no_gemini_job_runs_below_medium(tmp_path, monkeypatch):
+    p = tmp_path / 'roles.json'
+    routes = {m: {'cli': 'agy', 'canonical': 'google/' + m} for m in ('gemini-3.8-flash-low', 'gemini-3.8-flash-medium')}
+    p.write_text(json.dumps({'roles': {'batch': ['gemini-3.8-flash-low']}, 'routes': routes}))
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'agy')
+    monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
+    monkeypatch.delenv('RH_DELEGATE_SHARE', raising=False)
+    got = wm.select('batch', 'agy', path=p)
+    assert got['model'] == 'gemini-3.8-flash-medium' and 'gemini floor' in got['gemini_floor']
+    assert wm.gemini_floor('gemini-4-neon-high', json.loads(p.read_text())) is None
 
 def test_a_model_trial_alternates_by_job_keeps_a_jobs_arm_and_stops_at_n(tmp_path, monkeypatch):
     # 11-22 (Ricardo via general): Neon-medium vs Opus 5.5 on the next builder jobs, by turns, graded as usual.

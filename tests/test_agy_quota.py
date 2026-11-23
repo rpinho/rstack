@@ -22,7 +22,7 @@ ERROR = 'Individual quota reached. Please upgrade your subscription to increase 
 NOW = dt.datetime(2026, 11, 20, 13, 0, tzinfo=dt.timezone.utc)
 ROLES = {'roles': {'batch': ['gemini-4-hydrogen-medium', 'gpt-6.2-sol'], 'review': ['claude-opus-5-5']},
          'routes': {'gemini-4-hydrogen-medium': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-medium'},
-                    'gemini-4-hydrogen-low': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-low'},
+                    'gemini-4-hydrogen-high': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-high'},
                     'gpt-6.2-sol': {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'},
                     'claude-opus-5-5': {'cli': 'claude', 'canonical': 'anthropic/claude-opus-5.5'}}}
 
@@ -89,16 +89,16 @@ def test_the_default_pick_skips_a_blocked_agy_model_and_the_receipt_says_until_w
 
 def test_the_delegate_pool_leaves_out_a_blocked_agy_model(state, monkeypatch):
     monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
-    monkeypatch.setattr(wm, 'DELEGATE_MODELS', ('gemini-4-hydrogen-medium', 'gemini-4-hydrogen-low'))
+    monkeypatch.setattr(wm, 'DELEGATE_MODELS', ('gemini-4-hydrogen-medium', 'gemini-4-hydrogen-high'))
     write(state, quota_row('gemini-4-hydrogen-medium', '152h', utc=dt.datetime.now(dt.timezone.utc)))
     for _ in range(5):
         receipt = wm.select('batch', 'codex', path=state / 'roles.json', job='j')
-        assert (receipt['source'], receipt['model'], receipt['executor']) == ('delegate', 'gemini-4-hydrogen-low', 'agy')
+        assert (receipt['source'], receipt['model'], receipt['executor']) == ('delegate', 'gemini-4-hydrogen-high', 'agy')
         assert any(s.startswith('skipped gemini-4-hydrogen-medium') for s in receipt['quota_skipped'])
-    write(state, quota_row('gemini-4-hydrogen-low', '3h', utc=dt.datetime.now(dt.timezone.utc)))
+    write(state, quota_row('gemini-4-hydrogen-high', '3h', utc=dt.datetime.now(dt.timezone.utc)))
     receipt = wm.select('batch', 'codex', path=state / 'roles.json', job='j')
     assert (receipt['source'], receipt['model']) == ('leaderboard', 'gpt-6.2-sol')
-    assert any('gemini-4-hydrogen-low' in s and '5h window' in s for s in receipt['quota_skipped'])
+    assert any('gemini-4-hydrogen-high' in s and '5h window' in s for s in receipt['quota_skipped'])
 
 
 def test_a_claude_job_does_not_overflow_to_an_agy_claude_out_of_quota(state, monkeypatch):
