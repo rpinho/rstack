@@ -15,11 +15,10 @@ per lane:
   source now lives in the cache directory, so the lanes draw from one budget; when a
   source has no tokens left the search moves to the next source instead of waiting.
 
-Keys are optional everywhere and are read from the host env file, never from a spec: with
-no key at all the chain still works, because Europe PMC, arXiv and Crossref need none and
-Semantic Scholar answers keyless at a low rate. `RH_PAPER_CONTACT` is the address sent to
-OpenAlex's and Crossref's polite pools; it is deliberately unset by default, because a
-contact address belongs to the operator and not to this repository.
+Keys are optional. OpenAlex reads its bearer key from a local file on each request and uses
+the generic User-Agent. Semantic Scholar reads its key from the host environment and answers
+keyless at a low rate. Europe PMC, arXiv and Crossref work without keys. `RH_PAPER_CONTACT`
+opts other requests into the contact User-Agent and supplies Crossref's polite-pool address.
 """
 import datetime as dt
 import hashlib
@@ -43,8 +42,7 @@ DAY = 86400.0
 
 
 def contact():
-    """The address for OpenAlex's and Crossref's polite pools, or '' when the operator has
-    not supplied one. Never defaulted to a person's address from this repository."""
+    """The operator's optional address for the contact User-Agent and Crossref's polite pool."""
     value = os.environ.get('RH_PAPER_CONTACT', '').strip()
     if value and not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', value):
         raise ValueError('RH_PAPER_CONTACT: expected one email address')
@@ -171,10 +169,14 @@ def store(kind, query, n, source, hits, now=None, tried=()):
     return row
 
 
-def get(url, headers=None, timeout=40, parse=json.load):
-    head = {'User-Agent': AGENT + (' (mailto:%s)' % contact() if contact() else '')}
+def get(url, headers=None, timeout=40, parse=json.load, *, polite=True, bearer=None):
+    address = contact() if polite else ''
+    head = {'User-Agent': AGENT + (' (mailto:%s)' % address if address else '')}
     head.update(headers or {})
-    with urllib.request.urlopen(urllib.request.Request(url, headers=head), timeout=timeout) as r:
+    request = urllib.request.Request(url, headers=head)
+    if bearer:
+        request.add_unredirected_header('Authorization', f'Bearer {bearer}')
+    with urllib.request.urlopen(request, timeout=timeout) as r:
         return parse(r)
 
 
@@ -202,12 +204,45 @@ def _doi_url(doi):
     return doi if doi.startswith('http') else 'https://doi.org/' + doi.lstrip('/')
 
 
+class _OpenAlexUnavailable(Exception):
+    """A safe diagnostic for a failed request made with a configured key."""
+
+
+def _oa_get(path):
+    try:
+        key = settings.path('RH_OPENALEX_KEY_FILE', '~/.config/openalex/api_key').read_text(
+            encoding='utf-8').strip()
+    except (OSError, RuntimeError, ValueError):
+        key = ''
+    url = 'https://api.openalex.org' + path
+    if not key:
+        return get(url, polite=False)
+
+    # Transport exceptions can include request headers. Keep only safe diagnostic fields.
+    try:
+        return get(url, polite=False, bearer=key)
+    except urllib.error.HTTPError as error:
+        code = error.code
+        if error.fp is not None:
+            error.close()
+    except Exception as error:
+        raise _OpenAlexUnavailable(type(error).__name__) from None
+    if code not in (401, 403):
+        raise urllib.error.HTTPError(url, code, 'OpenAlex request failed', None, None)
+
+    try:
+        return get(url, polite=False)
+    except urllib.error.HTTPError as error:
+        retry_code = error.code
+        if error.fp is not None:
+            error.close()
+        raise _OpenAlexUnavailable(f'{code} key / {retry_code} keyless') from None
+    except Exception as error:
+        raise _OpenAlexUnavailable(f'{code} key / {type(error).__name__} keyless') from None
+
+
 def openalex(query, n):
-    params = _polite({'per-page': n, 'search': query})
-    key = os.environ.get('RH_OPENALEX_KEY', '').strip()
-    if key:
-        params['api_key'] = key
-    d = get('https://api.openalex.org/works?' + urllib.parse.urlencode(params))
+    d = _oa_get('/works?' + urllib.parse.urlencode({'per-page': n, 'search': query}))
     return [_meta(w.get('doi') or w['id'], w.get('display_name') or w.get('title'), w.get('publication_date'))
             for w in d['results']]
 
@@ -294,6 +329,12 @@ class Answer(object):
         return 'Answer(%r, %r)' % (self.source, self.hits)
 
 
+def _unavailable(tried):
+    note = 'All paper sources unavailable. ' + '; '.join(tried)
+    harness_blocks.warn('paper-search.unavailable', note)
+    return Answer([], None, note, tried)
+
+
 def search(query, n=6, order=None, kind='search', now=None):
     """Return the first nonempty answer and the outcome of every attempted source."""
     row = cached(kind, query, n, now=now)
@@ -310,6 +351,9 @@ def search(query, n=6, order=None, kind='search', now=None):
             continue
         try:
             hits = [h for h in ADAPTERS[name](query, n) if h]
+        except _OpenAlexUnavailable as e:
+            tried.append(f'{label}: unavailable: {e}')
+            continue
         except urllib.error.HTTPError as e:
             retry = (e.headers or {}).get('Retry-After') or (e.headers or {}).get('retry-after')
             detail = f', Retry-After: {retry}' if retry else ''
@@ -324,9 +368,7 @@ def search(query, n=6, order=None, kind='search', now=None):
         tried.append(f'{label}: searched: {len(hits)} results')
         store(kind, query, n, label, hits, now=now, tried=tried)
         return Answer(hits, label, '; '.join(tried), tried)
-    note = 'All paper sources unavailable. ' + '; '.join(tried)
-    harness_blocks.warn('paper-search.unavailable', note)
-    return Answer([], None, note, tried)
+    return _unavailable(tried)
 
 
 # --- forward citations -------------------------------------------------------------------
@@ -346,18 +388,18 @@ def citing_ttl_seconds():
 def _oa_work(ref, n=1):
     doi = re.search(r'(10\.\d{4,9}/\S+)', ref)
     if doi:
-        w = get('https://api.openalex.org/works/doi:' + doi.group(1))
+        w = _oa_get('/works/doi:' + doi.group(1))
     else:
         arx = re.search(r'(\d{4}\.\d{4,5})', ref)
         w = None
         if arx and re.search(r'arxiv', ref, re.I):
             try:
-                w = get('https://api.openalex.org/works/doi:10.48550/arXiv.' + arx.group(1))
+                w = _oa_get('/works/doi:10.48550/arXiv.' + arx.group(1))
             except urllib.error.HTTPError:
                 w = None
         if w is None:
-            found = get('https://api.openalex.org/works?' + urllib.parse.urlencode(
-                _polite({'search': ref, 'per-page': 1})))['results']
+            found = _oa_get('/works?' + urllib.parse.urlencode(
+                {'search': ref, 'per-page': 1}))['results']
             if not found:
                 return []
             w = found[0]
@@ -395,9 +437,9 @@ def _s2_work(ref, n=1):
 
 
 def _oa_citing(key, limit):
-    d = get('https://api.openalex.org/works?' + urllib.parse.urlencode(_polite(
+    d = _oa_get('/works?' + urllib.parse.urlencode(
         {'filter': 'cites:' + key, 'per-page': limit, 'sort': 'publication_date:desc',
-         'select': 'display_name,publication_year,doi'})))
+         'select': 'display_name,publication_year,doi'}))
     return [{'title': w.get('display_name') or '', 'year': w.get('publication_year'),
              'doi': _doi_url(w.get('doi'))} for w in d['results']]
 
@@ -423,12 +465,17 @@ def _chain(kind, query, n, adapters, ttl, now=None):
         return Answer(row['hits'], row['source'], 'cached %s from %s (%s)' % (
             kind, row['source'], row.get('fetched_utc', '?')))
     tried, error = [], None
+    openalex_unavailable = False
     for name, call in adapters:
         if not take(name, now=now):
             tried.append('%s: daily budget spent here, not asked' % LABELS[name])
             continue
         try:
             hits = call()
+        except _OpenAlexUnavailable as e:
+            tried.append(f'{LABELS[name]}: unavailable: {e}')
+            openalex_unavailable = True
+            continue
         except urllib.error.HTTPError as e:
             tried.append('%s: HTTP %d' % (LABELS[name], e.code)); error = e; continue
         except Exception as e:
@@ -436,6 +483,8 @@ def _chain(kind, query, n, adapters, ttl, now=None):
         store(kind, query, n, LABELS[name], hits, now=now)
         note = LABELS[name] + (' (after %s)' % '; '.join(tried) if tried else '')
         return Answer(hits, LABELS[name], note, tried)
+    if openalex_unavailable:
+        return _unavailable(tried)
     if error is not None:
         error.tried = tried  # a bare 'HTTP Error 429' hides which sources were asked and why
         raise error

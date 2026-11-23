@@ -29,7 +29,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
     monkeypatch.delenv('RSTACK_ABLATE', raising=False)
     monkeypatch.delenv('RH_PAPER_CONTACT', raising=False)
-    monkeypatch.delenv('RH_OPENALEX_KEY', raising=False)
+    monkeypatch.setenv('RH_OPENALEX_KEY_FILE', str(tmp_path / 'openalex-key'))
     monkeypatch.delenv('RH_SEMANTIC_SCHOLAR_KEY', raising=False)
     monkeypatch.setattr(ps.urllib.request, 'urlopen',
                         lambda *a, **k: pytest.fail('unexpected network call'))
@@ -218,46 +218,119 @@ def test_a_corrupt_bucket_does_not_block_every_lookup(monkeypatch):
     assert seen == ['api.openalex.org']
 
 
-def test_the_polite_pool_address_is_sent_only_when_the_operator_sets_one(monkeypatch):
+def test_openalex_uses_the_generic_agent_and_crossref_can_use_contact(monkeypatch):
     urls = []
 
     def urlopen(req, timeout=None):
         urls.append((req.full_url, req.headers.get('User-agent', '')))
-        return io.StringIO(json.dumps(BODIES['api.openalex.org']))
+        host = urllib.parse.urlsplit(req.full_url).hostname
+        return io.StringIO(json.dumps(BODIES[host]))
 
     monkeypatch.setattr(ps.urllib.request, 'urlopen', urlopen)
-    ps.search('a harmless query', 3)
-    assert 'mailto' not in urls[0][0] and 'mailto' not in urls[0][1]
     monkeypatch.setenv('RH_PAPER_CONTACT', 'papers@example.org')
-    ps.search('another query', 3)
+    ps.openalex('a harmless query', 3)
+    ps.crossref('a harmless query', 3)
+    assert 'mailto' not in urls[0][0]
+    assert urls[0][1] == ps.AGENT
     assert 'mailto=papers%40example.org' in urls[1][0]
     assert 'mailto:papers@example.org' in urls[1][1]
 
 
 def test_invalid_contact_marks_the_sources_unavailable(monkeypatch):
+    stub(monkeypatch, fail={'api.openalex.org': (429, 60)})
     monkeypatch.setenv('RH_PAPER_CONTACT', 'not an address')
     answer = ps.search('a harmless query', 3)
     assert len(answer.tried) == 5
-    assert all('unavailable: ValueError: RH_PAPER_CONTACT' in status for status in answer.tried)
+    assert 'OpenAlex: unavailable: HTTP 429' in answer.tried[0]
+    assert all('unavailable: ValueError: RH_PAPER_CONTACT' in status for status in answer.tried[1:])
 
 
-def test_an_api_key_is_sent_where_each_source_wants_it(monkeypatch):
+def test_openalex_rereads_its_key_file_at_request_time(monkeypatch, tmp_path):
+    seen = []
+
+    def urlopen(req, timeout=None):
+        seen.append(req)
+        return io.StringIO(json.dumps(BODIES['api.openalex.org']))
+
+    monkeypatch.setattr(ps.urllib.request, 'urlopen', urlopen)
+    key_file = tmp_path / 'openalex-key'
+    for i, key in enumerate(('fake-openalex-first', 'fake-openalex-rotated')):
+        key_file.write_text(f' \n{key}\t\n')
+        if i == 1:
+            assert 'cached' in ps.search('query 0', 3).note
+        assert ps.search(f'query {i}', 3).source == 'OpenAlex'
+        request = seen[i]
+        assert request.get_header('Authorization') == f'Bearer {key}'
+        assert 'Authorization' not in request.headers  # urllib does not forward it on redirects
+        assert 'api_key' not in urllib.parse.parse_qs(urllib.parse.urlsplit(request.full_url).query)
+        assert key not in request.full_url
+    assert len(seen) == 2
+
+
+@pytest.mark.parametrize('unreadable', [False, True])
+def test_openalex_requests_are_keyless_without_a_readable_key(monkeypatch, tmp_path, unreadable):
+    if unreadable:
+        (tmp_path / 'openalex-key').mkdir()
+    seen = []
+
+    def urlopen(req, timeout=None):
+        seen.append(req.get_header('Authorization'))
+        return io.StringIO(json.dumps(BODIES['api.openalex.org']))
+
+    monkeypatch.setattr(ps.urllib.request, 'urlopen', urlopen)
+    assert ps.search('a harmless query', 3).source == 'OpenAlex'
+    assert seen == [None]
+
+
+@pytest.mark.parametrize('code', [401, 403])
+def test_openalex_retries_a_rejected_key_once_without_auth(monkeypatch, tmp_path, code):
+    key = 'fake-openalex-rejected'
+    (tmp_path / 'openalex-key').write_text(key)
+    seen = []
+
+    def urlopen(req, timeout=None):
+        seen.append((req.full_url, req.get_header('Authorization')))
+        if len(seen) == 1:
+            raise urllib.error.HTTPError(req.full_url, code, 'rejected', {}, None)
+        return io.StringIO(json.dumps(BODIES['api.openalex.org']))
+
+    monkeypatch.setattr(ps.urllib.request, 'urlopen', urlopen)
+    assert ps.search('a harmless query', 3).hits == ['https://doi.org/10.1/openalex']
+    assert seen == [(seen[0][0], f'Bearer {key}'), (seen[0][0], None)]
+
+
+def test_openalex_transport_exception_with_key_is_safe(monkeypatch, tmp_path, capsys):
+    key = 'fake-openalex-echo'
+    (tmp_path / 'openalex-key').write_text(key)
+
+    def urlopen(req, timeout=None):
+        raise ValueError(req.get_header('Authorization'))
+
+    monkeypatch.setattr(ps.urllib.request, 'urlopen', urlopen)
+    answer = ps.search('a harmless query', 3, order=['openalex'])
+    assert answer.tried == ['OpenAlex: unavailable: ValueError']
+    assert key not in answer.note + capsys.readouterr().err
+
+
+def test_semantic_scholar_keeps_its_own_header_on_fallback(monkeypatch, tmp_path):
     sent = []
 
     def urlopen(req, timeout=None):
-        sent.append((req.full_url, dict(req.headers)))
+        sent.append((req.full_url, dict(req.header_items())))
         host = 'api.openalex.org' if 'openalex' in req.full_url else 'api.semanticscholar.org'
         if host == 'api.openalex.org':
             raise urllib.error.HTTPError(req.full_url, 429, 'limited', {'retry-after': '60'}, None)
         return io.StringIO(json.dumps(BODIES[host]))
 
-    monkeypatch.setenv('RH_OPENALEX_KEY', 'oa-secret')
+    (tmp_path / 'openalex-key').write_text('fake-openalex-quota')
     monkeypatch.setenv('RH_SEMANTIC_SCHOLAR_KEY', 's2-secret')
     monkeypatch.setattr(ps.urllib.request, 'urlopen', urlopen)
     ps.search('a harmless query', 3)
-    assert 'api_key=oa-secret' in sent[0][0]          # OpenAlex takes it as a parameter
-    assert sent[1][1].get('X-api-key') == 's2-secret'  # Semantic Scholar as a header
-    assert 's2-secret' not in sent[1][0]               # and never in the URL
+    assert len(sent) == 2
+    assert sent[0][1].get('Authorization') == 'Bearer fake-openalex-quota'
+    assert sent[1][1].get('X-api-key') == 's2-secret'
+    assert 'Authorization' not in sent[1][1]
+    assert all('s2-secret' not in url for url, _ in sent)
 
 
 def test_forward_citations_fall_back_to_semantic_scholar_with_its_own_ids(monkeypatch):
@@ -283,6 +356,28 @@ def test_forward_citations_fall_back_to_semantic_scholar_with_its_own_ids(monkey
     cites = ps.citing(found.hits[0], found.source, 50)
     assert [c['year'] for c in cites.hits] == [2025, 2019]   # newest first
     assert 'DOI:10.1016/j.cor.2021.105357' in calls[1]                           # looked up by DOI, not by title
+
+
+def test_openalex_work_and_citations_share_auth_and_fail_open(monkeypatch, tmp_path):
+    key = 'fake-openalex-citations'
+    (tmp_path / 'openalex-key').write_text(key)
+    auth = []
+
+    def urlopen(req, timeout=None):
+        auth.append(req.get_header('Authorization'))
+        if '/works/doi:' in req.full_url:
+            return io.StringIO(json.dumps({'id': 'https://openalex.org/W1'}))
+        assert 'filter=cites%3AW1' in req.full_url
+        code = 401 if auth[-1] else 429
+        raise urllib.error.HTTPError(req.full_url, code, 'rejected', {}, None)
+
+    monkeypatch.setattr(ps.urllib.request, 'urlopen', urlopen)
+    found = ps.work('10.1234/example')
+    assert found.source == 'OpenAlex'
+    cites = ps.citing(found.hits[0], found.source, 5)
+    assert (cites.source, cites.hits) == (None, [])
+    assert cites.tried == ['OpenAlex: unavailable: 401 key / 429 keyless']
+    assert auth == [f'Bearer {key}', f'Bearer {key}', None]
 
 
 def test_citation_lists_get_a_shorter_ttl_than_searches(monkeypatch):

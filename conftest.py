@@ -30,10 +30,14 @@ for key in ('RH_ROLES_FILE', 'RH_MODEL_OVERRIDE_LOG', 'MODEL_OVERRIDE_REASON', '
             'MODEL_OVERRIDES', 'MODEL_REVIEW_ROOT', 'MODEL_DRAFTS_LOG', 'MODEL_STATE', 'MODEL_LEDGER', 'RH_ROOT', 'LAUNCH_SELECTOR', 'LAUNCH_ARTIFACT_DIR', 'LAUNCH_IDEA', 'LAUNCH_IDEA_ROOT',
             'RH_TRANSCRIPTS_ROOT', 'RH_CS_DB_ROOT', 'RH_HARVEST_STATE', 'RH_POD_GATE_CONFIG', 'RH_POD_GATE_AUDIT', 'LAUNCH_MODEL', 'LAUNCH_MODEL_OVERRIDE',
             'RH_OWNER_ALIASES', 'RH_DISK_FLOOR_BYTES', 'RH_ENV_FILE', 'RH_INTAKE_LANES', 'RH_RUNPOD_KEY_FILE', 'RUNPOD_API_KEY',
+            'RH_OPENALEX_KEY_FILE',
             'RH_X_ACCOUNT', 'RH_X_GATE', 'RH_X_GATE_LOG', 'RH_X_REPLIED', 'RH_OUTREACH_ROOT',
             'RH_XLINT', 'RH_SIGNATURE_NAMES', 'RH_X_ORIGINALS_PER_DAY', 'RH_X_MIN_GAP_MINUTES',
             'RH_CONTACT_UPDATES', 'RH_LANE_REGISTRY', 'RH_EVERYDAY_GRADES', 'RH_CLAUDE_CEILING_PERCENT', 'RH_CLAUDE_CEILING_UNTIL'):
     os.environ.pop(key, None)
+# 11-23: the real OpenAlex key lives at the default path on these Macs; a test that forgets to set its own
+# file must never read it (it could land in a failure message), so tests default to a path that does not exist.
+os.environ['RH_OPENALEX_KEY_FILE'] = '/nonexistent/rstack-tests/openalex-key'
 _RUNTIME = Path(_TEST_HOME.name) / 'runtime'
 _RUNTIME.mkdir()
 os.environ['RH_ROOT'] = str(_RUNTIME)

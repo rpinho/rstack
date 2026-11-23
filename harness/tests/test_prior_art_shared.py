@@ -33,6 +33,7 @@ def offline(monkeypatch, tmp_path):
     # at this test's own directory: otherwise these tests would write to the real cache, and the
     # second test to ask for a query would pass on a cache hit instead of exercising the search.
     monkeypatch.setenv('RH_PAPER_CACHE', str(tmp_path / 'paper-cache'))
+    monkeypatch.setenv('RH_OPENALEX_KEY_FILE', str(tmp_path / 'openalex-key'))
     monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
     monkeypatch.delenv('RH_PAPER_CONTACT', raising=False)
 
@@ -79,29 +80,50 @@ def test_crossref_is_still_the_last_resort(monkeypatch):
     assert answer.source == 'Crossref'
 
 
-def test_paper_failure_is_recorded_in_output_and_receipt(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize('rejection', [None, 401, 403])
+def test_paper_failure_is_recorded_in_output_and_receipt(tmp_path, monkeypatch, capsys, rejection):
     capture(tmp_path, monkeypatch)
     mock_searches(monkeypatch)
     normal_urlopen = receipt.urllib.request.urlopen
+    requests = []
+    key = 'fake-openalex-receipt'
+    if rejection:
+        (tmp_path / 'openalex-key').write_text(key)
 
     def urlopen(req, timeout):
+        requests.append(req)
         if 'huggingface.co' in req.full_url:
             return normal_urlopen(req, timeout)
         if 'export.arxiv.org' in req.full_url:
             return io.StringIO('<feed xmlns="http://www.w3.org/2005/Atom"/>')
+        if 'api.openalex.org' in req.full_url:
+            if req.get_header('Authorization'):
+                raise urllib.error.HTTPError(req.full_url, rejection, key, {}, None)
+            if rejection:
+                raise urllib.error.HTTPError(req.full_url, 429, key, {'Retry-After': key}, None)
         raise urllib.error.HTTPError(req.full_url, 429, 'limited', {'Retry-After': '28800'}, None)
 
     monkeypatch.setattr(receipt.urllib.request, 'urlopen', urlopen)
     md = tmp_path / 'PRIOR_ART.md'
     assert receipt.main(['topic', str(md), '--baseline', 'method 42', '--query', 'topic query']) == 0
-    data = json.loads(md.read_text().split('```rh-prior-art\n')[1].split('\n```')[0])
+    receipt_text = md.read_text()
+    data = json.loads(receipt_text.split('```rh-prior-art\n')[1].split('\n```')[0])
     papers = data['sources']['papers']
     assert papers['status'] == 'unavailable' and papers['hits'] == []
-    assert 'OpenAlex: unavailable: HTTP 429, Retry-After: 28800' in papers['source_statuses']
+    reason = f'{rejection} key / 429 keyless' if rejection else 'HTTP 429, Retry-After: 28800'
+    assert f'OpenAlex: unavailable: {reason}' in papers['source_statuses']
     assert 'arXiv: unavailable: empty response' in papers['source_statuses']
     output = capsys.readouterr()
     assert 'All paper sources unavailable' in output.out
     assert all(status in output.out for status in papers['source_statuses'])
+    auth = [r.get_header('Authorization') for r in requests
+            if 'api.openalex.org' in r.full_url]
+    assert auth == ([f'Bearer {key}', None] if rejection else [None])
+    ledger = tmp_path / 'state' / receipt.paper_search.harness_blocks.LEDGER
+    surfaces = [receipt_text, output.out, output.err, ledger.read_text()]
+    surfaces.extend(r.full_url for r in requests)
+    if any(key in surface for surface in surfaces):
+        pytest.fail('OpenAlex key found outside the Authorization header', pytrace=False)
     with pytest.raises(ValueError, match='prior-art papers:'):
         idea_policy.prior_art(md)
 
