@@ -155,7 +155,7 @@ def cached(kind, query, n, now=None):
     return row
 
 
-def store(kind, query, n, source, hits, now=None, tried=()):
+def store(kind, query, n, source, hits, now=None, tried=(), *, metadata=None):
     now = time.time() if now is None else now
     path = _cache_path(kind, query, n)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -163,6 +163,8 @@ def store(kind, query, n, source, hits, now=None, tried=()):
            'at': now, 'fetched_utc': dt.datetime.fromtimestamp(now, dt.timezone.utc).isoformat()}
     if tried:
         row['tried'] = tried
+    if metadata is not None:
+        row['metadata'] = metadata
     tmp = path.with_suffix('.tmp-%d' % os.getpid())
     tmp.write_text(json.dumps(row))
     os.replace(tmp, path)  # atomic: a reader never sees half a row
@@ -186,14 +188,14 @@ def _polite(params):
     return params
 
 
-# Title and date of each hit, by URL, as the answering source gave them. Hits stay plain URLs (the
-# cache and the per-idea receipt use them); the lane overlap receipt reads titles from here.
+# Search hits stay plain URLs for receipts. The lane overlap receipt reads their metadata here.
 META = {}
 
 
-def _meta(url, title, date):
+def _meta(url, title, date, **fields):
     if url:
-        META[url] = dict(title=(title or '').strip() or None, date=str(date)[:10] if date else None)
+        META[url] = dict(title=(title or '').strip() or None, date=str(date)[:10] if date else None,
+                         **fields)
     return url
 
 
@@ -241,10 +243,24 @@ def _oa_get(path):
         raise _OpenAlexUnavailable(f'{code} key / {type(error).__name__} keyless') from None
 
 
+_OA_WORK_FIELDS = 'id,doi,title,display_name,publication_year'
+
+
+def _oa_metadata(work):
+    title = (work.get('display_name') or '').strip() or (work.get('title') or '').strip()
+    return {'title': title, 'year': work.get('publication_year'),
+            'doi': _doi_url(work.get('doi')), 'openalex_id': work.get('id')}
+
+
 def openalex(query, n):
-    d = _oa_get('/works?' + urllib.parse.urlencode({'per-page': n, 'search': query}))
-    return [_meta(w.get('doi') or w['id'], w.get('display_name') or w.get('title'), w.get('publication_date'))
-            for w in d['results']]
+    d = _oa_get('/works?' + urllib.parse.urlencode(
+        {'per-page': n, 'search': query, 'select': _OA_WORK_FIELDS + ',publication_date'}))
+    hits = []
+    for work in d['results']:
+        fields = _oa_metadata(work)
+        url = fields['doi'] or fields['openalex_id']
+        hits.append(_meta(url, date=work.get('publication_date') or fields['year'], **fields))
+    return hits
 
 
 def semanticscholar(query, n):
@@ -338,7 +354,10 @@ def _unavailable(tried):
 def search(query, n=6, order=None, kind='search', now=None):
     """Return the first nonempty answer and the outcome of every attempted source."""
     row = cached(kind, query, n, now=now)
+    if row is not None and row['source'] == 'OpenAlex' and 'metadata' not in row:
+        row = None  # Refresh older OpenAlex rows that only saved the URLs.
     if row is not None and row['hits']:
+        META.update(row.get('metadata', {}))
         tried = row.get('tried') or [f"{row['source']}: searched: {len(row['hits'])} results"]
         return Answer(row['hits'], row['source'],
                       f"cached {kind} answer, fetched {row.get('fetched_utc', '?')}. "
@@ -366,7 +385,8 @@ def search(query, n=6, order=None, kind='search', now=None):
             tried.append(f'{label}: unavailable: empty response')
             continue
         tried.append(f'{label}: searched: {len(hits)} results')
-        store(kind, query, n, label, hits, now=now, tried=tried)
+        store(kind, query, n, label, hits, now=now, tried=tried,
+              metadata={url: META[url] for url in hits if url in META})
         return Answer(hits, label, '; '.join(tried), tried)
     return _unavailable(tried)
 
@@ -403,9 +423,9 @@ def _oa_work(ref, n=1):
             if not found:
                 return []
             w = found[0]
-    return [{'title': w.get('display_name') or '', 'year': w.get('publication_year'),
-             'doi': _doi_url(w.get('doi')), 'key': w['id'].rsplit('/', 1)[-1],
-             'count': w.get('cited_by_count')}]
+    hit = _oa_metadata(w)
+    hit.update(key=w['id'].rsplit('/', 1)[-1], count=w.get('cited_by_count'))
+    return [hit]
 
 
 def _s2_work(ref, n=1):
@@ -439,9 +459,8 @@ def _s2_work(ref, n=1):
 def _oa_citing(key, limit):
     d = _oa_get('/works?' + urllib.parse.urlencode(
         {'filter': 'cites:' + key, 'per-page': limit, 'sort': 'publication_date:desc',
-         'select': 'display_name,publication_year,doi'}))
-    return [{'title': w.get('display_name') or '', 'year': w.get('publication_year'),
-             'doi': _doi_url(w.get('doi'))} for w in d['results']]
+         'select': _OA_WORK_FIELDS}))
+    return [_oa_metadata(w) for w in d['results']]
 
 
 def _s2_citing(key, limit):
@@ -461,6 +480,9 @@ def _s2_citing(key, limit):
 def _chain(kind, query, n, adapters, ttl, now=None):
     """The search() loop, reused for the citation lookups: cache, shared bucket, next source."""
     row = cached(kind, query, n, now=now)
+    if row is not None and row['source'] == 'OpenAlex' and any(
+            'openalex_id' not in hit for hit in row['hits']):
+        row = None  # Older OpenAlex work and citation hits lacked the full ID.
     if row is not None and (time.time() if now is None else now) - float(row['at']) <= ttl:
         return Answer(row['hits'], row['source'], 'cached %s from %s (%s)' % (
             kind, row['source'], row.get('fetched_utc', '?')))

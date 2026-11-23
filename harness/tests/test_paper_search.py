@@ -150,6 +150,36 @@ def test_all_sources_unavailable_warns_and_returns_an_unavailable_answer(monkeyp
     assert 'All paper sources unavailable' in capsys.readouterr().err
 
 
+@pytest.mark.parametrize('legacy_cache', [False, True])
+def test_openalex_search_preserves_metadata_in_the_shared_cache(monkeypatch, legacy_cache):
+    query = 'a harmless query'
+    doi = 'https://doi.org/10.1038/227680a0'
+    work_id = 'https://openalex.org/W2100837269'
+    other_id = 'https://openalex.org/W2138270253'
+    title = 'Cleavage of Structural Proteins during the Assembly of the Head of Bacteriophage T4'
+    monkeypatch.setattr(ps, 'META', {})
+    monkeypatch.setitem(BODIES, 'api.openalex.org', {'results': [
+        {'id': work_id, 'doi': doi, 'display_name': title,
+         'publication_date': '1970-08-15', 'publication_year': 1970},
+        {'id': other_id, 'doi': None, 'title': 'Title without a DOI', 'publication_year': 2024},
+    ]})
+    if legacy_cache:
+        ps.store('search', query, 3, 'OpenAlex', [doi])
+    seen = stub(monkeypatch)
+
+    answer = ps.search(query, 3)
+    assert answer.hits == [doi, other_id]
+    assert ps.META[doi]['title'] == title
+    monkeypatch.setattr(ps, 'META', {})  # simulate another process using the shared cache
+    cached = ps.search(query, 3)
+    assert cached.hits == answer.hits
+    assert seen == ['api.openalex.org']
+    assert ps.META[doi] == {'title': title, 'date': '1970-08-15', 'year': 1970,
+                            'doi': doi, 'openalex_id': work_id}
+    assert ps.META[other_id] == {'title': 'Title without a DOI', 'date': '2024', 'year': 2024,
+                                 'doi': '', 'openalex_id': other_id}
+
+
 def test_a_repeat_lookup_is_served_from_the_cache_and_spends_nothing(monkeypatch):
     seen = stub(monkeypatch)
     first = ps.search('the same query', 3)
@@ -356,6 +386,49 @@ def test_forward_citations_fall_back_to_semantic_scholar_with_its_own_ids(monkey
     cites = ps.citing(found.hits[0], found.source, 50)
     assert [c['year'] for c in cites.hits] == [2025, 2019]   # newest first
     assert 'DOI:10.1016/j.cor.2021.105357' in calls[1]                           # looked up by DOI, not by title
+
+
+@pytest.mark.parametrize('legacy_cache', [False, True])
+def test_openalex_work_and_cited_by_accept_title_and_display_name(monkeypatch, legacy_cache):
+    work_id = 'https://openalex.org/W1775749144'
+    work_doi = 'https://doi.org/10.1016/s0021-9258(19)52451-6'
+    citing_id = 'https://openalex.org/W2100837269'
+    citing_doi = 'https://doi.org/10.1038/227680a0'
+    other_id = 'https://openalex.org/W2138270253'
+    if legacy_cache:
+        ps.store('work', work_doi, 1, 'OpenAlex', [
+            {'title': '', 'year': 1951, 'doi': work_doi, 'key': 'W1775749144', 'count': 2}])
+        ps.store('citing', work_doi.removeprefix('https://doi.org/'), 5, 'OpenAlex', [
+            {'title': '', 'year': 2024, 'doi': ''}])
+
+    def urlopen(req, timeout=None):
+        url = urllib.parse.urlsplit(req.full_url)
+        assert url.hostname == 'api.openalex.org'
+        if url.path.startswith('/works/doi:'):
+            return io.StringIO(json.dumps({
+                'id': work_id, 'doi': work_doi, 'title': 'Protein measurement',
+                'publication_year': 1951, 'cited_by_count': 2}))
+        params = urllib.parse.parse_qs(url.query)
+        assert params['filter'] == ['cites:W1775749144']
+        assert params['sort'] == ['publication_date:desc']
+        fields = set(params['select'][0].split(','))
+        works = [
+            {'id': other_id, 'doi': None, 'title': 'Title only', 'publication_year': 2024},
+            {'id': citing_id, 'doi': citing_doi, 'display_name': 'Display name only',
+             'publication_year': 1970},
+        ]
+        return io.StringIO(json.dumps({'results': [
+            {k: v for k, v in work.items() if k in fields} for work in works]}))
+
+    monkeypatch.setattr(ps.urllib.request, 'urlopen', urlopen)
+    found = ps.work(work_doi)
+    cited_by = ps.citing(found.hits[0], found.source, 5)
+    assert cited_by.hits == [
+        {'title': 'Title only', 'year': 2024, 'doi': '', 'openalex_id': other_id},
+        {'title': 'Display name only', 'year': 1970, 'doi': citing_doi, 'openalex_id': citing_id},
+    ]
+    assert found.hits == [{'title': 'Protein measurement', 'year': 1951, 'doi': work_doi,
+                           'openalex_id': work_id, 'key': 'W1775749144', 'count': 2}]
 
 
 def test_openalex_work_and_citations_share_auth_and_fail_open(monkeypatch, tmp_path):
