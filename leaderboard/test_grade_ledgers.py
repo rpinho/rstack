@@ -165,6 +165,31 @@ def test_a_mirrored_job_is_costed_from_its_own_receipts_and_the_log_manifest(tmp
 
 
 @pytest.mark.skipif(not shutil.which('zsh') or not Path('/usr/bin/stat').exists(), reason='needs zsh and BSD stat')
+def test_the_mirror_expands_a_run_dir_pattern_on_the_host(tmp_path):
+    # 11-22 (general): the M4's math sweep runs held 11 grades in per-run ledgers the scorer never read.
+    remote = tmp_path / 'remote-home'
+    runs = remote / 'lanes/math/sweep-work/runs'
+    receipt(runs / 'r1', 'x')
+    write(runs / 'r1' / gl.NAME, [grade('g-r1', 'x', 'pass')])
+    (runs / 'r2').mkdir(parents=True)                       # a run with no ledger yet
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    (bin_dir / 'ssh').write_text(f'#!/bin/sh\nshift\ncd "{remote}" && exec /bin/sh -c "$1"\n')
+    (bin_dir / 'rsync').write_text(
+        '#!/bin/sh\nargs=""\nfor a in "$@"; do shift; case "$a" in -e) skip=1; continue;; esac\n'
+        '  if [ -n "$skip" ]; then skip=; continue; fi\n'
+        f'  case "$a" in *:*) a="{remote}/${{a#*:}}";; esac\n  set -- "$@" "$a"\ndone\nexec /usr/bin/rsync "$@"\n')
+    for f in bin_dir.iterdir():
+        f.chmod(0o755)
+    dest = tmp_path / 'grades-mirror' / 'm4'
+    env = dict(os.environ, GRADES_MIRROR_SSH=str(bin_dir / 'ssh'), GRADES_MIRROR_RSYNC=str(bin_dir / 'rsync'))
+    run = subprocess.run([str(MIRROR), 'm4', str(dest), 'lanes/*/sweep-work/runs/*', 'lanes/none/*'], env=env,
+                         capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    assert sorted(p.name for p in dest.glob('*.jsonl')) == ['lanes-math-sweep-work-runs-r1.jsonl']
+    assert (dest / gl.STAMP).exists()
+
+
 def test_the_mirror_copies_ledgers_receipts_and_log_times_only(tmp_path):
     remote = tmp_path / 'remote-home'
     src = remote / '.local/state/jobs/specs'

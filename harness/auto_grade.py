@@ -67,7 +67,11 @@ def exit_code(log, selection_id):
 HARNESS_EXITS = (75, 78)
 HARNESS_LINES = re.compile(r'^(?:codex: REFUSED .*|codex-budget: REFUSED.*|launch\.sh (?:REFUSED|refused).*|'
                            r'launch-guard: REFUSED.*|\[[\w.-]+\] REFUSED \(.*|agent_executor refused: .*|'
-                           r'npx: REFUSED .*)$', re.M)
+                           r'npx: REFUSED .*|'
+                           # 11-22: the executor CLI is not installed where the job ran (ddbench_scan_1122, agy on the M4)
+                           r"FileNotFoundError: \[Errno 2\] No such file or directory: '(?:[^']*/)?(?:agy|codex|claude)'|"
+                           r'(?:zsh|bash|sh): (?:\d+: )?command not found: (?:agy|codex|claude)|'
+                           r'(?:zsh|bash|sh): (?:\d+: )?(?:agy|codex|claude): command not found)$', re.M)
 
 
 def selection_text(log, selection_id):

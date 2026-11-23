@@ -123,3 +123,14 @@ def test_a_host_jobs_checks_run_on_the_host_where_its_outputs_are(tmp_path, monk
     assert (row['grade'], row['grader']) == ('pass', 'checks') and (tmp_path / 'hosts').read_text().strip() == 'm5'
     assert 'cd ' in (REPO / 'tools/launch.sh').read_text() and '--host} ${LAUNCH_HOST:+$LAUNCH_HOST}' in \
         (REPO / 'tools/launch.sh').read_text()
+
+
+def test_an_executor_that_is_not_installed_is_a_harness_error_not_a_fail(tmp_path):
+    # 11-22 (general): ddbench_scan_1122 was routed to agy on the M4, which has no agy, and graded FAIL for Hydrogen.
+    receipt, log, work, spec = returned(tmp_path, rc=1, report='nothing', status='nothing', model='gemini-4-hydrogen-medium')
+    log.write_text('MODEL_SELECTION ' + json.dumps(dict(selection_id='sid1')) + '\n'
+                   "FileNotFoundError: [Errno 2] No such file or directory: 'agy'\n"
+                   'MODEL_OUTCOME ' + json.dumps(dict(selection_id='sid1', exit_code=1)) + '\n')
+    assert auto_grade.main(['--receipt', str(receipt), '--log', str(log), '--dir', str(work), '--spec', str(spec)]) == 0
+    row = graded(tmp_path)
+    assert (row['grade'], row['grader']) == ('ungraded', 'harness') and 'agy' in row['note']

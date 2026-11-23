@@ -370,6 +370,25 @@ fi
 resume_prompt() {
   printf '\n\nRESUME (attempt %d): read STATUS.md, REPORT.md and existing files; continue completed work.\n' "$1"
 }
+# 11-22 (general, RULE #1): ddbench_scan_1122 was delegated to agy on the M4, which has no agy. It died in 1 s
+# and the auto-grade charged Hydrogen a FAIL. Unless RH_LAUNCHER_EXECUTORS names them, the selector is offered
+# the executors the run host has (this Mac, or LAUNCH_HOST over ssh with the job's own PATH), plus the one the
+# job asked for. A probe that finds nothing offers all three, as before.
+if [[ -z ${RH_LAUNCHER_EXECUTORS:-} ]]; then
+  if [[ -n $LAUNCH_HOST ]]; then
+    probe="export PATH=${${LAUNCH_REMOTE_PATH:+${(q)LAUNCH_REMOTE_PATH}}:-\$HOME/.local/bin:/opt/homebrew/bin:\$PATH}; "'for b in codex claude agy; do command -v "$b" >/dev/null 2>&1 && echo "$b"; done'
+    found=$(${=${LAUNCH_SSH:-ssh}} -o BatchMode=yes -o ConnectTimeout=20 "$LAUNCH_HOST" "$probe" 2>/dev/null)
+  else
+    found=$(for b in codex claude agy; do v=LAUNCH_${(U)b}; command -v "${(P)v:-$b}" >/dev/null 2>&1 && print -r -- $b; done)
+  fi
+  have=(${(f)found})
+  if (( $#have )); then
+    (( ${have[(Ie)$backend]} )) || have+=($backend)
+    export RH_LAUNCHER_EXECUTORS=${(j:,:)have}
+    [[ $RH_LAUNCHER_EXECUTORS == codex,claude,agy ]] ||
+      print -- "executors on ${LAUNCH_HOST:-this host}: $RH_LAUNCHER_EXECUTORS (the others are not installed there) $(date)" >> "$log"
+  fi
+fi
 codex_closed=; budget_warned=0
 prepare_attempt() {
   # Set after the Codex wrapper refused this job on its cap (below): the selector then leaves Codex out.

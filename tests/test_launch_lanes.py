@@ -193,3 +193,25 @@ def test_a_host_job_honours_the_remote_path_and_brings_back_its_last_message(tmp
     # The last message sits beside the spec, outside the work dir, so it is pulled by name.
     assert any(out in line for line in Path(env['SSH_LOG']).read_text().splitlines() if 'rsync' in line)
     assert 'fixture' in (jobs / 'fixture-job.log').read_text()   # the host's output is in the job log
+
+
+def test_the_selector_is_offered_only_executors_the_host_has(tmp_path):
+    # 11-22 (general): ddbench_scan_1122 was delegated to agy on the M4, which has no agy, died in 1 s and was
+    # graded FAIL for Hydrogen. Here Codex is the missing CLI: the delegate draw would pick gpt-6.2-sol on codex.
+    agy = stub(tmp_path / 'fake-agy', 'import json\n' + DONE + 'print(json.dumps({"response": "done"}))\n')
+    roles = {'roles': {'batch': ['gemini-4-hydrogen-low']}, 'routes': {
+        'gemini-4-hydrogen-low': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-low'},
+        'gpt-6.2-sol': {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'}}}
+    bare = tmp_path / 'bin'
+    bare.mkdir()
+    (bare / 'python3').symlink_to(sys.executable)
+    jobs, env = lanes_env(tmp_path, roles, AGENT_BACKEND='agy', LAUNCH_AGY=str(agy), RH_DELEGATE_SHARE='1',
+                          RH_HEADROOM_ROUTING='0', PATH=str(bare) + ':/usr/bin:/bin:/usr/sbin:/sbin',
+                          LAUNCH_CODEX=str(tmp_path / 'no-codex'), LAUNCH_CLAUDE=str(tmp_path / 'no-claude'))
+    (jobs / 'fixture-x.md').write_text('Write out.txt.\nCheck: test -f out.txt\n')
+    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-x', str(tmp_path)], env=env,
+                          capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    receipt = json.loads((jobs / 'fixture-x.log.selection.json').read_text())
+    assert (receipt['executor'], receipt['model']) == ('agy', 'gemini-4-hydrogen-low')
+    assert 'executors on this host: agy' in (jobs / 'fixture-x.log').read_text()
