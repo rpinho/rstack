@@ -359,6 +359,22 @@ def is_bench(r):
     return bool(r.get('bench')) or r.get('source') in BENCH_SOURCES or str(r.get('task_family', '')).startswith('bench')
 
 
+def _grades_feed():
+    """The grades-feed reader, or None when it cannot be loaded: the scorer then ranks on this machine's
+    grades alone (RULE #1: never in its way)."""
+    try:
+        spec = importlib.util.spec_from_file_location('grades_feed', HERE / 'grades_feed.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except (OSError, ImportError, SyntaxError) as exc:
+        print('grades-feed: not read ({})'.format(exc), file=sys.stderr)
+        return None
+
+
+FEED_SKIPPED = {}    # model ids in a grades feed that resolve to no known model: skipped, and reported
+
+
 def evidence():
     """{role: {model: {n, k, days}}} from graded everyday work. k counts a partial as half."""
     return graded('everyday')
@@ -397,6 +413,25 @@ def graded(kind):
         e["n"] += 1
         e["k"] += ok
         e["days"].add(r.get("date", "")[:10])
+    # 11-22 (Ricardo: "We just combine them together."): another machine's grades-feed snapshot counts here
+    # under the same rule (everyday and judge rows rank, bench rows only as bench, void and harness rows never),
+    # with the per-machine split kept on each row.
+    gf = _grades_feed()
+    for row in (gf.snapshots() if gf else ()):
+        row_kind, ok = gf.counts(row)
+        if row_kind != kind:
+            continue
+        model = canon(row["model"])
+        if not model:
+            FEED_SKIPPED[row["model"]] = FEED_SKIPPED.get(row["model"], 0) + 1
+            continue
+        e = ev[gf.role_for(row)][model]
+        e["n"] += 1
+        e["k"] += ok
+        e["days"].add(row["date"])
+        split = e.setdefault("feed", {}).setdefault(row["machine"], {"n": 0, "k": 0.0})
+        split["n"] += 1
+        split["k"] += ok
     return ev
 
 
@@ -593,6 +628,7 @@ def write_roles(data, path=ROLES_FILE):
 
 
 def recompute(write=True):
+    FEED_SKIPPED.clear()
     ev = evidence()
     if os.environ.get('RH_LAUNCH_RECEIPTS'):
         _, source_stats = linked_outcomes()
@@ -613,7 +649,8 @@ def recompute(write=True):
         out['roles'][role] = [MODELS[m][1] for m in order]
         # 'scored' is the n<5 rule: under MIN_N graded everyday tasks the model shows "n<5" and has no rate.
         out['evidence'][role] = {MODELS[m][1]: {'n': v['n'], 'rate': round(v['k']/v['n'], 3),
-                      'low': round(wilson_low(v['k'], v['n']), 3), 'days': len(v['days']), 'scored': v['n'] >= MIN_N}
+                      'low': round(wilson_low(v['k'], v['n']), 3), 'days': len(v['days']), 'scored': v['n'] >= MIN_N,
+                      **({'feed': v['feed']} if v.get('feed') else {})}
                       for m, v in ev.get(role, {}).items() if v['n']}
         for m in order:
             n, k, old = effective(m, ev.get(role, {}))
@@ -628,8 +665,13 @@ def recompute(write=True):
                                                                'scored': False})['ungraded'] = v['ungraded']
         out['cost'][role] = {MODELS[m][1]: {'n': v['n'], 'passes': v['passes'], 'pct_per_pass': v['per_pass']}
                              for m, v in cost.get(role, {}).items() if m in MODELS and v['per_pass'] is not None}
-        out['bench'][role] = {MODELS[m][1]: {'n': v['n'], 'rate': round(v['k']/v['n'], 3)}
+        out['bench'][role] = {MODELS[m][1]: {'n': v['n'], 'rate': round(v['k']/v['n'], 3),
+                                             **({'feed': v['feed']} if v.get('feed') else {})}
                               for m, v in bench.get(role, {}).items() if v['n'] and m in MODELS}
+    if FEED_SKIPPED:
+        out['feed_skipped'] = dict(sorted(FEED_SKIPPED.items()))
+        print('grades-feed: skipped unknown model ids: ' + ', '.join('{} ({})'.format(m, n) for m, n in out['feed_skipped'].items()),
+              file=sys.stderr)
     if write:
         write_roles(out)
     return out
@@ -710,6 +752,20 @@ def snapshot_rows(path):
     return tables
 
 
+def mini_only(observation):
+    """The public table's view of a row: the grades-feed rows from another machine are taken out unless
+    MODEL_PUBLIC_FEED=1 (11-22: they are graded work from another of the owner's machines; publishing their
+    counts is his call). The routing order itself still counts them."""
+    fed = observation.get('feed') or {}
+    if not fed or os.environ.get('MODEL_PUBLIC_FEED') == '1':
+        return observation, False
+    n_all, rate = observation.get('n', 0), observation.get('rate') or 0
+    fn = sum(int(f.get('n', 0)) for f in fed.values())
+    fk = sum(float(f.get('k', 0)) for f in fed.values())
+    n = max(n_all - fn, 0)
+    return dict(observation, n=n, rate=round(min(max((rate * n_all - fk) / n, 0), 1), 3) if n else None), True
+
+
 def public(data, path, observations=(), previous=None):
     """Allowlist fields. Unranked observations use '-' in the routing order column."""
     date = dt.datetime.fromisoformat(data['updated'].replace('Z', '+00:00')).date().isoformat()
@@ -723,6 +779,7 @@ def public(data, path, observations=(), previous=None):
     legacy = ['| ' + ' | '.join(c[:6] + ['-', c[6]]) + ' |' for c in
               ([x.strip() for x in l.strip('|').split('|')] for l in old[7])]
     lines.extend(l for l in old[8] + legacy if not l.rstrip().endswith(f'| {date} |'))
+    hidden_feed = False
     for role, ranked in data['roles'].items():
         safe_cell(role)
         if role not in ROLES:
@@ -734,7 +791,8 @@ def public(data, path, observations=(), previous=None):
             safe_cell(model)
             if model not in {native for _, native in MODELS.values()}:
                 raise ValueError('unknown public model')
-            observation = role_scores.get(model, {})
+            observation, fed = mini_only(role_scores.get(model, {}))
+            hidden_feed = hidden_feed or fed
             n = observation.get('n', 0)
             if type(n) is not int or n < 0:
                 raise ValueError('invalid everyday n')
@@ -745,7 +803,7 @@ def public(data, path, observations=(), previous=None):
                 safe_cell(inherited['from'])
                 everyday = score(inherited['rate'])
                 n = 'inherited from {} (n={}); own n={}'.format(inherited['from'], int(inherited['n']), n)
-            bench = score(role_bench[model]['rate']) if model in role_bench else '-'
+            bench = score(mini_only(role_bench[model])[0]['rate']) if model in role_bench else '-'
             per_pass = role_cost.get(model, {}).get('pct_per_pass')
             if per_pass is not None and not (type(per_pass) in (int, float) and math.isfinite(per_pass) and per_pass >= 0):
                 raise ValueError('invalid cost per pass')
@@ -754,6 +812,8 @@ def public(data, path, observations=(), previous=None):
             line = f"| {role} | {model} | {order} | {everyday} | {n} | {bench} | {cost} | {date} |"
             if line not in lines:
                 lines.append(line)
+    if hidden_feed:
+        lines += ['', '_The routing order also counts graded rows that are not published here._']
     if old[6]:
         lines += ['', '## Routing before 2026-11-19 (held-outcome scores, bench included)', '',
                   '| Role | Model | Routing order | Held score | Wilson lower score | Date |',

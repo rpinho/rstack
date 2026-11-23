@@ -44,7 +44,9 @@ RSTACK_TOOLS = ('codex', 'codex-budget', '_codex_budget.py', 'codex-budget.json.
 # per-host _codex/launch.sh is now a thin exec into it). It finds the harness as the root it sits in.
 LAUNCHER = {'tools/launch.sh': 'launcher/launch.sh', 'tools/RULES.md': 'launcher/RULES.md',
             # RULE #1 (11-20): the gate registry every gate reads its class from at run time.
-            'rstack/gates.json': 'rstack/gates.json'}
+            'rstack/gates.json': 'rstack/gates.json',
+            # 11-22: the grades feed between the owner's machines runs on the Mac that holds ~/handoff.
+            'leaderboard/grades_feed.py': 'leaderboard/grades_feed.py'}
 CODE_SUFFIXES = {'.py', '.sh'}
 SKIP_DIRS = {'lanes', '__pycache__', 'alerts', '.pytest_cache'}
 HOST_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z')
