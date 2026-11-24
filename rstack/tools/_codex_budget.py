@@ -34,6 +34,12 @@ RATES = {'gpt-6.1-sol': (50, 2.5, 250, 2.5), 'gpt-6.2-sol': (50, 2.5, 250, 2),
          'gpt-6.2-astra': (200, 10, 1000, 2), 'gpt-6-astra': (250, 25, 1250, 2.5),
          'gpt-6-sol': (50, 5, 250, 2.5), 'gpt-6.1-terra': (25, 1.25, 125, 2.5)}
 FALLBACK_TOKENS_PER_POINT = 250 / 50 * 1_000_000
+# 11-24 (Ricardo: "yes, use the Codex credits"): above 85% weekly a batch job is admitted without LAUNCH_URGENT
+# while the credits spent in the last 7 days on calls admitted that way (on_credits) stay under this budget
+# (6,247 credits spread to Dec 31). A weighted token is one Sol-input token, so credits = weighted * 50 / 1e6 (the
+# RATES unit above; it equals 250 credits/point at FALLBACK_TOKENS_PER_POINT).
+CREDITS_PER_WEIGHTED_TOKEN = 50 / 1_000_000
+CREDITS_WEEK_DEFAULT = 1250
 # 11-20 (general, on the open-source report): agy's Gemini quota is spent until ~11-26, so a claim a Claude
 # hunter made needs a Codex referee, and the lane's own Codex budget was refusing them ("past 50 calls").
 # A referee call (RSTACK_CALL_ROLE=referee, set by tools/launch.sh from the selection receipt) that only the
@@ -482,6 +488,55 @@ def token_calibration(base, now, weekly):
     return result
 
 
+def credits_week_budget():
+    try:
+        return float(os.environ.get('RH_CODEX_CREDITS_WEEK') or CREDITS_WEEK_DEFAULT)
+    except ValueError:
+        return float(CREDITS_WEEK_DEFAULT)
+
+
+def credits_spent_week(base, now):
+    """Estimated credits spent in the last 7 days, all lanes, on finished calls that were admitted above 85%
+    weekly (on_credits). An ESTIMATE: ledger weighted tokens times the 11-17 RATES unit, not OpenAI's meter, and
+    calls still running are not counted until they finish."""
+    total = 0.0
+    for ledger in sorted(base.glob('*.jsonl')):
+        if ledger.name.startswith('.'):
+            continue
+        for row in calls(read_rows(ledger)):
+            if row.get('on_credits') and row.get('event') == 'finish' and now - 7 * 86400 < row['ts'] <= now:
+                total += ledger_tokens(base, row) * CREDITS_PER_WEIGHTED_TOKEN
+    return total
+
+
+def credits_line(now=None):
+    """One clause for the daily split: credits spent in the last 7 days against the weekly budget."""
+    now = time.time() if now is None else now
+    try:
+        base = state_dir() / 'codex-ledger'
+        spent = credits_spent_week(base, now) if base.is_dir() else 0.0
+        return 'Codex credits {:.0f} of {:g} spent in 7 days'.format(spent, credits_week_budget())
+    except (OSError, ValueError, TypeError, KeyError):
+        return 'Codex credits unknown'
+
+
+def credits_balance_line(now=None):
+    """One line for the canary report: the credits balance Codex wrote into its newest rollout (no sign-in).
+    It only moves when a Codex call runs, so the age is part of the line."""
+    now = time.time() if now is None else now
+    try:
+        data = allowance.read_allowance(codex_homes(config()), now=now)['codex']
+        if data == 'unavailable':
+            return 'Codex credits balance: unknown (no rollout snapshot)'
+        credits = data.get('credits')
+        if not credits:
+            return 'Codex credits balance: not in the newest rollout (read it at chatgpt.com/codex/settings/usage)'
+        return 'Codex credits balance: {} (has_credits {}; as of the newest Codex call, {:.1f} h ago)'.format(
+            credits.get('balance'), credits.get('has_credits'), data['snapshot_age_seconds'] / 3600)
+    except (OSError, ValueError, TypeError, KeyError):
+        return 'Codex credits balance: unknown'
+
+
 def account_alerts(cfg, base, lane, weekly, now):
     """Share 70/85% delivery receipts with the companion launcher's allowance reader."""
     folder = state_dir() / 'allowance'
@@ -522,7 +577,11 @@ def admit(cfg, base, lane, now, prefix, prompt_tokens, weekly, interactive=False
             if interactive:
                 print('codex: WARNING week {}% used; interactive session remains available'.format(used), file=sys.stderr)
             elif not urgent:
-                return 'above 85% weekly usage; LAUNCH_URGENT=<reason> required'
+                spent, budget_week = credits_spent_week(base, now), credits_week_budget()
+                if spent >= budget_week:
+                    return ('credit budget for the week spent: {:.0f} of {:g}; above 85% weekly usage; '
+                            'LAUNCH_URGENT=<reason> overrides, or RH_CODEX_CREDITS_WEEK=<n> raises the budget'
+                            .format(spent, budget_week))
     elif not interactive:
         return 'weekly allowance unavailable or reset; obtain a current snapshot interactively'
     else:
@@ -874,6 +933,7 @@ def supervise(native, args, cfg, lane, cwd, interactive, batch):
                                    pid=os.getpid(), codex_home=str(home), prefix=prefix,
                                    prompt_tokens=prompt_tokens, interactive=interactive, urgent=urgent, weekly_before=weekly,
                                    role=role, bucket=bucket, bucket_note=note,
+                                   on_credits=bool(weekly and not interactive and weekly['weekly_used_percent'] > 85),
                                    resume_rollouts=list(before)))
         env = dict(os.environ, CODEX_INTERNAL_ORIGINATOR_OVERRIDE=marker)
         process = subprocess.Popen([str(native)] + args, stdin=stream if stream else None, env=env)

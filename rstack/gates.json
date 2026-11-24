@@ -438,8 +438,8 @@
    "sunset": true,
    "last_changed_outcome": null,
    "old": "Codex per-lane/day caps and 85% weekly refusal, exit 75",
-   "change": "general 11-20: the cap still holds on Codex (the wrapper exits 75, logged as a warning); launch.sh reruns the job on claude (80% ceiling and lane shares) or agy, and while both are capped queues it, warned, never failing it; the refused run stays ungraded (auto_grade)",
-   "fix": "LAUNCH_URGENT=<reason> for an urgent job, or AGENT_BACKEND=claude|agy",
+   "change": "general 11-20: the cap still holds on Codex (the wrapper exits 75, logged as a warning); launch.sh reruns the job on claude (80% ceiling and lane shares) or agy, and while both are capped queues it, warned, never failing it; the refused run stays ungraded (auto_grade). 11-24 (Ricardo: use the Codex credits): above 85% weekly a batch job is admitted, flagged on_credits, while the estimated credits spent in 7 days on such calls are under RH_CODEX_CREDITS_WEEK (default 1250); past that it is refused as before",
+   "fix": "LAUNCH_URGENT=<reason> for an urgent job, RH_CODEX_CREDITS_WEEK=<n> to raise the credit budget, or AGENT_BACKEND=claude|agy",
    "probe": {
     "pytest": "tests/test_fail_open_gates.py::test_a_codex_budget_refusal_reruns_the_job_on_claude"
    }

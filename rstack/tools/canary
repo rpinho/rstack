@@ -386,6 +386,16 @@ def cmd_report(args):
                                                               '  last: ' + t['last'] if t['fail'] else ''))
     if not tally:
         print('no rows')
+    try:
+        from importlib.machinery import SourceFileLoader
+        from importlib.util import module_from_spec, spec_from_loader
+        tool = Path(__file__).resolve().parent / '_codex_budget.py'
+        spec = spec_from_loader('_codex_budget', SourceFileLoader('_codex_budget', str(tool)))
+        module = module_from_spec(spec)
+        spec.loader.exec_module(module)
+        print(module.credits_balance_line())
+    except Exception:  # RULE #1: a report line never fails the report
+        print('Codex credits balance: unknown')
     return 0
 
 

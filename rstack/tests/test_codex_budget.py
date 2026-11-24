@@ -206,8 +206,9 @@ def test_estimate_gate_on_51_and_finite_estimate_exhaustion(isolated):
         assert 'estimate exhausted' in cb.admit(cfg, base, 'normal', now, 'x', 1, weekly(reset=now + 1000))
 
 
-def test_account_thresholds_urgent_and_owner_notification(isolated):
+def test_account_thresholds_urgent_and_owner_notification(isolated, monkeypatch):
     _, _, cfg, _, notified = isolated
+    monkeypatch.setenv('RH_CODEX_CREDITS_WEEK', '0')  # credit budget spent: the old 85% refusal
     with cb.locked() as base:
         assert 'LAUNCH_URGENT' in cb.admit(cfg, base, 'normal', NOW, '', 0, weekly(86))
         assert 'LAUNCH_URGENT' in cb.admit(cfg, base, 'normal', NOW, '', 0, weekly(86))
@@ -624,7 +625,8 @@ def test_live_pending_run_does_not_charge_account_movement(isolated):
         assert cb.admit(cfg, base, 'normal', NOW, '', 0, weekly(15)) is None
 
 
-def test_prompt_named_version_after_separator_does_not_bypass_guard(isolated):
+def test_prompt_named_version_after_separator_does_not_bypass_guard(isolated, monkeypatch):
+    monkeypatch.setenv('RH_CODEX_CREDITS_WEEK', '0')
     fake_native(isolated)
     rollout(isolated[1] / 'sessions/rollout-before.jsonl', used=99, stamp=time.time() - 1)
     r = run_wrapper('exec', '--', '--version')
@@ -967,3 +969,60 @@ def test_the_wrapper_says_which_bucket_a_referee_used(isolated, monkeypatch):
     assert start['bucket'] == 'referee' and start['role'] == 'referee'
     r = run_wrapper('exec', 'hello', env=dict(os.environ, RSTACK_CALL_ROLE='batch'))
     assert r.returncode == cb.REFUSED and 'past 50 calls' in r.stderr
+
+
+def spend_credits(base, lane, credits, now, on_credits=True):
+    """A finished call that cost `credits` (weighted tokens = credits / 50 per million)."""
+    cid = '{}:{}'.format(lane, credits)
+    cb.append(base, lane, dict(event='start', call_id=cid, ts=now - 60, on_credits=on_credits))
+    cb.append(base, lane, dict(event='finish', call_id=cid, ts=now - 30, weighted_tokens=credits * 20_000))
+
+
+def test_above_85_with_credit_budget_left_is_admitted_without_urgent(isolated):
+    _, _, cfg, _, notified = isolated
+    with cb.locked() as base:
+        spend_credits(base, 'games', 600, NOW)  # another lane's credits count too
+        spend_credits(base, "games", 400, NOW - 8 * 86400)  # older than 7 days: ignored
+        spend_credits(base, "games", 5000, NOW - 2 * 86400, on_credits=False)  # admitted under 85%: not credits
+        assert cb.credits_spent_week(base, NOW) == pytest.approx(600)
+        assert cb.admit(cfg, base, 'normal', NOW, '', 0, weekly(90)) is None
+    assert 'ricardo' not in notified.read_text() if notified.exists() else True
+    assert cb.credits_line(NOW).startswith('Codex credits ')
+
+
+def test_credit_budget_spent_refuses_with_the_fix_named(isolated):
+    _, _, cfg, _, _ = isolated
+    with cb.locked() as base:
+        spend_credits(base, 'games', 1300, NOW)
+        reason = cb.admit(cfg, base, 'normal', NOW, '', 0, weekly(90))
+    assert reason.startswith('credit budget for the week spent: 1300 of 1250')
+    assert 'LAUNCH_URGENT=<reason>' in reason and 'RH_CODEX_CREDITS_WEEK' in reason
+
+
+def test_below_85_is_unchanged_whatever_the_credit_budget(isolated, monkeypatch):
+    _, _, cfg, _, _ = isolated
+    monkeypatch.setenv('RH_CODEX_CREDITS_WEEK', '0')
+    with cb.locked() as base:
+        assert cb.admit(cfg, base, 'normal', NOW, '', 0, weekly(85)) is None
+        assert cb.admit(cfg, base, 'normal', NOW, '', 0, weekly(40)) is None
+
+
+def test_urgent_still_overrides_a_spent_credit_budget(isolated):
+    _, _, cfg, _, notified = isolated
+    with cb.locked() as base:
+        spend_credits(base, 'games', 1300, NOW)
+        assert cb.admit(cfg, base, 'normal', NOW, '', 0, weekly(90), urgent='fix') is None
+    assert 'fix' in notified.read_text()
+
+
+def test_wrapper_flags_on_credits_above_85_only(isolated):
+    fake_native(isolated)
+    rollout(isolated[1] / 'sessions/rollout-before.jsonl', used=90, stamp=time.time() - 1)
+    r = run_wrapper('exec', 'hello')
+    assert r.returncode == 0, r.stderr
+    start = [x for x in cb.read_rows(cb.state_dir() / 'codex-ledger/normal.jsonl') if x['event'] == 'start'][-1]
+    assert start['on_credits'] is True
+    rollout(isolated[1] / 'sessions/rollout-before.jsonl', used=20, stamp=time.time() - 1)
+    assert run_wrapper('exec', 'hello').returncode == 0
+    start = [x for x in cb.read_rows(cb.state_dir() / 'codex-ledger/normal.jsonl') if x['event'] == 'start'][-1]
+    assert start['on_credits'] is False

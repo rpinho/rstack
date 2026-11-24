@@ -88,7 +88,9 @@ def snapshot(row, path, root, now):
             used, reset = window.get('used_percent'), window.get('resets_at')
             if not finite(used) or not 0 <= used <= 100 or not finite(reset) or reset <= 0:
                 continue
-            return dict(weekly_used_percent=used, resets_at=reset,
+            # 11-24: the rollout also carries the account's credits balance; read from the file, no sign-in.
+            return dict(credits=limits.get('credits') if isinstance(limits.get('credits'), dict) else None,
+                        weekly_used_percent=used, resets_at=reset,
                         reset_time=datetime.fromtimestamp(reset, timezone.utc).isoformat(),
                         snapshot_at=stamp.astimezone(timezone.utc).isoformat(), snapshot_age_seconds=max(0, now - stamp.timestamp()),
                         window=key, window_minutes=WEEK, codex_home=str(root), source=str(path))
