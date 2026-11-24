@@ -1,6 +1,6 @@
 {
   "host": "HOST_LABEL",
-  "probes": ["claude", "codex", "agy", "grok", "handoff", "claude@tmux", "claude@executor", "agy@executor", "x_read"],
+  "probes": ["claude", "codex", "agy", "grok", "handoff", "claude@tmux", "claude@executor", "agy@executor", "x_read", "push"],
   "timeout": 120,
   "tmux_session": "TMUX_SESSION",
   "claude_model": "haiku",
@@ -12,5 +12,6 @@
   "fixture_dir": "~/.local/state/canary/fixture",
   "gate_script": "PATH_TO_HANDOFF_GATE_SCRIPT",
   "grok_host": "local",
-  "x_read": {"query": "One read-only question for the Grok bot about your own account", "schema": "post_id", "host": "local"}
+  "x_read": {"query": "One read-only question for the Grok bot about your own account", "schema": "post_id", "host": "local"},
+  "push": {"min_remaining": 25, "ok_file": "~/.local/state/PUSH_OK_MARKER", "failed_file": "~/.local/state/PUSH_FAILED_MARKER", "down_file": "~/.local/state/canary/PUSH_DOWN"}
 }

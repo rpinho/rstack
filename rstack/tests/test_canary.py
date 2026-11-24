@@ -74,3 +74,60 @@ def test_report_ignores_old_rows(tmp_path, capsys):
                    + json.dumps(dict(ts=now, host='h', probe='a', ok=True, reason='')) + '\n')
     c.main(['report', '--ledger', str(led)])
     assert '1 pass' in capsys.readouterr().out
+
+
+def push_cfg(tmp_path, **kw):
+    return dict(push=dict(ok_file=str(tmp_path / 'ok'), failed_file=str(tmp_path / 'failed'),
+                          down_file=str(tmp_path / 'st' / 'PUSH_DOWN'), min_remaining=25, **kw))
+
+
+def account(left, reset=1795400000):
+    return {'limits': {'messages': 250}, 'stats': {'messages_remaining': left, 'reset_at': reset}}
+
+
+def test_push_probe_quota(tmp_path, monkeypatch):
+    cfg = push_cfg(tmp_path)
+    monkeypatch.setattr(c, 'fetch_account', lambda: account(200))
+    assert c.probe_push(cfg)[:2] == (True, '')
+    monkeypatch.setattr(c, 'fetch_account', lambda: account(3))
+    ok, reason, _ = c.probe_push(cfg)
+    assert not ok and 'quota 3 left of 250' in reason and 'resets 20' in reason and 'Z' in reason
+
+
+def test_push_probe_marker_files(tmp_path, monkeypatch):
+    cfg = push_cfg(tmp_path)
+    monkeypatch.setattr(c, 'fetch_account', lambda: account(200))
+    ok_f, bad_f = tmp_path / 'ok', tmp_path / 'failed'
+    bad_f.write_text('2026-11-23T10:00:00Z 429 daily limit\nsecond line\n')
+    ok, reason, _ = c.probe_push(cfg)
+    assert not ok and reason == 'last push failed: 2026-11-23T10:00:00Z 429 daily limit'
+    ok_f.write_text('x\n')
+    os.utime(ok_f, (1, 1))
+    os.utime(bad_f, (2, 2))
+    assert c.probe_push(cfg)[0] is False
+    os.utime(ok_f, (3, 3))
+    assert c.probe_push(cfg)[0] is True
+
+
+def test_push_probe_network_error_names_type_only(tmp_path, monkeypatch):
+    def boom():
+        raise OSError('secret-host-detail')
+    monkeypatch.setattr(c, 'fetch_account', boom)
+    ok, reason, _ = c.probe_push(push_cfg(tmp_path))
+    assert not ok and reason == 'ntfy account unreadable: OSError'
+
+
+def test_push_fail_writes_down_file_pass_leaves_it(tmp_path, monkeypatch):
+    cfg = dict(push_cfg(tmp_path), host='h')
+    down = tmp_path / 'st' / 'PUSH_DOWN'
+    monkeypatch.setattr(c, 'fetch_account', lambda: account(0))
+    row = c.run_probe('push', cfg)
+    assert row['ok'] is False and 'quota 0 left' in down.read_text() and down.read_text().count('\n') == 1
+    down.write_text('old\n')
+    monkeypatch.setattr(c, 'fetch_account', lambda: account(0))
+    c.run_probe('push', cfg)
+    assert down.read_text() != 'old\n' and down.read_text().count('\n') == 1
+    down.write_text('keep\n')
+    monkeypatch.setattr(c, 'fetch_account', lambda: account(200))
+    assert c.run_probe('push', cfg)['ok'] is True
+    assert down.read_text() == 'keep\n'

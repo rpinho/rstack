@@ -8,7 +8,7 @@ from pass to fail pushes one short alert (again at most once a day while it stay
   canary run [--only NAME ...]     run the configured probes (the LaunchAgent does this every hour)
   canary report [--hours 24]       pass/fail counts per probe and per host from the ledger
 
-Probe names: claude, codex, agy, grok, handoff, x_read. A name with @tmux (claude@tmux, agy@tmux) runs the
+Probe names: claude, codex, agy, grok, handoff, x_read, push. A name with @tmux (claude@tmux, agy@tmux) runs the
 same call in a new window of the configured tmux session, the other context lanes launch from. A name with
 @executor (claude@executor, agy@executor) goes through harness agent_executor.py as launch.sh does, records
 the agy route it took, and fails on "agy unauthenticated from lanes". Do not run agy in a tmux pane directly:
@@ -28,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -227,6 +228,47 @@ def probe_handoff(cfg):
     return code, 'OK' if code == 0 else out, err + out, expired
 
 
+NTFY_ACCOUNT = 'https://ntfy.sh/v1/account'
+PUSH_DEFAULTS = {'min_remaining': 25, 'ok_file': '~/.local/state/notify-ricardo.ok',
+                 'failed_file': '~/.local/state/notify-ricardo.failed', 'down_file': '~/.local/state/canary/PUSH_DOWN'}
+
+
+def fetch_account():
+    """ntfy's anonymous account read: costs no quota, publishes nothing. Split out so tests can mock it."""
+    with urllib.request.urlopen(NTFY_ACCOUNT, timeout=30) as resp:
+        return json.loads(resp.read().decode())
+
+
+def probe_push(cfg):
+    """(ok, reason, settings). Pushes must still work, or every other alert is worthless: ntfy quota left, and the
+    alert script's .ok/.failed marker files (a .failed newer than .ok means the last push did not go out)."""
+    x = dict(PUSH_DEFAULTS, **(cfg.get('push') or {}))
+    reasons = []
+    try:
+        data = fetch_account()
+        stats, limits = data.get('stats') or {}, data.get('limits') or {}
+        left = stats.get('messages_remaining')
+        if left is None:
+            reasons.append('ntfy account has no messages_remaining')
+        elif left < x['min_remaining']:
+            reset = stats.get('reset_at')
+            try:
+                reset = datetime.fromtimestamp(int(reset), timezone.utc).strftime('%Y-%m-%dT%H:%MZ')
+            except (TypeError, ValueError, OverflowError, OSError):
+                reset = clean(str(reset), 30)
+            reasons.append('ntfy quota {} left of {}, resets {}'.format(left, limits.get('messages', '?'), reset))
+    except Exception as exc:   # network or bad JSON: the exception type only, never its text
+        reasons.append('ntfy account unreadable: ' + type(exc).__name__)
+    ok_f, bad_f = Path(x['ok_file']).expanduser(), Path(x['failed_file']).expanduser()
+    if bad_f.exists() and (not ok_f.exists() or bad_f.stat().st_mtime > ok_f.stat().st_mtime):
+        try:
+            first = bad_f.read_text(errors='replace').splitlines()[0]
+        except (OSError, IndexError):
+            first = ''
+        reasons.append('last push failed: ' + clean(first, 80))
+    return not reasons, '; '.join(reasons), x
+
+
 def run_probe(name, cfg):
     began = time.monotonic()
     try:
@@ -247,6 +289,12 @@ def run_probe(name, cfg):
             ok, reason = judge(code, 'OK' if has else out, err + out, expired, cfg['timeout'])
             if code == 0 and not has:
                 ok, reason = False, 'read returned no rows'
+        elif base == 'push':
+            ok, reason, x = probe_push(cfg)
+            if not ok:   # the alert below may not reach the phone when pushes are what broke: leave a note
+                down = Path(x['down_file']).expanduser()
+                down.parent.mkdir(parents=True, exist_ok=True)
+                down.write_text('{} {}\n'.format(datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), reason))
         elif base == 'handoff':
             code, out, noise, expired = probe_handoff(cfg)
             ok, reason = judge(code, out, noise, expired, cfg['timeout'])
