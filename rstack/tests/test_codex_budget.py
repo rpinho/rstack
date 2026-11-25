@@ -429,13 +429,14 @@ def test_post_brew_upgrade_reasserts_and_preserves_previous_symlink(isolated):
     assert cb.health_problems(settings, repair=True) == []
 
 
-def test_unavailable_weekly_refuses_batch_and_invalid_config_is_one_line(isolated):
+def test_unavailable_weekly_warns_and_runs_and_invalid_config_is_one_line(isolated):
     fake_native(isolated)
     home = isolated[1]
     # Created in this test session: move the synthetic snapshot rather than deleting it.
     (home / 'sessions/rollout-before.jsonl').rename(home / 'old-snapshot')
     r = run_wrapper('exec', 'hello')
-    assert r.returncode == 75 and 'allowance unavailable' in r.stderr
+    # RULE #1 (11-24): admitted with a warning, not refused (75). The fake native then fails on the moved rollout.
+    assert r.returncode != 75 and 'allowance unavailable' in r.stderr and 'obtain a current snapshot' not in r.stderr
     isolated[3].write_text('{broken')
     r = run_wrapper('exec', 'hello')
     # RULE #1 (11-20): a config the wrapper cannot read is its own error, never a refusal: the native codex

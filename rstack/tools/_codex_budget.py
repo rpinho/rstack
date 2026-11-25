@@ -582,10 +582,10 @@ def admit(cfg, base, lane, now, prefix, prompt_tokens, weekly, interactive=False
                     return ('credit budget for the week spent: {:.0f} of {:g}; above 85% weekly usage; '
                             'LAUNCH_URGENT=<reason> overrides, or RH_CODEX_CREDITS_WEEK=<n> raises the budget'
                             .format(spent, budget_week))
-    elif not interactive:
-        return 'weekly allowance unavailable or reset; obtain a current snapshot interactively'
     else:
-        print('codex: WARNING weekly allowance unavailable; interactive session remains available', file=sys.stderr)
+        # 11-24 (general, RULE #1): after a weekly reset there is no fresh snapshot until a call writes one, and
+        # refusing every batch then held all lanes. A missing snapshot warns and runs; that call refreshes it.
+        print('codex: WARNING weekly allowance unavailable (a reset?); running, and this call refreshes it', file=sys.stderr)
     if interactive:
         return None
     if 'calls_run' in limits:
