@@ -19,7 +19,7 @@ def run_floor(tmp_path, *, floor='50%', report='Shipped: nothing', sleep=0, time
         spec += f'Effort floor: {floor}\n'
     jobs, env = harness(tmp_path, spec)
     env.update(LAUNCH_TIMEOUT_SECONDS=str(timeout), RSTACK_STATE_DIR=str(tmp_path / 'state'),
-               RH_HEADROOM_ROUTING='0', RH_DELEGATE_SHARE='0', LAUNCH_DETACH='', RSTACK_ABLATE='0')
+               RH_HEADROOM_ROUTING='0', RH_AGY_CLOSED='test', LAUNCH_DETACH='', RSTACK_ABLATE='0')
     if watchdog:
         env['LAUNCH_RESUME'] = '1'
     lane_ledger = Path(env['LAUNCH_LANE_ROOT']) / 'lanes/fixture/RESULTS.jsonl'
@@ -157,7 +157,7 @@ def test_codex_continuation_stops_at_its_remaining_wall_budget(tmp_path):
                    '    time.sleep(60)\n'
                    'Path("REPORT.md").write_text("Shipped: nothing\\n")\n')
     env.update(AGENT_BACKEND='codex', LAUNCH_CODEX=str(cli), LAUNCH_TIMEOUT_SECONDS='6',
-               RH_HEADROOM_ROUTING='0', RH_DELEGATE_SHARE='0', LAUNCH_DETACH='',
+               RH_HEADROOM_ROUTING='0', RH_AGY_CLOSED='test', LAUNCH_DETACH='',
                RSTACK_STATE_DIR=str(tmp_path / 'state'))
     proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path)],
                           env=env, capture_output=True, text=True, timeout=20)

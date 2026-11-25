@@ -128,7 +128,7 @@ def test_effort_resume_uses_the_same_host_and_remaining_timeout(tmp_path):
     rsync.write_text('#!/bin/sh\nexit 0\n')
     rsync.chmod(0o755)
     env.update(PATH=str(tmp_path) + os.pathsep + env['PATH'], LAUNCH_HOST='m5',
-               LAUNCH_TIMEOUT_SECONDS='14400', RH_HEADROOM_ROUTING='0', RH_DELEGATE_SHARE='0')
+               LAUNCH_TIMEOUT_SECONDS='14400', RH_HEADROOM_ROUTING='0', RH_AGY_CLOSED='test')
     proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-job', str(tmp_path)],
                           env=env, capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr

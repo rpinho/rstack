@@ -422,10 +422,11 @@ if [[ -n ${LAUNCH_MODEL_OVERRIDE:-} && -n $log.selection.json*(N.mh-24[1]) ]]; t
   python3 "$hblocks" mark --job "${job:t}" --lane "$lane" --outcome override --gate selector \
     --reason "relaunched with --model-override: $LAUNCH_MODEL_OVERRIDE" >/dev/null 2>&1 || true
 fi
-codex_closed=
+codex_closed=; agy_closed=
 prepare_attempt() {
-  # 11-24: set only when Codex failed this job on quota or a rate limit (below): the selector then leaves Codex out.
+  # 11-24: set only when that provider failed this job on quota or a rate limit (below): the selector then leaves it out.
   if [[ -n $codex_closed ]]; then export RH_CODEX_CLOSED=$codex_closed; else unset RH_CODEX_CLOSED; fi
+  if [[ -n $agy_closed ]]; then export RH_AGY_CLOSED=$agy_closed; else unset RH_AGY_CLOSED; fi
   sel_exec=$backend
   [[ ${LAUNCH_PROVIDER:-} == (openrouter|gemini) && $backend == codex ]] && sel_exec=$LAUNCH_PROVIDER
   # This launcher runs all three executors, so a delegate may be on any of them. A host without one of
@@ -462,7 +463,7 @@ prepare_attempt() {
 p=sys.argv[1]; d=json.load(open(p)); d["codex_sandbox"]={"mode":"danger-full-access","why":"spec line Third-party: run"}
 json.dump(d, open(p, "w"), indent=2)' "$log.selection.json" 2>/dev/null || true
   fi
-  unset RH_CODEX_CLOSED   # the selection's input only; the job's own children choose for themselves
+  unset RH_CODEX_CLOSED RH_AGY_CLOSED   # the selection's input only; the job's own children choose for themselves
   # 11-20 (general): the round ran past its gate's warnings; the receipt says which, and flags a comparison
   # against a baseline that stopped reproducing.
   if [[ -n $round_warn ]]; then
@@ -755,11 +756,18 @@ exec env RH_JOB=${(q)${job:t}} ${(j: :)${(q)cache_env[@]}} ${(j: :)${(q)effort_e
   (( ! effort_resumed )) || break
   # 11-24 (general): Codex enforces its own limits. A Codex job that failed on quota or a rate limit is rerun
   # with Codex left out (RH_CODEX_CLOSED, set in prepare_attempt): the selector gives agy's Gemini for the
-  # role, else Claude. That is not an attempt, so it does not use up the five.
+  # role, else Claude. An agy run that hit its quota goes the other way (RH_AGY_CLOSED): Codex, else Claude.
+  # Neither is an attempt, so neither uses up the five.
   if [[ $backend == codex && -z $codex_closed ]] && (( rc != 0 )) &&
      tail -40 "$attempt_log" | grep -Eqi 'usage limit|usage_limit_reached|insufficient_quota|rate.?limit|429 too many'; then
     codex_closed='quota or rate limit'
     print -- "codex hit its quota or rate limit: rerunning $job on Gemini (agy), else Claude $(date)" >> "$log"
+    (( i-- )); continue
+  fi
+  if [[ $backend == agy && -z $agy_closed && ${RH_LAUNCHER_EXECUTORS:-codex} == *(codex|claude)* ]] && (( rc != 0 )) &&
+     tail -40 "$attempt_log" | grep -Eqi 'AGY_QUOTA|RESOURCE_EXHAUSTED|Individual quota reached'; then
+    agy_closed='quota'
+    print -- "agy hit its quota: rerunning $job on Codex, else Claude $(date)" >> "$log"
     (( i-- )); continue
   fi
   (( policy_flag == 0 && rc != 0 && i < 5 )) || break

@@ -83,11 +83,10 @@ def test_current_snapshot_routes_are_consumable_without_private_state(tmp_path):
     restored = roles.bootstrap(REPO / 'LEADERBOARD.md')
     path = tmp_path / 'roles.json'
     roles.write_roles(restored, path)
-    result = worker_models.select('batch', 'codex', path=path)
-    assert result['model'] == restored['roles']['batch'][0]
-    assert result['source'] == 'leaderboard'
+    result = worker_models.select('batch', 'codex', path=path, follows_route=False)   # no agy here
+    assert result['model'] == restored['roles']['batch'][0] and result['executor'] == 'codex'
     with pytest.raises(ValueError, match='no compatible'):
-        worker_models.select('batch', 'claude', path=path)
+        worker_models.select('batch', 'claude', path=path, follows_route=False)
 
 
 def test_ranking_needs_five_graded_everyday_tasks_then_ranks_by_them():

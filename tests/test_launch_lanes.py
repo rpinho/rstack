@@ -50,7 +50,7 @@ def lanes_env(tmp_path, roles, **extra):
                RH_ROLES_FILE=str(tmp_path / 'roles.json'), FORCE_LAUNCH='1', LAUNCH_LANE_ROOT=str(root),
                RSTACK_STATE_DIR=str(tmp_path / 'state'), LAUNCH_YIELD_LEDGER=str(tmp_path / 'yield.jsonl'))
     for k in ('LAUNCH_RESUME', 'SPEC_OVER_CAP', 'LAUNCH_HOST', 'TMUX', 'LAUNCH_DETACHED', 'AGENT_BACKEND',
-              'LAUNCH_BACKEND', 'RH_LAUNCHER_EXECUTORS', 'LAUNCH_ROLE', 'RH_DELEGATE_SHARE'):
+              'LAUNCH_BACKEND', 'RH_LAUNCHER_EXECUTORS', 'LAUNCH_ROLE'):
         env.pop(k, None)
     env.update(extra)
     return jobs, env
@@ -90,7 +90,7 @@ def test_a_delegated_agy_job_is_auto_graded_at_return(tmp_path):
     roles = {'roles': {'batch': ['gpt-6.2-sol']}, 'routes': {
         'gpt-6.2-sol': {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'},
         'gemini-4-hydrogen-high': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-high'}}}
-    jobs, env = lanes_env(tmp_path, roles, LAUNCH_AGY=str(agy), RH_DELEGATE_SHARE='1',
+    jobs, env = lanes_env(tmp_path, roles, LAUNCH_AGY=str(agy),
                           RH_LAUNCHER_EXECUTORS='agy', RH_HEADROOM_ROUTING='0')
     (jobs / 'fixture-d.md').write_text('Write out.txt.\nCheck: test -f out.txt\n')
     proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-d', str(tmp_path)], env=env,
@@ -205,7 +205,7 @@ def test_the_selector_is_offered_only_executors_the_host_has(tmp_path):
     bare = tmp_path / 'bin'
     bare.mkdir()
     (bare / 'python3').symlink_to(sys.executable)
-    jobs, env = lanes_env(tmp_path, roles, AGENT_BACKEND='agy', LAUNCH_AGY=str(agy), RH_DELEGATE_SHARE='1',
+    jobs, env = lanes_env(tmp_path, roles, AGENT_BACKEND='agy', LAUNCH_AGY=str(agy),
                           RH_HEADROOM_ROUTING='0', PATH=str(bare) + ':/usr/bin:/bin:/usr/sbin:/sbin',
                           LAUNCH_CODEX=str(tmp_path / 'no-codex'), LAUNCH_CLAUDE=str(tmp_path / 'no-claude'))
     (jobs / 'fixture-x.md').write_text('Write out.txt.\nCheck: test -f out.txt\n')

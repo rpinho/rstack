@@ -60,7 +60,6 @@ def test_without_checks_the_lanes_reviewing_model_grades_and_is_recorded(tmp_pat
                     'print(json.dumps({"is_error": False, "subtype": "success", "result": "PARTIAL\\nhalf of it"}))\n')
     fake.chmod(0o755)
     monkeypatch.setenv('LAUNCH_CLAUDE', str(fake))
-    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')   # the grader itself is never delegated
     auto_grade.main(['--receipt', str(receipt), '--log', str(log), '--dir', str(work), '--spec', str(spec),
                      '--roles-file', str(roles)])
     row = graded(tmp_path)
@@ -95,7 +94,7 @@ def test_the_launcher_grades_a_returned_delegated_job_by_itself(tmp_path):
     work = tmp_path / 'work'; work.mkdir()
     env = dict(os.environ, AGENT_BACKEND='claude', LAUNCH_CODEX=str(fake), LAUNCH_ARTIFACT_DIR=str(jobs),
                LAUNCH_STATE=str(tmp_path / 'registry'), RH_ROLES_FILE=str(roles), FORCE_LAUNCH='1',
-               RH_DELEGATE_SHARE='1', RSTACK_STATE_DIR=str(tmp_path / 'state'))
+               RSTACK_STATE_DIR=str(tmp_path / 'state'), RH_CLAUDE_DELEGATE_DEFAULT='1', RH_AGY_CLOSED='test')
     proc = subprocess.run(['zsh', str(REPO / 'tools/launch.sh'), 'fixture', str(work)], env=env,
                           capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr

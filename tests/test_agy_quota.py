@@ -35,7 +35,7 @@ def quota_row(model, reset, utc=NOW, tier=None, job='j'):
 @pytest.fixture
 def state(tmp_path, monkeypatch):
     monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
-    for k in ('RH_DELEGATE_SHARE', 'RH_CLAUDE_OVERFLOW_PERCENT', 'LAUNCH_EFFORT', 'RH_DELEGATE_ROLES'):
+    for k in ('RH_CLAUDE_OVERFLOW_PERCENT', 'LAUNCH_EFFORT'):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
     monkeypatch.setenv('RH_CLAUDE_CAP', '0')   # these test the 85% overflow and agy quota; the 80% ceiling has its own tests
@@ -76,7 +76,8 @@ def test_only_resets_still_ahead_block_and_the_latest_wins(state):
 
 
 def test_the_default_pick_skips_a_blocked_agy_model_and_the_receipt_says_until_when(state):
-    write(state, quota_row('gemini-4-hydrogen-medium', '152h', utc=dt.datetime.now(dt.timezone.utc)))
+    write(state, quota_row('gemini-4-hydrogen-medium', '152h', utc=dt.datetime.now(dt.timezone.utc)),
+          quota_row('gemini-4-hydrogen-high', '152h', utc=dt.datetime.now(dt.timezone.utc)))
     receipt = wm.select('batch', 'codex', path=state / 'roles.json', job='j')
     assert (receipt['model'], receipt['executor']) == ('gpt-6.2-sol', 'codex')
     assert receipt['quota_skipped'][0].startswith('skipped gemini-4-hydrogen-medium: agy quota until ')
@@ -84,20 +85,13 @@ def test_the_default_pick_skips_a_blocked_agy_model_and_the_receipt_says_until_w
     with pytest.raises(ValueError, match='agy quota until'):
         wm.select('batch', 'agy', model='gemini-4-hydrogen-medium', override='test', path=state / 'roles.json')
     (state / 'state/agy-quota.jsonl').write_text('')
-    assert wm.select('batch', 'agy', path=state / 'roles.json')['model'] == 'gemini-4-hydrogen-medium'
+    assert wm.select('batch', 'agy', path=state / 'roles.json')['model'] == 'gemini-4-hydrogen-high'
 
 
-def test_the_delegate_pool_leaves_out_a_blocked_agy_model(state, monkeypatch):
-    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
-    monkeypatch.setattr(wm, 'DELEGATE_MODELS', ('gemini-4-hydrogen-medium', 'gemini-4-hydrogen-high'))
-    write(state, quota_row('gemini-4-hydrogen-medium', '152h', utc=dt.datetime.now(dt.timezone.utc)))
-    for _ in range(5):
-        receipt = wm.select('batch', 'codex', path=state / 'roles.json', job='j')
-        assert (receipt['source'], receipt['model'], receipt['executor']) == ('delegate', 'gemini-4-hydrogen-high', 'agy')
-        assert any(s.startswith('skipped gemini-4-hydrogen-medium') for s in receipt['quota_skipped'])
+def test_a_blocked_agy_model_sends_the_job_to_codex(state):
     write(state, quota_row('gemini-4-hydrogen-high', '3h', utc=dt.datetime.now(dt.timezone.utc)))
     receipt = wm.select('batch', 'codex', path=state / 'roles.json', job='j')
-    assert (receipt['source'], receipt['model']) == ('leaderboard', 'gpt-6.2-sol')
+    assert (receipt['source'], receipt['model'], receipt['executor']) == ('delegate', 'gpt-6.2-sol', 'codex')
     assert any('gemini-4-hydrogen-high' in s and '5h window' in s for s in receipt['quota_skipped'])
 
 
@@ -167,8 +161,8 @@ def test_the_launcher_grades_a_delegated_agy_quota_failure_ungraded_and_the_next
     (state / 'roles.json').write_text(json.dumps(roles))
     env = dict(os.environ, LAUNCH_ARTIFACT_DIR=str(jobs), LAUNCH_STATE=str(state / 'registry'),
                RH_ROLES_FILE=str(state / 'roles.json'), FORCE_LAUNCH='1', LAUNCH_LANE_ROOT=str(state / 'runtime'),
-               LAUNCH_YIELD_LEDGER=str(state / 'yield.jsonl'), LAUNCH_AGY=str(agy), RH_DELEGATE_SHARE='1',
-               RH_LAUNCHER_EXECUTORS='agy', RH_DELEGATE_ROLES='batch')
+               LAUNCH_YIELD_LEDGER=str(state / 'yield.jsonl'), LAUNCH_AGY=str(agy),
+               RH_LAUNCHER_EXECUTORS='agy')
     for k in ('LAUNCH_RESUME', 'SPEC_OVER_CAP', 'LAUNCH_HOST', 'TMUX', 'LAUNCH_DETACHED', 'AGENT_BACKEND',
               'LAUNCH_BACKEND', 'LAUNCH_ROLE'):
         env.pop(k, None)
@@ -189,3 +183,32 @@ def test_the_launcher_grades_a_delegated_agy_quota_failure_ungraded_and_the_next
                           env=env, capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0 and proc.stdout.split()[0] != model
     assert 'skipped {}: agy quota until'.format(model) in proc.stderr
+
+
+def test_an_agy_run_that_hits_its_quota_is_rerun_on_codex(state):
+    """11-24: the mirror of the Codex quota rerun (RH_AGY_CLOSED); the quota failure is not an attempt."""
+    agy = state / 'fake-agy'
+    agy.write_text('#!' + sys.executable + '\nimport json\nprint(json.dumps({"status": "ERROR", "response": "", "error": '
+                   + json.dumps(ERROR.format('3h')) + '}))\n')
+    codex = state / 'fake-codex'
+    codex.write_text('#!' + sys.executable + '\nfrom pathlib import Path\nimport sys\n'
+                     'Path("STATUS.md").write_text("You asked: x. I will: y.\\n")\nPath("REPORT.md").write_text("Shipped: x\\n")\n'
+                     'Path(sys.argv[sys.argv.index("-o") + 1]).write_text("done")\n')
+    agy.chmod(0o755); codex.chmod(0o755)
+    jobs = state / 'jobs'
+    jobs.mkdir()
+    (jobs / 'fixture-r.md').write_text('Write out.txt.\n')
+    (state / 'roles.json').write_text(json.dumps({'roles': {'batch': ['gpt-6.2-sol']}, 'routes': ROLES['routes']}))
+    env = dict(os.environ, LAUNCH_ARTIFACT_DIR=str(jobs), LAUNCH_STATE=str(state / 'registry'),
+               RH_ROLES_FILE=str(state / 'roles.json'), FORCE_LAUNCH='1', LAUNCH_LANE_ROOT=str(state / 'runtime'),
+               LAUNCH_YIELD_LEDGER=str(state / 'yield.jsonl'), LAUNCH_AGY=str(agy), LAUNCH_CODEX=str(codex),
+               RH_LAUNCHER_EXECUTORS='agy,codex')
+    for k in ('LAUNCH_RESUME', 'SPEC_OVER_CAP', 'LAUNCH_HOST', 'TMUX', 'LAUNCH_DETACHED', 'AGENT_BACKEND',
+              'LAUNCH_BACKEND', 'LAUNCH_ROLE'):
+        env.pop(k, None)
+    proc = subprocess.run(['zsh', str(REPO / 'tools/launch.sh'), 'fixture-r', str(state)], env=env,
+                          capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads((jobs / 'fixture-r.log.selection.json').read_text())['executor'] == 'codex'
+    assert 'agy hit its quota: rerunning' in (jobs / 'fixture-r.log').read_text()
+

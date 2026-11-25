@@ -596,31 +596,33 @@ def delegate_roles(path):
     return path
 
 
-def test_a_delegated_share_goes_to_the_delegate_with_fewest_graded_outcomes_and_says_so(tmp_path, monkeypatch):
+def test_an_unpinned_job_goes_to_gemini_first_and_to_codex_only_when_agy_is_closed_or_blocked(tmp_path, monkeypatch):
     p = delegate_roles(tmp_path / 'roles.json')
-    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
+    monkeypatch.setenv('RH_CLAUDE_DELEGATE_DEFAULT', '1')
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
-    got = wm.select('review', 'codex', path=p, made_by='gpt-6')
-    assert got['source'] == 'delegate' and got['model'] == 'gemini-4-neon-high' and got['executor'] == 'agy'
-    assert got['delegate'] == ('delegated share 1 of review: gemini-4-neon-high (everyday n=0) instead of the '
-                               'leaderboard pick claude-opus-5-5')
-    # Never to the job's own maker for judgment, and only in the delegated roles.
-    assert wm.select('review', 'codex', path=p, made_by='gemini-3')['model'] == 'gpt-6.2-sol'
-    assert wm.select('batch', 'claude', path=p)['source'] == 'delegate'   # batch is delegated too (11-19)
-    monkeypatch.setenv('RH_DELEGATE_ROLES', 'review')
-    assert wm.select('batch', 'claude', path=p)['source'] == 'leaderboard'
-    monkeypatch.delenv('RH_DELEGATE_ROLES')
-    log, receipt = tmp_path / 'job.log', tmp_path / 'job.log.selection.json'
-    assert wm.main(['--role', 'review', '--made-by', 'gpt-6', '--roles-file', str(p), '--job', 'j',
-                    '--log', str(log), '--receipt', str(receipt)]) == 0
-    assert 'delegated share 1 of review' in log.read_text()
-
-
-def test_with_no_share_set_the_leaderboard_pick_stands(tmp_path, monkeypatch):
-    p = delegate_roles(tmp_path / 'roles.json')
-    monkeypatch.delenv('RH_DELEGATE_SHARE', raising=False)
-    got = wm.select('review', 'codex', path=p, made_by='gpt-6')
-    assert got['source'] == 'leaderboard' and got['model'] == 'claude-opus-5-5' and 'delegate' not in got
+    monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
+    for _ in range(3):
+        assert wm.select('batch', 'claude', path=p)['model'] == 'gemini-4-hydrogen-high'
+        assert wm.select('review', 'claude', path=p, made_by='gpt-6')['model'] == 'gemini-4-neon-high'
+    got = wm.select('batch', 'claude', path=p)
+    assert got['source'] == 'delegate' and got['delegate'].startswith('gemini first')
+    monkeypatch.setenv('RH_AGY_CLOSED', 'quota')       # launch.sh: the agy run failed on quota
+    got = wm.select('batch', 'claude', path=p)
+    assert got['model'] == 'gpt-6.2-sol' and got['executor'] == 'codex'
+    monkeypatch.delenv('RH_AGY_CLOSED')
+    state = tmp_path / 'state'                          # agy_quota.blocked() holds the model
+    state.mkdir()
+    until = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=3)).isoformat()
+    (state / 'agy-quota.jsonl').write_text(json.dumps({'model': 'gemini-4-hydrogen-high', 'blocked_until': until}) + '\n')
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(state))
+    got = wm.select('batch', 'claude', path=p)
+    assert got['model'] == 'gpt-6.2-sol' and 'skipped gemini-4-hydrogen-high' in ' '.join(got['quota_skipped'])
+    monkeypatch.delenv('RSTACK_STATE_DIR')
+    monkeypatch.setenv('RH_CODEX_CLOSED', 'quota')
+    assert wm.select('batch', 'claude', path=p)['model'] == 'gemini-4-hydrogen-high'
+    monkeypatch.delenv('RH_CODEX_CLOSED')
+    got = wm.select('review', 'codex', path=p, made_by='gemini-3')     # a Google producer: no Gemini judge
+    assert not got['model'].startswith('gemini')
 
 
 def test_a_returned_job_is_graded_into_its_log_and_the_grades_file(tmp_path):
@@ -636,7 +638,7 @@ def test_a_returned_job_is_graded_into_its_log_and_the_grades_file(tmp_path):
 
 def test_a_spec_that_pins_its_model_is_never_delegated(tmp_path, monkeypatch):
     p = delegate_roles(tmp_path / 'roles.json')
-    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
+    monkeypatch.setenv('RH_CLAUDE_DELEGATE_DEFAULT', '1')
     assert wm.spec_pin('Do the thing.\n- Model pin: sealed referee for batch 3\n') == 'sealed referee for batch 3'
     assert wm.spec_pin('We discussed whether a model pin: matters') == ''
     got = wm.select('review', 'codex', path=p, made_by='gpt-6', pin='cross-family check')
@@ -647,7 +649,6 @@ def test_a_spec_that_pins_its_model_is_never_delegated(tmp_path, monkeypatch):
     assert wm.main(['--role', 'batch', '--executor', 'claude', '--roles-file', str(p), '--spec', str(spec),
                     '--log', str(tmp_path / 'l'), '--receipt', str(receipt)]) == 0
     assert json.loads(receipt.read_text())['model_pin'] == 'sealed referee'
-    assert 'batch' in wm.DELEGATE_ROLES
 
 
 def returned_delegate(receipts, job, lane, hours_ago):
@@ -713,7 +714,6 @@ def family_roles(path):
 def test_a_referee_is_never_delegated_to_the_producers_family(tmp_path, monkeypatch, producer, family):
     from bug_verdicts import maker
     p = family_roles(tmp_path / 'roles.json')
-    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
     for _ in range(40):
         got = wm.select('review', 'codex', path=p, made_by=producer)
         assert maker(got['model'], got['canonical']) != family, got
@@ -728,12 +728,10 @@ def test_a_planted_referee_batch_reads_the_hunters_family_from_plants(tmp_path, 
     lane_dir.mkdir(); work.mkdir()
     (lane_dir / 'PLANTS.jsonl').write_text(json.dumps(dict(batch='b1', workdir=str(work), hunter_family='Google',
                                                            hunter_model='gemini-4-hydrogen-low', hunter_maker='google')) + '\n')
-    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
     for _ in range(40):
         got = wm.select('review', 'codex', path=p, made_by='claude-opus-5-5', workdir=str(work), lane_dir=str(lane_dir))
         assert maker(got['model'], got['canonical']) not in ('google', 'anthropic'), got
     # A batch-role job on a planted batch: the base pick (Gemini first in batch) moves off the hunter's family too.
-    monkeypatch.setenv('RH_DELEGATE_SHARE', '0')
     got = wm.select('batch', 'codex', path=p, job='lane-hunt-x', workdir=str(work), lane_dir=str(lane_dir))
     assert got['model'] == 'gpt-6.2-sol' and got['executor'] == 'codex'
 
@@ -741,8 +739,6 @@ def test_a_planted_referee_batch_reads_the_hunters_family_from_plants(tmp_path, 
 def test_a_judging_job_with_an_unknown_producer_is_not_delegated(tmp_path, monkeypatch):
     p = family_roles(tmp_path / 'roles.json')
     data = json.loads(p.read_text()); data['roles']['taste'] = ['claude-opus-5-5']; p.write_text(json.dumps(data))
-    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
-    monkeypatch.setenv('RH_DELEGATE_ROLES', 'taste')
     got = wm.select('taste', 'claude', path=p)
     assert got['source'] == 'leaderboard' and got['producer_family'] == 'unknown'
     assert 'unknown producer family' in got['delegate_skipped']
@@ -766,7 +762,6 @@ def test_a_job_recorded_at_return_says_so_and_a_later_grade_clears_its_row(tmp_p
 def test_a_delegate_runs_only_on_an_executor_the_launcher_can_run(tmp_path, monkeypatch):
     # 11-19 23:52, games: the lanes' launcher ran Codex with a delegated gemini-4-neon-medium and exited in 17 s.
     p = family_roles(tmp_path / 'roles.json')
-    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
     monkeypatch.delenv('RH_LAUNCHER_EXECUTORS', raising=False)
     for _ in range(40):
         # A caller that runs the model name on its own CLI never gets an agy delegate.
@@ -781,7 +776,6 @@ def test_the_stopgap_is_relaxed_a_route_following_caller_gets_delegates_on_all_t
     # 11-20: the lanes' launcher now execs rstack tools/launch.sh, which runs codex, claude and agy, so the
     # stopgap of 829d256 no longer holds a delegate to the executor asked for when the caller follows the route.
     p = family_roles(tmp_path / 'roles.json')
-    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
     monkeypatch.delenv('RH_LAUNCHER_EXECUTORS', raising=False)
     seen = {wm.select('batch', 'codex', path=p)['executor'] for _ in range(60)}
     assert 'agy' in seen, seen
@@ -830,7 +824,6 @@ def stub_allowance(monkeypatch, claude, codex):
             return {'weekly_used_percent': claude[0]}
     now_ = now
     monkeypatch.setattr(wm, '_allowance', lambda: Stub())
-    monkeypatch.setenv('RH_DELEGATE_SHARE', '0')
     monkeypatch.setenv('RH_CLAUDE_CAP', '0')   # these test the executor picker; the ceiling has its own tests
     monkeypatch.delenv('RH_HEADROOM_ROUTING', raising=False)
 
@@ -888,7 +881,6 @@ def real_allowance_state(tmp_path, monkeypatch, claude_age_s, codex_used=95):
     monkeypatch.setenv('RSTACK_HOST', 'm5')
     monkeypatch.delenv('RESETS_USAGE_DIR', raising=False)
     monkeypatch.delenv('RH_HEADROOM_ROUTING', raising=False)
-    monkeypatch.setenv('RH_DELEGATE_SHARE', '0')
     return state / 'asks-waiting/m5-claude-usage.tsv'
 
 
@@ -933,7 +925,7 @@ def test_a_science_publish_review_is_held_to_the_gates_reviewers_and_a_plain_rev
     # 11-20, math: math_c82r12rvb2_1120 (a public PR text review) was delegated to claude-sonnet-5-5, a reviewer
     # science-publish-gate never counts, so it could not reach the two accepts.
     p = science_gate(tmp_path, monkeypatch)
-    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
+    monkeypatch.setenv('RH_CLAUDE_DELEGATE_DEFAULT', '1')
     monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
     for made_by in ('gpt-6.2-sol', 'claude-opus-5-5'):
         for _ in range(30):
@@ -995,7 +987,6 @@ def cap_setup(tmp_path, monkeypatch, used, hours=100, history=None, shares=None)
     monkeypatch.delenv('RH_CLAUDE_CAP', raising=False)
     monkeypatch.delenv('RH_CLAUDE_OVERFLOW_PERCENT', raising=False)
     monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
-    monkeypatch.setenv('RH_DELEGATE_SHARE', '0')
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     monkeypatch.setenv('RSTACK_CLAUDE_SHARES', str(tmp_path / 'shares.json'))
     monkeypatch.setenv('RH_CLAUDE_PROJECTS', str(tmp_path / 'no-projects'))
@@ -1174,31 +1165,21 @@ def test_claude_usage_keeps_a_history_for_pacing(tmp_path):
     assert rows == [{'at': 1000 + 15 * 86400, 'weekly_percent': 9.0}]
 
 
-def test_gemini_delegates_run_at_high_or_medium_argon_takes_a_small_share_and_carbon_none(tmp_path, monkeypatch):
-    """11-23 (Ricardo: "just do median for all of them, and for Neon and Hydrogen, we should try high")."""
+def test_gemini_picks_run_at_high_and_carbon_or_argon_never(tmp_path, monkeypatch):
+    """11-23 (Ricardo: Neon and Hydrogen at high). 11-24: the Argon share went with the random draw."""
     routes = {m: {'cli': 'agy', 'canonical': 'google/' + m} for m in (
         'gemini-4-argon-low', 'gemini-4-argon-medium', 'gemini-4-carbon-medium', 'gemini-4-neon-high',
         'gemini-4-neon-medium', 'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium', 'gemini-4-hydrogen-high')}
     routes['gpt-6.2-sol'] = {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'}
-    roles = {r: ['gpt-6.2-sol'] for r in wm.DELEGATE_ROLES}
+    gemini_roles = wm.GEMINI_ROLES['neon'] + wm.GEMINI_ROLES['hydrogen']
     p = tmp_path / 'roles.json'
-    p.write_text(json.dumps({'roles': roles, 'routes': routes}))
-    monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
+    p.write_text(json.dumps({'roles': {r: ['gpt-6.2-sol'] for r in gemini_roles}, 'routes': routes}))
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,agy')
     monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
-    seen = {}
-    for role in wm.DELEGATE_ROLES:
-        for _ in range(40):
-            got = wm.select(role, 'codex', path=p, made_by='claude-opus-5-5' if role in wm.INDEPENDENT else '')
-            seen.setdefault(role, []).append(got['model'])
-    flat = [m for ms in seen.values() for m in ms]
-    assert not any(m.endswith('-low') or 'carbon' in m for m in flat), set(flat)
-    for role in ('review', 'judge', 'audit', 'builder'):
-        assert set(seen[role]) <= {'gemini-4-neon-high', 'gemini-4-argon-medium', 'gpt-6.2-sol'}, (role, set(seen[role]))
-    for role in ('batch', 'mechanical'):
-        assert set(seen[role]) <= {'gemini-4-hydrogen-high', 'gpt-6.2-sol'}, (role, set(seen[role]))
-    argon = sum(m == 'gemini-4-argon-medium' for r in ('review', 'judge', 'audit', 'builder') for m in seen[r])
-    assert 0 < argon < 0.45 * 160, argon                       # a small share, not every draw
+    for role in gemini_roles:
+        got = wm.select(role, 'codex', path=p, made_by='claude-opus-5-5' if role in wm.INDEPENDENT else '')
+        assert got['model'] == ('gemini-4-hydrogen-high' if role in wm.GEMINI_ROLES['hydrogen']
+                                else 'gemini-4-neon-high'), (role, got['model'])
 
 
 def test_no_gemini_job_runs_below_medium(tmp_path, monkeypatch):
@@ -1207,7 +1188,6 @@ def test_no_gemini_job_runs_below_medium(tmp_path, monkeypatch):
     p.write_text(json.dumps({'roles': {'batch': ['gemini-3.8-flash-low']}, 'routes': routes}))
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'agy')
     monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
-    monkeypatch.delenv('RH_DELEGATE_SHARE', raising=False)
     got = wm.select('batch', 'agy', path=p)
     assert got['model'] == 'gemini-3.8-flash-medium' and 'gemini floor' in got['gemini_floor']
     assert wm.gemini_floor('gemini-4-neon-high', json.loads(p.read_text())) is None
@@ -1223,7 +1203,6 @@ def test_a_model_trial_alternates_by_job_keeps_a_jobs_arm_and_stops_at_n(tmp_pat
                                                      'models': ['gemini-4-neon-medium', 'claude-opus-5-5']}))
     monkeypatch.setenv('RH_MODEL_TRIAL', str(tmp_path / 'trial.json'))
     monkeypatch.setenv('RH_MODEL_TRIAL_LEDGER', str(tmp_path / 'trial.jsonl'))
-    monkeypatch.delenv('RH_DELEGATE_SHARE', raising=False)
 
     def run(job, role='builder', executor='codex'):
         log, receipt = tmp_path / (job + '.log'), tmp_path / (job + '.log.selection.json')
@@ -1258,7 +1237,6 @@ def test_the_trial_runs_in_several_roles_against_each_jobs_own_pick_and_takes_ex
                                                      'models': ['gemini-4-neon-medium', '@leaderboard']}))
     monkeypatch.setenv('RH_MODEL_TRIAL', str(tmp_path / 'trial.json'))
     monkeypatch.setenv('RH_MODEL_TRIAL_LEDGER', str(tmp_path / 'trial.jsonl'))
-    monkeypatch.delenv('RH_DELEGATE_SHARE', raising=False)
 
     def run(job, *extra, role='builder', executor='claude'):
         log, receipt = tmp_path / (job + '.log'), tmp_path / (job + '.log.selection.json')
@@ -1298,7 +1276,7 @@ def test_the_trial_runs_in_several_roles_against_each_jobs_own_pick_and_takes_ex
 
 
 def test_biology_draws_neon_as_a_delegate():
-    assert 'biology' in wm.DELEGATE_ROLES and 'biology' in wm.GEMINI_ROLES['neon']
+    assert 'biology' in wm.GEMINI_ROLES['neon']
 
 
 def test_the_last_hours_before_the_reset_spend_down_on_their_own(tmp_path, monkeypatch):
@@ -1372,7 +1350,7 @@ def test_claude_is_off_by_default_in_build_and_review_roles_unless_pinned(tmp_pa
     monkeypatch.setenv('RH_CLAUDE_DELEGATE_DEFAULT', '1')
     for role in ('builder', 'mechanical', 'batch', 'review', 'judge'):
         got = wm.select(role, 'claude', path=p, made_by='gpt-6.2-sol' if role in wm.INDEPENDENT else '')
-        assert got['executor'] in ('codex', 'agy') and 'Claude off by default' in got['delegate'], (role, got)
+        assert got['executor'] in ('codex', 'agy') and 'gemini first' in got['delegate'], (role, got)
         assert got['source'] == 'delegate', role
     got = wm.select('taste', 'claude', path=p)                       # Ricardo-facing writing keeps Claude
     assert got['executor'] == 'claude'
@@ -1380,7 +1358,7 @@ def test_claude_is_off_by_default_in_build_and_review_roles_unless_pinned(tmp_pa
     assert got['executor'] == 'claude' and got['model'] == 'claude-opus-5-5'
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'claude')            # nowhere to go: stays, and says so
     got = wm.select('builder', 'claude', path=p)
-    assert got['executor'] == 'claude' and 'no Codex or Gemini delegate is open' in got['delegate_skipped']
+    assert got['executor'] == 'claude' and 'neither Codex nor Gemini is open' in got['delegate_skipped']
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     monkeypatch.setenv('RH_CLAUDE_DELEGATE_DEFAULT', '0')
     assert wm.select('builder', 'claude', path=p)['executor'] == 'claude'
