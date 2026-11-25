@@ -498,3 +498,116 @@ def test_missing_usage_wakes_nobody_and_never_raises(tmp_path, monkeypatch):
     state.mkdir()
     (state / 'weekly-reset.json').write_text(json.dumps({'done': 0}))
     nudge.reset_wake(reset_args(tmp_path, tmp_path / 'nothing'), None, state, RESET)
+
+
+# ---- 11-24: DRIVER_STATUS.md primary driver routing and fallback -----------------------------------------------
+
+def _driver_env(tmp_path, monkeypatch, status_text, status_age=600, agy_live=True, agy_tail='? for shortcuts',
+                claude_idle=120, include_claude=True, status_in_state=False):
+    lanes = tmp_path / 'lanes'
+    lane = lanes / 'math'
+    lane.mkdir(parents=True)
+    state = tmp_path / 'state'
+    state.mkdir()
+    marker = (tmp_path / 'math' / 'DRIVER_STATUS.md') if status_in_state else (lane / 'DRIVER_STATUS.md')
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(status_text)
+    os.utime(marker, (NOW - status_age, NOW - status_age))
+    monkeypatch.delenv('RH_LANE_REGISTRY', raising=False)
+    monkeypatch.setattr(nudge.sys, 'argv', ['lane-nudge', '--lanes', str(lanes), '--skip', '',
+                                           '--state', str(state), '--log', str(tmp_path / 'log'),
+                                           '--outputs', str(tmp_path / '{lane}_*.last.md')])
+    monkeypatch.setattr(nudge, 'cadence', lambda _: ({'math': {'status': 'OK'}}, None))
+    monkeypatch.setattr(nudge, 'panes', lambda *_: [('math', '%claude', '/work')] if include_claude else [])
+    monkeypatch.setattr(nudge, 'idle_minutes', lambda *_: claude_idle)
+    monkeypatch.setattr(nudge, 'time', SimpleNamespace(time=lambda: NOW, sleep=lambda *_: None,
+                                                       strftime=nudge.time.strftime))
+    sent = []
+
+    def run(cmd, **kw):
+        if cmd[1] == 'list-panes':
+            return SimpleNamespace(returncode=0 if agy_live else 1, stdout='%agy\n' if agy_live else '')
+        if cmd[1] == 'capture-pane':
+            return SimpleNamespace(returncode=0, stdout=agy_tail if cmd[4] == '%agy' else '> ')
+        if cmd[1] == 'send-keys' and '-l' in cmd:
+            sent.append((cmd[3], cmd[-1]))
+        return SimpleNamespace(returncode=0, stdout='')
+
+    monkeypatch.setattr(nudge.subprocess, 'run', run)
+    return sent, tmp_path
+
+
+def test_live_driver_handles_results_and_idle_without_waking_claude_fallback(tmp_path, monkeypatch):
+    # Output older than DRIVER_STATUS.md mtime (already handled by agy-math): wakes nobody.
+    sent, root = _driver_env(tmp_path, monkeypatch, 'Driver: agy-math (Neon), active.\nNeon quota refusals: 0\n',
+                             status_age=600)
+    old_out = root / 'math_old.last.md'
+    old_out.write_text('done')
+    os.utime(old_out, (NOW - 1800, NOW - 1800))
+    nudge.main()
+    assert sent == []
+
+    # Fresh settled output newer than DRIVER_STATUS.md mtime: wakes agy-math, never claude-math.
+    os.utime(root / 'lanes/math/DRIVER_STATUS.md', (NOW - 3600, NOW - 3600))
+    new_out = root / 'math_new.last.md'
+    new_out.write_text('done')
+    os.utime(new_out, (NOW - 1200, NOW - 1200))
+    nudge.main()
+    assert len(sent) == 1 and sent[0][0] == '%agy' and str(new_out) in sent[0][1]
+
+
+def test_live_driver_busy_indicators_skip_idle_nudge(tmp_path, monkeypatch):
+    for tail in ('esc to cancel  auto', '? for shortcuts  1 task(s) /tasks'):
+        sent, _ = _driver_env(tmp_path / tail[:3], monkeypatch, 'Driver: agy-math\n',
+                              status_age=7200, agy_tail=tail)
+        nudge.main()
+        assert sent == []
+
+
+@pytest.mark.parametrize('status_text,agy_live', [
+    ('Driver: agy-math (Neon)\n', False),
+    ('Driver: agy-math\nStopped: agy hit quota limit, standing down.\n', True),
+    ('Driver: agy-math\nPaused on rate limit (429).\n', True),
+])
+def test_claude_fallback_wakes_only_when_driver_missing_or_quota_stopped(tmp_path, monkeypatch, status_text, agy_live):
+    sent, _ = _driver_env(tmp_path, monkeypatch, status_text, status_age=600, agy_live=agy_live, claude_idle=120)
+    nudge.main()
+    assert len(sent) == 1 and sent[0][0] == '%claude'
+
+
+def test_standalone_driver_and_state_dir_driver_status_work(tmp_path, monkeypatch):
+    sent, _ = _driver_env(tmp_path / 'a', monkeypatch, 'Updated: (driver: agy-math / Neon)\n',
+                          status_age=7200, include_claude=False)
+    nudge.main()
+    assert len(sent) == 1 and sent[0][0] == '%agy'
+
+    sent2, _ = _driver_env(tmp_path / 'b', monkeypatch, 'Driver: agy-math (Neon)\n',
+                           status_age=7200, status_in_state=True)
+    nudge.main()
+    assert len(sent2) == 1 and sent2[0][0] == '%agy'
+
+
+def test_reset_wake_skips_claude_fallback_when_driver_is_live(tmp_path, monkeypatch):
+    usage, state, lanes = tmp_path / 'u', tmp_path / 'state', tmp_path / 'lanes'
+    state.mkdir()
+    (lanes / 'math').mkdir(parents=True)
+    (lanes / 'math/DRIVER_STATUS.md').write_text('Driver: agy-math (Neon)\n')
+    write_usage(usage, RESET, RESET + 7 * 86400)
+    registry = SimpleNamespace(lane_of_session=lambda s: s, status=lambda l: 'active')
+    monkeypatch.setattr(nudge, 'panes', lambda *_: [('general', '%1', '/'), ('math', '%2', '/')])
+    typed = []
+
+    def run(cmd, **kw):
+        if cmd[1] == 'list-panes':
+            return SimpleNamespace(returncode=0, stdout='%agy\n')
+        if cmd[1] == 'capture-pane':
+            return SimpleNamespace(returncode=0, stdout='> ')
+        if '-l' in cmd:
+            typed.append(cmd[3])
+        return SimpleNamespace(returncode=0, stdout='')
+
+    monkeypatch.setattr(nudge.subprocess, 'run', run)
+    monkeypatch.setattr(nudge.time, 'sleep', lambda _: None)
+    (state / 'weekly-reset.json').write_text(json.dumps({'done': RESET - 7 * 86400}))
+    nudge.reset_wake(reset_args(tmp_path, usage, lanes=str(lanes)), registry, state, RESET + 400)
+    assert typed == ['%1']

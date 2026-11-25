@@ -38,7 +38,12 @@ import harness_blocks
 import lane_registry
 
 BEHIND = ('WARN', 'STALLED', 'BROKEN')
-RUNNING = re.compile(r'esc to interrupt|shells? still running|agents? running|still running')
+RUNNING = re.compile(r'esc to (?:interrupt|cancel)|shells? still running|agents? running|still running|\b[1-9]\d* task\(s\)')
+DRIVER_RE = re.compile(r'\b(agy-[A-Za-z0-9_.-]+)\b')
+QUOTA_LINE = re.compile(r'\b(?:quota|rate[- ]?limit(?:ed)?)\b', re.I)
+QUOTA_OK = re.compile(
+    r'\b(?:no|none|zero)\s+\w*\s*(?:quota|rate[- ]?limit)|(?:quota|rate[- ]?limit)[^.\n]{0,20}\b(?:0|none|ok|clear)\b',
+    re.I)
 MSG = ("Harness check (lane-nudge): lane {lane} is {why}, and this session has been idle {idle} min with nothing "
        "running. Start the next round from the lane's idea queue now, put bounded work on background jobs, and arm "
        "a watcher on every job so you wake on results. If you are blocked on a human decision, send it through the "
@@ -107,9 +112,12 @@ def reset_wake(a, registry, state, now):
             return
         at = datetime.fromtimestamp(t, timezone.utc).strftime('%Y-%m-%d %H:%MZ')
         skip = {s for s in a.reset_skip.split(',') if s}
+        lanes_root = getattr(a, 'lanes', None)
         for session, pane, _ in panes(a.tmux, a.prefix):
             lane = registry.lane_of_session(session)
             if session in skip or registry.status(lane) in ('retired', 'ended', 'held'):
+                continue
+            if lanes_root and active_driver(Path(os.path.expanduser(lanes_root)) / lane, a.tmux, state):
                 continue
             tail = subprocess.run([a.tmux, 'capture-pane', '-p', '-t', pane, '-S', '-15'],
                                   capture_output=True, text=True).stdout
@@ -117,11 +125,8 @@ def reset_wake(a, registry, state, now):
                 say(a.log, f'{a.prefix}{session}: weekly reset {at}, already running', a.dry)
                 continue
             say(a.log, f'{a.prefix}{session}: weekly-reset wake ({at})', a.dry)
-            if a.dry:
-                continue
-            subprocess.run([a.tmux, 'send-keys', '-t', pane, '-l', '--', RESET_MSG.format(at=at)])
-            time.sleep(1)
-            subprocess.run([a.tmux, 'send-keys', '-t', pane, 'Enter'])
+            if not a.dry:
+                type_into(a.tmux, pane, RESET_MSG.format(at=at))
         if not a.dry:
             sf.write_text(json.dumps({'done': t, 'at': now}))
 
@@ -239,6 +244,46 @@ def quiet_until(lane_dir, state, now):
         warn_quiet(lane_dir, state, now, f'marker expired at {match[1]}')
         return None
     return line[:200]
+
+
+def type_into(tmux, pane, text):
+    subprocess.run([tmux, 'send-keys', '-t', pane, '-l', '--', text])
+    time.sleep(1)
+    subprocess.run([tmux, 'send-keys', '-t', pane, 'Enter'])
+
+
+def driver_status(lane_dir, state=None):
+    """Read DRIVER_STATUS.md -> (session_name, quota_stopped, mtime), or (None, False, None)."""
+    paths = [Path(lane_dir) / 'DRIVER_STATUS.md']
+    if state is not None:
+        paths.append(Path(state).parent / Path(lane_dir).name / 'DRIVER_STATUS.md')
+    for path in paths:
+        try:
+            st = path.stat()
+            text = path.read_text(errors='replace')
+        except OSError:
+            continue
+        m = DRIVER_RE.search(text)
+        if not m:
+            return None, False, None
+        stopped = any(QUOTA_LINE.search(ln) and not QUOTA_OK.search(ln) for ln in text.splitlines())
+        return m.group(1), stopped, st.st_mtime
+    return None, False, None
+
+
+def driver_pane(tmux, name):
+    """Return the first pane id of tmux session `name`, or None when missing."""
+    r = subprocess.run([tmux, 'list-panes', '-t', '=' + name, '-F', '#{pane_id}'],
+                       capture_output=True, text=True)
+    lines = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    return lines[0] if getattr(r, 'returncode', 0) == 0 and lines else None
+
+
+def active_driver(lane_dir, tmux, state=None):
+    """Return (session_name, pane_id, mtime) when DRIVER_STATUS.md names a live, non-quota-stopped driver."""
+    name, stopped, mtime = driver_status(lane_dir, state)
+    pane = driver_pane(tmux, name) if name and not stopped else None
+    return (name, pane, mtime) if pane else None
 
 
 def panes(tmux, prefix):
@@ -360,7 +405,8 @@ def main():
                     help='comma-separated owner sessions that are idle by design')
     ap.add_argument('--idle-min', type=int, default=60)
     ap.add_argument('--reask', type=int, default=7200)
-    ap.add_argument('--tmux', default=os.environ.get('TMUX_BIN', 'tmux'))
+    default_tmux = str(home / '.local/bin/tmux') if (home / '.local/bin/tmux').exists() else 'tmux'
+    ap.add_argument('--tmux', default=os.environ.get('TMUX_BIN') or default_tmux)
     ap.add_argument('--rh', default=os.environ.get('RH_BIN', 'rh'))
     ap.add_argument('--projects', default=str(home / '.claude/projects'))
     ap.add_argument('--state', default=str(home / '.local/state/lane-nudge'))
@@ -395,36 +441,55 @@ def main():
     if failed:
         say(a.log, failed, a.dry)
     cad = cad or {}
+    lanes_root = Path(os.path.expanduser(a.lanes))
+    targets = list(panes(a.tmux, a.prefix))
+    seen = {registry.lane_of_session(s) for s, _, _ in targets}
+    if lanes_root.is_dir():
+        for marker in sorted(lanes_root.glob('*/DRIVER_STATUS.md')):
+            if not marker.parent.is_symlink():
+                lname = registry.lane_of_session(marker.parent.name)
+                if lname not in seen:
+                    targets.append((lname, None, None))
+                    seen.add(lname)
     quiet = {}
-    for lane, pane, path in panes(a.tmux, a.prefix):
-        session = lane
+    for session, pane, path in targets:
         lane = registry.lane_of_session(session)
         if registry.status(lane) in ('retired', 'ended', 'held'):
             say(a.log, f'{a.prefix}{session}: skipped ({registry.reason(lane)})', a.dry)
             continue
         if session in skip or lane in skip:
             continue
-        lane_dir = Path(os.path.expanduser(a.lanes)) / lane
+        lane_dir = lanes_root / lane
+        drv = active_driver(lane_dir, a.tmux, state)
+        if not drv and pane is None:
+            continue
+        label = drv[0] if drv else f'{a.prefix}{session}'
         if lane not in quiet:
             quiet[lane] = quiet_until(lane_dir, state, time.time())
             if quiet[lane]:
-                say(a.log, f'{a.prefix}{session}: QUIET ({quiet[lane]}), idle nudge skipped', a.dry)
-        idle = idle_minutes(path, Path(a.projects), time.time())
-        if idle is None:
-            continue
-        tail = subprocess.run([a.tmux, 'capture-pane', '-p', '-t', pane, '-S', '-15'],
+                say(a.log, f'{label}: QUIET ({quiet[lane]}), idle nudge skipped', a.dry)
+        now = time.time()
+        if drv:
+            target_pane, last_act = drv[1], drv[2]
+            idle = max(0, int((now - last_act) / 60))
+        else:
+            target_pane = pane
+            idle = idle_minutes(path, Path(a.projects), now)
+            if idle is None:
+                continue
+            last_act = now - idle * 60
+        tail = subprocess.run([a.tmux, 'capture-pane', '-p', '-t', target_pane, '-S', '-15'],
                               capture_output=True, text=True).stdout
-        sf = state / f'{session}.json'
+        sf = state / f'{drv[0] if drv else session}.json'
         saved = json.loads(sf.read_text()) if sf.exists() else {}
         last = saved.get('at', 0)
         c = cad.get(session, cad.get(lane, {}))
-        now = time.time()
-        unread = unread_output(outputs, lane, now - idle * 60, now) if outputs else None
+        unread = unread_output(outputs, lane, last_act, now) if outputs else None
         blocked = blocked_on(lane_dir, now)
         why = decide(idle, bool(RUNNING.search(tail)), c.get('status'), last, now, a.idle_min, a.reask,
                      unread, saved.get('output'), blocked, quiet[lane])
         if blocked and not why and idle >= a.idle_min:
-            say(a.log, f'{a.prefix}{session}: blocked, not nudged ({blocked})', True)
+            say(a.log, f'{label}: blocked, not nudged ({blocked})', True)
         if not why:
             continue
         if c.get('status') in BEHIND and c.get('deliverable'):
@@ -435,12 +500,10 @@ def main():
             why = 'quiet (cadence unknown: the read failed)'
         text = (RESULT_MSG.format(lane=lane, path=unread) if unread and why.startswith('a job result')
                 else MSG.format(lane=lane, why=why, idle=idle) + pickup(c))
-        say(a.log, f'{a.prefix}{session}: nudge ({why}; idle {idle} min)', a.dry)
+        say(a.log, f'{label}: nudge ({why}; idle {idle} min)', a.dry)
         if a.dry:
             continue
-        subprocess.run([a.tmux, 'send-keys', '-t', pane, '-l', '--', text])
-        time.sleep(1)
-        subprocess.run([a.tmux, 'send-keys', '-t', pane, 'Enter'])
+        type_into(a.tmux, target_pane, text)
         sf.write_text(json.dumps({'at': time.time(), 'why': why, 'output': unread or saved.get('output')}))
 
 

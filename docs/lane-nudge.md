@@ -30,7 +30,7 @@ Idle is never the transcript's mtime. From 11-08 to 11-11 every lane slept: Clau
 
 Each Mac that hosts lane sessions runs its own copy against its own tmux. Under launchd pass `--tmux` (or `TMUX_BIN`) and `--rh` as full paths; `--log` (or `LANE_NUDGE_LOG`) appends each nudge to a file.
 
-Limits: it only sees tmux-hosted Claude Code sessions, and it detects "running" from the pane's status line, which can change between Claude Code versions. Tests: `tests/test_lane_nudge.py`.
+When `lanes/<lane>/DRIVER_STATUS.md` names an active driver session (`agy-<lane>`) and that tmux session is live without a quota or rate-limit stop note, lane-nudge targets that driver pane (measuring activity from `DRIVER_STATUS.md` mtime and detecting `esc to cancel` / `<N> task(s)` as running) and leaves the Claude fallback alone; it wakes the Claude fallback only when the named tmux session is missing or `DRIVER_STATUS.md` reports a quota/rate-limit stop. Tests: `tests/test_lane_nudge.py`.
 
 A cadence read that fails is never read as all clear. If `rh lanes cadence` cannot run or prints no JSON, lane-nudge prints `CADENCE READ FAILED`, runs `--alert COMMAND` (or `LANE_NUDGE_ALERT`) with the message once per failure streak and again on recovery, and still nudges quiet lanes, as "cadence unknown". One installation called a bare `rh` from launchd, whose PATH did not include it; every read failed for eight hours and every lane read as fine. Pass `--rh` (or `RH_BIN`) as a full path when a scheduler runs it.
 
