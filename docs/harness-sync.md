@@ -2,7 +2,7 @@
 
 An installed harness that people fix in place drifts from its repo. Each copy ages differently: a fix lands in one and not the other, and a later install silently undoes it. One source, plus a scheduled check, is the fix.
 
-`harness/tools/harness-sync/harness_sync.py` installs the git-tracked files under `harness/` at a committed ref (default `main`) into the installed root. The Codex wrapper, budget policy, allowance reader and job-health also ship under `rstack/tools/` in that root; see [Codex deployment](../rstack/tools/codex-spend.md). The job launcher `tools/launch.sh` and its `tools/RULES.md` ship to `launcher/` in that root; installed there it runs the installed harness beside it, and a host's lane wrapper execs it rather than keeping its own launcher. PATH entrypoints are activated separately by the operator. It never reads the working tree, so a half-finished edit cannot reach running lanes. Lanes, ledgers and other runtime state in the root are never touched.
+`harness/tools/harness-sync/harness_sync.py` installs the git-tracked files under `harness/` at a committed ref (default `main`) into the installed root. The Codex privacy-routing wrapper, allowance reader and job-health also ship under `rstack/tools/` in that root. The job launcher `tools/launch.sh` and its `tools/RULES.md` ship to `launcher/` in that root; installed there it runs the installed harness beside it, and a host's lane wrapper execs it rather than keeping its own launcher. PATH entrypoints are activated separately by the operator. It never reads the working tree, so a half-finished edit cannot reach running lanes. Lanes, ledgers and other runtime state in the root are never touched.
 
 ```sh
 harness-sync --check   # report drift, change nothing; exit 2 if any

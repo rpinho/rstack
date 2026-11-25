@@ -54,8 +54,6 @@ explicitly accept it before installation. Fleet lint inventories global and sess
 reports denied names and misplaced packs, and checks installed pack integrity. Static review
 and hashes do not provide execution isolation or authorize service calls.
 
-Codex spend is enforced at the codex wrapper; job-health's ledger check catches bypasses.
-
 ## Layers
 
 There are fourteen. Ten are about the machinery and are listed here. The other four cover my own

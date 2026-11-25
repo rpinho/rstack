@@ -62,12 +62,11 @@ def exit_code(log, selection_id):
 
 
 # RULE #1 (11-20): a run the harness refused never reached the model, so it is never pass, partial or fail.
-# math_huntfree_1120 was graded 'fail' for the Codex wrapper's per-lane cap (exit 75). Exit 75 (tempfail) and
-# 78 (config) are the wrapper's and the launcher's refusal codes; the patterns are their refusal lines.
+# math_huntfree_1120 was graded 'fail' for a refusal (exit 75). Exit 75 (tempfail) and 78 (config) are the
+# launcher's refusal codes; the patterns are their refusal lines.
 HARNESS_EXITS = (75, 78)
-HARNESS_LINES = re.compile(r'^(?:codex: REFUSED .*|codex-budget: REFUSED.*|launch\.sh (?:REFUSED|refused).*|'
+HARNESS_LINES = re.compile(r'^(?:launch\.sh (?:REFUSED|refused).*|'
                            r'launch-guard: REFUSED.*|\[[\w.-]+\] REFUSED \(.*|agent_executor refused: .*|'
-                           r'npx: REFUSED .*|'
                            # 11-22: the executor CLI is not installed where the job ran (ddbench_scan_1122, agy on the M4)
                            r"FileNotFoundError: \[Errno 2\] No such file or directory: '(?:[^']*/)?(?:agy|codex|claude)'|"
                            r'(?:zsh|bash|sh): (?:\d+: )?command not found: (?:agy|codex|claude)|'

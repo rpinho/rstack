@@ -435,13 +435,6 @@ def guard(data, job, role, backend, provider, log):
             message('WARNING snapshot window has reset; old percentage is not current usage', log)
         else:
             alerts(weekly, log)
-            if weekly['weekly_used_percent'] > 85 and re.search(
-                    r'audit|rescore|review-sweep|calibration|leaderboard', job + ' ' + role, re.I):
-                urgent = os.environ.get('LAUNCH_URGENT', '').strip()
-                if not urgent:
-                    message('REFUSED {}: above 85% weekly; non-urgent job needs LAUNCH_URGENT=<reason>'.format(job), log)
-                    return 75
-                message('LAUNCH_URGENT {}: {}'.format(job, urgent), log)
     cap = os.environ.get('LAUNCH_MAX_CONCURRENT') or '4'
     if not cap.isdecimal() or int(cap) < 1:
         message('REFUSED: LAUNCH_MAX_CONCURRENT must be a positive integer', log)

@@ -3,7 +3,7 @@
 Cost is never dollars (no pay-as-you-go). A job's cost is the weekly-percent delta of its executor over the
 job's start/end window:
   claude  ~/.local/state/rstack/usage/claude-history.jsonl   (weekly_percent every 15 minutes)
-  codex   ~/.local/state/rstack/codex-ledger/*.jsonl         (weekly_before / weekly_after snapshots of every call)
+  codex   no source since 11-24 (the Codex wrapper's ledger is gone), so Codex jobs show "-" like agy.
   agy     no source: the launch receipts carry no tokens and agy-quota.jsonl logs only quota errors, so agy
           jobs are never costed and show "-".
 Window: the launch receipt's utc (start) to the job log's last write (end). Jobs on the same executor whose
@@ -81,20 +81,6 @@ def series(state=None):
         t, p = _ts(r.get('at')), r.get('weekly_percent')
         if t is not None and isinstance(p, (int, float)):
             out['claude'].append((t, float(p), _window(r.get('resets_at'))))
-    seen = set()
-    for path in sorted((state / 'codex-ledger').glob('*.jsonl')) if (state / 'codex-ledger').is_dir() else ():
-        for r in _lines(path):
-            for key in ('weekly_before', 'weekly_after'):
-                w = r.get(key)
-                if not isinstance(w, dict):
-                    continue
-                t, p = _ts(w.get('snapshot_at')), w.get('weekly_used_percent')
-                if t is None or not isinstance(p, (int, float)):
-                    continue
-                item = (t, float(p), _window(w.get('resets_at')))
-                if item not in seen:
-                    seen.add(item)
-                    out['codex'].append(item)
     for rows in out.values():
         rows.sort()
     return out

@@ -412,7 +412,7 @@ def test_the_concurrency_cap_queues_then_runs(tmp_path):
 
 
 def test_a_wrapper_refusal_is_ungraded_not_failed(tmp_path):
-    """math_huntfree_1120 (11-20): the Codex per-lane cap refused the run (exit 75) and it was graded fail."""
+    """math_huntfree_1120 (11-20): the launcher refused the run (exit 75) and it was graded fail."""
     import auto_grade
     work = tmp_path / 'work'
     work.mkdir()
@@ -421,14 +421,14 @@ def test_a_wrapper_refusal_is_ungraded_not_failed(tmp_path):
                                        model='gpt-6.2-sol', source='delegate')))
     log = tmp_path / 'job.log'
     log.write_text('MODEL_SELECTION ' + json.dumps(dict(selection_id='sid1')) + '\n'
-                   'codex: REFUSED 3% weekly allowance/day limit for math\n'
+                   'launch-guard: REFUSED math_huntfree_1120: 4 other Codex job-* sessions running\n'
                    'MODEL_OUTCOME ' + json.dumps(dict(selection_id='sid1', exit_code=75)) + '\n')
     (tmp_path / 'job.md').write_text('Find it.\nCheck: test -f out.txt\n')
     assert auto_grade.main(['--receipt', str(receipt), '--log', str(log), '--dir', str(work),
                             '--spec', str(tmp_path / 'job.md')]) == 0
     row = json.loads((tmp_path / 'everyday-grades.jsonl').read_text().splitlines()[-1])
     assert (row['grade'], row['grader']) == ('ungraded', 'harness')
-    assert row['note'] == 'harness: codex: REFUSED 3% weekly allowance/day limit for math'
+    assert row['note'] == 'harness: launch-guard: REFUSED math_huntfree_1120: 4 other Codex job-* sessions running'
     # Exit 75 with no refusal line in the log is still the harness's.
     log.write_text('MODEL_SELECTION ' + json.dumps(dict(selection_id='sid1')) + '\n'
                    'MODEL_OUTCOME ' + json.dumps(dict(selection_id='sid1', exit_code=75)) + '\n')
@@ -452,85 +452,53 @@ def test_the_claude_ceiling_without_a_fallback_stays_on_claude(monkeypatch, tmp_
     assert ledger(tmp_path)[-1]['gate'] == 'selector.claude-ceiling'
 
 
-def test_codex_wrapper_errors_fail_open():
-    src = (REPO / 'rstack/tools/_codex_budget.py').read_text()
-    # After the run: an accounting error no longer replaces the run's own exit code with 75.
-    assert "completion accounting failed ({}); the run\\'s own exit code stands" in src
-    assert "_gate('codex-budget.unavailable'" in src and "_warn('codex-budget.limit'" in src
-    assert GATES['codex-budget.unavailable']['class'] == 'fail-open'
-    assert GATES['codex-budget.accounting']['class'] == 'fail-open'
-
-
-# --- general's decisions on the ambiguous gates (11-20): the input that used to refuse now runs, warned ----------
+# --- 11-24 (general): no Codex usage gate; a Codex job that fails on quota reruns on Gemini (agy), else Claude ----
 CODEX_CLAUDE_ROLES = {'roles': {'batch': ['fixture-codex', 'fixture-claude']},
                       'routes': {'fixture-codex': {'canonical': 'fixture-codex', 'cli': 'codex'},
-                                 'fixture-claude': {'canonical': 'fixture-claude', 'cli': 'claude'}}}
+                                 'fixture-claude': {'canonical': 'fixture-claude', 'cli': 'claude'},
+                                 'gemini-4-hydrogen-high': {'canonical': 'gemini-4-hydrogen-high', 'cli': 'agy'}}}
 
 
-def capped_codex(tmp_path, refusals=99):
-    """A codex CLI that the spend wrapper refuses `refusals` times (its REFUSED line, exit 75), then runs."""
+def quota_codex(tmp_path):
+    """A codex CLI that fails on its usage limit (exit 1) every time it is called."""
     count = tmp_path / 'codex-calls'
     return stub(tmp_path / 'fake-codex', 'from pathlib import Path\nimport sys\np = Path({!r})\n'
-                'n = int(p.read_text()) if p.exists() else 0\np.write_text(str(n + 1))\n'
-                'if n < {}:\n    print("codex: REFUSED 3% weekly allowance/day limit for fixture", file=sys.stderr)\n'
-                '    sys.exit(75)\nprint("codex ran")\n'.format(str(count), refusals)), count
+                'p.write_text(str(int(p.read_text()) + 1 if p.exists() else 1))\n'
+                'print("You have hit your usage limit. Try again later.", file=sys.stderr)\nsys.exit(1)\n'.format(
+                    str(count))), count
 
 
-def test_a_codex_budget_refusal_reruns_the_job_on_claude(tmp_path):
-    """codex-budget.limit used to fail the job (exit 75); the cap holds on Codex and the job runs on Claude."""
-    codex, count = capped_codex(tmp_path)
+def test_a_codex_quota_failure_reruns_the_job_on_claude(tmp_path):
+    """No Gemini route in the roles: the job that Codex failed on quota runs on Claude, and Codex is not retried."""
+    roles = json.loads(json.dumps(CODEX_CLAUDE_ROLES))
+    del roles['routes']['gemini-4-hydrogen-high']
+    codex, count = quota_codex(tmp_path)
     fake = claude_stub(tmp_path)
-    jobs, env = lanes_env(tmp_path, CODEX_CLAUDE_ROLES, AGENT_BACKEND='codex', LAUNCH_CODEX=str(codex),
+    jobs, env = lanes_env(tmp_path, roles, AGENT_BACKEND='codex', LAUNCH_CODEX=str(codex),
                           LAUNCH_CLAUDE=str(fake), RH_CLAUDE_CAP='0', RH_HEADROOM_ROUTING='0')
     (jobs / 'fixture-cap.md').write_text('a job\n')
     proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-cap', str(tmp_path)], env=env, capture_output=True,
                           text=True, timeout=120)
     assert proc.returncode == 0, proc.stderr
     log = (jobs / 'fixture-cap.log').read_text()
-    assert '=== attempt 1 model fixture-codex' in log and 'codex budget refused fixture-cap' in log
+    assert '=== attempt 1 model fixture-codex' in log and 'codex hit its quota or rate limit' in log
     assert '=== attempt 1 model fixture-claude' in log and count.read_text() == '1'
     receipt = json.loads((jobs / 'fixture-cap.log.selection.json').read_text())
     assert (receipt['executor'], receipt['model']) == ('claude', 'fixture-claude')
-    assert receipt['codex_refused'] == '3% weekly allowance/day limit for fixture'
+    assert receipt['codex_refused'] == 'quota or rate limit'
 
 
-def test_both_capped_queues_the_job_then_runs_it(tmp_path):
-    """Codex and Claude both capped: the job queues, warned, and runs when Codex has room again; never failed."""
-    codex, count = capped_codex(tmp_path, refusals=2)
-    real = REPO / 'harness/worker_models.py'
-    # The selector, except that Claude and agy have no room while Codex is closed (exit 5, as the 80% ceiling does).
-    selector = stub(tmp_path / 'fake-selector', 'import os, sys\n'
-                    'if os.environ.get("RH_CODEX_CLOSED") and any(a.endswith(".reroute.json") for a in sys.argv):\n'
-                    '    sys.exit(5)\n'
-                    'os.execv(sys.executable, [sys.executable, {!r}] + sys.argv[1:])\n'.format(str(real)))
-    jobs, env = lanes_env(tmp_path, CODEX_CLAUDE_ROLES, AGENT_BACKEND='codex', LAUNCH_CODEX=str(codex),
-                          LAUNCH_SELECTOR=str(selector), LAUNCH_BUDGET_QUEUE_POLL='0', RH_HEADROOM_ROUTING='0')
-    (jobs / 'fixture-cq.md').write_text('a job\n')
-    proc = subprocess.run(['zsh', str(LAUNCH), 'fixture-cq', str(tmp_path)], env=env, capture_output=True,
-                          text=True, timeout=120)
-    assert proc.returncode == 0, proc.stderr
-    log = (jobs / 'fixture-cq.log').read_text()
-    assert log.count('queued: codex budget') == 1 and 'codex ran' in log and count.read_text() == '3'
-    rows = [r for r in ledger(tmp_path / 'state') if r['gate'] == 'codex-budget.limit']
-    assert [r['outcome'] for r in rows] == ['warn']
-
-
-def test_a_selector_with_codex_closed_and_claude_capped_has_no_room(monkeypatch, tmp_path):
-    """The exit 5 that queues: Codex refused the job and Claude is past its ceiling with nowhere else to go."""
+def test_a_selector_with_codex_closed_gives_the_gemini_pick_before_claude(monkeypatch, tmp_path):
     import worker_models as wm
     monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
-    monkeypatch.setenv('RH_CODEX_CLOSED', 'weekly cap')
+    monkeypatch.setenv('RH_CODEX_CLOSED', 'quota or rate limit')
     monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
-    monkeypatch.setattr(wm.claude_cap, 'enabled', lambda: True)
-    monkeypatch.setattr(wm.claude_cap, 'decide', lambda chosen, *a, **k: dict(
-        model=chosen, leave='weekly 82% >= 80% ceiling', notes=[], warning='', opus_reason=''))
-    monkeypatch.setattr(wm, 'claude_fallback', lambda *a, **k: None)
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     roles = tmp_path / 'roles.json'
     roles.write_text(json.dumps(CODEX_CLAUDE_ROLES))
-    with pytest.raises(wm.NoRoom):
-        wm.select('batch', 'codex', '', '', roles, job='fixture', lane='lane-a')
-    assert wm.main(['--role', 'batch', '--roles-file', str(roles), '--log', str(tmp_path / 'l'),
-                    '--receipt', str(tmp_path / 'r.json'), '--print-route']) == 5
+    receipt = wm.select('batch', 'codex', '', '', roles, job='fixture', lane='lane-a')
+    assert (receipt['executor'], receipt['model']) == ('agy', 'gemini-4-hydrogen-high')
+    assert receipt['codex_refused'] == 'quota or rate limit'
 
 
 def rounds_cli(lane_dir, *args):

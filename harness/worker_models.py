@@ -29,10 +29,6 @@ class MeteredRefusal(ValueError):
     reroutes every other selector refusal to the leaderboard pick instead of stopping (RULE #1)."""
 
 
-class NoRoom(ValueError):
-    """11-20 (general): the Codex wrapper refused this job on its cap (RH_CODEX_CLOSED), and Claude (80% ceiling,
-    lane shares) and agy have no room for it either. main() exits 5, and launch.sh queues the job instead of
-    failing it (codex-budget.limit)."""
 
 ROLES_FILE = settings.path('RH_ROLES_FILE', Path('.runtime/roles.json'))
 JUDGMENT = frozenset(('review', 'judge', 'audit', 'taste', 'design', 'ideation'))
@@ -222,61 +218,39 @@ def gate_reviewer(model, reviewers):
     return any('-{}-'.format(r) in '-{}-'.format(model) for r in reviewers)
 
 
-# 11-23 (general: "the Codex week is at 85%"): while Codex's weekly figure is at or above RH_CODEX_TIGHT_PERCENT
-# (80), work leaving Claude tries Gemini before Codex. It goes back to Codex first by itself after Codex's reset.
-CODEX_TIGHT = 80.0
-
-
-def codex_week_percent():
-    """Codex's weekly used percent from the allowance cache, or None when it cannot be read."""
-    try:
-        allowance = _allowance()
-        row = (allowance.cached(__import__('time').time()) or {}).get('codex') if allowance else None
-        return float(row.get('weekly_used_percent') or 0) if row else None
-    except (AttributeError, TypeError, ValueError, OSError):
-        return None
-
-
-def codex_tight(pct=None):
-    pct = codex_week_percent() if pct is None else pct
-    try:
-        limit = float(os.environ.get('RH_CODEX_TIGHT_PERCENT') or CODEX_TIGHT)
-    except ValueError:
-        limit = CODEX_TIGHT
-    return pct is not None and pct >= limit
+def gemini_pick(role, data, excluded, families, run):
+    """agy's Gemini for the role (Neon, or Hydrogen for batch and mechanical), else None."""
+    gemini = 'gemini-4-hydrogen-high' if role in GEMINI_ROLES['hydrogen'] else 'gemini-4-neon-high'
+    r = data['routes'].get(gemini)
+    if ('agy' in run and isinstance(r, dict) and r.get('cli') == 'agy' and gemini not in excluded
+            and r.get('canonical') not in excluded and maker(gemini, r.get('canonical')) not in families):
+        return gemini
+    return None
 
 
 def claude_fallback(role, data, excluded, families, requested, follows_route, chosen, hold=False):
     """Where a job goes when Claude is closed to it (ceiling, pacing, budget line, lane share): (model, executor,
-    route_model). Codex's default for the role first (unless Codex is past 95%), then agy's Sonnet 5.5; while the
-    Codex week is tight (codex_tight), agy's Gemini for the role comes before Codex. Never a family the job judges.
+    route_model). Codex's default for the role first, then agy's Sonnet 5.5. Never a family the job judges.
     None when nothing is available. Under a Claude hold (a 0% lane share; 11-22, general) the agy leg is agy's
     Gemini for the role (Neon, or Hydrogen for batch and mechanical), never agy's Claude."""
     run = runnable(requested, follows_route)
-    pct = codex_week_percent()
-    codex_full = pct is not None and pct >= 95
 
     def codex_leg():
         pick = PROVIDER_DEFAULT['codex'].get(role) or PROVIDER_DEFAULT['codex']['*']
         r = data['routes'].get(pick)
-        if ('codex' in run and not codex_full and isinstance(r, dict) and r.get('cli') == 'codex'
+        if ('codex' in run and isinstance(r, dict) and r.get('cli') == 'codex'
                 and pick not in excluded and r.get('canonical') not in excluded
                 and maker(pick, r.get('canonical')) not in families):
             return pick, 'codex', None
         return None
 
     def gemini_leg():
-        gemini = 'gemini-4-hydrogen-high' if role in GEMINI_ROLES['hydrogen'] else 'gemini-4-neon-high'
-        r = data['routes'].get(gemini)
-        if ('agy' in run and isinstance(r, dict) and r.get('cli') == 'agy' and gemini not in excluded
-                and r.get('canonical') not in excluded and maker(gemini, r.get('canonical')) not in families):
-            return gemini, 'agy', gemini
-        return None
+        gemini = gemini_pick(role, data, excluded, families, run)
+        return (gemini, 'agy', gemini) if gemini else None
 
-    for leg in ((gemini_leg, codex_leg) if codex_tight(pct) else (codex_leg,)):
-        got = leg()
-        if got:
-            return got
+    got = codex_leg()
+    if got:
+        return got
     if hold:
         return gemini_leg()
     model = chosen if chosen in AGY_CLAUDE else claude_cap.SONNET
@@ -395,24 +369,6 @@ def headroom_pick(role, chosen, data, excluded, families, rooms, unknown=None, e
     return None, None, None
 
 
-def codex_delegates_today(add=False):
-    """How many delegate picks went to a Codex route today; Sol and Astra draw on the Codex budget."""
-    base = Path(os.environ.get('RSTACK_STATE_DIR') or
-                Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'rstack').expanduser()
-    path = base / 'delegate' / 'codex-{}.count'.format(dt.date.today().isoformat())
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('a+') as stream:
-        fcntl.flock(stream, fcntl.LOCK_EX)
-        stream.seek(0)
-        count = int(stream.read().strip() or 0)
-        if add:
-            stream.seek(0)
-            stream.truncate()
-            stream.write(str(count + 1))
-            count += 1
-    return count
-
-
 def runnable(executor, follows_route=True):
     """The executors the calling launcher can actually run.
 
@@ -426,8 +382,8 @@ def runnable(executor, follows_route=True):
     named = os.environ.get('RH_LAUNCHER_EXECUTORS', '')
     named = {e.strip() for e in named.split(',') if e.strip()}
     run = named or ({'codex', 'claude', 'agy'} if follows_route else {executor, 'claude'})
-    # 11-20 (general): RH_CODEX_CLOSED is set by launch.sh after the Codex wrapper refused this job on its cap;
-    # the job is asked for again on what is left.
+    # RH_CODEX_CLOSED (launch.sh, 11-24): Codex failed this job on quota or a rate limit; it is asked for again
+    # on what is left. That is its one meaning.
     return run - {'codex'} if os.environ.get('RH_CODEX_CLOSED', '').strip() else run
 
 
@@ -582,8 +538,7 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), exe
              quota=None, skipped=None, job='', force=False):
     """(model, note) when this selection is one of the delegated share, else None. An agy model whose logged quota
     reset has not passed is left out of the pool (quota: agy_quota.blocked()), and `skipped` gets a line for it.
-    force (11-23, Claude off by default in this role): every draw, no trial, no Claude delegate, and no Codex
-    per-day count (the Codex wrapper's own cap still holds)."""
+    force (11-23, Claude off by default in this role): every draw, no trial, no Claude delegate,."""
     if not force:
         trial = trial_pick(role, data, excluded, families, executors, quota, job, top=top)
         if trial:
@@ -615,22 +570,15 @@ def delegate(role, data, excluded, made_by, top, draw, families=frozenset(), exe
             if skipped is not None:
                 skipped.append(agy_quota.skip_note(m, held))
             continue
-        if not force and route.get('cli') == 'codex' and codex_delegates_today() >= int(os.environ.get('RH_DELEGATE_CODEX_PER_DAY') or 6):
-            continue   # Sol and Astra draw on the Codex budget: at most this many delegate picks a day
         pool.append(m)
     if not pool:
         return None
-    # 11-23 (general): Claude's default delegation leans on Gemini while the Codex week is tight.
-    if force and codex_tight() and any(data['routes'][m].get('cli') == 'agy' for m in pool):
-        pool = [m for m in pool if data['routes'][m].get('cli') != 'codex']
     n = lambda m: (evidence.get(m) or {}).get('n', 0)
     if 'gemini-4-argon-medium' in pool and len(pool) > 1 and int(hashlib.sha256(
             ('argon' + repr(draw)).encode()).hexdigest()[:8], 16) / 2 ** 32 >= ARGON_SHARE:
         pool.remove('gemini-4-argon-medium')   # Argon only in ARGON_SHARE of its draws
     # Fewest graded outcomes first, so every delegate reaches n=5; the draw breaks ties.
     pick = min(pool, key=lambda m: (n(m), hashlib.sha256((m + repr(draw)).encode()).hexdigest()))
-    if data['routes'][pick].get('cli') == 'codex' and not force:
-        codex_delegates_today(add=True)
     if force:
         return pick, ('Claude off by default for {} (Ricardo 11-23: "run more on Codex and on Gemini"): {} '
                       '(everyday n={}) instead of the leaderboard pick {}').format(role, pick, n(pick), top)
@@ -751,21 +699,23 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         if switched:
             chosen = switched
             executor = provider
-    # 11-20 (general): the Codex wrapper refused this job on its cap (codex-budget.limit) and launch.sh asks again
-    # with RH_CODEX_CLOSED set. A Codex pick moves to Claude; the ceiling and lane shares below still apply, with
-    # agy past them. A pick held to Codex (a pin, an explicit model) waits for Codex instead: NoRoom, queued.
+    # 11-24 (general): Codex failed this job on quota or a rate limit and launch.sh asks again with RH_CODEX_CLOSED
+    # set. A Codex pick goes to agy's Gemini for the role, else to Claude's default. A pick held to Codex (a pin, an
+    # explicit model) is refused, and launch.sh reroutes it to the leaderboard pick.
     codex_closed = os.environ.get('RH_CODEX_CLOSED', '').strip()
     if codex_closed and (data['routes'].get(chosen) or {}).get('cli') == 'codex':
-        moved = None
-        if not (explore or model or pin) and 'claude' in runnable(requested, follows_route):
-            moved = codex_closed_pick(role, data, eligible, excluded, families if judging else frozenset())
+        held, fam = bool(explore or model or pin), (families if judging else frozenset())
+        moved = None if held else gemini_pick(role, data, excluded, fam, runnable(requested, follows_route))
+        if moved and agy_quota.blocked_until(moved, effort, table=quota):
+            moved = None
+        if not moved and not held and 'claude' in runnable(requested, follows_route):
+            moved = codex_closed_pick(role, data, eligible, excluded, fam)
         if not moved:
-            raise NoRoom('role {}: Codex refused this job ({}) and {}'.format(
-                role, codex_closed, '{} is held to Codex'.format(chosen) if (explore or model or pin)
-                else 'no Claude pick is open to it'))
+            raise ValueError('role {}: Codex failed this job ({}) and {}'.format(
+                role, codex_closed, '{} is held to Codex'.format(chosen) if held else 'no Gemini or Claude pick is open to it'))
         chosen = switched = moved
-        executor = 'claude'
-        executor_choice = 'executor claude: Codex refused this job ({})'.format(codex_closed)
+        executor = data['routes'][moved]['cli']
+        executor_choice = 'executor {}: Codex failed this job ({})'.format(executor, codex_closed)
     delegated, delegate_skip = None, ''
     if judging and not families:
         delegate_skip = 'judging job with an unknown producer family: not delegated'
@@ -791,7 +741,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
             delegate_skip = 'Claude off by default for {}, but the producer family is unknown: stays on {}'.format(
                 role, chosen)
         else:
-            open_to = runnable(requested, follows_route) & ({'agy'} if codex_closed else {'codex', 'agy'})
+            open_to = runnable(requested, follows_route) & {'codex', 'agy'}
             forced = delegate(role, data, excluded, made_by, chosen, int(uuid.uuid4().hex[:8], 16) / 2 ** 32,
                               families if judging else frozenset(), open_to, quota=quota, skipped=quota_skipped,
                               job=job, force=True)
@@ -828,11 +778,6 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
                     role, chosen, cap['leave']))
             cap_route = claude_fallback(role, data, excluded, families if judging else frozenset(), requested,
                                         follows_route, chosen, hold=cap.get('hold', False))
-            if not cap_route and codex_closed:
-                # 11-20 (general): Codex refused this job and Claude is past its ceiling or the lane's share, so the
-                # job queues (launch.sh) rather than taking Claude past the line.
-                raise NoRoom('role {} selected {}: {}; Codex refused this job ({}) and agy is not open to it'.format(
-                    role, chosen, cap['leave'], codex_closed))
             if not cap_route:
                 # RULE #1: the ceiling reroutes work; with nowhere to reroute it to, the job stays on Claude.
                 if harness_blocks.gate('selector.claude-ceiling', 'role {} selected {}: {}; no Codex or agy fallback '
@@ -867,15 +812,15 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     if overflow and agy_quota.blocked_until(overflow[0], effort, table=quota):
         quota_skipped.append(agy_quota.skip_note(overflow[0], agy_quota.blocked_until(overflow[0], effort, table=quota)))
         if cap_route and cap_route[1] == 'agy':
-            raise (NoRoom if codex_closed else ValueError)('role {} selected {}: {}; agy\'s Claude is out of quota too ({})'.format(
+            raise ValueError('role {} selected {}: {}; agy\'s Claude is out of quota too ({})'.format(
                 role, chosen, cap['leave'], quota_skipped[-1]))
         overflow = None   # stays on Claude: agy's Claude is out of quota until then
     receipt = dict(schema=1, selection_id=uuid.uuid4().hex, utc=dt.datetime.now(dt.timezone.utc).isoformat(),
         role=role, model=chosen, canonical=route['canonical'], executor=executor,
         roles_sha256=hashlib.sha256(raw).hexdigest(), roles_updated=data.get('updated'),
         model_override=override, source='delegate' if delegated else 'explore' if explore else 'override' if model else 'leaderboard', job=job, lane=lane, made_by=made_by)
-    # 11-20: what the Codex wrapper is told this call is (launch.sh exports it as RSTACK_CALL_ROLE). A referee
-    # (an independent judgment role, or a referee batch on a hunter's claims) may use the referee bucket.
+    # 11-20: what launch.sh exports as RSTACK_CALL_ROLE: a referee is an independent judgment role, or a referee
+    # batch on a hunter's claims.
     receipt['call_role'] = ('referee' if role in INDEPENDENT | {'referee'}
                             or any(src.startswith('hunter ') for src in family_sources) else role)
     if delegated:
@@ -1258,9 +1203,6 @@ def main(argv=None):
     except MeteredRefusal as exc:
         harness_blocks.gate('selector.metered', str(exc), job=getattr(args, 'job', ''), lane=getattr(args, 'lane', ''))
         return 4
-    except NoRoom as exc:
-        print('worker model: no room: ' + str(exc), file=sys.stderr)
-        return 5
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print('worker model: ' + str(exc), file=sys.stderr)
         return 2

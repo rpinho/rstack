@@ -160,14 +160,13 @@ def test_codex_wrapper_and_policy_ship_from_committed_source(env):
     for name in hs.RSTACK_TOOLS:
         path = tools / name
         path.write_text('committed ' + name + '\n')
-        path.chmod(0o755 if name in ('codex', 'codex-budget', 'job-health', 'allowance', 'npx') else 0o644)
+        path.chmod(0o755 if name in ('codex', 'job-health', 'allowance') else 0o644)
     git(repo, 'add', 'rstack')
     git(repo, 'commit', '-qm', 'wrapper and policy')
     (tools / 'codex').write_text('uncommitted change must not ship\n')
     assert run() == 0
     assert (root / 'rstack/tools/codex').read_text() == 'committed codex\n'
     assert os.access(root / 'rstack/tools/codex', os.X_OK)
-    assert (root / 'rstack/tools/_codex_budget.py').exists()
     assert (root / 'rstack/tools/ask_lint.py').read_text() == 'committed ask_lint.py\n'
     assert run('--check') == 0
 

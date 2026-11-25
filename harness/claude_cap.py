@@ -318,20 +318,6 @@ def lanes_text(allowance, now=None, projects=None, lanes_root=None, top=8):
         shown + (', {} others {:.1f}%'.format(len(rows) - top, used * rest / total) if rest else '') + '.'
 
 
-def codex_credits_line():
-    """Codex credits spent in the last 7 days against the weekly budget (rstack/tools/_codex_budget.py)."""
-    from importlib.machinery import SourceFileLoader
-    from importlib.util import module_from_spec, spec_from_loader
-    here = Path(__file__).resolve().parent
-    for tool in (here / 'rstack/tools/_codex_budget.py', here.parent / 'rstack/tools/_codex_budget.py'):
-        if tool.is_file():
-            spec = spec_from_loader('_codex_budget', SourceFileLoader('_codex_budget', str(tool)))
-            module = module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module.credits_line()
-    return 'Codex credits unknown'
-
-
 def main(argv=None):
     import argparse
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
@@ -340,10 +326,6 @@ def main(argv=None):
     r.add_argument('--tell', action='store_true', help='send the line to general (tell-general fyi)')
     a = p.parse_args(argv)
     text = lanes_text(load_allowance())
-    try:
-        text += ' ' + codex_credits_line() + '.'
-    except Exception:  # RULE #1: the credits clause never costs the daily line
-        pass
     print(text)
     if a.tell:
         import subprocess

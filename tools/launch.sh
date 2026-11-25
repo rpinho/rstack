@@ -422,9 +422,9 @@ if [[ -n ${LAUNCH_MODEL_OVERRIDE:-} && -n $log.selection.json*(N.mh-24[1]) ]]; t
   python3 "$hblocks" mark --job "${job:t}" --lane "$lane" --outcome override --gate selector \
     --reason "relaunched with --model-override: $LAUNCH_MODEL_OVERRIDE" >/dev/null 2>&1 || true
 fi
-codex_closed=; budget_warned=0
+codex_closed=
 prepare_attempt() {
-  # Set after the Codex wrapper refused this job on its cap (below): the selector then leaves Codex out.
+  # 11-24: set only when Codex failed this job on quota or a rate limit (below): the selector then leaves Codex out.
   if [[ -n $codex_closed ]]; then export RH_CODEX_CLOSED=$codex_closed; else unset RH_CODEX_CLOSED; fi
   sel_exec=$backend
   [[ ${LAUNCH_PROVIDER:-} == (openrouter|gemini) && $backend == codex ]] && sel_exec=$LAUNCH_PROVIDER
@@ -445,8 +445,6 @@ prepare_attempt() {
   (( sel_rc == 0 )) || { print -- "exit 2 model-selection-refused $(date)" >> "$log"; exit 2; }
   selected_route=("${(@f)selection}")
   m=$selected_route[1]; backend=$selected_route[2]
-  # 11-20: the Codex wrapper charges a referee call (call_role in the selection receipt) to the lane's
-  # referee bucket when only the lane's daily budget refuses it; every other call carries its role too.
   RSTACK_CALL_ROLE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("call_role", ""))' \
     "$log.selection.json" 2>/dev/null)
   export RSTACK_CALL_ROLE
@@ -492,7 +490,6 @@ json.dump(d, open(p, "w"), indent=2)' "$log.selection.json" "$round_warn" 2>/dev
     LAUNCH_CLAUDE_BUDGET=5.00
     print -- "claude budget 5.00: a codex job routed to claude $(date)" >> "$log"
   fi
-  # Allowance/call limits belong to the Codex wrapper. Only tmux concurrency is local here.
   # RULE #1: the concurrency cap queues a job, it does not refuse one. It waits for a slot (up to
   # LAUNCH_QUEUE_SECONDS, default 2 h), then runs anyway with a warning in harness-blocks.jsonl.
   queued=0
@@ -508,10 +505,7 @@ json.dump(d, open(p, "w"), indent=2)' "$log.selection.json" "$round_warn" 2>/dev
     (( queued == 0 )) && print -- "queued: concurrency cap (launch-guard exit $guard_rc) $(date)" >> "$log"
     sleep ${LAUNCH_QUEUE_POLL:-60}; (( queued += ${LAUNCH_QUEUE_POLL:-60} ))
   done
-  export RSTACK_LANE="$lane" LAUNCH_URGENT
-  if [[ -n ${LAUNCH_URGENT//[[:space:]]/} && $backend == codex ]]; then
-    print -r -- "LAUNCH_URGENT $job: $LAUNCH_URGENT $(date)" >> "$log"
-  fi
+  export RSTACK_LANE="$lane"
   # Authentication is read only by the executing shell, never put in a receipt or command file.
   if [[ -n ${LAUNCH_PROVIDER:-} && ( $LAUNCH_PROVIDER != (openrouter|gemini) || $backend != codex ) ]]; then
     print -u2 -- "launch.sh refused $job: unsupported LAUNCH_PROVIDER"; exit 2
@@ -636,7 +630,7 @@ ${RH_ALLOW_OPENROUTER:+export RH_ALLOW_OPENROUTER=${(q)RH_ALLOW_OPENROUTER}}
 ${RH_ALLOW_GEMINI_API:+export RH_ALLOW_GEMINI_API=${(q)RH_ALLOW_GEMINI_API}}
 ${LAUNCH_CODEX_SANDBOX:+export LAUNCH_CODEX_SANDBOX=${(q)LAUNCH_CODEX_SANDBOX}}
 ${LAUNCH_CODEX_NETWORK:+export LAUNCH_CODEX_NETWORK=${(q)LAUNCH_CODEX_NETWORK}}
-export RSTACK_LANE=${(q)lane} LAUNCH_URGENT=${(q)LAUNCH_URGENT} RSTACK_CALL_ROLE=${(q)RSTACK_CALL_ROLE}
+export RSTACK_LANE=${(q)lane} RSTACK_CALL_ROLE=${(q)RSTACK_CALL_ROLE}
 $remote_auth
 mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
 mkdir -p $rmarks 2>/dev/null || true
@@ -759,29 +753,13 @@ exec env RH_JOB=${(q)${job:t}} ${(j: :)${(q)cache_env[@]}} ${(j: :)${(q)effort_e
   fi
   print -r -- "GRADE ON RETURN: python3 ${selector:A} --grade pass|partial|fail --note WHY --receipt ${log:A}.selection.json --log ${log:A}" >> "$log"
   (( ! effort_resumed )) || break
-  # 11-20 (general, RULE #1): codex-budget.limit. The Codex wrapper refused this job on a cap (exit 75 and its
-  # REFUSED line), so nothing ran. The cap holds on Codex; the job is rerun on claude (80% ceiling and lane
-  # shares, applied by the selector) or agy instead of failing. While neither has room (selector exit 5) the job
-  # queues, warned, and tries Codex again after each wait, whose day cap resets; it is never failed for the
-  # budget. A budget refusal is not an attempt, so it does not use up the five.
-  if [[ $backend == codex ]] && (( rc == 75 )) && grep -q '^codex: REFUSED ' "$attempt_log" 2>/dev/null; then
-    codex_closed=$(grep -m1 '^codex: REFUSED ' "$attempt_log"); codex_closed=${codex_closed#codex: REFUSED }
-    RH_CODEX_CLOSED=$codex_closed RH_LAUNCHER_EXECUTORS=${RH_LAUNCHER_EXECUTORS:-codex,claude,agy} python3 "$selector" \
-      --role "$LAUNCH_ROLE" --executor "$sel_exec" --model "" --explore "" --model-override "" --made-by "$LAUNCH_MADE_BY" \
-      --job "$job" --lane "$lane" --workdir "$dir" --lane-dir "$lane_dir" --spec "$spec" --print-route \
-      --log "$log.reroute" --receipt "$log.reroute.json" >/dev/null 2>>"$log.reroute"
-    if (( $? == 5 )); then
-      if (( ! budget_warned )); then
-        budget_warned=1
-        refuses codex-budget.limit "Codex refused $job ($codex_closed) and Claude and agy have no room for it; queued, trying again every ${LAUNCH_BUDGET_QUEUE_POLL:-1800}s" "LAUNCH_URGENT=<reason>, or job-stop $job" && exit 75
-        print -- "queued: codex budget ($codex_closed) and no room on claude or agy $(date)" >> "$log"
-        notify "launch $job queued: Codex refused it ($codex_closed) and Claude/agy have no room"
-      fi
-      sleep ${LAUNCH_BUDGET_QUEUE_POLL:-1800}
-      codex_closed=   # Codex first again
-    else
-      print -- "codex budget refused $job ($codex_closed): rerunning it on claude or agy $(date)" >> "$log"
-    fi
+  # 11-24 (general): Codex enforces its own limits. A Codex job that failed on quota or a rate limit is rerun
+  # with Codex left out (RH_CODEX_CLOSED, set in prepare_attempt): the selector gives agy's Gemini for the
+  # role, else Claude. That is not an attempt, so it does not use up the five.
+  if [[ $backend == codex && -z $codex_closed ]] && (( rc != 0 )) &&
+     tail -40 "$attempt_log" | grep -Eqi 'usage limit|usage_limit_reached|insufficient_quota|rate.?limit|429 too many'; then
+    codex_closed='quota or rate limit'
+    print -- "codex hit its quota or rate limit: rerunning $job on Gemini (agy), else Claude $(date)" >> "$log"
     (( i-- )); continue
   fi
   (( policy_flag == 0 && rc != 0 && i < 5 )) || break

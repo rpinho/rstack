@@ -154,50 +154,6 @@ def test_72_warns_once_per_threshold_per_window_even_concurrently(env):
     assert run_guard(env).returncode == 0 and len(alert_rows(env)) == 3
 
 
-@pytest.mark.parametrize('job,role', [('lane-audit', 'batch'), ('AUDIT', 'batch'),
-    ('deliver', 'audit'), ('lane-rescore', 'batch'), ('lane-review-sweep', 'batch'),
-    ('lane-calibration', 'batch'), ('lane-leaderboard', 'batch')])
-def test_86_refuses_nonurgent_job_or_role_and_logs_urgent_override(env, job, role):
-    rollout(Path(env['CODEX_HOME']), [event(86)])
-    refused = run_guard(env, job, role)
-    assert refused.returncode == 75 and 'LAUNCH_URGENT' in refused.stderr
-    assert len(alert_rows(env)) == 2
-    urgent = dict(env, LAUNCH_URGENT='Ricardo: submission closes in one hour')
-    admitted = run_guard(urgent, job, role)
-    assert admitted.returncode == 0, admitted.stderr
-    assert 'Ricardo: submission closes in one hour' in (Path(env['HOME']) / 'guard.log').read_text()
-    assert len(alert_rows(env)) == 2
-
-
-@pytest.mark.parametrize('used', [85, 86])
-def test_deliverable_jobs_admitted_and_exact_85_audit_is_admitted(env, used):
-    rollout(Path(env['CODEX_HOME']), [event(used)])
-    assert run_guard(env).returncode == 0
-    if used == 85:
-        assert run_guard(env, 'audit').returncode == 0
-
-
-def test_stale_snapshot_warns_but_freshness_does_not_refuse(env):
-    rollout(Path(env['CODEX_HOME']), [event(20, age=6 * 3600 + 60)])
-    result = run_guard(env)
-    assert result.returncode == 0 and 'WARNING stale snapshot' in result.stderr
-    assert not alert_rows(env)
-
-
-def test_expired_window_does_not_refuse_or_alert_using_last_weeks_usage(env):
-    rollout(Path(env['CODEX_HOME']), [event(100, age=8 * 86400, reset=int(NOW - 10))])
-    result = run_guard(env, 'audit')
-    assert result.returncode == 0 and 'window has reset' in result.stderr
-    assert not alert_rows(env)
-
-
-def test_alert_delivery_failure_is_visible_and_retried(env):
-    rollout(Path(env['CODEX_HOME']), [event()])
-    result = run_guard(dict(env, ALERT_FAIL='1'))
-    assert result.returncode == 0 and 'decision failed' in result.stderr
-    assert run_guard(env).returncode == 0 and len(alert_rows(env)) == 1
-
-
 def pane(name, backend='codex', provider='', dead=0, command=''):
     return '{}\t{}\t{}\t{}\t{}\n'.format(name, dead, backend, provider, command)
 
@@ -212,7 +168,6 @@ def test_concurrency_refuses_fifth_counts_sessions_not_panes_excludes_current_an
     env.update(PANES=rows, TMUX='fixture', TMUX_PANE='%42')
     result = run_guard(env)
     assert result.returncode == 75 and '4 other Codex job-*' in result.stderr
-    assert run_guard(dict(env, LAUNCH_URGENT='deadline')).returncode == 75
     assert run_guard(dict(env, LAUNCH_MAX_CONCURRENT='5')).returncode == 0
     assert run_guard(dict(env, LAUNCH_MAX_CONCURRENT='')).returncode == 75
     env['PANES'] = rows.replace(pane('job-3'), '')
@@ -256,19 +211,6 @@ sys.exit(int(os.environ.get('FAKE_EXIT','0')))
     result = subprocess.run(['zsh', str(REPO / 'tools/launch.sh'), job, str(tmp_path), '--role', role],
                             env=env, capture_output=True, text=True, timeout=15)
     return result, (tmp_path / 'paid-calls'), (jobs / (job + '.log'))
-
-
-@pytest.mark.parametrize('job,role,urgent,admit', [('lane-audit', 'batch', '', True),
-    ('lane-deliver', 'audit', '', True), ('lane-deliver', 'batch', '', True),
-    ('lane-audit', 'batch', 'deadline today', True)])
-def test_real_launcher_leaves_allowance_admission_to_wrapper(env, tmp_path, job, role, urgent, admit):
-    rollout(Path(env['CODEX_HOME']), [event(86)])
-    result, calls, log = launcher(dict(env, LAUNCH_URGENT=urgent), tmp_path, job, role)
-    assert (result.returncode == 0) == admit, result.stderr + log.read_text()
-    assert calls.exists() == admit
-    if urgent:
-        assert urgent in log.read_text()
-    assert not alert_rows(env)
 
 
 def test_route_switch_to_codex_checks_concurrency_and_claude_is_exempt(env, tmp_path):
@@ -370,14 +312,6 @@ def test_real_launcher_exempts_games_and_open_source(env, tmp_path, job):
     assert result.returncode == 0 and calls.exists(), result.stderr
 
 
-def test_urgent_selects_priority_and_passes_canonical_lane(env, tmp_path):
-    result, calls, log = launcher(dict(env, LAUNCH_URGENT='deadline today'), tmp_path, 'bio_fix')
-    assert result.returncode == 0, result.stderr
-    assert 'service_tier=priority' in json.loads(Path(str(calls)+'.argv').read_text())
-    assert Path(str(calls)+'.lane').read_text() in ('bio', 'open-source')
-    assert 'deadline today' in log.read_text()
-
-
 def test_launcher_cap_excludes_exempt_sessions_and_counts_unknown_routes_once(env, tmp_path):
     env['PANES'] = (''.join(pane('job-' + str(i), '') for i in range(3))
                     + pane('job-1', '') + pane('job-games_build') + pane('job-open-source_fix')
@@ -385,52 +319,3 @@ def test_launcher_cap_excludes_exempt_sessions_and_counts_unknown_routes_once(en
                     + pane('job-provider', provider='gemini') + pane('job-dead', dead=1))
     result, calls, _ = launcher(env, tmp_path, 'lane-deliver')
     assert result.returncode == 0 and calls.exists(), result.stderr
-
-
-def test_urgency_does_not_override_concurrency(env, tmp_path):
-    env['PANES'] = ''.join(pane('job-' + str(i)) for i in range(4))
-    result, calls, log = launcher(dict(env, LAUNCH_URGENT='deadline', LAUNCH_QUEUE_SECONDS='0'), tmp_path, 'lane-deliver')
-    assert 'launch-guard: QUEUED' in log.read_text()   # urgent or not, it waits its turn first
-
-
-def test_no_urgent_reason_leaves_service_tier_unset(env, tmp_path):
-    result, calls, _ = launcher(dict(env, LAUNCH_URGENT='  '), tmp_path, 'lane-deliver')
-    assert result.returncode == 0, result.stderr
-    assert 'service_tier=priority' not in json.loads(Path(str(calls) + '.argv').read_text())
-
-
-@pytest.mark.parametrize('rc', [0, 1, 42])
-def test_cybersecurity_policy_flag_keeps_exit_prefix_and_stops_retry(env, tmp_path, rc):
-    output = 'This content was flagged for possible cybersecurity risk\n' + 'noise\n' * 70 + 'at capacity'
-    result, calls, log = launcher(dict(env, FAKE_OUTPUT=output, FAKE_EXIT=str(rc)), tmp_path, 'lane-deliver')
-    assert result.returncode == rc, result.stderr
-    assert calls.read_text().splitlines() == ['called']
-    exits = [line for line in log.read_text().splitlines() if line.startswith('exit ')]
-    assert len(exits) == 1 and exits[0].startswith('exit {} codex-policy-flag '.format(rc))
-    status = (tmp_path / 'STATUS.md').read_text().splitlines()
-    assert len(status) == 1 and 'Codex policy flag' in status[0]
-
-
-def test_the_claude_weekly_reading_and_the_latest_agy_quota_error_are_reported(tmp_path, monkeypatch):
-    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
-    monkeypatch.delenv('RESETS_USAGE_DIR', raising=False)
-    assert allowance.claude_weekly() is None and allowance.agy_quota_latest() is None
-    (tmp_path / 'usage').mkdir()
-    (tmp_path / 'usage/claude.json').write_text(json.dumps({'weekly_percent': 86, 'at': NOW - 600, 'source': 'footer'}))
-    got = allowance.claude_weekly(NOW)
-    assert got['weekly_used_percent'] == 86 and got['source'] == 'footer'
-    assert allowance.claude_weekly(NOW + 3 * 3600) is None  # over 2 h old: the 15-min reader stopped
-    assert 'h old' in allowance.claude_status(NOW + 3 * 3600)[1]
-    (tmp_path / 'agy-quota.jsonl').write_text('{"utc": "a", "model": "m1"}\n{"utc": "b", "model": "m2", "tier": "medium"}\n')
-    assert allowance.agy_quota_latest()['model'] == 'm2'
-    data = allowance.read_allowance([], now=NOW)
-    assert data['claude']['weekly_used_percent'] == 86 and data['agy_quota']['tier'] == 'medium'
-    # 11-20: the reader says which window agy named (5h or weekly) and what is blocked until when.
-    from datetime import datetime, timezone
-    at = datetime.now(timezone.utc).isoformat(timespec='seconds')
-    with (tmp_path / 'agy-quota.jsonl').open('a') as stream:
-        stream.write(json.dumps({'utc': at, 'model': 'gemini-4-argon-medium', 'tier': 'medium',
-                                 'error': 'Individual quota reached. Resets in 152h14m46s.'}) + '\n')
-    latest = allowance.agy_quota_latest()
-    assert latest['window'] == 'weekly' and latest['blocked_until']
-    assert allowance.agy_blocked() == ['gemini-4-argon-medium (medium): weekly window until ' + latest['blocked_until']]

@@ -1186,7 +1186,6 @@ def test_gemini_delegates_run_at_high_or_medium_argon_takes_a_small_share_and_ca
     monkeypatch.setenv('RH_DELEGATE_SHARE', '1')
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,agy')
     monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
-    monkeypatch.setenv('RH_DELEGATE_CODEX_PER_DAY', '0')
     seen = {}
     for role in wm.DELEGATE_ROLES:
         for _ in range(40):
@@ -1371,7 +1370,6 @@ def test_claude_is_off_by_default_in_build_and_review_roles_unless_pinned(tmp_pa
                            ('gemini-4-neon-high', 'gemini-4-hydrogen-high')})
     p.write_text(json.dumps(data))
     monkeypatch.setenv('RH_CLAUDE_DELEGATE_DEFAULT', '1')
-    monkeypatch.setenv('RH_DELEGATE_CODEX_PER_DAY', '0')            # the per-day delegate count does not apply here
     for role in ('builder', 'mechanical', 'batch', 'review', 'judge'):
         got = wm.select(role, 'claude', path=p, made_by='gpt-6.2-sol' if role in wm.INDEPENDENT else '')
         assert got['executor'] in ('codex', 'agy') and 'Claude off by default' in got['delegate'], (role, got)
@@ -1424,24 +1422,14 @@ def test_the_daily_line_gives_each_session_and_lane_its_claude_share(tmp_path, m
     assert 'ahead of it' in text
 
 
-def test_while_the_codex_week_is_tight_work_leaving_claude_tries_gemini_first(tmp_path, monkeypatch):
-    # 11-23 (general): "the Codex week is at 85% ... until that reset, Gemini first and Codex second".
+def test_work_leaving_claude_goes_to_codex_first_whatever_the_codex_week(tmp_path, monkeypatch):
+    # 11-24 (general): no Codex usage gate and no "tight" mode; Codex is first while the credits last.
     p = cap_setup(tmp_path, monkeypatch, 80)
     data = json.loads(p.read_text())
     data['routes']['gemini-4-hydrogen-high'] = {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-high'}
-    data['roles']['builder'] = ['claude-opus-5-5']
-    data['routes']['gemini-4-neon-high'] = {'cli': 'agy', 'canonical': 'google/gemini-4-neon-high'}
     p.write_text(json.dumps(data))
-    monkeypatch.setattr(wm, 'codex_week_percent', lambda: 85.0)
     got = wm.select('batch', 'claude', path=p)                         # past the Claude ceiling
-    assert (got['executor'], got['model']) == ('agy', 'gemini-4-hydrogen-high'), got
-    monkeypatch.setenv('RH_CLAUDE_DELEGATE_DEFAULT', '1')
-    for _ in range(6):
-        assert wm.select('builder', 'claude', path=p)['executor'] == 'agy'
-    monkeypatch.setattr(wm, 'codex_week_percent', lambda: 10.0)        # after Codex's reset: Codex first again
-    monkeypatch.setenv('RH_CLAUDE_DELEGATE_DEFAULT', '0')
-    got = wm.select('batch', 'claude', path=p)
-    assert (got['executor'], got['model']) == ('codex', 'gpt-6.2-sol')
+    assert (got['executor'], got['model']) == ('codex', 'gpt-6.2-sol'), got
 
 
 def test_a_trial_of_one_model_still_runs_when_the_jobs_pick_is_another(tmp_path, monkeypatch):

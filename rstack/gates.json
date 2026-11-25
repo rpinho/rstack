@@ -407,44 +407,6 @@
    "fix": "run it through third_party.py run on a machine with sandbox-exec, or set RH_SANDBOX_COMMAND"
   },
   {
-   "gate": "codex-budget.npx",
-   "files": [
-    "rstack/tools/npx"
-   ],
-   "class": "hard-line",
-   "kind": "tool",
-   "hard_line": "credentials",
-   "added": "2026-11-17",
-   "why": "Refuses `npx @openai/codex` (a Codex outside the spend wrapper).",
-   "sunset": false,
-   "last_changed_outcome": null,
-   "old": "refuses `npx @openai/codex` (a Codex outside the spend wrapper)",
-   "change": "none (credentials/account: an unwrapped Codex on his login)",
-   "fix": "run the installed codex (the spend wrapper) instead of a fresh npm copy"
-  },
-  {
-   "gate": "codex-budget.limit",
-   "files": [
-    "rstack/tools/_codex_budget.py",
-    "rstack/tools/allowance",
-    "rstack/tools/codex",
-    "tools/launch.sh",
-    "harness/worker_models.py"
-   ],
-   "class": "fail-open",
-   "kind": "tool",
-   "added": "2026-11-17",
-   "why": "Codex per-lane/day caps and 85% weekly refusal, exit 75.",
-   "sunset": true,
-   "last_changed_outcome": null,
-   "old": "Codex per-lane/day caps and 85% weekly refusal, exit 75",
-   "change": "general 11-20: the cap still holds on Codex (the wrapper exits 75, logged as a warning); launch.sh reruns the job on claude (80% ceiling and lane shares) or agy, and while both are capped queues it, warned, never failing it; the refused run stays ungraded (auto_grade). 11-24 (Ricardo: use the Codex credits): above 85% weekly a batch job is admitted, flagged on_credits, while the estimated credits spent in 7 days on such calls are under RH_CODEX_CREDITS_WEEK (default 1250); past that it is refused as before",
-   "fix": "LAUNCH_URGENT=<reason> for an urgent job, RH_CODEX_CREDITS_WEEK=<n> to raise the credit budget, or AGENT_BACKEND=claude|agy",
-   "probe": {
-    "pytest": "tests/test_fail_open_gates.py::test_a_codex_budget_refusal_reruns_the_job_on_claude"
-   }
-  },
-  {
    "gate": "rounds.repeat",
    "files": [
     "harness/tools/rounds.py"
@@ -974,7 +936,8 @@
    "gate": "launch.concurrency",
    "files": [
     "tools/launch.sh",
-    "rstack/tools/launch-guard"
+    "rstack/tools/launch-guard",
+    "rstack/tools/allowance"
    ],
    "class": "fail-open",
    "kind": "launcher",
@@ -1210,41 +1173,6 @@
    "fix": "spec.py --lane L pin",
    "probe": {
     "pytest": "tests/test_fail_open_gates.py::test_round_gate_process_checks_warn"
-   }
-  },
-  {
-   "gate": "codex-budget.accounting",
-   "files": [
-    "rstack/tools/_codex_budget.py"
-   ],
-   "class": "fail-open",
-   "kind": "tool",
-   "added": "2026-11-17",
-   "why": "After a Codex run, an accounting error turned its exit code into 75.",
-   "sunset": true,
-   "last_changed_outcome": null,
-   "old": "after a Codex run, an accounting error turned its exit code into 75",
-   "change": "warns; the run's own exit code stands",
-   "probe": {
-    "pytest": "tests/test_fail_open_gates.py::test_codex_wrapper_errors_fail_open"
-   }
-  },
-  {
-   "gate": "codex-budget.unavailable",
-   "files": [
-    "rstack/tools/_codex_budget.py"
-   ],
-   "class": "fail-open",
-   "kind": "tool",
-   "added": "2026-11-17",
-   "why": "Unreadable accounting/config refused every non-interactive Codex call (exit 75).",
-   "sunset": true,
-   "last_changed_outcome": null,
-   "old": "unreadable accounting/config refused every non-interactive Codex call (exit 75)",
-   "change": "warns and runs the native codex",
-   "fix": "codex-budget health",
-   "probe": {
-    "pytest": "tests/test_fail_open_gates.py::test_codex_wrapper_errors_fail_open"
    }
   },
   {

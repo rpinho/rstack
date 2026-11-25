@@ -130,7 +130,6 @@ def command(backend, executable, model, effort, directory, output, budget='1.00'
         return [executable, 'exec', '--ignore-user-config', '--skip-git-repo-check',
                 '--cd', str(directory), '-m', model, '-c', 'model_reasoning_effort='+effort,
                 *provider_args, *guard,
-                *(['-c', 'service_tier=priority'] if os.environ.get('LAUNCH_URGENT', '').strip() else []),
                 '-o', str(output), '-']
     if backend == 'claude':
         # `tools` widens what a job may do. The default is read/write/edit only: a research job

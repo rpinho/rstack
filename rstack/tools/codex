@@ -1,13 +1,95 @@
 #!/usr/bin/python3
-"""Stock Homebrew Codex, preserving privacy routing and enforcing local spend limits.
+"""Stock Homebrew Codex plus agent-privacy routing (11-07). No budget, no ledger: Codex enforces its own limits (11-24).
 
-The real CLI is reached ONLY through ~/.local/libexec/codex-real, a symlink to the newest
-Caskroom binary that activation and job-health re-point after a brew upgrade (or an explicit
-native_binary in the host config). Never /opt/homebrew/bin/codex: that entry is this wrapper.
+Batch runs (`exec`, `review`, `debug prompt-input`) use CODEX_HOME ~/.codex inside a host `personal_roots` path
+(~/.config/rstack/codex-routing.json, never in this repo) and ~/.codex-clean anywhere else. `--personal` and `--clean`
+override one run; an explicit CODEX_HOME other than ~/.codex is respected; resuming a personal session keeps it personal.
 """
-from pathlib import Path
+import glob
+import json
+import os
+import re
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _codex_budget import wrapper_main
+import time
+from pathlib import Path
+
+VALUE_OPTIONS = {'-c', '--config', '--remote', '-C', '--cd', '--add-dir', '--add-root', '-m', '--model', '-p', '--profile',
+                 '-i', '--image', '--local-provider', '--permission-profile', '-s', '--sandbox', '-a', '--ask-for-approval',
+                 '--enable', '--disable', '--output-schema', '-o', '--output-last-message', '--color',
+                 '--remote-auth-token-env', '--base', '--commit', '--title'}
+
+
+def personal_roots():
+    path = Path(os.environ.get('CODEX_ROUTING_CONFIG') or Path.home() / '.config/rstack/codex-routing.json')
+    try:
+        roots = json.loads(path.read_text()).get('personal_roots', [])
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [Path(r).expanduser().resolve() for r in roots] if isinstance(roots, list) else []
+
+
+def routing(args):
+    """Set CODEX_HOME for this run and return the arguments without --personal/--clean."""
+    personal, clean = '--personal' in args, '--clean' in args
+    args = [a for a in args if a not in ('--personal', '--clean')]
+    pos = 0
+    while pos < len(args) and args[pos].startswith('-'):
+        if args[pos] == '--':
+            pos += 1
+            break
+        pos += 2 if args[pos] in VALUE_OPTIONS else 1
+    sub = args[pos:pos + 2]
+    batch = bool(sub) and (sub[0] in ('exec', 'e', 'review') or sub == ['debug', 'prompt-input'])
+    option_args = args[:args.index('--')] if '--' in args else args
+    personal_home, clean_home = Path.home() / '.codex', Path.home() / '.codex-clean'
+    if batch and not any(a in ('--help', '-h') for a in option_args):
+        workdir = os.getcwd()
+        for i, a in enumerate(args):
+            if a in ('-C', '--cd') and i + 1 < len(args):
+                workdir = os.path.abspath(os.path.expanduser(args[i + 1]))
+            elif a.startswith('--cd='):
+                workdir = os.path.abspath(os.path.expanduser(a[5:]))
+        current = os.environ.get('CODEX_HOME')
+        real = os.path.realpath(workdir)
+        in_kb = any(real == str(r) or real.startswith(str(r) + '/') for r in personal_roots())
+        route = 'personal' if personal else 'clean' if clean else 'personal:kb' if in_kb else 'clean'
+        if current and os.path.realpath(os.path.expanduser(current)) != str(personal_home.resolve()):
+            route = 'explicit:' + current
+        elif route == 'clean' and not clean and sub[0] in ('exec', 'e'):
+            rest = args[pos + 1:]
+            ids = [a for a in rest[1:] if not a.startswith('-')] if rest[:1] == ['resume'] else []
+            if ids and not list((clean_home / 'sessions').rglob('rollout-*-{}.jsonl'.format(ids[0]))) and list(
+                    (personal_home / 'sessions').rglob('rollout-*-{}.jsonl'.format(ids[0]))):
+                route = 'personal:resume'
+        if route == 'clean':
+            os.environ['CODEX_HOME'] = str(clean_home)
+        elif route.startswith('personal'):
+            os.environ['CODEX_HOME'] = str(personal_home)
+        try:
+            log = Path.home() / '.local/state/ricardo-agent/codex-routing.log'
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with log.open('a') as stream:
+                stream.write('{} {} {} cwd={} ppid={}\n'.format(time.strftime('%F %T'), route, sub[0], os.getcwd(), os.getppid()))
+        except OSError:
+            pass
+    elif personal:
+        os.environ['CODEX_HOME'] = str(personal_home)
+    elif clean:
+        os.environ['CODEX_HOME'] = str(clean_home)
+    return args
+
+
+def native():
+    """CODEX_REAL, else the newest Homebrew Caskroom binary (never this script: /opt/homebrew/bin/codex is a link to it)."""
+    if os.environ.get('CODEX_REAL'):
+        return os.path.expanduser(os.environ['CODEX_REAL'])
+    me = os.path.realpath(__file__)
+    found = [p for p in glob.glob('/opt/homebrew/Caskroom/codex/*/bin/codex') if os.path.realpath(p) != me]
+    if not found:
+        sys.exit('codex: the native CLI is not under /opt/homebrew/Caskroom/codex (brew install --cask codex)')
+    return max(found, key=lambda p: tuple(int(n) for n in re.findall(r'\d+', p)))
+
+
 if __name__ == '__main__':
-    sys.exit(wrapper_main())
+    real = native()
+    os.execv(real, [real] + routing(sys.argv[1:]))

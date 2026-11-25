@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launcher-only tmux concurrency cap; spend policy belongs to the Codex wrapper."""
+"""Launcher-only tmux concurrency cap."""
 import argparse
 import os
 import re

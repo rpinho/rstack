@@ -42,10 +42,6 @@ Every guard here has a test that shows it says no when it should. And a guard ha
 
 Agents make public stuff on the same machine as my private stuff. `egress-gate` scans a folder, a text or a push, and says no if it sees a secret or a word on your list. On my machines it runs as a global git pre-push hook. You have to install the hook yourself, and anything that doesn't go through git has to be scanned by hand. Work that goes public runs in `clean-room`, with an empty identity. https://github.com/rpinho/rstack/blob/main/rstack/tools/README.md
 
-### 5. The Codex spend wrapper
-
-On 11-17 a Python loop called Codex 1,568 times, and the launcher never saw it. Now `codex` on the PATH is a wrapper that counts every call it sees. By default it stops a lane at 60 calls an hour, or 3 points of the weekly allowance in a day. It's not a wall. A call to the real binary by its full path, `npx`, or another machine goes around it, and one long run can go over the limit before the next call is checked. A scheduled job looks for the runs it missed. https://github.com/rpinho/rstack/blob/main/rstack/tools/codex-spend.md
-
 ## What it found
 
 ### Merged PRs
@@ -107,7 +103,6 @@ The referees are models too. No human expert has refereed any of this.
 | 38, 2, 528, 98% | https://github.com/rpinho/rstack/blob/main/rstack/principles/results-not-activity.md |
 | 11-09 | https://github.com/rpinho/rstack/blob/main/docs/outreach.md |
 | 12, 5 | https://github.com/rpinho/rstack/blob/main/rstack/principles/a-guard-must-refuse-not-crash.md |
-| 1,568, 60, 3 | https://github.com/rpinho/rstack/blob/main/rstack/tools/codex-spend.md |
 | 129, 15, 106, 8, and the PR list | https://github.com/rpinho/rstack/blob/main/docs/snapshots/2026-11-18-prs.md |
 | 4, 18 | https://github.com/rpinho/rstack/blob/main/harness/README.md |
 | 11-09 fix | https://github.com/rpinho/rstack/commit/ee2c52c |

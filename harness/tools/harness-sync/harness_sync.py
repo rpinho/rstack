@@ -4,7 +4,7 @@
 The installed copy and the repo drifted for days: fixes went straight into the installed
 files, other fixes went only into the repo, and each copy aged differently. This makes the
 committed repo the only source. It installs the git-tracked files under harness/ plus the
-Codex wrapper/health tools under rstack/tools/ and the job launcher (tools/launch.sh -> launcher/) at a
+Codex routing wrapper/health tools under rstack/tools/ and the job launcher (tools/launch.sh -> launcher/) at a
 committed ref (default: main), never the working tree, so a half-finished edit cannot reach
 running lanes. Installed code is made read-only so a hand edit fails loudly instead of
 drifting quietly. Lanes, ledgers and other runtime state in the installed root are never
@@ -37,7 +37,7 @@ import storage  # noqa: E402  (Trash-only deletion; refuses when no Trash comman
 
 RECEIPT = '.harness-sync.json'
 # Spend enforcement and its dependencies ship with the harness, at a distinct namespace.
-RSTACK_TOOLS = ('codex', 'codex-budget', '_codex_budget.py', 'codex-budget.json.example', 'allowance', 'job-health', 'claude-usage', 'npx', 'launch-guard', 'x-reply-review', '_lan.py', 'lan-proxy', 'lan-proxy-pf-refresh', 'ask_lint.py', 'resets-check',
+RSTACK_TOOLS = ('codex', 'allowance', 'job-health', 'claude-usage', 'launch-guard', 'x-reply-review', '_lan.py', 'lan-proxy', 'lan-proxy-pf-refresh', 'ask_lint.py', 'resets-check',
                 'grok-post', '_grok_post.py', '_grok_ask.py', 'grok-ask.json.example', 'grok-post.json.example',
                 'x-handle-guard', 'grok-ask', 'x-route', 'x-submit-gate', 'xurl', 'xurl-policy', 'x-log', 'net-deletion', 'canary', 'canary.json.example')
 # The job launcher, installed at <root>/launcher/ so the lanes run committed launcher code (11-20: their

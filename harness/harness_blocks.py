@@ -63,11 +63,11 @@ REFUSE = 3
 LEDGER = 'harness-blocks.jsonl'
 # Used only when the registry cannot be read at all: these gates still refuse, every other gate fails
 # open. tests/test_gates_registry.py keeps this equal to the registry's refusing gates.
-# 11-20: general moved codex-budget.limit, rounds.{repeat,dry-family,dead-end,baseline-drift},
+# 11-20: general moved rounds.{repeat,dry-family,dead-end,baseline-drift},
 # bughunt.coverage, lane-yield.hold, launch.host-memguard, sweep.host-headroom and upstream.live-claim to
 # fail-open, so they left this set with the registry.
 FALLBACK_REFUSING = frozenset((
-    'bug-claims-check', 'claude-pace-gate.limit', 'codex-budget.npx',
+    'bug-claims-check', 'claude-pace-gate.limit',
     'conductor-inbox-gate.py', 'contact-gate', 'egress-gate', 'email-voice-gate.py', 'friend-reply-gate.py',
     'general-inbox-gate.py', 'general-relay-check.py', 'guard-main-tree.py', 'lan-proxy.allowlist',
     'lane-no-questions.py', 'launch.host-peak-cap',

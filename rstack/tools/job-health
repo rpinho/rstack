@@ -392,12 +392,6 @@ def main(argv=None):
         reg, bad = {}, [('registry', a.registry, 'unreadable: {}'.format(exc))]
     now = time.time()
     x_source = dict(path=a.x_engage_log) if a.x_engage_log is not None else reg.get('x_engage')
-    try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from _codex_budget import health_problems
-        codex_rows = health_problems(reg.get('codex'), now, repair=bool(a.prefix) and not a.dry)
-    except (OSError, ValueError, TypeError, KeyError, ImportError) as exc:
-        codex_rows = [('codex-read', 'Codex spend backstop', 'unavailable: ' + type(exc).__name__)]
     release_rows = []
     if reg.get('release_protection'):
         try:
@@ -407,7 +401,7 @@ def main(argv=None):
                 state_dir() / 'job-health/release-protection.json', write=bool(a.prefix) and not a.dry)
         except (OSError, ValueError, TypeError, KeyError, ImportError) as exc:
             release_rows = [('release-protection', 'registry comparison', 'unavailable: ' + str(exc))]
-    rows = (bad + codex_rows + release_rows + exit_problems(launchd_jobs(a.prefix), reg.get('exit_ok') or {})
+    rows = (bad + release_rows + exit_problems(launchd_jobs(a.prefix), reg.get('exit_ok') or {})
             + fresh_problems(reg.get('fresh') or [], now) + disk_problems(reg.get('disk') or [])
             + x_engage_problems(x_source, now) + net_failover_problems(reg.get('net_failover'), now)
             + lan_proxy_problems(reg.get('lan_proxy')))
@@ -420,8 +414,6 @@ def main(argv=None):
         return 0
     if a.dry:
         return 1 if rows else 0
-    if codex_rows and not a.alert:
-        a.alert = str(Path.home() / '.local/bin/tell-general') + ' decision'
     report(rows, 'job-health', 'jobs', 'job', a.alert, a.push)
     # Problems are reported above, not through this exit code: a scheduled run that found problems
     # exiting 1 would list job-health itself as a failing job (11-12, its own first day).
