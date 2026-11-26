@@ -570,6 +570,8 @@ def test_live_driver_busy_indicators_skip_idle_nudge(tmp_path, monkeypatch):
     ('Driver: agy-math\nPaused on rate limit (429).\n', True),
 ])
 def test_claude_fallback_wakes_only_when_driver_missing_or_quota_stopped(tmp_path, monkeypatch, status_text, agy_live):
+    # 11-26: a quota-stopped live driver is first restarted on Claude through agy; this stub's pane never comes
+    # back on it, so the respawn fails and the fallback wakes.
     sent, _ = _driver_env(tmp_path, monkeypatch, status_text, status_age=600, agy_live=agy_live, claude_idle=120)
     nudge.main()
     assert len(sent) == 1 and sent[0][0] == '%claude'
@@ -627,5 +629,131 @@ def test_nameless_driver_status_defaults_to_agy_lane_and_wakes_it_not_claude(tmp
 
     monkeypatch.setattr(nudge.subprocess, 'run', spy)
     nudge.main()
-    assert seen_targets == ['=agy-math']
+    assert set(seen_targets) == {'=agy-math'}
     assert len(sent) == 1 and sent[0][0] == '%agy'
+
+
+# ---- 11-26: a Gemini quota stop moves the agy driver onto Claude through agy, and back after the reset ----------
+
+QUOTA_SCREEN = ('  Started the sweep.\n'
+                '⚠ Individual quota reached. Please upgrade your subscription to increase your\n'
+                'limits. Resets in 2h0m0s.\nError ID: fixture\n' + '─' * 40 + '\n>\n' + '─' * 40 + '\n'
+                '? for shortcuts                       auto · {model} · high\n')
+IDLE_SCREEN = '  ok\n' + '─' * 40 + '\n>\n' + '─' * 40 + '\n? for shortcuts            auto · {model} · high\n'
+SHOWN = {'gemini-4-neon': 'Gemini 4 Neon', 'claude-opus-5-5-high': 'Claude Opus 5.5'}
+
+
+def _agy_env(tmp_path, monkeypatch, screen, model='gemini-4-neon', respawn_ok=True, comes_up_on=None):
+    lanes = tmp_path / 'lanes'
+    (lanes / 'math').mkdir(parents=True)
+    state = tmp_path / 'state'
+    state.mkdir()
+    (lanes / 'math/DRIVER_STATUS.md').write_text('Driver: agy-math\n')
+    os.utime(lanes / 'math/DRIVER_STATUS.md', (NOW - 600, NOW - 600))
+    monkeypatch.delenv('RH_LANE_REGISTRY', raising=False)
+    monkeypatch.setenv('RH_MODEL_RUNS_LOG', str(tmp_path / 'model-runs.jsonl'))
+    monkeypatch.setattr(nudge.sys, 'argv', ['lane-nudge', '--lanes', str(lanes), '--skip', '', '--state', str(state),
+                                           '--log', str(tmp_path / 'log'), '--agy', '/bin/agy'])
+    monkeypatch.setattr(nudge, 'cadence', lambda _: ({'math': {'status': 'OK'}}, None))
+    monkeypatch.setattr(nudge, 'panes', lambda *_: [('math', '%claude', '/work')])
+    monkeypatch.setattr(nudge, 'idle_minutes', lambda *_: 120)
+    clock = SimpleNamespace(now=NOW)
+    monkeypatch.setattr(nudge, 'time', SimpleNamespace(time=lambda: clock.now, sleep=lambda *_: None,
+                                                       strftime=nudge.time.strftime))
+    pane = {'model': model, 'screen': screen.format(model=SHOWN[model]), 'start': f'agy --model {model} --effort high'}
+    log = SimpleNamespace(respawns=[], sent=[])
+
+    def run(cmd, **kw):
+        out = ''
+        if cmd[1] == 'list-panes':
+            out = '%agy\n'
+        elif cmd[1] == 'display-message':
+            out = '{}\t/work/math\t4242\n'.format(pane['start'])
+        elif cmd[1] == 'capture-pane':
+            out = pane['screen'] if cmd[4] == '%agy' else '> '
+        elif cmd[0].endswith('lsof'):
+            out = 'p4242\nn/x/conversations/0a1b2c3d-0000-4000-8000-000000000001.db\n'
+        elif cmd[1] == 'respawn-pane':
+            log.respawns.append(cmd[-1])
+            if not respawn_ok:
+                return SimpleNamespace(returncode=1, stdout='')
+            new = comes_up_on or cmd[-1].split('--model ')[1].split()[0]
+            pane.update(model=new, start=cmd[-1], screen=IDLE_SCREEN.format(model=SHOWN.get(new, new)))
+        elif cmd[1] == 'send-keys' and '-l' in cmd:
+            log.sent.append((cmd[3], cmd[-1]))
+        return SimpleNamespace(returncode=0, stdout=out)
+
+    monkeypatch.setattr(nudge.subprocess, 'run', run)
+    monkeypatch.setattr(nudge, 'tell_session', lambda: None)
+    return log, pane, clock, state
+
+
+def test_a_gemini_quota_pane_moves_to_claude_through_agy_and_wakes_no_fallback(tmp_path, monkeypatch):
+    log, pane, clock, state = _agy_env(tmp_path, monkeypatch, QUOTA_SCREEN)
+    nudge.main()
+    assert len(log.respawns) == 1
+    assert '--model claude-opus-5-5-high' in log.respawns[0]
+    assert '--conversation 0a1b2c3d-0000-4000-8000-000000000001' in log.respawns[0]
+    assert [p for p, _ in log.sent] == ['%agy'] and 'now on Claude Opus 5.5 through agy' in log.sent[0][1]
+    saved = json.loads((state / 'agy-math.agy-switch.json').read_text())
+    assert (saved['to'], saved['from'], saved['reset']) == ('claude-opus-5-5-high', 'gemini-4-neon', NOW + 7200)
+    hit, = [json.loads(ln) for ln in (tmp_path / 'quota-hits.jsonl').read_text().splitlines()]
+    assert (hit['model'], hit['lane']) == ('google/gemini-4-neon-high', 'math') and hit['reset_time']
+    assert 'switching to claude-opus-5-5-high' in (tmp_path / 'log').read_text()
+    nudge.main()                                     # on Claude now: no second respawn, the driver stays primary
+    assert len(log.respawns) == 1
+
+
+def test_a_pane_already_on_claude_is_not_respawned(tmp_path, monkeypatch):
+    log, *_ = _agy_env(tmp_path, monkeypatch, IDLE_SCREEN, model='claude-opus-5-5-high')
+    nudge.main()
+    assert log.respawns == []
+    log, *_ = _agy_env(tmp_path / 'b', monkeypatch, QUOTA_SCREEN, model='claude-opus-5-5-high')
+    nudge.main()                                     # the Claude group is out too: the fallback is woken
+    assert log.respawns == [] and [p for p, _ in log.sent] == ['%claude']
+
+
+@pytest.mark.parametrize('respawn_ok,comes_up_on', [(False, None), (True, 'gemini-4-neon')])
+def test_a_failed_respawn_wakes_the_claude_fallback(tmp_path, monkeypatch, respawn_ok, comes_up_on):
+    log, *_ = _agy_env(tmp_path, monkeypatch, QUOTA_SCREEN, respawn_ok=respawn_ok, comes_up_on=comes_up_on)
+    nudge.main()
+    assert len(log.respawns) == 1 and [p for p, _ in log.sent] == ['%claude']
+    assert 'failed; waking the Claude fallback' in (tmp_path / 'log').read_text()
+
+
+def test_the_driver_switches_back_to_its_model_after_the_reset(tmp_path, monkeypatch):
+    log, pane, clock, state = _agy_env(tmp_path, monkeypatch, QUOTA_SCREEN)
+    nudge.main()
+    pane['screen'] = QUOTA_SCREEN.format(model='Claude Opus 5.5').replace('Individual quota reached', 'Done')
+    clock.now = NOW + 3600                           # before the reset: stays on Claude
+    nudge.main()
+    assert len(log.respawns) == 1
+    clock.now = NOW + 7200 + 60
+    nudge.main()
+    assert len(log.respawns) == 2 and '--model gemini-4-neon --effort high' in log.respawns[1]
+    assert 'back on gemini-4-neon' in log.sent[-1][1]
+    assert json.loads((state / 'agy-math.agy-switch.json').read_text())['to'] is None
+    nudge.main()                                     # the old quota line is gone from above the prompt: no flapping
+    assert len(log.respawns) == 2
+
+
+def test_the_quota_line_is_read_only_above_the_prompt():
+    old = QUOTA_SCREEN.format(model='Gemini 4 Neon').replace('Error ID: fixture\n', 'Error ID: fixture\n  ok\n  a\n'
+                                                              '  b\n  c\n  d\n  e\n  f\n')
+    assert not nudge.AGY_QUOTA.search(nudge.above_prompt(old))
+    assert nudge.AGY_QUOTA.search(nudge.above_prompt(QUOTA_SCREEN.format(model='Gemini 4 Neon')))
+    assert not nudge.AGY_QUOTA.search('Weekly quota · Refreshes in 3d 3h 59m')
+    assert nudge.shown_model('? for shortcuts   auto · Claude Opus 5.5 · high · 1 task(s)') == 'Claude Opus 5.5'
+
+
+def test_the_conversation_comes_from_the_open_db_else_the_process_log(tmp_path, monkeypatch):
+    log = tmp_path / 'log/cli-20261126_171828.log'
+    log.parent.mkdir()
+    log.write_text('conversation=11111111-0000-4000-8000-000000000000 listed\n'
+                   'I1126 manager.go] cascade_id:22222222-0000-4000-8000-000000000000\n')
+    outs = {'db': 'p1\nn/x/conversations/33333333-0000-4000-8000-000000000000.db\nn{}\n'.format(log),
+            'log': 'p1\nn{}\nn/x/conversations\n'.format(log)}
+    for kind, want in (('db', '33333333'), ('log', '22222222')):
+        monkeypatch.setattr(nudge.subprocess, 'run', lambda *a, **k: SimpleNamespace(stdout=outs[kind]))
+        assert nudge.conversation_of('1').startswith(want)
+    assert nudge.conversation_of('') is None
