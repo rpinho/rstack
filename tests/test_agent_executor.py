@@ -533,3 +533,33 @@ def test_a_workspace_sandbox_may_write_the_shared_package_caches(monkeypatch):
     monkeypatch.delenv('npm_config_cache', raising=False)
     cmd = command('codex', 'codex', 'gpt-6.2-sol', 'high', '/w', '/w/out')
     assert 'sandbox_workspace_write.writable_roots=["/h/.cache/uv"]' in cmd
+
+
+def test_agy_runs_append_to_model_runs_jsonl_across_direct_tmux_and_gui_routes(tmp_path):
+    runs = tmp_path / '.local/state/model-runs.jsonl'
+    # direct route (rc=0)
+    ok = agy_run(tmp_path, "print('{\"status\":\"SUCCESS\",\"response\":\"ok\"}')\n", RH_JOB='job-direct')
+    assert ok.returncode == 0, ok.stderr
+    # tmux route (rc=0)
+    via_tmux = agy_run(tmp_path, KEYCHAIN_AGY, FAKE_TMUX_SESSION='1', RH_JOB='job-tmux')
+    assert via_tmux.returncode == 0, via_tmux.stderr
+    # gui route (rc=0)
+    gui_agy = (
+        'import json, os, sys, time\n'
+        'if os.environ.get("IN_GUI_AGENT") != "1":\n'
+        '    sys.stderr.write("Authentication required.\\n"); sys.stderr.flush(); time.sleep(60)\n'
+        'print(json.dumps({"status": "SUCCESS", "response": "ok"}))\n')
+    via_gui = agy_run(tmp_path, gui_agy, exe_name='agy', FAKE_TMUX_SESSION='1', FAKE_GUI_SESSION='1',
+                      RH_JOB='job-gui')
+    assert via_gui.returncode == 0, via_gui.stderr
+    # failing run (rc=1) still counted
+    bad = agy_run(tmp_path, "print('{\"status\":\"ERROR\",\"response\":\"\",\"error\":\"boom\"}')\n", RH_JOB='job-err')
+    assert bad.returncode == 1
+    rows = [json.loads(line) for line in runs.read_text().splitlines()]
+    assert [(r['job'], r['backend'], r['model'], r['effort'], r['rc']) for r in rows] == [
+        ('job-direct', 'agy', 'gemini-fixture', 'low', 0),
+        ('job-tmux', 'agy', 'gemini-fixture', 'low', 0),
+        ('job-gui', 'agy', 'gemini-fixture', 'low', 0),
+        ('job-err', 'agy', 'gemini-fixture', 'low', 1),
+    ]
+    assert all(r['utc'].endswith('Z') and r['transcript'] for r in rows)

@@ -558,7 +558,7 @@ for (( i = start; i <= 5 || effort_resumed; i++ )); do
       export GEMINI_API_KEY="$(cat "$HOME/.config/gemini/api_key")" || exit 2
       [[ -n $GEMINI_API_KEY ]] || { print -u2 -- 'missing Gemini key'; exit 2; }
     fi
-    env "${cache_env[@]}" "${effort_env[@]}" nice -n 10 python3 "$H/agent_executor.py" --backend "$backend" \
+    env RH_JOB="${job:t}" "${cache_env[@]}" "${effort_env[@]}" nice -n 10 python3 "$H/agent_executor.py" --backend "$backend" \
       --executable "$cx" --directory "$dir" --model "$m" --effort "$LAUNCH_EFFORT" \
       --output "$out" --budget "$attempt_budget" \
       --allowed-tools "$LAUNCH_CLAUDE_TOOLS" --timeout-seconds "$attempt_timeout" \

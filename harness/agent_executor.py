@@ -479,10 +479,7 @@ def log_agy_quota(cmd, text):
     AGY_QUOTA line: the job log carries it to the controller, whose picker and grader read it (11-20)."""
     import datetime as dt
     import agy_quota
-    model = cmd[cmd.index('--model') + 1] if '--model' in cmd else 'default'
-    tier = next((t for t in AGY_EFFORTS if model.endswith('-' + t)), None)
-    if not tier and '--effort' in cmd:
-        tier = cmd[cmd.index('--effort') + 1]
+    model, tier = _agy_model_effort(cmd, None)
     row = agy_quota.annotate(dict(
         utc=dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'), model=model, tier=tier,
         job=os.environ.get('RH_JOB') or os.environ.get('RSTACK_LANE') or '', error=' '.join(text.split())[:500]))
@@ -529,7 +526,34 @@ def agy_chain(cmd, directory, timeout_seconds=0):
     return route, data, code, signed_out, expired, err, relayed
 
 
-def run_agy(cmd, directory, output, timeout_seconds=0):
+def _agy_model_effort(cmd, fallback=''):
+    model = cmd[cmd.index('--model') + 1] if '--model' in cmd else 'default'
+    tier = next((t for t in AGY_EFFORTS if model.endswith('-' + t)), None)
+    if not tier and '--effort' in cmd:
+        tier = cmd[cmd.index('--effort') + 1]
+    return model, tier or fallback
+
+
+def log_agy_run(cmd, directory, output, rc, effort=''):
+    """Append one agy run to ~/.local/state/model-runs.jsonl (same shape as codex/claude; never fails the run)."""
+    import datetime as dt
+    import fcntl
+    model, eff = _agy_model_effort(cmd, effort)
+    row = dict(
+        utc=dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        job=os.environ.get('RH_JOB') or os.environ.get('AGENT_JOB') or os.environ.get('RSTACK_LANE') or Path(directory).name,
+        backend='agy', model=model, effort=eff or 'default', rc=int(rc), transcript=str(output))
+    path = Path(os.environ.get('RH_MODEL_RUNS_LOG') or Path.home() / '.local/state/model-runs.jsonl').expanduser()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a') as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            fh.write(json.dumps(row, separators=(',', ':')) + '\n')
+    except OSError:
+        pass
+
+
+def run_agy(cmd, directory, output, timeout_seconds=0, effort=''):
     """Run agy print mode; its JSON result goes to `output`.
 
     Direct first; if agy asks to authenticate, relay through tmux, then a one-shot Aqua LaunchAgent
@@ -548,26 +572,30 @@ def run_agy(cmd, directory, output, timeout_seconds=0):
     quota = QUOTA.search(error) or QUOTA.search(err.decode(errors='replace'))
     if quota:
         log_agy_quota(cmd, error or err.decode(errors='replace'))
+    rc = code
     if signed_out or 'authentication' in error.lower():
         _warn_agy_auth()
         if relayed or not signed_out:
             print('agent_executor: {}; {}'.format(AGY_UNAUTH, AGY_SIGN_IN), file=sys.stderr)
-            return 77
-        print('agent_executor: {} ({})'.format(AGY_UNAUTH, AGY_NO_KEYCHAIN), file=sys.stderr)
-        return 76
-    if expired:
+            rc = 77
+        else:
+            print('agent_executor: {} ({})'.format(AGY_UNAUTH, AGY_NO_KEYCHAIN), file=sys.stderr)
+            rc = 76
+    elif expired:
         print('wall-clock cap of {:g}s reached; stopped'.format(timeout_seconds), file=sys.stderr)
-        return 124
-    if route:
-        print('agent_executor: agy route=' + route, file=sys.stderr)
-    if code == 0 and (not isinstance(result, dict) or result.get('status') == 'ERROR' or error):
-        print('agy returned an error result' + (': ' + error if error else ''), file=sys.stderr)
-        return 1
-    if code == 0 and not str(result.get('response') or '').strip() and result.get('denied_actions'):
-        print('agy produced nothing; it was denied: ' + ', '.join(
-            str(d.get('action')) for d in result['denied_actions'] if isinstance(d, dict)), file=sys.stderr)
-        return 1
-    return code
+        rc = 124
+    else:
+        if route:
+            print('agent_executor: agy route=' + route, file=sys.stderr)
+        if code == 0 and (not isinstance(result, dict) or result.get('status') == 'ERROR' or error):
+            print('agy returned an error result' + (': ' + error if error else ''), file=sys.stderr)
+            rc = 1
+        elif code == 0 and not str(result.get('response') or '').strip() and result.get('denied_actions'):
+            print('agy produced nothing; it was denied: ' + ', '.join(
+                str(d.get('action')) for d in result['denied_actions'] if isinstance(d, dict)), file=sys.stderr)
+            rc = 1
+    log_agy_run(cmd, directory, output, rc, effort)
+    return rc
 
 
 def run_codex(cmd, args, env):
@@ -627,7 +655,7 @@ def main(argv=None):
         print('agent_executor refused: ' + str(exc), file=sys.stderr)
         return 78
     if a.backend == 'agy':
-        return run_agy(cmd, a.directory, a.output, a.timeout_seconds)
+        return run_agy(cmd, a.directory, a.output, a.timeout_seconds, a.effort)
     if a.backend == 'codex':
         # No OpenAI API key or base URL reaches codex: with one in the environment it can bill the API instead of
         # the subscription (11-19: no pay-as-you-go). The lanes' launcher has run codex this way since 10-18.
