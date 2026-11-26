@@ -186,3 +186,31 @@ def test_scorer_and_canary_read_the_same_run_grade_without_a_legacy_receipt(tmp_
     grade, = run_records.read_jsonl(ledger)
     assert grade['case'] == 'receipt-everyday:grade-current'
     assert grade['model'] == 'google/gemini-4-neon-high' and grade['outcome'] == 'pass'
+
+
+def _legacy(path, job, hours, transcript, model='opus'):
+    when = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)
+    run_records.append(path, dict(job=job, model=model, backend='claude', rc=0,
+                                  utc=when.strftime('%Y-%m-%dT%H:%M:%SZ'), transcript=str(transcript)))
+
+
+def test_legacy_routine_run_without_a_launch_receipt_is_not_owed(tmp_path, logs, capsys):
+    # 11-26 (M4): 321 pre-run-table x-engage / nightly / alert-watch runs have no grader and would fail forever.
+    _legacy(logs, 'family-alert-watch', 30, tmp_path / 'alert-watch.log.agent')
+    assert score_canary.main(['--owed']) == 0
+    output = capsys.readouterr().out
+    assert 'routine: 1 legacy runs' in output and 'missing grade' not in output
+
+
+def test_legacy_launcher_run_with_a_receipt_is_still_owed(tmp_path, logs, capsys):
+    (tmp_path / 'math_x_1126.log.selection.json').write_text('{}')
+    _legacy(logs, 'math_x_1126', 30, tmp_path / 'math_x_1126.last.md', model='gemini-4-carbon-high')
+    assert score_canary.main(['--owed']) == 1
+    assert 'missing grade: run_id=math_x_1126@' in capsys.readouterr().out
+
+
+def test_bare_opus_resolves_to_opus_5_5():
+    sys.path.insert(0, str(REPO / 'harness'))
+    from model_slugs import canon
+    assert canon('opus') == 'anthropic/claude-opus-5.5'
+    assert canon('opus-4-6') == 'anthropic/claude-opus-4.6'

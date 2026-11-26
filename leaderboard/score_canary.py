@@ -12,6 +12,17 @@ import run_grades
 from run_grades import run_records
 
 
+def is_routine(run):
+    """A run from before the run table (fac78df) with no launch receipt: a routine job with no grader.
+    New routine runs are closed by the executor as "void: no launcher acceptance checks"."""
+    if not run.get('legacy'):
+        return False
+    transcript = run.get('transcript')
+    if not transcript:
+        return True
+    return not (Path(transcript).parent / '{}.log.selection.json'.format(run['job'])).exists()
+
+
 def report(pairs, now, owed=False):
     counts, recent, failures = defaultdict(Counter), defaultdict(list), {}
     overdue = 0
@@ -21,11 +32,15 @@ def report(pairs, now, owed=False):
         failures[(code, run['run_id'])] = (
             f"{detail}: run_id={run['run_id']} job={run['job']} model={run['model']} age={age:.2f}h")
 
+    routine = 0
     for run, record in pairs:
         if run_records.is_probe(run):
             continue
-        age = now - run_grades.utc(run['utc'])
         grade = record[0] if record else {}
+        if not grade and is_routine(run):
+            routine += 1
+            continue
+        age = now - run_grades.utc(run['utc'])
         if dt.timedelta(0) <= age <= dt.timedelta(hours=24):
             model = run['model']
             recent[model].append(run)
@@ -50,6 +65,9 @@ def report(pairs, now, owed=False):
                               for key in ('runs', 'graded', 'pass', 'partial', 'fail', 'harness_fail', 'void')))
     if owed:
         print(f'owed >24h: {overdue} ungraded runs (all listed below; hourly FAIL rules retained)')
+    if routine:
+        print(f'routine: {routine} legacy runs with no launch receipt (x-engage, nightly jobs...) have no grader; '
+              'not owed. New routine runs close themselves as void.')
     for message in failures.values():
         print(message)
     print('FAIL' if failures else 'PASS')

@@ -44,7 +44,7 @@ MODELS = {'anthropic/claude-opus-5.5': ('claude', 'claude-opus-5-5'),
  'google/gemini-4-argon-low': ('agy', 'gemini-4-argon-low'),
  'google/gemini-4-hydrogen-low': ('agy', 'gemini-4-hydrogen-low')}
 
-ALIASES = [('opus[- ]?5[.-]5', 'anthropic/claude-opus-5.5'),
+ALIASES = [('opus[- ]?5[.-]5|^opus$', 'anthropic/claude-opus-5.5'),  # bare 'opus': family-alert-watch rows, 11-10..16
  ('fable[- ]?5[.-]1|fable-5-1', 'anthropic/claude-fable-5.1'),
  ('sonnet[- ]?5[.-]5', 'anthropic/claude-sonnet-5.5'),
  ('haiku[- ]?5[.-]5', 'anthropic/claude-haiku-5.5'),

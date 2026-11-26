@@ -79,4 +79,9 @@ the result can be checked by a command. To correct a grade, run the `GRADE ON RE
 its launch log. Grading never holds up a lane: a job that could not be graded is recorded "ungraded" and
 listed in the morning report. This is how other models earn a rank (Ricardo, 11-19: "it's very, very
 important that we delegate to other models").
+
+**Driver sessions log what they ship.** Work you do yourself in this session (not a launched job) has no
+grader unless you log it. Each time you ship a unit (a result, a PR, a report), run once:
+`delegate-log --model <your model> --source session --session <your tmux session> --task <id> --run-id <id> --verdict pass|partial|fail --asked "<what was asked>" --did "<what you did>" --shipped "<path, PR or link>"`
+Use one stable id per unit for both `--task` and `--run-id`, so a retry does not count twice.
 <!-- /lane-rules-common -->
