@@ -665,7 +665,7 @@ def x_checks(row, text, everyone, clock, selected=(), cfg=None, posting=False):
         for other in others:
             if other.get('channel') != 'x_reply' or other.get('status') == 'retracted':
                 continue
-            if target and reply_target(other) == target and (other.get('sent') or other.get('gate_attempt') or other.get('status') == 'approved'):
+            if target and reply_target(other) == target and other.get('status') != 'dropped' and (other.get('sent') or other.get('gate_attempt') or other.get('status') == 'approved'):
                 failures.append('already replied or reserved reply to this post: {}/{}'.format(other['lane'], other['id']))
             if recent_sent(other, 14, clock) or any(same_row(other, r) for r in selected):
                 try:

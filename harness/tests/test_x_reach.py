@@ -442,3 +442,12 @@ def test_a_sent_reply_whose_draft_file_is_gone_is_still_compared(state, monkeypa
         kept.unlink()
     rc, out, _ = lint(state, near)
     assert rc == 0 and 'near-duplicate check skipped' in out, out
+
+
+def test_dropped_row_releases_its_reply_reservation(state):
+    # 11-26: a dropped row whose posting attempt sent nothing still blocked the retry row for the same post.
+    history(state, ident='old', channel='x_reply', status='dropped', in_reply_to='https://x.com/anna/status/123',
+            gate_attempt={'utc': CLOCK.isoformat(), 'path': 'browser'})
+    ident, _ = draft(state, text='The error bars shrink when the window grows.', channel='x_reply',
+                     in_reply_to='https://x.com/anna/status/123')
+    assert 'already replied or reserved' not in lint(state, ident)[1]

@@ -84,7 +84,7 @@ def approve(root, channel='x_reply', text=TEXT, **metadata):
     draft.write_text(text)
     args = ['draft', 'test', '--to', '@anna', '--channel', channel, '--purpose', 'Ask about staging', '--file', draft]
     if channel == 'x_reply':
-        args += ['--in-reply-to', 'https://x.com/anna/status/123']
+        args += ['--in-reply-to', 'https://x.com/anna/status/12345']
     for key, val in metadata.items():
         args += ['--' + key.replace('_', '-'), str(val)]
     result = cli(root, *args)
@@ -103,7 +103,7 @@ def update(root, row, **extra):
     return row
 
 
-def payload(text=TEXT, reply='123'):
+def payload(text=TEXT, reply='12345'):
     value = {'text': text}
     if reply:
         value['reply'] = {'in_reply_to_tweet_id': reply}
@@ -115,6 +115,12 @@ def event(path, value=None, summary=None):
         words = ['xurl', '-X', 'POST', '/2/tweets', '-d', json.dumps(value or payload())]
         return dict(tool_name='Bash', tool_input=dict(command=shlex.join(words)))
     item = dict(action='left_click', action_summary=summary or 'Click Reply to post the reply on X')
+    # A browser reply comes after a failed first route (x_route.browser_allowed); start past that.
+    ledger = Path(os.environ['RSTACK_STATE_DIR']) / 'x-route.jsonl'
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with ledger.open('a') as stream:
+        stream.write(json.dumps(dict(utc=dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
+                                     kind='reply', target='12345', route='grok', ok=False, detail='test')) + '\n')
     if path == 'batch':
         return dict(tool_name='mcp__claude-in-chrome__browser_batch', tool_input={'actions': [{'name': 'mcp__claude-in-chrome__computer', 'input': item}]})
     return dict(tool_name='mcp__claude-in-chrome__computer', tool_input=item)
@@ -269,7 +275,7 @@ def test_browser_original_approval_does_not_authorize_reply(local):
 
 def test_api_original_and_self_reply_are_bound_to_payload_kind(local):
     row = approve(local, channel='x_post', text='The table now has a certificate.')
-    assert hook_pipe(local, event('bash', payload('The table now has a certificate.', '123')))['hookSpecificOutput']['permissionDecision'] == 'deny'
+    assert hook_pipe(local, event('bash', payload('The table now has a certificate.', '12345')))['hookSpecificOutput']['permissionDecision'] == 'deny'
     assert hook_pipe(local, event('bash', payload('The table now has a certificate.', None))) is None
 
 
@@ -281,7 +287,7 @@ def test_link_self_reply_gate(local):
 
 def test_replied_registry_rechecked_after_approval(local):
     approve(local)
-    Path(os.environ['RH_X_REPLIED']).write_text('["123"]')
+    Path(os.environ['RH_X_REPLIED']).write_text('["12345"]')
     assert hook_pipe(local, event('bash'))['hookSpecificOutput']['permissionDecision'] == 'deny'
 
 
@@ -363,10 +369,10 @@ def test_opaque_and_ambiguous_payloads_fail_enforce(local, command):
 
 
 @pytest.mark.parametrize('command', [
-    'xurl -X POST /2/users/1/likes -d \'{"tweet_id":"123"}\'',
-    'xurl -X POST /2/users/1/following -d \'{"target_user_id":"123"}\'',
+    'xurl -X POST /2/users/1/likes -d \'{"tweet_id":"12345"}\'',
+    'xurl -X POST /2/users/1/following -d \'{"target_user_id":"12345"}\'',
     'xurl -X POST /2/dm_conversations/with/1/messages -d \'{"text":"hi"}\'',
-    'xurl -X GET /2/tweets/123',
+    'xurl -X GET /2/tweets/12345',
     'echo \'xurl -X POST /2/tweets -d invalid\'',
     "cat <<'EOF'\nxurl -X POST /2/tweets -d invalid\nEOF\n",
 ])
@@ -392,7 +398,7 @@ def test_xr_likes_follows_dms_not_in_gate(local, words):
     assert logs() == []
 
 
-@pytest.mark.parametrize('words', [['-X', 'DELETE', '/2/tweets/123'], ['-X', 'POST', '/2/users/1/blocking'], ['-X', 'POST', '/2/users/1/bookmarks']])
+@pytest.mark.parametrize('words', [['-X', 'DELETE', '/2/tweets/12345'], ['-X', 'POST', '/2/users/1/blocking'], ['-X', 'POST', '/2/users/1/bookmarks']])
 def test_existing_xr_forbidden_operations_still_blocked(local, words):
     assert xr_pipe(local, {}, args=words).returncode == 2
     assert not Path(os.environ['XURL_TEST_RECORD']).exists()
@@ -450,7 +456,7 @@ def test_browser_receipt_can_be_recorded_after_registry_update(local):
     row = approve(local)
     assert hook_pipe(local, event('browser')) is None
     replied = Path(os.environ['RH_X_REPLIED'])
-    replied.write_text('["123"]')
+    replied.write_text('["12345"]')
     before = replied.read_bytes()
     result = cli(local, 'sent', 'test', row['id'], '--message-id', '456', '--via', 'browser')
     assert result[0] == 0, result
@@ -472,15 +478,15 @@ def x_log(rows):
 
 
 NOW = dt.datetime.now(dt.timezone.utc).isoformat()
-LIKE = dict(utc=NOW, action='like', target_url='https://x.com/i/status/123')
-ANSWER = dict(utc=NOW, action='answer_recorded', target_url='https://x.com/i/status/123')
+LIKE = dict(utc=NOW, action='like', target_url='https://x.com/i/status/12345')
+ANSWER = dict(utc=NOW, action='answer_recorded', target_url='https://x.com/i/status/12345')
 
 
 def lint_reply(root):
     draft = root / 'body.txt'
     draft.write_text(TEXT)
     result = cli(root, 'draft', 'test', '--to', '@anna', '--channel', 'x_reply', '--purpose', 'Thank them',
-                 '--file', draft, '--in-reply-to', 'https://x.com/anna/status/123')
+                 '--file', draft, '--in-reply-to', 'https://x.com/anna/status/12345')
     assert result[0] == 0, result
     return cli(root, 'lint', 'test', result[1].strip())
 
@@ -488,9 +494,9 @@ def lint_reply(root):
 def test_a_liked_answer_in_replied_json_does_not_block_the_thanks(local):
     """general, 11-09: the drafting round added a post to replied.json when it liked an answer, so the
     thanks it drafted under the same post was refused as already replied and could never post."""
-    Path(os.environ['RH_X_REPLIED']).write_text('["123"]')
-    x_log([LIKE, ANSWER, dict(utc=NOW, action='draft_reply', target_url='https://x.com/i/status/123')])
-    assert outreach.only_liked('123')
+    Path(os.environ['RH_X_REPLIED']).write_text('["12345"]')
+    x_log([LIKE, ANSWER, dict(utc=NOW, action='draft_reply', target_url='https://x.com/i/status/12345')])
+    assert outreach.only_liked('12345')
     result = lint_reply(local)
     assert result[0] == 0, result
     assert 'shows only a like' in ''.join(map(str, result))
@@ -498,17 +504,17 @@ def test_a_liked_answer_in_replied_json_does_not_block_the_thanks(local):
 
 @pytest.mark.parametrize('rows', [
     [],                                                                       # no evidence: replied.json stands
-    [LIKE, dict(action='reply', target_url='https://x.com/rpinho_sci/status/9', in_reply_to='https://x.com/a/status/123')],
-    [LIKE, dict(action='reply_failed_403', target_url='https://x.com/a/status/123')],   # unknown: binding
-    [dict(utc=NOW, action='conversation_read', target_url='https://x.com/i/status/123')],  # no like or answer
+    [LIKE, dict(action='reply', target_url='https://x.com/rpinho_sci/status/9', in_reply_to='https://x.com/a/status/12345')],
+    [LIKE, dict(action='reply_failed_403', target_url='https://x.com/a/status/12345')],   # unknown: binding
+    [dict(utc=NOW, action='conversation_read', target_url='https://x.com/i/status/12345')],  # no like or answer
     # Before 11-07 a reply could be logged with only our URL, so an old like proves nothing.
     [dict(LIKE, utc='2026-10-22T13:56:25Z')],
     [dict(LIKE, utc='not a time')],
 ])
 def test_replied_json_still_binds_without_proof_of_a_like_only(local, rows):
-    Path(os.environ['RH_X_REPLIED']).write_text('["123"]')
+    Path(os.environ['RH_X_REPLIED']).write_text('["12345"]')
     x_log(rows)
-    assert not outreach.only_liked('123')
+    assert not outreach.only_liked('12345')
     result = lint_reply(local)
     assert result[0] != 0 and 'already replied to this post' in ''.join(map(str, result)), result
 
@@ -538,7 +544,7 @@ def test_xr_sends_a_text_reply_through_grok_first(local, tmp_path, monkeypatch):
     assert run.returncode == 0, run.stderr
     assert json.loads(run.stdout)['data']['id'] == '555'
     argv = json.loads(record.read_text())
-    assert argv[:2] == ['--rh', 'test/' + row['id']] and argv[-2:] == ['--reply-to', 'https://x.com/i/status/123']
+    assert argv[:2] == ['--rh', 'test/' + row['id']] and argv[-2:] == ['--reply-to', 'https://x.com/i/status/12345']
     assert not Path(os.environ['XURL_TEST_RECORD']).exists()
     assert [(r['route'], r['ok']) for r in route_rows(tmp_path)] == [('grok', True)]
 
@@ -566,3 +572,11 @@ def test_xr_keeps_media_posts_on_the_api(local, tmp_path, monkeypatch):
     value = dict(payload(), media={'media_ids': ['1']})
     xr_pipe(local, value, 'enforce')
     assert not record.exists()
+
+
+def test_browser_claim_waits_for_the_first_route(local, tmp_path):
+    # 11-26: a click the route gate refused used up the approval, then grok-post refused the row.
+    row = approve(local)
+    _, message = x_gate.check(local, 'browser', browser=True)
+    assert message and 'run x-route reply first' in message
+    assert not outreach.current(local / 'lanes/test', rh)[row['id']].get('gate_attempt')

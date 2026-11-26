@@ -189,6 +189,14 @@ def check(root, path_name, payload=None, browser=False, claim=True):
                 reason += ': ' + blocked[0]
             return None, log_block(path_name, reason, payload)
         row = matches[0]
+        if browser:
+            # 11-26: x-submit-gate refuses a browser reply until its first route has failed. Claiming
+            # before that check used the approval up on a click that never happened, so grok-post
+            # then refused the row as already attempted. Both gates now agree before anything is claimed.
+            import x_route
+            allowed, why = x_route.browser_allowed('reply', outreach.reply_target(row))
+            if not allowed:
+                return None, log_block(path_name, why, payload)
         if claim:
             lane = root / 'lanes' / row['lane']
             # Root lock is held before lane lock everywhere in this job.
