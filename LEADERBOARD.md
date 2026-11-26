@@ -699,17 +699,19 @@ A dated routing snapshot from selected local harness outcomes. The ranking is ev
 | taste | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | - | 2026-11-26 |
 | taste | gemini-4-neon-high | 5 | n<5 | 0 | - | - | 2026-11-26 |
 | taste | gemini-4-neon-medium | 6 | n<5 | 0 | - | - | 2026-11-26 |
-| review | gpt-6.2-astra | 1 | 1.0 | 18 | - | - | 2026-11-26 |
-| review | claude-sonnet-5-5 | 2 | 0.857 | 7 | - | - | 2026-11-26 |
-| review | claude-opus-5-5 | 3 | n<5 | 3 | 1.0 | - | 2026-11-26 |
-| review | claude-fable-5-2 | 4 | n<5 | 0 | - | - | 2026-11-26 |
-| review | gpt-6.2-sol | 5 | n<5 | 0 | - | - | 2026-11-26 |
-| review | gemini-3.8-flash-high | 6 | n<5 | 1 | 1.0 | - | 2026-11-26 |
-| review | gemini-3.8-flash-medium | 7 | n<5 | 1 | 1.0 | - | 2026-11-26 |
-| review | gemini-4-neon-high | 8 | n<5 | 2 | - | - | 2026-11-26 |
+| review | gpt-6.2-astra | 1 | 0.947 | 38 | - | - | 2026-11-26 |
+| review | gemini-4-neon-high | 2 | 1.0 | 7 | - | - | 2026-11-26 |
+| review | claude-sonnet-5-5 | 3 | 0.875 | 8 | - | - | 2026-11-26 |
+| review | claude-opus-5-5 | 4 | n<5 | 3 | 1.0 | - | 2026-11-26 |
+| review | claude-fable-5-2 | 5 | n<5 | 0 | - | - | 2026-11-26 |
+| review | gpt-6.2-sol | 6 | n<5 | 0 | - | - | 2026-11-26 |
+| review | gemini-3.8-flash-high | 7 | n<5 | 1 | 1.0 | - | 2026-11-26 |
+| review | gemini-3.8-flash-medium | 8 | n<5 | 1 | 1.0 | - | 2026-11-26 |
 | review | gemini-4-neon-medium | 9 | n<5 | 1 | 1.0 | - | 2026-11-26 |
 | review | gemini-4-hydrogen-medium | 10 | n<5 | 1 | 1.0 | - | 2026-11-26 |
-| review | gpt-5.6-sol | 11 | n<5 | 0 | 0.667 | - | 2026-11-26 |
+| review | gemini-4-carbon-high | 11 | n<5 | 3 | - | - | 2026-11-26 |
+| review | claude-fable-5-1 | 12 | n<5 | 0 | - | - | 2026-11-26 |
+| review | gpt-5.6-sol | 13 | n<5 | 0 | 0.667 | - | 2026-11-26 |
 | review | gemini-3.8-flash-low | - | n<5 | 1 | 1.0 | - | 2026-11-26 |
 | review | gemini-4-argon-low | - | n<5 | 1 | - | - | 2026-11-26 |
 | review | gemini-4-argon-medium | - | 1.0 | 6 | 1.0 | - | 2026-11-26 |
@@ -735,11 +737,12 @@ A dated routing snapshot from selected local harness outcomes. The ranking is ev
 | mechanical | gpt-6.2-astra | - | n<5 | 0 | - | - | 2026-11-26 |
 | mechanical | moonshotai/kimi-k3.1-pro | - | n<5 | 0 | - | - | 2026-11-26 |
 | mechanical | x-ai/grok-4.6 | - | n<5 | 0 | - | - | 2026-11-26 |
+| mechanical | x-ai/grok-4.7 | - | n<5 | 0 | - | - | 2026-11-26 |
 | mechanical | z-ai/glm-5.3-flash | - | n<5 | 0 | - | - | 2026-11-26 |
-| builder | claude-opus-5-5 | 1 | 0.944 | 17 | - | - | 2026-11-26 |
-| builder | gemini-4-neon-medium | 2 | 1.0 | 12 | - | - | 2026-11-26 |
-| builder | gpt-6.2-sol | 3 | 0.833 | 15 | - | - | 2026-11-26 |
-| builder | gemini-4-neon-high | 4 | 0.889 | 9 | - | - | 2026-11-26 |
+| builder | claude-opus-5-5 | 1 | 0.942 | 18 | - | - | 2026-11-26 |
+| builder | gemini-4-neon-high | 2 | 0.96 | 25 | - | - | 2026-11-26 |
+| builder | gemini-4-neon-medium | 3 | 1.0 | 12 | - | - | 2026-11-26 |
+| builder | gpt-6.2-sol | 4 | 0.833 | 21 | - | - | 2026-11-26 |
 | builder | gemini-3.8-flash-high | 5 | n<5 | 0 | - | - | 2026-11-26 |
 | builder | gemini-3.8-flash-medium | 6 | n<5 | 0 | - | - | 2026-11-26 |
 | builder | claude-sonnet-5-5 | 7 | n<5 | 3 | - | - | 2026-11-26 |
@@ -755,6 +758,7 @@ A dated routing snapshot from selected local harness outcomes. The ranking is ev
 | builder | gpt-6-astra | - | n<5 | 0 | - | - | 2026-11-26 |
 | builder | gpt-6.1-sol | - | n<5 | 0 | - | - | 2026-11-26 |
 | builder | moonshotai/kimi-k3.1-pro | - | n<5 | 0 | - | - | 2026-11-26 |
+| builder | x-ai/grok-4.7 | - | n<5 | 0 | - | - | 2026-11-26 |
 | cheap | gpt-6-luna | 1 | n<5 | 0 | - | - | 2026-11-26 |
 | cheap | claude-haiku-5-5 | 2 | n<5 | 0 | - | - | 2026-11-26 |
 | cheap | gemini-3.8-flash-high | 3 | n<5 | 0 | - | - | 2026-11-26 |
@@ -767,13 +771,14 @@ A dated routing snapshot from selected local harness outcomes. The ranking is ev
 | biology | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | - | 2026-11-26 |
 | biology | gemini-4-neon-high | 5 | n<5 | 0 | - | - | 2026-11-26 |
 | biology | gemini-4-neon-medium | 6 | n<5 | 0 | - | - | 2026-11-26 |
-| batch | gpt-6.2-astra | 1 | 0.944 | 9 | - | - | 2026-11-26 |
-| batch | gpt-6.2-sol | 2 | 0.65 | 40 | - | - | 2026-11-26 |
-| batch | gemini-4-hydrogen-medium | 3 | 0.25 | 12 | - | - | 2026-11-26 |
-| batch | gemini-4-hydrogen-high | 4 | 0.125 | 16 | - | - | 2026-11-26 |
-| batch | claude-sonnet-5-5 | 5 | n<5 | 4 | - | - | 2026-11-26 |
-| batch | gemini-3.8-flash-high | 6 | n<5 | 0 | - | - | 2026-11-26 |
-| batch | gemini-3.8-flash-medium | 7 | n<5 | 0 | - | - | 2026-11-26 |
+| batch | gpt-6.2-astra | 1 | 0.95 | 10 | - | - | 2026-11-26 |
+| batch | gemini-4-carbon-high | 2 | 0.812 | 16 | - | - | 2026-11-26 |
+| batch | gpt-6.2-sol | 3 | 0.696 | 46 | - | - | 2026-11-26 |
+| batch | gemini-4-hydrogen-medium | 4 | 0.25 | 12 | - | - | 2026-11-26 |
+| batch | gemini-4-hydrogen-high | 5 | 0.125 | 16 | - | - | 2026-11-26 |
+| batch | claude-sonnet-5-5 | 6 | n<5 | 4 | - | - | 2026-11-26 |
+| batch | gemini-3.8-flash-high | 7 | n<5 | 0 | - | - | 2026-11-26 |
+| batch | gemini-3.8-flash-medium | 8 | n<5 | 0 | - | - | 2026-11-26 |
 | batch | gemini-4-argon-medium | - | n<5 | 1 | - | - | 2026-11-26 |
 | batch | gpt-6.1-sol | - | 1.0 | 25 | - | - | 2026-11-26 |
 | writing | claude-opus-5-5 | 1 | n<5 | 0 | - | - | 2026-11-26 |
@@ -790,6 +795,8 @@ A dated routing snapshot from selected local harness outcomes. The ranking is ev
 | design | gemini-3.8-flash-medium | 4 | n<5 | 0 | - | - | 2026-11-26 |
 | design | gemini-4-neon-high | 5 | n<5 | 0 | - | - | 2026-11-26 |
 | design | gemini-4-neon-medium | 6 | n<5 | 0 | - | - | 2026-11-26 |
+| design | gpt-6.2-sol | 7 | n<5 | 0 | - | - | 2026-11-26 |
+| design | gpt-6.2-astra | 8 | n<5 | 0 | - | - | 2026-11-26 |
 | judge | claude-opus-5-5 | 1 | n<5 | 0 | - | - | 2026-11-26 |
 | judge | gpt-6.2-astra | 2 | n<5 | 0 | - | - | 2026-11-26 |
 | judge | claude-fable-5-2 | 3 | n<5 | 2 | - | - | 2026-11-26 |
@@ -1112,6 +1119,8 @@ Selected local labels on a 0–4 scale, including proxy and operational outcomes
 | batch | claude-sonnet-5-5 | 2, 4 | 2026-11-20 |
 | batch | claude-sonnet-5-5 | 4, 4 | 2026-11-22 |
 | batch | gemini-4-argon-medium | 4 | 2026-11-20 |
+| batch | gemini-4-carbon-high | 4, 4, 4, 4 | 2026-11-25 |
+| batch | gemini-4-carbon-high | 0, 2, 2, 2, 2, 4, 4, 4, 4, 4, 4, 4 | 2026-11-26 |
 | batch | gemini-4-hydrogen-high | 0, 0, 0, 0, 0, 4, 4 | 2026-11-23 |
 | batch | gemini-4-hydrogen-high | 0, 0, 0, 0, 0, 0 | 2026-11-24 |
 | batch | gemini-4-hydrogen-high | 0, 0, 0 | 2026-11-25 |
@@ -1122,23 +1131,27 @@ Selected local labels on a 0–4 scale, including proxy and operational outcomes
 | batch | gpt-6.2-astra | 2, 4, 4, 4, 4, 4 | 2026-11-20 |
 | batch | gpt-6.2-astra | 4 | 2026-11-22 |
 | batch | gpt-6.2-astra | 4, 4 | 2026-11-23 |
+| batch | gpt-6.2-astra | 4 | 2026-11-26 |
 | batch | gpt-6.2-sol | 0, 4, 4 | 2026-11-20 |
 | batch | gpt-6.2-sol | 0, 0 | 2026-11-21 |
 | batch | gpt-6.2-sol | 0, 0, 0, 2, 2, 4, 4 | 2026-11-22 |
 | batch | gpt-6.2-sol | 2, 4, 4, 4, 4, 4 | 2026-11-23 |
 | batch | gpt-6.2-sol | 4, 4, 4, 4, 4 | 2026-11-24 |
-| batch | gpt-6.2-sol | 0, 0, 0, 0, 0, 0, 2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 | 2026-11-25 |
+| batch | gpt-6.2-sol | 0, 0, 0, 0, 0, 0, 2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 | 2026-11-25 |
+| batch | gpt-6.2-sol | 4, 4, 4, 4 | 2026-11-26 |
 | builder | claude-opus-5-5 | 2, 4, 4, 4, 4, 4, 4, 4 | 2026-11-20 |
 | builder | claude-opus-5-5 | 4 | 2026-11-21 |
 | builder | claude-opus-5-5 | 4, 4, 4, 4, 4, 4 | 2026-11-22 |
 | builder | claude-opus-5-5 | 2, 4 | 2026-11-23 |
+| builder | claude-opus-5-5 | 4 | 2026-11-25 |
 | builder | claude-sonnet-5-5 | 2, 4, 4 | 2026-11-20 |
 | builder | gemini-4-argon-medium | 4 | 2026-11-20 |
 | builder | gemini-4-hydrogen-low | 2 | 2026-11-19 |
 | builder | gemini-4-hydrogen-low | 2 | 2026-11-20 |
 | builder | gemini-4-neon-high | 4, 4, 4, 4, 4 | 2026-11-23 |
 | builder | gemini-4-neon-high | 4 | 2026-11-24 |
-| builder | gemini-4-neon-high | 0, 4, 4 | 2026-11-25 |
+| builder | gemini-4-neon-high | 0, 4, 4, 4, 4, 4, 4, 4 | 2026-11-25 |
+| builder | gemini-4-neon-high | 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 | 2026-11-26 |
 | builder | gemini-4-neon-medium | 4 | 2026-11-19 |
 | builder | gemini-4-neon-medium | 4, 4, 4, 4 | 2026-11-20 |
 | builder | gemini-4-neon-medium | 4 | 2026-11-21 |
@@ -1150,7 +1163,8 @@ Selected local labels on a 0–4 scale, including proxy and operational outcomes
 | builder | gpt-6.2-sol | 2, 4 | 2026-11-22 |
 | builder | gpt-6.2-sol | 2, 4, 4, 4, 4, 4, 4 | 2026-11-23 |
 | builder | gpt-6.2-sol | 4 | 2026-11-24 |
-| builder | gpt-6.2-sol | 4 | 2026-11-25 |
+| builder | gpt-6.2-sol | 0, 4, 4, 4, 4, 4 | 2026-11-25 |
+| builder | gpt-6.2-sol | 4 | 2026-11-26 |
 | design | claude-fable-5-2 | 4, 4 | 2026-11-13 |
 | design | claude-fable-5-2 | 4 | 2026-11-14 |
 | ideation | claude-fable-5-2 | 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 | 2026-11-13 |
@@ -1164,7 +1178,7 @@ Selected local labels on a 0–4 scale, including proxy and operational outcomes
 | review | claude-sonnet-5-5 | 4, 4 | 2026-11-19 |
 | review | claude-sonnet-5-5 | 0, 4, 4, 4 | 2026-11-20 |
 | review | claude-sonnet-5-5 | 0 | 2026-11-23 |
-| review | claude-sonnet-5-5 | 4 | 2026-11-25 |
+| review | claude-sonnet-5-5 | 4, 4 | 2026-11-25 |
 | review | gemini-3.8-flash-high | 4 | 2026-11-19 |
 | review | gemini-3.8-flash-high | 4 | 2026-11-25 |
 | review | gemini-3.8-flash-low | 4 | 2026-11-19 |
@@ -1175,10 +1189,13 @@ Selected local labels on a 0–4 scale, including proxy and operational outcomes
 | review | gemini-4-argon-medium | 4, 4 | 2026-11-19 |
 | review | gemini-4-argon-medium | 4, 4, 4, 4 | 2026-11-20 |
 | review | gemini-4-argon-medium | 4 | 2026-11-25 |
+| review | gemini-4-carbon-high | 4 | 2026-11-25 |
+| review | gemini-4-carbon-high | 0, 2 | 2026-11-26 |
 | review | gemini-4-hydrogen-medium | 4 | 2026-11-19 |
 | review | gemini-4-hydrogen-medium | 4 | 2026-11-25 |
 | review | gemini-4-neon-high | 4 | 2026-11-24 |
-| review | gemini-4-neon-high | 4 | 2026-11-25 |
+| review | gemini-4-neon-high | 4, 4, 4, 4 | 2026-11-25 |
+| review | gemini-4-neon-high | 4, 4 | 2026-11-26 |
 | review | gemini-4-neon-medium | 4 | 2026-11-19 |
 | review | gemini-4-neon-medium | 4 | 2026-11-25 |
 | review | google/gemini-4-argon | 4 | 2026-11-10 |
@@ -1191,7 +1208,8 @@ Selected local labels on a 0–4 scale, including proxy and operational outcomes
 | review | gpt-6.2-astra | 4, 4, 4, 4, 4, 4, 4, 4 | 2026-11-22 |
 | review | gpt-6.2-astra | 4, 4 | 2026-11-23 |
 | review | gpt-6.2-astra | 4 | 2026-11-24 |
-| review | gpt-6.2-astra | 4 | 2026-11-25 |
+| review | gpt-6.2-astra | 2, 4, 4, 4, 4, 4, 4 | 2026-11-25 |
+| review | gpt-6.2-astra | 0, 2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 | 2026-11-26 |
 | review | moonshotai/kimi-k3.1-pro | 4, 4 | 2026-11-10 |
 
 Ranking method and limits: [leaderboard/README.md](leaderboard/README.md).
