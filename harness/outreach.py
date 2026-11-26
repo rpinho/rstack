@@ -343,6 +343,16 @@ def awaiting_reply(row, text, everyone, lane):
                                                                       last.isoformat()[:10])]
 
 
+REFEREED_LINE = re.compile(r'^\s*(?:lean-checked|certificate)\b', re.I | re.M)
+
+
+def refereed_result(row, text):
+    """11-26: a bare math result whose referee HOLDS: a certificate line, not prose in the author's voice,
+    so it needs no .cuts and carries its link in the post."""
+    return (str(row.get('lane', '')).startswith('math') and row.get('channel') == 'x_post'
+            and 'referee HOLDS' in row.get('purpose', '') and bool(REFEREED_LINE.search(text)))
+
+
 def cut_check(row, text, cfg, checks, cover=None):
     """Paper-cut (voice_cuts.py): the draft is built from the author's own messages, listed in
     DRAFT.cuts. On whenever banks are configured, unless the lane says voice_cuts = "off"."""
@@ -351,7 +361,7 @@ def cut_check(row, text, cfg, checks, cover=None):
     cuts = voice_cuts.cuts_for(row['draft_path']) if row.get('draft_path') else None
     # 11-19 (Ricardo: "We don't say 'we'. We always say 'I'."): I, never we, even where paper-cut is off.
     plural = voice_cuts.plural_failures(text, voice_cuts.we_ok_reason(cuts))
-    if cfg['voice_cuts'] == 'off':
+    if cfg['voice_cuts'] == 'off' or refereed_result(row, text):
         checks['cuts'] += plural
         return []
     try:
@@ -612,7 +622,7 @@ def x_checks(row, text, everyone, clock, selected=(), cfg=None, posting=False):
             url = match.group().rstrip('.,;!?)]}')
             try:
                 parsed = urlsplit(url if '://' in url else 'https://' + url)
-                if parsed.hostname != 'x.com' or parsed.username or parsed.password:
+                if (parsed.hostname != 'x.com' or parsed.username or parsed.password) and not refereed_result(row, text):
                     failures.append('external URL in main post; put the link in a separate --self-reply-to ID row')
             except ValueError:
                 failures.append('invalid URL in main post')

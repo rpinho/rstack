@@ -451,3 +451,38 @@ def test_dropped_row_releases_its_reply_reservation(state):
     ident, _ = draft(state, text='The error bars shrink when the window grows.', channel='x_reply',
                      in_reply_to='https://x.com/anna/status/123')
     assert 'already replied or reserved' not in lint(state, ident)[1]
+
+
+REFEREED = dict(lane='math', purpose='Original post, cand c1: [refereed: referee HOLDS]',
+                text='A new upper bound on problem 1\n\nLean-checked: https://github.com/example/certs/tree/abc/p1')
+
+
+@pytest.fixture
+def math_lane(state, tmp_path, monkeypatch):
+    """11-26: refereed bare math results post with their link and no .cuts. Synthetic bank only."""
+    (state[0] / 'lanes' / 'math').mkdir()
+    (tmp_path / 'en.jsonl').write_text(json.dumps({'text': 'thanks, that makes sense'}) + '\n')
+    (tmp_path / 'banks.json').write_text(json.dumps({'en': {'path': 'en.jsonl', 'lang': 'en'}}))
+    monkeypatch.setenv('RH_VOICE_BANKS', str(tmp_path / 'banks.json'))
+    return state
+
+
+def test_a_refereed_math_result_needs_no_cuts_and_keeps_its_link(math_lane):
+    ident, _ = draft(math_lane, **REFEREED)
+    rc, out, _ = lint(math_lane, ident, 'math')
+    assert rc == 0 and 'VOICE_CUTS' not in out and 'external URL' not in out, out
+
+
+@pytest.mark.parametrize('change', [dict(purpose='Original post, cand c1'), dict(lane='a'),
+                                    dict(text=REFEREED['text'].replace('Lean-checked', 'Proof'))])
+def test_without_the_marker_math_lane_or_certificate_line_both_rules_hold(math_lane, change):
+    row = dict(REFEREED, **change)
+    ident, _ = draft(math_lane, **row)
+    rc, out, _ = lint(math_lane, ident, row['lane'])
+    assert rc == 1 and 'VOICE_CUTS_MISSING' in out and 'external URL' in out, out
+
+
+def test_a_refereed_math_result_still_says_i(math_lane):
+    ident, _ = draft(math_lane, **dict(REFEREED, text='We prove it.\n\nCertificate: https://github.com/example/certs'))
+    rc, out, _ = lint(math_lane, ident, 'math')
+    assert rc == 1 and 'VOICE_PLURAL' in out and 'VOICE_CUTS_MISSING' not in out, out
