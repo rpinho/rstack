@@ -170,12 +170,12 @@ def ledger_rows(ledger, machine='mini'):
         model, outcome = str(r.get('model') or ''), r.get('outcome')
         if not MODEL.match(model):
             continue
-        verdict = {'held': 'pass', 'partial': 'partial', 'overturned': 'fail'}.get(outcome, 'void')
+        verdict = {'held': 'pass', 'pass': 'pass', 'partial': 'partial', 'overturned': 'fail', 'fail': 'fail'}.get(outcome, 'void')
         bench = bool(r.get('bench')) or r.get('source') == 'receipt-review' or str(r.get('task_family', '')).startswith('bench')
         task_class = 'bench' if bench else 'judge' if r['pick_role'] in judge else 'everyday'
         role = r['pick_role'] if ROLE.match(r['pick_role']) else ''
         rows.append(dict(date=str(r.get('date', ''))[:10], machine=machine, model=model, task_class=task_class,
-                         role=role, verdict=verdict, harness_fail='0'))
+                         role=role, verdict=verdict, harness_fail='1' if outcome == 'harness_fail' else '0'))
     return [r for r in rows if DATE.match(r['date'])]
 
 

@@ -16,6 +16,13 @@ _TEST_HOME = tempfile.TemporaryDirectory(prefix='ai-research-tests-')
 os.environ['HOME'] = _TEST_HOME.name
 os.environ['XDG_CONFIG_HOME'] = str(Path(_TEST_HOME.name) / '.config')
 os.environ['XDG_STATE_HOME'] = str(Path(_TEST_HOME.name) / '.local/state')
+# Child launchers must not inherit the real job's host, notifier or tmux settings.
+for key in tuple(os.environ):
+    if key.startswith('LAUNCH_') or key in {
+        'AGENT_JOB', 'RH_JOB', 'RH_LAUNCHER_EXECUTORS', 'RSTACK_CALL_ROLE', 'RSTACK_LANE',
+        'RSTACK_STATE_DIR', 'TMUX', 'TMUX_PANE', 'UV_CACHE_DIR', 'PIP_CACHE_DIR', 'npm_config_cache',
+    }:
+        os.environ.pop(key)
 os.environ['RH_POD_LANES'] = 'team,theory,orbits,toy-evolution'
 os.environ['RH_POLICY_EXCLUDED'] = 'restricted-a,restricted-b'
 # `rh lane new` runs a live overlap search; child interpreters have no socket guard, and gh is a
@@ -32,13 +39,14 @@ os.environ['RH_REAP_EXCLUDED'] = 'restricted-a,restricted-b'
 for key in ('RH_ROLES_FILE', 'RH_MODEL_OVERRIDE_LOG', 'MODEL_OVERRIDE_REASON', 'LAUNCH_MADE_BY',
             'RH_CONTACTS', 'RH_DECIDED_BY', 'CLAUDE_CODE_SESSION_ID', 'RH_EVIDENCE_ROOT',
             'RH_SELECTION_GATE', 'RH_LAUNCH_RECEIPTS', 'MODEL_OUTCOMES_ROOT', 'MODEL_UPSTREAM_ROOT',
-            'MODEL_OVERRIDES', 'MODEL_REVIEW_ROOT', 'MODEL_DRAFTS_LOG', 'MODEL_STATE', 'MODEL_LEDGER', 'RH_ROOT', 'LAUNCH_SELECTOR', 'LAUNCH_ARTIFACT_DIR', 'LAUNCH_IDEA', 'LAUNCH_IDEA_ROOT',
+            'MODEL_OVERRIDES', 'MODEL_REVIEW_ROOT', 'MODEL_DRAFTS_LOG', 'MODEL_STATE', 'MODEL_LEDGER', 'RH_ROOT', 'LAUNCH_BACKEND', 'LAUNCH_SELECTOR', 'LAUNCH_ARTIFACT_DIR', 'LAUNCH_IDEA', 'LAUNCH_IDEA_ROOT',
             'RH_TRANSCRIPTS_ROOT', 'RH_CS_DB_ROOT', 'RH_HARVEST_STATE', 'RH_POD_GATE_CONFIG', 'RH_POD_GATE_AUDIT', 'LAUNCH_MODEL', 'LAUNCH_MODEL_OVERRIDE',
             'RH_OWNER_ALIASES', 'RH_DISK_FLOOR_BYTES', 'RH_ENV_FILE', 'RH_INTAKE_LANES', 'RH_RUNPOD_KEY_FILE', 'RUNPOD_API_KEY',
             'RH_OPENALEX_KEY_FILE',
             'RH_X_ACCOUNT', 'RH_X_GATE', 'RH_X_GATE_LOG', 'RH_X_REPLIED', 'RH_OUTREACH_ROOT',
             'RH_XLINT', 'RH_SIGNATURE_NAMES', 'RH_X_ORIGINALS_PER_DAY', 'RH_X_MIN_GAP_MINUTES',
-            'RH_CONTACT_UPDATES', 'RH_LANE_REGISTRY', 'RH_EVERYDAY_GRADES', 'RH_CLAUDE_CEILING_PERCENT', 'RH_CLAUDE_CEILING_UNTIL'):
+            'RH_CONTACT_UPDATES', 'RH_LANE_REGISTRY', 'RH_EVERYDAY_GRADES', 'RH_MODEL_RUNS_LOG',
+            'RH_LAUNCH_RUN_ID', 'RH_LAUNCH_DRIVER', 'RH_LAUNCH_GRADE_LEDGER', 'RH_LAUNCH_GROUP', 'RH_RUN_PURPOSE', 'RH_CLAUDE_CEILING_PERCENT', 'RH_CLAUDE_CEILING_UNTIL'):
     os.environ.pop(key, None)
 # 11-23: the real OpenAlex key lives at the default path on these Macs; a test that forgets to set its own
 # file must never read it (it could land in a failure message), so tests default to a path that does not exist.
@@ -55,7 +63,8 @@ os.environ['RH_SCIENCE_CHECK_COMMAND'] = shlex.join([sys.executable, str(FIXTURE
 
 
 @pytest.fixture(autouse=True)
-def no_internet(monkeypatch):
+def no_internet(monkeypatch, tmp_path):
+    monkeypatch.setenv('RH_MODEL_RUNS_LOG', str(tmp_path / '.local/state/model-runs.jsonl'))
     connect, connect_ex = socket.socket.connect, socket.socket.connect_ex
     def guarded(self, address):
         if self.family in (socket.AF_INET, socket.AF_INET6):

@@ -24,6 +24,11 @@ LEDGER = Path(os.environ.get('MODEL_LEDGER', str(STATE / 'evaluations.jsonl'))).
 ROLES_FILE = Path(os.environ.get('RH_ROLES_FILE', str(Path('.runtime/roles.json')))).expanduser()
 RH_LANES = Path(os.environ.get('RH_EVIDENCE_ROOT', str(STATE / 'no-evidence-root'))) / 'lanes'
 MIN_N, MIN_DAYS, SEED_RATE, LIFT_N, SETTLE_DAYS, Z = 5, 2, 0.75, 20, 14, 1.96
+# Ricardo's own rank (taste + cost), copied from the KB leaderboard page "11-26 CURRENT RANK"; never computed from
+# pass rates. A family rank covers every effort tier of that model; Neon's #1 is the high tier only.
+OWNER_RANK = {'anthropic/claude-opus-5.5': 1, 'google/gemini-4-neon-high': 1, 'anthropic/claude-fable-5.2': 2,
+              'openai/gpt-6.2-astra': 3, 'openai/gpt-6.2-sol': 4, 'anthropic/claude-sonnet-5.5': '5-6',
+              **{f'google/gemini-4-{m}-{t}': 7 for m in ('argon', 'hydrogen') for t in ('low', 'medium', 'high')}}
 MIN_LABS = {'ideation': 2}
 OVERRIDES = {}  # Set via a private MODEL_OVERRIDES config file; never included in export.
 if os.environ.get('MODEL_OVERRIDES'):
@@ -33,65 +38,10 @@ CLOSE_FAULTS_PROPOSAL = {'prior-art', 'duplicate', 'rule-blocked'}
 CLOSE_NEUTRAL = {'bar-failed', 'infeasible', 'superseded', 'other'}
 RULE_BLOCKED = re.compile(r'rule-blocked|prohibited|not allowed|forbidden|holdout violat', re.I)
 
-MODELS = {'anthropic/claude-opus-5.5': ('claude', 'claude-opus-5-5'),
- 'anthropic/claude-fable-5.1': ('claude', 'claude-fable-5-1'),
- 'anthropic/claude-fable-5.2': ('claude', 'claude-fable-5-2'),
- 'anthropic/claude-sonnet-5.5': ('claude', 'claude-sonnet-5-5'),
- 'anthropic/claude-haiku-5.5': ('claude', 'claude-haiku-5-5'),
- 'anthropic/claude-opus-4.6': ('claude', 'claude-opus-4-6'),
- 'openai/gpt-6.2-sol': ('codex', 'gpt-6.2-sol'),
- 'openai/gpt-6.2-astra': ('codex', 'gpt-6.2-astra'),
- 'openai/gpt-6.1-sol': ('codex', 'gpt-6.1-sol'),
- 'openai/gpt-6-astra': ('codex', 'gpt-6-astra'),
- 'openai/gpt-6.1-terra': ('codex', 'gpt-6.1-terra'),
- 'openai/gpt-6-luna': ('codex', 'gpt-6-luna'),
- 'openai/gpt-5.6-sol': ('codex', 'gpt-5.6-sol'),
- 'deepseek/deepseek-v4.1-flash-1017': ('openrouter', 'deepseek/deepseek-v4.1-flash-1017'),
- 'z-ai/glm-5.3-flash': ('openrouter', 'z-ai/glm-5.3-flash'),
- 'moonshotai/kimi-k3.1-pro': ('openrouter', 'moonshotai/kimi-k3.1-pro'),
- 'x-ai/grok-4.6': ('openrouter', 'x-ai/grok-4.6'),
- 'google/gemini-4-argon': ('gemini', 'google/gemini-4-argon'),
- 'google/gemini-4-carbon': ('gemini', 'google/gemini-4-carbon'),
- 'google/gemini-4-hydrogen': ('gemini', 'google/gemini-4-hydrogen'),
- # 11-19: Gemini on the Antigravity subscription (agy). `agy models` on the m5 lists these three tiers.
- 'google/gemini-3.8-flash-high': ('agy', 'gemini-3.8-flash-high'),
- 'google/gemini-3.8-flash-medium': ('agy', 'gemini-3.8-flash-medium'),
- 'google/gemini-3.8-flash-low': ('agy', 'gemini-3.8-flash-low'),
- # 11-19 later: Google AI Pro adds Gemini 4 to agy (Carbon is Ultra-only). Distinct canonical IDs from the
- # Gemini API routes above, whose history stays as it is. Low and medium are both candidates: effort is chosen
- # like everything else, from graded real lane work at each effort (Ricardo 11-19: "Those are synthetic tests.
- # I wouldn't use synthetic tests as the guidance... It's everyday work.").
- 'google/gemini-4-carbon-high': ('agy', 'gemini-4-carbon-high'),
- 'google/gemini-4-carbon-medium': ('agy', 'gemini-4-carbon-medium'),
- 'google/gemini-4-carbon-low': ('agy', 'gemini-4-carbon-low'),
- 'google/gemini-4-neon-high': ('agy', 'gemini-4-neon-high'),
- 'google/gemini-4-hydrogen-high': ('agy', 'gemini-4-hydrogen-high'),
- 'google/gemini-4-neon-medium': ('agy', 'gemini-4-neon-medium'),
- 'google/gemini-4-argon-medium': ('agy', 'gemini-4-argon-medium'),
- 'google/gemini-4-hydrogen-medium': ('agy', 'gemini-4-hydrogen-medium'),
- 'google/gemini-4-neon-low': ('agy', 'gemini-4-neon-low'),
- 'google/gemini-4-argon-low': ('agy', 'gemini-4-argon-low'),
- 'google/gemini-4-hydrogen-low': ('agy', 'gemini-4-hydrogen-low')}
-
-ALIASES = [('opus[- ]?5[.-]5', 'anthropic/claude-opus-5.5'),
- ('fable[- ]?5[.-]1|fable-5-1', 'anthropic/claude-fable-5.1'),
- ('sonnet[- ]?5[.-]5', 'anthropic/claude-sonnet-5.5'),
- ('haiku[- ]?5[.-]5', 'anthropic/claude-haiku-5.5'),
- ('opus[- ]?4[.-]6', 'anthropic/claude-opus-4.6'),
- ('5\\.6-sol', 'openai/gpt-5.6-sol'),
- ('6\\.1-sol', 'openai/gpt-6.1-sol'),
- ('6[- ]astra', 'openai/gpt-6-astra'),
- ('^sol\\b', 'openai/gpt-6.2-sol'),
- ('astra', 'openai/gpt-6.2-astra'),
- ('terra', 'openai/gpt-6.1-terra'),
- ('luna', 'openai/gpt-6-luna'),
- ('deepseek', 'deepseek/deepseek-v4.1-flash-1017'),
- ('glm', 'z-ai/glm-5.3-flash'),
- ('kimi', 'moonshotai/kimi-k3.1-pro'),
- ('grok[- ]?4\\.6', 'x-ai/grok-4.6'),
- ('argon', 'google/gemini-4-argon'),
- ('carbon', 'google/gemini-4-carbon'),
- ('hydrogen', 'google/gemini-4-hydrogen')]
+# One resolver for every score writer and reader.
+sys.path.insert(0, str(HERE.parent / 'harness'))
+from model_slugs import MODELS, ALIASES, canon
+import score_verdicts
 
 # 11-19 Ricardo: "No pay-as-you-go. Do NOT top up OpenRouter." Every seed is a subscription route
 # (claude -p, codex exec, agy); the OpenRouter seeds (DeepSeek, GLM, Kimi) are history-only below.
@@ -187,31 +137,6 @@ def close_faults_proposal(row, prose):
     return bool(prose)
 
 
-def canon(s):
-    s = (s or "").lower().strip()
-    if s in MODELS:
-        return s
-    for canonical, (_, native) in MODELS.items():
-        if s == native:
-            return canonical
-    # Versioned native names and canonical provider IDs register their own routes.
-    # A bare family name is deliberately insufficient to identify a model version.
-    if re.fullmatch(r'claude-[a-z]+-\d+(?:[.-]\d+)+', s):
-        canonical = 'anthropic/' + re.sub(r'-(\d+)-(\d+)$', r'-\1.\2', s)
-    elif re.fullmatch(r'gpt-\d+(?:\.\d+)?-[a-z0-9.-]+', s):
-        canonical = 'openai/' + s
-    elif re.fullmatch(r'[a-z][a-z0-9-]*/[a-z][a-z0-9_.-]*', s):
-        canonical = s
-    else:
-        for pat, c in ALIASES:
-            if re.search(pat, s):
-                return c
-        return None
-    provider, name = canonical.split('/', 1)
-    cli = {'anthropic': 'claude', 'openai': 'codex'}.get(provider, 'openrouter')
-    native = re.sub(r'(\d+)\.(\d+)', r'\1-\2', name) if provider == 'anthropic' else name if provider == 'openai' else canonical
-    MODELS[canonical] = (cli, native)
-    return canonical
 
 
 def now():
@@ -247,13 +172,14 @@ def jsonl(path):
 
 def obs(source, item, model, role, outcome, date, evidence, note):
     """One resolved outcome, in the ledger's own format (scripts/model-eval.py validates it)."""
+    model = canon(model) or model
     key = "|".join((source, item, model, role))
     case = f"{source}:{item}"
     if len(case) > 120:
         case = case[:103] + "-" + hashlib.sha1(case.encode()).hexdigest()[:16]
     return {"id": "auto-" + hashlib.sha1(key.encode()).hexdigest()[:12], "case": case,
             "date": date[:10], "model": model, "effort": "as run", "route": MODELS[model][0], "role": "harness",
-            "task_family": f"auto-{role}", "layer": "model", "score": {"held": 4, "partial": 2}.get(outcome, 0),
+            "task_family": f"auto-{role}", "layer": "model", "score": {"held": 4, "pass": 4, "partial": 2, "overturned": 0, "fail": 0}.get(outcome),
             "cost_usd": None, "evidence": [str(e) for e in evidence], "note": note,
             "pick_role": role, "source": source, "outcome": outcome}
 
@@ -332,7 +258,7 @@ def ingest(write=True):
             stats[name]['link_kinds'] = dict(collections.Counter(r['link_kind'] for r in rows))
         for r in rows:
             prev = latest.get((r["case"], r["model"], r["pick_role"]))
-            if prev and prev["outcome"] == r["outcome"]:
+            if prev and score_verdicts.migrate(prev["outcome"], prev) == score_verdicts.migrate(r["outcome"], r):
                 continue
             if prev:                              # outcome flipped: supersede, never edit
                 r["id"] = r["id"] + "-" + hashlib.sha1((prev["id"] + r["outcome"]).encode()).hexdigest()[:8]
@@ -341,6 +267,10 @@ def ingest(write=True):
                 r["supersedes"] = prev["id"]
             new.append(r)
             latest[(r["case"], r["model"], r["pick_role"])] = r
+    for row in new:
+        row['model'] = canon(row['model']) or row['model']
+        row['outcome'] = score_verdicts.observation(row['outcome'], row)
+        score_verdicts.validate(row['outcome'])
     if write and new:
         text = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in new)
         validate((LEDGER.read_text() if LEDGER.exists() else '') + text)        # the ledger's own validator, before anything is written
@@ -348,6 +278,10 @@ def ingest(write=True):
         with open(LEDGER, "a") as f:
             f.write(text)
     return new, stats
+
+
+def wilson_high(k, n):
+    return min(1.0, 1 - wilson_low(n - k, n)) if n else 1.0
 
 
 def wilson_low(k, n):
@@ -362,7 +296,7 @@ def wilson_low(k, n):
 # graded pass, partial or fail when they come back. The bench (reproductions with known answers, planted claims) is
 # a second check on correctness and cost and never ranks: almost every model scores 100% on it.
 BENCH_SOURCES = {'receipt-review'}          # planted-claim referee batches
-GRADE = {'held': 1.0, 'partial': 0.5, 'overturned': 0.0}
+GRADE = {'held': 1.0, 'pass': 1.0, 'partial': 0.5, 'overturned': 0.0, 'fail': 0.0}
 
 
 def is_bench(r):
@@ -407,7 +341,7 @@ def graded(kind):
             continue
         if r.get("pick_role") == "corrections":
             continue                              # reported as a rate, never ranked; see CORRECTIONS_CAVEAT
-        if r.get("pick_role") and r.get("outcome") == "ungraded":
+        if r.get("pick_role") and (r.get("outcome") == "ungraded" or r.get("outcome") == "harness_fail" or str(r.get("outcome", "")).startswith("void:")):
             # Returned but never graded within 24 h: counted, and kept out of the rate.
             ev[r["pick_role"]][model]["ungraded"] = ev[r["pick_role"]][model].get("ungraded", 0) + 1
             continue
@@ -654,6 +588,7 @@ def recompute(write=True):
     out['bench'] = {}
     out['cost'] = {}
     out['ranking'] = 'everyday'
+    out['owner_rank'] = dict(OWNER_RANK)
     for role in ROLES:
         order, _ = rank(role, ev, {m: v['per_pass'] for m, v in cost.get(role, {}).items() if v['per_pass'] is not None})
         out['roles'][role] = [MODELS[m][1] for m in order]
@@ -723,17 +658,17 @@ def score(value):
 
 def snapshot_rows(path):
     """Read only the two public table schemas; never copy arbitrary page prose."""
-    tables = {8: [], 7: [], 6: [], 4: []}
+    tables = {8: [], 7: [], 6: [], 5: [], 4: []}
     if not path or not Path(path).is_file():
         return tables
     for line in Path(path).read_text().splitlines():
         cells = [cell.strip() for cell in line.strip('|').split('|')]
-        if not line.startswith('| ') or len(cells) not in tables or cells[0] == 'Role':
+        if not line.startswith('| ') or len(cells) not in tables or cells[0] in ('Role', 'Model'):
             continue
         role, model = cells[:2]
         # Diagnostic calibration tables can also have six columns. Their first
         # column is Entry/a canonical model ID, not a routing role.
-        if role == 'Entry' or role in MODELS:
+        if role == 'Entry' or role in MODELS or canon(role):
             continue
         safe_cell(role); safe_cell(model)
         if role not in ROLES or not canon(model):
@@ -756,6 +691,11 @@ def snapshot_rows(path):
             for value in cells[3:5]:
                 if value != '-':
                     score(float(value))
+        elif len(cells) == 5:
+            if cells[2] != '-' and (not cells[2].isdigit() or int(cells[2]) < 1):
+                raise ValueError('invalid routing position in snapshot')
+            if cells[3] != '-' and not re.fullmatch(r'\d+(?:\.\d+)?% wk', cells[3]):
+                raise ValueError('invalid cost per pass in snapshot')
         elif not re.fullmatch(r'[0-4](?:, [0-4])*', cells[2]):
             raise ValueError('invalid observation scores in snapshot')
         tables[len(cells)].append('| ' + ' | '.join(cells) + ' |')
@@ -782,64 +722,173 @@ def feed_only(observation):
     return fed > 0 and fed >= observation.get('n', 0)
 
 
-def public(data, path, observations=(), previous=None):
-    """Allowlist fields. Unranked observations use '-' in the routing order column."""
+def public_counts(pairs, historical, stamp, days):
+    """Windowed observed work; aggregated routing evidence never supplies a grade."""
+    import run_grades
+    since = stamp - dt.timedelta(days=days)
+    totals, roles = collections.defaultdict(lambda: [0, 0, 0.0]), collections.defaultdict(dict)
+    dropped = collections.Counter()
+    drivers = [0, 0]
+
+    def admit(run, record, when, has_run):
+        if not when or not since <= when <= stamp:
+            return
+        grade, ledger = (record[0], record[1]) if record else ({}, Path('.'))
+        if run_grades.run_records.is_probe(run) or run_grades.run_records.is_probe(grade):
+            dropped['probe'] += bool(record and record[2])
+            return
+        if is_bench(run) or is_bench(grade):
+            dropped['bench'] += bool(record)
+            return
+        model = canon(run.get('model') or grade.get('model'))
+        if not model:
+            return
+        native = MODELS[model][1]
+        safe_cell(native)
+        role = grade.get('role') or run.get('role') or 'batch'
+        safe_cell(role)
+        entry = roles[role].setdefault(native, [0, 0, 0.0])
+        overall = totals[native]
+        if has_run:
+            entry[0] += 1
+            overall[0] += 1
+        driver = run.get('backend') == 'agy-driver'
+        if driver:
+            drivers[1] += 1
+        reason = run_grades.exclusion_reason(run, grade, ledger) if record else ''
+        if reason:
+            dropped[reason] += 1
+            return
+        verdict = grade.get('grade')
+        if verdict in GRADE:
+            for cell in (entry, overall):
+                cell[1] += 1
+                cell[2] += GRADE[verdict]
+            drivers[0] += int(driver)
+
+    for run, record in pairs:
+        admit(run, record, parse_ts(run.get('utc')), True)
+    for record in historical:
+        grade = record[0]
+        admit({}, record, parse_ts(grade.get('utc') or grade.get('date')), False)
+    return totals, roles, dropped, drivers
+
+
+def owner_ranks(data, previous):
+    """Owner taste/cost is copied, never inferred from evidence or routing positions."""
+    ranks = {canon(m): str(v) for m, v in OWNER_RANK.items()}
+    ranks.update({canon(m): str(v) for m, v in data.get('owner_rank', {}).items()})
+    header = []
+    if previous and Path(previous).is_file():
+        for line in Path(previous).read_text().splitlines():
+            if not line.startswith('| '):
+                continue
+            cells = [c.strip() for c in line.strip('|').split('|')]
+            if 'Model' in cells:
+                header = cells
+                continue
+            rank_col = next((i for i, c in enumerate(header) if c in ('Rank', 'Rank (Ricardo: taste + cost)')), None)
+            if rank_col is not None and len(cells) == len(header):
+                model = canon(cells[header.index('Model')])
+                if model:
+                    ranks[model] = cells[rank_col]
+    for value in ranks.values():
+        if not re.fullmatch(r'[#=~0-9 .–—-]+', value):
+            raise ValueError('invalid owner rank')
+    return ranks
+
+
+def interval(cell):
+    _, n, k = cell
+    if not n:
+        return '- (n=0)'
+    return '{:.1f}% [{:.1f}%, {:.1f}%] (n={})'.format(
+        100 * k / n, 100 * wilson_low(k, n), 100 * wilson_high(k, n), n)
+
+
+def public(data, path, observations=(), previous=None, days=30):
+    """Render observed work separately from the owner's rank and the unchanged routing snapshot."""
+    import run_grades
+    if type(days) is not int or days <= 0:
+        raise ValueError('days must be a positive integer')
+    stamp = now()
     date = dt.datetime.fromisoformat(data['updated'].replace('Z', '+00:00')).date().isoformat()
-    old = snapshot_rows(previous if previous is not None else path)
+    previous = previous if previous is not None else path
+    old = snapshot_rows(previous)
+    ranks = owner_ranks(data, previous)
+    pairs, historical = run_grades.table()
+    totals, by_role, dropped, drivers = public_counts(pairs, historical, stamp, days)
     lines = ['# Model leaderboard', '',
-             'A dated routing snapshot from selected local harness outcomes. The ranking is everyday delegated work: real tasks handed to workers, graded pass, partial (half) or fail when they came back. "n<5" means fewer than 5 graded everyday tasks, and such a model ranks below every model with data. The bench (planted claims, reproductions with known answers) is a separate check on correctness and cost and never ranks. Starting orders include operator seed choices. This is not a universal benchmark.', '',
-             '| Role | Model | Routing order | Everyday passed | Everyday n | Bench passed | Cost per pass | Date |',
-             '|---|---|---:|---:|---:|---:|---:|---|']
-    # A rerun on the same day replaces that day's routing rows; older days are kept (merge, never erase).
-    # Rows written before the cost column (7 cells) are carried with a dash for it.
-    legacy = ['| ' + ' | '.join(c[:6] + ['-', c[6]]) + ' |' for c in
-              ([x.strip() for x in l.strip('|').split('|')] for l in old[7])]
-    lines.extend(l for l in old[8] + legacy if not l.rstrip().endswith(f'| {date} |'))
+             "Ricardo's own rank (2026-11-26): Gemini 4 Neon and Opus 5.5 tied #1.", '',
+             'Everyday work over {} days: {} through {} (UTC). Runs is the recorded model total across roles, including ungraded work; n counts only pass, partial or fail (partial=half). Historical grades without run records count in n, so n can exceed Runs. Each rate shows a Wilson 95% interval. Within-role ranks use the Wilson lower bound and require n>=20; owner ranks retain taste + cost. Task mix, correlated jobs and subjective grades limit comparisons; these are descriptive intervals, not matched trials.'.format(
+                 days, (stamp - dt.timedelta(days=days)).date().isoformat(), stamp.date().isoformat()), '',
+             '| Model | Rank (Ricardo: taste + cost) | Runs | Overall passed (Wilson 95%) | Role | Role passed (Wilson 95%) | Within-role rank |',
+             '|---|---:|---:|---|---|---|---|']
+    for role, models in sorted(by_role.items()):
+        ordered = sorted(models, key=lambda m: (-wilson_low(models[m][2], models[m][1]) if models[m][1] >= 20 else 1, m))
+        eligible = [m for m in ordered if models[m][1] >= 20]
+        lows = [wilson_low(models[m][2], models[m][1]) for m in eligible]
+        for model in ordered:
+            cell = models[model]
+            rank = str(lows.index(wilson_low(cell[2], cell[1])) + 1) if cell[1] >= 20 else 'n<20, unranked'
+            lines.append('| {} | {} | {} | {} | {} | {} | {} |'.format(
+                model, ranks.get(canon(model), '-'), totals[model][0], interval(totals[model]), role, interval(cell), rank))
+    why = ', '.join('{}={}'.format(reason, n) for reason, n in sorted(dropped.items()) if n) or 'none'
+    lines += ['', 'Dropped {} grade rows: {}. Ungraded runs remain in Runs; probes and bench runs are omitted.'.format(sum(dropped.values()), why), '',
+              'Driver-session work (most Gemini Neon use) is ungraded until driver outputs are scored; {}/{} driver outputs have a grade.'.format(*drivers), '']
+    bench = []
+    for role, models in sorted(data.get('bench', {}).items()):
+        safe_cell(role)
+        for model, row in sorted(models.items()):
+            safe_cell(model)
+            row, _ = mini_only(row)
+            if row.get('n'):
+                bench.append('{} / {} {} (n={})'.format(model, role, score(row.get('rate')), row['n']))
+    lines += ['Everyday work ranks models, never synthetic. Bench (saturated): ' + ('; '.join(bench) if bench else 'no published observations') + '.', '',
+              'Carbon (10-28) replaced Argon; model versions and effort tiers keep their own records.', '']
+    # Preserve routing positions as routing positions, never as the owner or measured ranks.
+    # Earlier scored snapshots remain in the source file; their scores are not reused as current evidence.
+    routing = []
+    for width in (8, 7, 6, 5):
+        for line in old[width]:
+            cells = [c.strip() for c in line.strip('|').split('|')]
+            if cells[-1] != date:
+                cost = cells[6] if width == 8 else cells[3] if width == 5 else '-'
+                item = '| {} | {} | {} | {} | {} |'.format(cells[0], cells[1], cells[2], cost, cells[-1])
+                if item not in routing:
+                    routing.append(item)
     hidden_feed = False
-    for role, ranked in data['roles'].items():
+    for role, order in data['roles'].items():
         safe_cell(role)
         if role not in ROLES:
             raise ValueError('unknown public role')
-        role_scores = data.get('evidence', {}).get(role, {})
-        role_bench = data.get('bench', {}).get(role, {})
-        role_cost = data.get('cost', {}).get(role, {})
-        for model in list(ranked) + sorted((set(role_scores) | set(role_bench)) - set(ranked)):
+        # Validate aggregate inputs even though only raw joined grades enter the main table.
+        for model, row in data.get('evidence', {}).get(role, {}).items():
             safe_cell(model)
             if model not in {native for _, native in MODELS.values()}:
-                # 11-23: a model graded only in the laptop's feed (google/gemini-4-neon, x-ai/grok-4.7 through the
-                # API) is ranked for routing but has no public row; this machine's own unknown ids still refuse.
-                seen = [o for o in (role_scores.get(model), role_bench.get(model)) if o]
-                if model not in ranked and seen and all(feed_only(o) for o in seen):
+                if feed_only(row):
                     hidden_feed = True
                     continue
                 raise ValueError('unknown public model')
-            observation, fed = mini_only(role_scores.get(model, {}))
-            hidden_feed = hidden_feed or fed
-            n = observation.get('n', 0)
-            if type(n) is not int or n < 0:
-                raise ValueError('invalid everyday n')
-            rate = score(observation.get('rate'))      # validated even when it is not shown
-            everyday = rate if n >= MIN_N else 'n<5'
-            inherited = observation.get('inherited')
-            if inherited:
-                safe_cell(inherited['from'])
-                everyday = score(inherited['rate'])
-                n = 'inherited from {} (n={}); own n={}'.format(inherited['from'], int(inherited['n']), n)
-            bench = score(mini_only(role_bench[model])[0]['rate']) if model in role_bench else '-'
-            per_pass = role_cost.get(model, {}).get('pct_per_pass')
-            if per_pass is not None and not (type(per_pass) in (int, float) and math.isfinite(per_pass) and per_pass >= 0):
+            score(row.get('rate'))
+        for i, model in enumerate(order, 1):
+            safe_cell(model)
+            if model not in {native for _, native in MODELS.values()}:
+                raise ValueError('unknown public model')
+            value = data.get('cost', {}).get(role, {}).get(model, {}).get('pct_per_pass')
+            if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or value < 0):
                 raise ValueError('invalid cost per pass')
-            cost = '{:.2f}% wk'.format(per_pass) if per_pass is not None else '-'
-            order = str(ranked.index(model) + 1) if model in ranked else '-'
-            line = f"| {role} | {model} | {order} | {everyday} | {n} | {bench} | {cost} | {date} |"
-            if line not in lines:
-                lines.append(line)
-    if hidden_feed:
-        lines += ['', '_The routing order also counts graded rows that are not published here._']
+            cost = '{:.2f}% wk'.format(value) if value is not None else '-'
+            routing.append('| {} | {} | {} | {} | {} |'.format(role, model, i, cost, date))
+    if routing:
+        lines += ['<details>', '<summary>Routing snapshots (positions are routing preferences)</summary>', '',
+                  '| Role | Model | Routing order | Cost per pass | Date |', '|---|---|---:|---:|---|', *routing, '', '</details>', '']
     if old[6]:
-        lines += ['', '## Routing before 2026-11-19 (held-outcome scores, bench included)', '',
+        lines += ['<details>', '<summary>Historical held-outcome scores (before 2026-11-19)</summary>', '',
                   '| Role | Model | Routing order | Held score | Wilson lower score | Date |',
-                  '|---|---|---:|---:|---:|---|', *old[6]]
+                  '|---|---|---:|---:|---:|---|', *old[6], '', '</details>', '']
+    if hidden_feed:
+        lines += ['_The routing order also counts graded rows that are not published here._', '']
     groups = collections.defaultdict(list)
     for observation in observations:
         canonical = canon(observation.get('model'))
@@ -852,17 +901,13 @@ def public(data, path, observations=(), previous=None):
         day = dt.date.fromisoformat(observation['date'][:10]).isoformat()
         groups[(role, MODELS[canonical][1], day)].append(value)
     if groups or old[4]:
-        lines += ['', '## Recorded observation scores', '',
-                  'Selected local labels on a 0–4 scale, including proxy and operational outcomes. Repeated scores are retained; no task identifiers or text are exported. These labels are not matched benchmark trials.', '',
+        lines += ['## Recorded observation scores', '',
+                  'Historical 0–4 labels; these are not the pass rates above.', '',
                   '| Role | Model | Scores | Date |', '|---|---|---|---|']
-        # Recomputed (role, model, day) cells replace their earlier copy instead of sitting beside it.
         fresh = {(f'| {r} | {m} |', day) for r, m, day in groups}
-        lines.extend(l for l in old[4] if not any(l.startswith(k) and l.rstrip().endswith(f'| {v} |')
-                                                  for k, v in fresh))
+        lines.extend(l for l in old[4] if not any(l.startswith(k) and l.rstrip().endswith(f'| {v} |') for k, v in fresh))
         for (role, model, day), values in sorted(groups.items()):
-            line = f"| {role} | {model} | {', '.join(map(str, sorted(values)))} | {day} |"
-            if line not in lines:
-                lines.append(line)
+            lines.append('| {} | {} | {} | {} |'.format(role, model, ', '.join(map(str, sorted(values))), day))
     lines += ['', 'Ranking method and limits: [leaderboard/README.md](leaderboard/README.md).', '']
     Path(path).write_text('\n'.join(lines))
     return Path(path)
@@ -876,10 +921,10 @@ def bootstrap(path):
         if not line.startswith('| '):
             continue
         cells = [cell.strip() for cell in line.strip('|').split('|')]
-        if len(cells) not in (6, 7, 8) or cells[0] == 'Role':
+        if len(cells) not in (5, 6, 7, 8) or cells[0] in ('Role', 'Model'):
             continue
         role, model, position, date = cells[0], cells[1], cells[2], cells[-1]
-        if role == 'Entry' or role in MODELS:
+        if role == 'Entry' or role in MODELS or canon(role):
             continue
         safe_cell(role); safe_cell(model)
         if role not in ROLES:
@@ -891,7 +936,7 @@ def bootstrap(path):
         # The everyday table (7 columns 11-19, 8 with cost per pass from 11-20) is the routing; the older held-score table is history.
         snapshots[(role, len(cells), date)][model] = position
     for role in {r for r, _, _ in snapshots}:
-        width = max(w for r, w, _ in snapshots if r == role)
+        width = max((w for r, w, _ in snapshots if r == role), key=lambda w: (w == 5, w))
         latest = max(date for r, w, date in snapshots if r == role and w == width)
         for model, position in snapshots[(role, width, latest)].items():
             if position != '-':
@@ -914,6 +959,7 @@ def main(argv=None):
     parser.add_argument('command', choices=('bootstrap', 'ingest', 'recompute', 'daily', 'status', 'public'))
     parser.add_argument('--snapshot', type=Path, default=HERE.parent / 'LEADERBOARD.md')
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--days', type=int, default=30, help='public work window in days (default: 30)')
     args = parser.parse_args(argv)
     try:
         if args.command == 'bootstrap':
@@ -933,7 +979,7 @@ def main(argv=None):
             for route in data.get('routes', {}).values():
                 canon(route.get('canonical'))
             observations = validate(LEDGER.read_text()) if LEDGER.exists() else []
-            print(public(data, args.output or args.snapshot, observations, previous=args.snapshot))
+            print(public(data, args.output or args.snapshot, observations, previous=args.snapshot, days=args.days))
         else:
             print(json.dumps(recompute(write=False), indent=2))
         return 0

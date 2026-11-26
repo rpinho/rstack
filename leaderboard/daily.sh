@@ -1,13 +1,16 @@
 #!/bin/zsh
-# Generate one snapshot; publish changed snapshots from an isolated main worktree.
+# Refresh the local snapshot. Explicit publishing uses an isolated main worktree.
 set -euo pipefail
 HERE=${0:A:h}
 REPO=${HERE:h}
 PYTHON=${PYTHON:-python3}
 dry_run=false
+publish=false
+canary_rc=0
 scratch=''
 while (( $# )); do
   case "$1" in
+    --publish) publish=true; shift ;;
     --dry-run) dry_run=true; shift ;;
     --scratch-dir) scratch=${2:?--scratch-dir needs a path}; shift 2 ;;
     *) print -u2 -- "unknown argument: $1"; exit 2 ;;
@@ -39,23 +42,22 @@ else
   : ${MODEL_STATE:?configure MODEL_STATE}
   mkdir -p -- "$MODEL_STATE"
   target=$MODEL_STATE/LEADERBOARD.md
-  # Returned delegated jobs ungraded for 24 h are recorded "ungraded" and listed for the morning report.
-  "$PYTHON" "$REPO/harness/worker_models.py" --sweep-ungraded "$RH_LAUNCH_RECEIPTS" || true
-  # RULE #1 (11-20): yesterday's harness blocks. A block later rerun, overridden or retracted is a harness
-  # bug; general gets the count and the top three blockers (tell-general fyi). Never fails the tick.
-  "$PYTHON" "$REPO/harness/harness_blocks.py" report --tell ${=RH_BLOCKS_PEER_ARGS:-} || true
-  # 11-20: the grades are every Mac's (RH_EVERYDAY_GRADES, grade_ledgers.py). A missing or stale mirror warns
-  # once here (harness-blocks ledger) and the scorer reads what it has; it never fails the tick.
-  "$PYTHON" "$HERE/grade_ledgers.py" check || true
+  "$PYTHON" "$HERE/driver_grades.py" || true
+  "$PYTHON" "$HERE/score_canary.py" --owed --alert || canary_rc=$?
+  if $publish; then
+    "$PYTHON" "$REPO/harness/harness_blocks.py" report --tell ${=RH_BLOCKS_PEER_ARGS:-} || true
+  fi
 fi
 "$PYTHON" "$HERE/model-roles.py" ingest
 "$PYTHON" "$HERE/model-roles.py" recompute
 "$PYTHON" "$HERE/model-roles.py" public --output "$target"
-"$PYTHON" "$REPO/rstack/tools/egress-gate" scan "$target"
 if $dry_run; then
+  "$PYTHON" "$REPO/rstack/tools/egress-gate" scan "$target"
   print -- "Dry run: $scratch (no commits or pushes)"
   exit 0
 fi
+$publish || exit "$canary_rc"
+"$PYTHON" "$REPO/rstack/tools/egress-gate" scan "$target"
 # Fetch and branch before touching the repository page. The controller tree is never committed.
 remote=${MODEL_SCORER_REMOTE:-origin}
 branch=${MODEL_SCORER_BRANCH:-main}

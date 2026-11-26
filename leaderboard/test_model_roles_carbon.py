@@ -36,7 +36,9 @@ def test_no_served_role_resolves_to_google_even_with_winning_evidence(role, tmp_
     assert set(google).issubset(data['evidence'][role])
     page = tmp_path / 'LEADERBOARD.md'
     mr.public(data, page)
-    assert '| ' + role + ' | google/gemini-4-carbon | - | 1.0 |' in page.read_text()
+    assert '| Model | Rank (Ricardo: taste + cost) |' in page.read_text()
+    # Aggregated routing evidence is no longer a source of public pass rates.
+    assert '| google/gemini-4-carbon |' not in page.read_text()
     restored = mr.bootstrap(page)
     assert all(restored['routes'][m]['canonical'] not in google
                for order in restored['roles'].values() for m in order)

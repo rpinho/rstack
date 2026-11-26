@@ -111,8 +111,8 @@ def test_the_leaderboard_shows_the_cost_column_and_a_dash_without_it(tmp_path):
     mr.public(data, page)
     text = page.read_text()
     assert '| Cost per pass | Date |' in text
-    assert '| batch | claude-sonnet-5-5 | 1 | 0.9 | 6 | - | 1.23% wk | 2026-11-20 |' in text
-    assert '| batch | claude-opus-5-5 | 2 | 0.9 | 6 | - | - | 2026-11-20 |' in text
+    assert '| batch | claude-sonnet-5-5 | 1 | 1.23% wk | 2026-11-20 |' in text
+    assert '| batch | claude-opus-5-5 | 2 | - | 2026-11-20 |' in text
     page.write_text(text.replace('2026-11-20', '2026-11-19'))
     mr.public(dict(data, cost={}), page)                       # a rerun keeps the older day's rows
     assert '| 1.23% wk | 2026-11-19 |' in page.read_text()

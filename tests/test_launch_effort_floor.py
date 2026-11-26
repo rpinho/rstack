@@ -89,6 +89,10 @@ def test_early_no_result_resumes_once_with_original_prompt_route_and_remaining_b
     assert 'RESUME (attempt 2)' in resume['prompt']
     assert log.count(f'effort-floor resume at {elapsed:.2f}/240.00 min') == 1
     assert log.count('MODEL_SELECTION ') == log.count('MODEL_OUTCOME ') == 1
+    assert log.count('MODEL_ATTEMPT_OUTCOME ') == 1
+    grades = [json.loads(line) for line in (tmp_path / 'jobs/everyday-grades.jsonl').read_text().splitlines()]
+    assert [row['grade'] for row in grades] == ['void: attempt continued before grading', 'pass']
+    assert len({row['run_id'] for row in grades}) == 2
     assert 'quit_at_seconds' not in floor
 
 

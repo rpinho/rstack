@@ -11,6 +11,9 @@ import math
 import pathlib
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'harness'))
+from model_slugs import canon
+
 
 def load_rows(path):
     rows, seen, by_id, retired = [], set(), {}, set()
@@ -49,6 +52,7 @@ def load_rows(path):
             if by_id[old]["case"] != row["case"]:
                 raise ValueError(f"line {line_no}: supersession must retain case identity")
             retired.add(old)
+        row['model'] = canon(row['model']) or row['model']
         rows.append(row)
         by_id[row["id"]] = row
     return [r for r in rows if r["id"] not in retired]

@@ -240,6 +240,11 @@ if [[ -f $lane_dir/YIELD_HOLD ]]; then
   yield_hold=$(head -1 "$lane_dir/YIELD_HOLD")
   refuses lane-yield.hold "lane $lane: $yield_hold" "general decides: mv $lane_dir/YIELD_HOLD $lane_dir/HOLD to hold the lane, or remove it" && exit 78
 fi
+# Resolve the origin before detaching, without reading pane contents or process commands.
+if [[ -z ${RH_LAUNCH_DRIVER:-} && -n ${TMUX_PANE:-} ]]; then
+  candidate=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)
+  [[ $candidate != agy-* ]] || export RH_LAUNCH_DRIVER=$candidate
+fi
 # LAUNCH_DETACH=tmux: the job never lives under the caller's process tree. 11-01: the 7:25 AM memory kill
 # took out eight jobs inside Claude's process tree with no exit line, and nobody noticed for 13 hours. So
 # a job started outside tmux, or from a claude-* session, moves itself into its own tmux session
@@ -535,6 +540,20 @@ json.dump(d, open(p, "w"), indent=2)' "$log.selection.json" "$round_warn" 2>/dev
     fi
     cat "$spec"; (( i > 1 )) && resume_prompt "$i"; } > "$log.prompt"
 }
+record_outcome() {
+  if ! python3 "$selector" --log "$log" --receipt "$log.selection.json" --outcome "$rc" "$@" &&
+     refuses launch.outcome-receipt "could not record the outcome of $job in its selection receipt" "python3 $selector --log $log --receipt $log.selection.json --outcome $rc"; then
+    exit 2
+  fi
+}
+grade_attempt() {
+  python3 "$H/auto_grade.py" --receipt "$log.selection.json" --log "$log" --dir "$dir" \
+    --spec "$spec" ${LAUNCH_HOST:+--host} ${LAUNCH_HOST:+$LAUNCH_HOST} "$@" >> "$log" 2>&1 || true
+  python3 "$selector" --record-ungraded --receipt "$log.selection.json" --log "$log" >/dev/null 2>&1 || true
+}
+driver=${RH_LAUNCH_DRIVER:-}
+launch_group=$(python3 -c 'import uuid; print(uuid.uuid4().hex)')
+grade_ledger=${log:A:h}/everyday-grades.jsonl
 attempt_timeout=$LAUNCH_TIMEOUT_SECONDS
 for (( i = start; i <= 5 || effort_resumed; i++ )); do
   if (( ! effort_resumed )); then
@@ -544,6 +563,26 @@ for (( i = start; i <= 5 || effort_resumed; i++ )); do
     # Keep the prompt and selected route from the original attempt.
     resume_prompt "$i" >> "$log.prompt"
   fi
+  run_id=$(python3 -c 'import json, sys, uuid
+from pathlib import Path
+receipt, log = map(Path, sys.argv[1:3])
+row = json.loads(receipt.read_text())
+row["run_id"] = uuid.uuid4().hex if row.get("run_id") else row["selection_id"]
+row.update(launch_group=sys.argv[3], driver=sys.argv[4], workdir=sys.argv[5])
+receipt.write_text(json.dumps(row) + "\n")
+with log.open("a") as stream:
+    stream.write("MODEL_ATTEMPT " + json.dumps(row) + "\n")
+try:
+    sys.path.insert(0, sys.argv[6])
+    import run_records
+    run_records.open_run(dict(run_id=row["run_id"], utc=run_records.utc_now(), job=row.get("job"),
+        model=row.get("route_model") or row["model"], effort=sys.argv[7],
+        backend=row.get("executor"), role=row.get("role"), workdir=sys.argv[5],
+        grade_ledger=str(receipt.with_name("everyday-grades.jsonl")),
+        driver=sys.argv[4], launch_group=sys.argv[3]))
+except (OSError, ValueError) as exc:
+    print("run records: " + str(exc), file=sys.stderr)
+print(row["run_id"])' "$log.selection.json" "$log" "$launch_group" "$driver" "$dir" "$H" "$LAUNCH_EFFORT") || run_id=
   print -- "=== attempt $i model $m${LAUNCH_HOST:+ host $LAUNCH_HOST} $(date)" >> "$log"
   attempt_log="$log.attempt-$i"
   out=${spec:r}.last.md
@@ -558,7 +597,8 @@ for (( i = start; i <= 5 || effort_resumed; i++ )); do
       export GEMINI_API_KEY="$(cat "$HOME/.config/gemini/api_key")" || exit 2
       [[ -n $GEMINI_API_KEY ]] || { print -u2 -- 'missing Gemini key'; exit 2; }
     fi
-    env RH_JOB="${job:t}" "${cache_env[@]}" "${effort_env[@]}" nice -n 10 python3 "$H/agent_executor.py" --backend "$backend" \
+    env RH_JOB="${job:t}" RH_LAUNCH_RUN_ID="$run_id" RH_LAUNCH_GRADE_LEDGER="$grade_ledger" \
+      RH_LAUNCH_DRIVER="$driver" RH_LAUNCH_GROUP="$launch_group" "${cache_env[@]}" "${effort_env[@]}" nice -n 10 python3 "$H/agent_executor.py" --backend "$backend" \
       --executable "$cx" --directory "$dir" --model "$m" --effort "$LAUNCH_EFFORT" \
       --output "$out" --budget "$attempt_budget" \
       --allowed-tools "$LAUNCH_CLAUDE_TOOLS" --timeout-seconds "$attempt_timeout" \
@@ -636,7 +676,7 @@ $remote_auth
 mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
 mkdir -p $rmarks 2>/dev/null || true
 echo \$\$ > $rmarks/${(q)${job:t}}.pid 2>/dev/null || true
-exec env RH_JOB=${(q)${job:t}} ${(j: :)${(q)cache_env[@]}} ${(j: :)${(q)effort_env[@]}} nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)attempt_budget} --allowed-tools ${(q)LAUNCH_CLAUDE_TOOLS} --timeout-seconds ${(q)attempt_timeout}"
+exec env RH_JOB=${(q)${job:t}} RH_LAUNCH_RUN_ID=${(q)run_id} RH_LAUNCH_GRADE_LEDGER=${(q)grade_ledger} RH_LAUNCH_DRIVER=${(q)driver} RH_LAUNCH_GROUP=${(q)launch_group} ${(j: :)${(q)cache_env[@]}} ${(j: :)${(q)effort_env[@]}} nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)attempt_budget} --allowed-tools ${(q)LAUNCH_CLAUDE_TOOLS} --timeout-seconds ${(q)attempt_timeout}"
     # 11-08: this was one foreground ssh, so the job lived exactly as long as the connection. A
     # network blip ended a 5 h job, and the controller's reset at 22:16 took every job on the host
     # with it. remote_run.py starts the executor detached THERE (nohup, files for stdio, a watcher
@@ -742,16 +782,15 @@ exec env RH_JOB=${(q)${job:t}} ${(j: :)${(q)cache_env[@]}} ${(j: :)${(q)effort_e
         attempt_timeout=$effort_left; attempt_budget=$effort_next
         LC_ALL=C printf 'effort-floor resume at %.2f/%.2f min\n' \
           "$(( effort_elapsed / 60.0 ))" "$(( LAUNCH_TIMEOUT_SECONDS / 60.0 ))" >> "$log"
+        record_outcome --attempt-outcome
+        grade_attempt --retried
         continue
       fi
     else
       effort_warn "$effort_next"
     fi
   fi
-  if ! python3 "$selector" --log "$log" --receipt "$log.selection.json" --outcome "$rc" &&
-     refuses launch.outcome-receipt "could not record the outcome of $job in its selection receipt" "python3 $selector --log $log --receipt $log.selection.json --outcome $rc"; then
-    exit 2
-  fi
+  record_outcome
   print -r -- "GRADE ON RETURN: python3 ${selector:A} --grade pass|partial|fail --note WHY --receipt ${log:A}.selection.json --log ${log:A}" >> "$log"
   (( ! effort_resumed )) || break
   # 11-24 (general): Codex enforces its own limits. A Codex job that failed on quota or a rate limit is rerun
@@ -762,12 +801,14 @@ exec env RH_JOB=${(q)${job:t}} ${(j: :)${(q)cache_env[@]}} ${(j: :)${(q)effort_e
      tail -40 "$attempt_log" | grep -Eqi 'usage limit|usage_limit_reached|insufficient_quota|rate.?limit|429 too many'; then
     codex_closed='quota or rate limit'
     print -- "codex hit its quota or rate limit: rerunning $job on Gemini (agy), else Claude $(date)" >> "$log"
+    grade_attempt --retried
     (( i-- )); continue
   fi
   if [[ $backend == agy && -z $agy_closed && ${RH_LAUNCHER_EXECUTORS:-codex} == *(codex|claude)* ]] && (( rc != 0 )) &&
      tail -40 "$attempt_log" | grep -Eqi 'AGY_QUOTA|RESOURCE_EXHAUSTED|Individual quota reached'; then
     agy_closed='quota'
     print -- "agy hit its quota: rerunning $job on Codex, else Claude $(date)" >> "$log"
+    grade_attempt --retried
     (( i-- )); continue
   fi
   (( policy_flag == 0 && rc != 0 && i < 5 )) || break
@@ -775,6 +816,7 @@ exec env RH_JOB=${(q)${job:t}} ${(j: :)${(q)cache_env[@]}} ${(j: :)${(q)effort_e
   # A quota response ends this model's attempt even if it also says 'at capacity'.
   if [[ ${LAUNCH_PROVIDER:-} == gemini ]] && grep -Eqi '429|RESOURCE_EXHAUSTED|quota' "$attempt_log"; then break; fi
   tail -40 "$attempt_log" | grep -q 'at capacity' || break
+  grade_attempt --retried
   sleep $(( ${LAUNCH_RETRY_SECONDS:-300} * i ))
 done
 
@@ -789,13 +831,7 @@ asked=$(first_line "$dir/STATUS.md"); shipped=$(first_line "$dir/REPORT.md")
 ok_ask=0; [[ $asked == You\ asked:* ]] && ok_ask=1
 ok_ship=0; [[ $shipped == Shipped:* ]] && ok_ship=1
 print -- "lint restate-ask=$ok_ask shipped-line=$ok_ship $(date)" >> "$log"
-# 11-19 (general): a returned delegated job is graded here, at return, with no session in the loop: its own
-# checks first (exit code, Shipped and You asked lines, the spec's Check: lines), else the lane's reviewing
-# model. Whatever cannot be graded is recorded "ungraded" (counted, outside the rate) for the morning report.
-# Never blocks and never fails the job. A --host job's outputs stay on the host, so its checks run there.
-python3 "$H/auto_grade.py" --receipt "$log.selection.json" --log "$log" --dir "$dir" \
-  --spec "$spec" ${LAUNCH_HOST:+--host} ${LAUNCH_HOST:+$LAUNCH_HOST} >> "$log" 2>&1 || true
-python3 "$selector" --record-ungraded --receipt "$log.selection.json" --log "$log" >/dev/null 2>&1 || true
+grade_attempt
 yield=${LAUNCH_YIELD_LEDGER:-$PWD/.runtime/job-yield.jsonl}
 mkdir -p "${yield:h}" 2>/dev/null
 python3 -I -c 'import json, sys, time

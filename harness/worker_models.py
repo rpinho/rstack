@@ -19,6 +19,9 @@ import uuid
 from bug_verdicts import maker
 from agent_executor import metered_refusal
 import agy_quota
+import run_records
+from model_slugs import canon
+import score_verdicts
 import claude_cap
 from claude_cap import load_allowance as _allowance
 import harness_blocks
@@ -841,27 +844,37 @@ def quota_failure(log, receipt):
     selection's MODEL_SELECTION line to its MODEL_OUTCOME: the executor's AGY_QUOTA line, or agy's own error
     text from an executor older than that line. On the way it copies AGY_QUOTA rows into this machine's quota
     log, so a controller whose --host job hit the quota on the host stops picking that model too."""
-    if receipt.get('executor') != 'agy':
-        return None
     try:
         lines = Path(log).read_text(errors='replace').splitlines()
     except OSError:
         return None
+    run_id = receipt.get('run_id')
+    marker = run_id and 'EXECUTOR_QUOTA ' + run_id in lines
     sid, inside, part = receipt.get('selection_id'), False, []
+    rc = None
     for line in lines:
-        if line.startswith(('MODEL_SELECTION ', 'MODEL_OUTCOME ')):
+        if line.startswith(('MODEL_SELECTION ', 'MODEL_ATTEMPT ', 'MODEL_OUTCOME ', 'MODEL_ATTEMPT_OUTCOME ')):
             try:
-                mine = json.loads(line.split(' ', 1)[1]).get('selection_id') == sid
-            except (ValueError, AttributeError):
-                mine = False
-            if mine and line.startswith('MODEL_SELECTION '):
-                inside = True
-            elif mine:
+                row = json.loads(line.split(' ', 1)[1])
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or row.get('selection_id') != sid:
+                continue
+            if line.startswith('MODEL_SELECTION ') or (
+                    line.startswith('MODEL_ATTEMPT ') and row.get('run_id') == run_id):
+                inside, part = True, []
+            elif line.startswith(('MODEL_OUTCOME ', 'MODEL_ATTEMPT_OUTCOME ')) and (not run_id or row.get('run_id') == run_id):
+                rc = row.get('exit_code')
                 break
+            else:
+                inside = False
             continue
         if inside:
             part.append(line)
     text = '\n'.join(part)
+    backend = receipt.get('executor')
+    if backend != 'agy':
+        return 'quota' if marker or (rc and run_records.quota_message(backend, text)) else None
     rows = agy_quota.hit(text)
     for row in rows:
         try:
@@ -874,7 +887,7 @@ def quota_failure(log, receipt):
             '{} window until {}'.format(row.get('window'), row['blocked_until']) if row.get('blocked_until')
             else ' '.join(str(row.get('error')).split())[:120]))
     found = AGY_QUOTA_TEXT.search(text)
-    return 'quota: agy ' + ' '.join(text[found.start():].splitlines()[0].split())[:120] if found else None
+    return 'quota: agy ' + ' '.join(text[found.start():].splitlines()[0].split())[:120] if found else 'quota' if marker else None
 
 
 # 11-19 (general): grading never blocks a lane ("lanes never stop") and never depends on anyone remembering.
@@ -952,7 +965,7 @@ def ungraded(receipts_dir, lane='', skip_job='', now=None):
         if now - finished > dt.timedelta(hours=UNGRADED_HOURS):
             log_record(receipts_dir / 'everyday-grades.jsonl', '', dict(
                 id='grade-' + r['selection_id'], date=now.date().isoformat(), source_kind='everyday', job=r['job'],
-                grade='ungraded', model=r.get('route_model') or r['model'], role=r.get('role'),
+                grade='void: returned without a grade', model=r.get('route_model') or r['model'], role=r.get('role'),
                 note='not graded within {} h of its return'.format(UNGRADED_HOURS)))
             UNGRADED_TODAY.append((r['job'], r.get('lane'), r.get('route_model') or r['model']))
             continue
@@ -996,6 +1009,10 @@ def morning_report(rows, state=None, host=None, reason=None):
 
 
 def log_record(path, event, record):
+    record = score_verdicts.row(record)
+    record = dict(record)
+    if 'grade' in record and record.get('model'):
+        record['model'] = canon(record['model']) or record['model']
     with Path(path).open('a') as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)
         stream.write((event + ' ' if event else '') + json.dumps(record, sort_keys=True) + '\n')
@@ -1027,7 +1044,8 @@ def main(argv=None):
     parser.add_argument('--sweep-ungraded', type=Path, metavar='RECEIPTS_DIR',
                         help='record jobs ungraded for 24 h as "ungraded" and list them for the morning report')
     parser.add_argument('--outcome', type=int)
-    parser.add_argument('--grade', choices=('pass', 'partial', 'fail'),
+    parser.add_argument('--attempt-outcome', action='store_true', help='outcome before resuming the same selection')
+    parser.add_argument('--grade',
                         help='grade a returned job: credited to the model its --receipt ran, as everyday work')
     parser.add_argument('--note', default='')
     parser.add_argument('--retract', metavar='JOB',
@@ -1039,6 +1057,8 @@ def main(argv=None):
     parser.add_argument('--trial-ledger', type=Path, action='append', help='another Mac\'s model-trial.jsonl')
     args = parser.parse_args(argv)
     try:
+        if args.grade:
+            score_verdicts.validate(args.grade)
         if args.trial_report is not None:
             for line in trial_report(args.trial_report, [trial_ledger()] + (args.trial_ledger or []), args.roles_file):
                 print(line)
@@ -1056,14 +1076,14 @@ def main(argv=None):
                     row = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(row, dict) and row.get('job') == args.retract and row.get('grade') != 'retracted':
+                if isinstance(row, dict) and row.get('job') == args.retract and row.get('grade') not in ('retracted', 'void: retracted'):
                     hits.append(row)
             if not hits:
                 raise ValueError('no grade for job {} in {}'.format(args.retract, path))
             for row in {r['id']: r for r in hits}.values():
                 log_record(path, '', dict(id=row['id'], date=dt.date.today().isoformat(), source_kind='everyday',
-                                          job=row['job'], grade='retracted', model=row.get('model'), role=row.get('role'),
-                                          retracted=row.get('grade'), note=' '.join(args.reason.split())[:300]))
+                                          job=row['job'], grade='void: retracted', model=row.get('model'), role=row.get('role'),
+                                          retracted=row.get('grade'), **({'run_id': row['run_id']} if row.get('run_id') else {}), note=' '.join(args.reason.split())[:300]))
                 print('retracted {} {} ({}): {}'.format(row['job'], row.get('grade'), row.get('model'), args.reason))
                 harness_blocks.mark(row['job'], 'retract', 'auto-grade', args.reason)   # 11-22: counted as a harness bug
             clear_ungraded(args.retract)
@@ -1078,11 +1098,16 @@ def main(argv=None):
             return 0
         if args.record_ungraded:
             receipt = json.loads(args.receipt.read_text())
-            if gradeable(receipt) and 'grade-' + str(receipt.get('selection_id')) not in _grades(args.receipt.parent):
-                row = dict(id='grade-' + receipt['selection_id'], date=dt.date.today().isoformat(),
-                           source_kind='everyday', job=receipt.get('job'), grade='ungraded',
+            grade_id = receipt.get('run_id') or receipt.get('selection_id')
+            if (receipt.get('run_id') or gradeable(receipt)) and 'grade-' + str(grade_id) not in _grades(args.receipt.parent):
+                row = dict(id='grade-' + (receipt.get('run_id') or receipt['selection_id']), date=dt.date.today().isoformat(),
+                           source_kind='everyday', job=receipt.get('job'), grade='void: returned without a grade',
                            model=receipt.get('route_model') or receipt['model'], role=receipt.get('role'),
                            note=(quota_failure(args.log, receipt) if args.log else None) or 'returned without a grade')
+                if receipt.get('run_id'):
+                    row.update(run_id=receipt['run_id'], reason='quota' if row['note'].startswith('quota') else row['note'])
+                if row['note'].startswith('quota'):
+                    row['grade'] = 'void: quota'
                 log_record(args.receipt.with_name('everyday-grades.jsonl'), '', row)
                 if not row['note'].startswith('quota'):
                     morning_report([(row['job'], receipt.get('lane'), row['model'])], reason='returned without a grade')
@@ -1093,28 +1118,38 @@ def main(argv=None):
         if args.grade:
             receipt = json.loads(args.receipt.read_text())
             quota = quota_failure(args.log, receipt)
-            row = dict(id='grade-' + receipt['selection_id'], date=dt.date.today().isoformat(),
+            grade_id = 'grade-' + (receipt.get('run_id') or receipt['selection_id'])
+            prior = next((r for r in reversed(list(run_records.read_jsonl(
+                args.receipt.with_name('everyday-grades.jsonl')))) if r.get('id') == grade_id), {})
+            row = dict(id=grade_id, date=dt.date.today().isoformat(),
                        source_kind='everyday', job=receipt.get('job') or args.job,
-                       grade='ungraded' if quota else args.grade,
+                       grade='void: quota' if quota else args.grade,
                        model=receipt.get('route_model') or receipt['model'], role=receipt['role'],
                        note=' '.join(('{} (given {}: {})'.format(quota, args.grade, args.note) if quota
                                       else args.note).split())[:300])
+            if receipt.get('run_id'):
+                row.update(run_id=receipt['run_id'], reason='quota' if quota else row['note'])
+            if prior.get('grade_dir'):
+                row.update({key: prior[key] for key in ('grade_host', 'grade_dir', 'missing_files') if key in prior})
+            if not quota and row.get('missing_files'):
+                row.update(grade='harness_fail', reason=prior['reason'], note=prior['note'])
             if quota:
-                print('{} hit the agy quota, so it is recorded ungraded, not {}'.format(row['job'], args.grade),
+                print('{} hit its quota, so it is recorded void: quota (requested {})'.format(row['job'], args.grade),
                       file=sys.stderr)
             # The grade lands where the job's outcome is already recorded (its log), and in the grades file
             # beside its receipt, which the daily model scorer reads.
             log_record(args.log, 'MODEL_GRADE', row)
             log_record(args.receipt.with_name('everyday-grades.jsonl'), '', row)
             clear_ungraded(row['job'])
-            print('graded {} {} ({})'.format(row['job'], args.grade, row['model']))
+            print('graded {} {} ({})'.format(row['job'], row['grade'], row['model']))
             return 0
         if args.outcome is not None:
             receipt = json.loads(args.receipt.read_text())
             receipt.update(exit_code=args.outcome, finished=dt.datetime.now(dt.timezone.utc).isoformat(),
                 signal='executor_exit_only', quality='unscored')
             # Exit status is operational evidence, never a scientific quality score.
-            log_record(args.log, 'MODEL_OUTCOME', receipt)
+            event = 'MODEL_ATTEMPT_OUTCOME' if args.attempt_outcome else 'MODEL_OUTCOME'
+            log_record(args.log, event, receipt)
             return 0
         receipt = select(args.role, args.executor, args.model, args.model_override, args.roles_file,
                          args.made_by, args.job, args.lane, args.explore,
@@ -1163,7 +1198,7 @@ def main(argv=None):
         return 4
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print('worker model: ' + str(exc), file=sys.stderr)
-        return 2
+        return 0 if args.grade or args.record_ungraded else 2
 
 
 if __name__ == '__main__':

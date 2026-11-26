@@ -555,7 +555,7 @@ def test_agy_runs_append_to_model_runs_jsonl_across_direct_tmux_and_gui_routes(t
     # failing run (rc=1) still counted
     bad = agy_run(tmp_path, "print('{\"status\":\"ERROR\",\"response\":\"\",\"error\":\"boom\"}')\n", RH_JOB='job-err')
     assert bad.returncode == 1
-    rows = [json.loads(line) for line in runs.read_text().splitlines()]
+    rows = [json.loads(line) for line in runs.read_text().splitlines() if json.loads(line).get('closed_at')]
     assert [(r['job'], r['backend'], r['model'], r['effort'], r['rc']) for r in rows] == [
         ('job-direct', 'agy', 'gemini-fixture', 'low', 0),
         ('job-tmux', 'agy', 'gemini-fixture', 'low', 0),

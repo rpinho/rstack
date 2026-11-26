@@ -7,21 +7,23 @@ grade ledgers are the exception: a malformed line there is skipped (grade_ledger
 import collections
 import functools
 import datetime as dt
-import importlib.util
 import json
 from pathlib import Path
 import re
 import shlex
 
 
-def _grade_ledgers():
-    spec = importlib.util.spec_from_file_location('grade_ledgers', Path(__file__).with_name('grade_ledgers.py'))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def _run_grades():
+    import sys
+    directory = str(Path(__file__).resolve().parent)
+    if directory not in sys.path:
+        sys.path.insert(0, directory)
+    import run_grades
+    return run_grades
 
 
-grade_ledgers = _grade_ledgers()
+run_grades = _run_grades()
+grade_ledgers = run_grades.grade_ledgers
 
 
 def rows(path):
@@ -425,7 +427,7 @@ class Outcomes:
 
     def everyday(self, row, path, item, receipts=None):
         # pass / partial / fail of a returned delegated job, credited to the model its receipt ran.
-        grade = {'pass': 'held', 'partial': 'partial', 'fail': 'overturned', 'ungraded': 'ungraded'}.get(str(row.get('grade')).lower())
+        grade = run_grades.outcome(row.get('grade'))
         self.emit('everyday', item, self.producer(row, receipts=receipts), grade, row, str(path), receipts=receipts)
 
     def grade_receipts(self, ledger):
@@ -445,13 +447,36 @@ class Outcomes:
         return self.mirrored[directory]
 
     def read_grades(self, ledgers):
-        """Everyday grades from every ledger, as one record: one row per grade id, a retraction in any ledger
-        applies in all (grade_ledgers.rows). A grade links to the receipt beside its own ledger first."""
-        for row, path, number in grade_ledgers.rows(ledgers):
+        stats = self.stats['everyday']
+        pairs, historical = run_grades.table(ledgers=ledgers)
+        for run, record in pairs:
+            if run_grades.run_records.is_probe(run):
+                continue
+            if not record:
+                stats['pending'] += 1
+                continue
+            row, path, number = record
+            model = self.canon(run['model'])
+            role = row.get('role') or run.get('role') or 'batch'
+            if not model:
+                stats['unlinked'] += 1
+                continue
+            item = row.get('id') or f'{path}:{number}'
+            date = day(row) or run_grades.utc(run['utc']).date().isoformat()
+            outcome = run_grades.outcome(row['grade'])
+            observation = self.make('receipt-everyday', item, model, role, outcome, date, [str(path)],
+                                    f'everyday: {outcome}')
+            observation.update(role=role, job=run['job'], source_kind='everyday', day=date,
+                               link_kind='run_id' if not run['legacy'] else 'legacy_job')
+            self.observations[observation['id']] = observation
+        # Receipts for older work can predate the run ledger entirely.
+        for row, path, number in historical:
+            if run_grades.run_records.is_probe(row):
+                continue
             item = row.get('id') or f'{path}:{number}'
             own = self.grade_receipts(path)
             if own is not None and not own.get(self.producer(row, receipts=own) or ''):
-                own = None      # not in its own directory's receipts: try this reader's
+                own = None
             self.everyday(row, path, item, receipts=own)
 
     def read_markdown(self, path):
@@ -569,7 +594,7 @@ class Outcomes:
         # 11-20: a grade caused by a harness or launcher error is retracted by an appended row
         # (worker_models.py --retract); every everyday row for that job id is then left out.
         retracted = {r.get('id') for r in source_rows if isinstance(r, dict)
-                     and r.get('source_kind') == 'everyday' and str(r.get('grade')).lower() == 'retracted'}
+                     and r.get('source_kind') == 'everyday' and str(r.get('grade')).lower() in ('retracted', 'void: retracted')}
         for number, row in enumerate(source_rows, 1):
             item = row.get('id') or row.get('url') or f'{path}:{number}'
             kind = row.get('source_kind') or row.get('outcome_kind')

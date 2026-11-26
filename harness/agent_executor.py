@@ -11,6 +11,9 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
+
+import run_records
 
 
 def _kill_tree(proc):
@@ -471,7 +474,6 @@ def _agy_gui(cmd, directory, timeout_seconds, poll=None):
 
 # 11-19: agy has a 5-hour refresh and a weekly cap with no published numbers, so every 429 or quota error
 # is kept, to learn the real limits. AI Credit Overages stays "Never": nothing here buys more.
-QUOTA = re.compile(r'\b429\b|quota|rate.?limit|resource.?exhausted|too many requests|usage limit', re.I)
 
 
 def log_agy_quota(cmd, text):
@@ -534,23 +536,70 @@ def _agy_model_effort(cmd, fallback=''):
     return model, tier or fallback
 
 
-def log_agy_run(cmd, directory, output, rc, effort=''):
-    """Append one agy run to ~/.local/state/model-runs.jsonl (same shape as codex/claude; never fails the run)."""
-    import datetime as dt
-    import fcntl
-    model, eff = _agy_model_effort(cmd, effort)
-    row = dict(
-        utc=dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-        job=os.environ.get('RH_JOB') or os.environ.get('AGENT_JOB') or os.environ.get('RSTACK_LANE') or Path(directory).name,
-        backend='agy', model=model, effort=eff or 'default', rc=int(rc), transcript=str(output))
-    path = Path(os.environ.get('RH_MODEL_RUNS_LOG') or Path.home() / '.local/state/model-runs.jsonl').expanduser()
+def reported_usage(output, errors=''):
+    tokens, cost = None, None
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open('a') as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)
-            fh.write(json.dumps(row, separators=(',', ':')) + '\n')
+        text = Path(output).read_text(errors='replace')
     except OSError:
-        pass
+        text = ''
+    text += '\n' + errors
+    for line in [text.strip(), *text.splitlines()]:
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        usage = data.get('usage') or {}
+        if isinstance(usage, dict):
+            values = [usage[k] for k in ('input_tokens', 'output_tokens') if type(usage.get(k)) is int]
+            if values:
+                tokens = sum(values)
+            elif type(usage.get('total_tokens')) is int:
+                tokens = usage['total_tokens']
+        if type(data.get('total_cost_usd')) in (int, float):
+            cost = data['total_cost_usd']
+    found = re.search(r'tokens used\s*\n\s*([\d,]+)', errors)
+    if tokens is None and found:
+        tokens = int(found.group(1).replace(',', ''))
+    return dict(tokens=tokens, cost_usd=cost)
+
+
+def record_run(backend, model, effort, directory, output, rc, quota='', errors=''):
+    launch_id = os.environ.get('RH_LAUNCH_RUN_ID')
+    run_id = launch_id or uuid.uuid4().hex
+    lane = os.environ.get('RSTACK_LANE', '')
+    row = dict(
+        run_id=run_id, utc=run_records.utc_now(),
+        job=os.environ.get('RH_JOB') or os.environ.get('AGENT_JOB') or lane or Path(directory).name,
+        backend=backend, model=model, effort=effort or 'default', rc=int(rc), transcript=str(output),
+        lane=lane, workdir=str(Path(directory).resolve()), role=os.environ.get('RSTACK_CALL_ROLE') or 'batch')
+    for key, env in [('grade_ledger', 'RH_LAUNCH_GRADE_LEDGER'), ('driver', 'RH_LAUNCH_DRIVER'),
+                     ('launch_group', 'RH_LAUNCH_GROUP')]:
+        if launch_id and os.environ.get(env):
+            row[key] = os.environ[env]
+    if quota:
+        row['reason'] = 'quota'
+        # The launcher sees this marker even when the executor ran via its existing SSH route.
+        print('EXECUTOR_QUOTA ' + run_id, file=sys.stderr)
+    try:
+        existing = next((r for r in run_records.read_jsonl(run_records.runs_path()) if r.get('run_id') == run_id), None)
+        if existing is None:
+            run_records.open_run(row)
+        usage = reported_usage(output, errors)
+        closed = run_records.close_run(run_id, rc=int(rc), reason='quota' if quota else '', **usage)
+        if closed:
+            summary = {key: closed.get(key) for key in ('run_id', 'closed_at', 'wall_seconds', 'tokens', 'cost_usd', 'rc')}
+            print('EXECUTOR_RUN ' + json.dumps(summary), file=sys.stderr)
+        if quota:
+            run_records.record_quota(dict(row, utc=existing['utc'] if existing else row['utc']), quota)
+        if not launch_id or os.environ.get('RH_EXECUTOR_STANDALONE') == '1':
+            probe = run_records.is_probe(closed or existing or row)
+            reason = 'probe' if probe else 'quota' if quota else 'no launcher acceptance checks'
+            grade = run_records.grade_fields(run_id, row['job'], model, row['role'], 'void: ' + reason, reason)
+            run_records.append(run_records.grades_path(), grade)
+    except OSError as exc:
+        run_records.warn(exc)
 
 
 def run_agy(cmd, directory, output, timeout_seconds=0, effort=''):
@@ -569,9 +618,6 @@ def run_agy(cmd, directory, output, timeout_seconds=0, effort=''):
     except ValueError:
         result = None
     error = str(result.get('error') or '') if isinstance(result, dict) else ''
-    quota = QUOTA.search(error) or QUOTA.search(err.decode(errors='replace'))
-    if quota:
-        log_agy_quota(cmd, error or err.decode(errors='replace'))
     rc = code
     if signed_out or 'authentication' in error.lower():
         _warn_agy_auth()
@@ -594,15 +640,36 @@ def run_agy(cmd, directory, output, timeout_seconds=0, effort=''):
             print('agy produced nothing; it was denied: ' + ', '.join(
                 str(d.get('action')) for d in result['denied_actions'] if isinstance(d, dict)), file=sys.stderr)
             rc = 1
-    log_agy_run(cmd, directory, output, rc, effort)
+    quota = run_records.quota_message('agy', err.decode(errors='replace') + '\n' + error) if rc else ''
+    if quota:
+        log_agy_quota(cmd, quota)
+    model, tier = _agy_model_effort(cmd, effort)
+    record_run('agy', model, tier, directory, output, rc, quota)
     return rc
 
 
-def run_codex(cmd, args, env):
+def relay_errors(proc, tail):
+    def copy():
+        with proc.stderr as stream:
+            for block in iter(lambda: stream.read1(65536), b''):
+                tail.extend(block)
+                del tail[:-16384]
+                sys.stderr.buffer.write(block)
+                sys.stderr.buffer.flush()
+    thread = threading.Thread(target=copy, daemon=True)
+    thread.start()
+    return thread
+
+
+def run_codex(cmd, args, env, errors):
     # Existing callers leave Codex's clock alone. An effort-floor job shares one wall budget
     # across calls, including the first call when it uses all of that budget itself.
     if not env.get('RH_EFFORT_FLOOR_JOB') or args.timeout_seconds <= 0:
-        return subprocess.call(cmd, cwd=args.directory, env=env)
+        with subprocess.Popen(cmd, cwd=args.directory, env=env, stderr=subprocess.PIPE) as proc:
+            relay = relay_errors(proc, errors)
+            rc = proc.wait()
+            relay.join(timeout=1)
+            return rc
     def stopped(signum, _frame):
         # 11-23 (math_leanshadow_1123): a job exited 143 and nothing recorded which process got the signal.
         # This line says it was the executor, not Codex, and when, so the sender can be matched in the logs.
@@ -614,7 +681,9 @@ def run_codex(cmd, args, env):
     stop_signals = (signal.SIGTERM, signal.SIGHUP)
     handlers = {sig: signal.signal(sig, stopped) for sig in stop_signals}
     try:
-        with subprocess.Popen(cmd, cwd=args.directory, env=env, start_new_session=True) as proc:
+        with subprocess.Popen(cmd, cwd=args.directory, env=env, start_new_session=True,
+                              stderr=subprocess.PIPE) as proc:
+            relay = relay_errors(proc, errors)
             try:
                 return proc.wait(timeout=args.timeout_seconds)
             except subprocess.TimeoutExpired:
@@ -623,6 +692,7 @@ def run_codex(cmd, args, env):
             finally:
                 if proc.poll() is None:
                     _kill_tree(proc)
+                relay.join(timeout=1)
     finally:
         for sig, handler in handlers.items():
             signal.signal(sig, handler)
@@ -644,18 +714,75 @@ def main(argv=None):
                    help='wall-clock cap; 0 means none. This CLI has no --max-turns, so a run '
                         'is bounded by spend and by the clock.')
     a = p.parse_args(argv)
+    # Persist before provider validation, stdin reads, or process creation.
+    launch_id = os.environ.get('RH_LAUNCH_RUN_ID')
+    ident = launch_id or uuid.uuid4().hex
+    os.environ['RH_LAUNCH_RUN_ID'] = ident
+    a.standalone = not launch_id
+    try:
+        run_records.open_run(dict(run_id=ident, utc=run_records.utc_now(),
+            job=os.environ.get('RH_JOB') or os.environ.get('AGENT_JOB') or os.environ.get('RSTACK_LANE') or Path(a.directory).name,
+            lane=os.environ.get('RSTACK_LANE', ''),
+            model=a.model, effort=a.effort, backend=a.backend, workdir=str(a.directory),
+            transcript=str(a.output), role=os.environ.get('RSTACK_CALL_ROLE') or 'batch',
+            **{key: os.environ[env] for key, env in [('grade_ledger', 'RH_LAUNCH_GRADE_LEDGER'),
+                ('driver', 'RH_LAUNCH_DRIVER'), ('launch_group', 'RH_LAUNCH_GROUP')]
+               if os.environ.get(env)}))
+    except OSError as exc:
+        run_records.warn(exc)
+    if a.standalone:
+        os.environ['RH_EXECUTOR_STANDALONE'] = '1'
     why = shim_first()
     if why:
         print('agent_executor refused: ' + why, file=sys.stderr)
+        run_records.close_run(ident, rc=78)
         return 78
     try:
         cmd = command(a.backend, a.executable, a.model, a.effort, a.directory, a.output, a.budget,
                       a.allowed_tools, prompt=sys.stdin.read() if a.backend == 'agy' else None)
     except ValueError as exc:
         print('agent_executor refused: ' + str(exc), file=sys.stderr)
+        run_records.close_run(ident, rc=78)
         return 78
     if a.backend == 'agy':
-        return run_agy(cmd, a.directory, a.output, a.timeout_seconds, a.effort)
+        try:
+            return run_agy(cmd, a.directory, a.output, a.timeout_seconds, a.effort)
+        except OSError:
+            model, tier = _agy_model_effort(cmd, a.effort)
+            record_run('agy', model, tier, a.directory, a.output, 1)
+            raise
+    errors = bytearray()
+    rc, quota = 1, ''
+    try:
+        rc = run_backend(cmd, a, errors)
+    except SystemExit as exc:
+        rc = exc.code
+        raise
+    finally:
+        if rc:
+            quota = run_records.quota_message(a.backend, errors.decode(errors='replace'))
+        if rc and a.backend == 'claude' and not quota:
+            quota = claude_quota(a.output)
+        record_run(a.backend, a.model, a.effort, a.directory, a.output, rc, quota, errors.decode(errors='replace'))
+    return rc
+
+
+def claude_quota(output):
+    try:
+        text = output.read_text(errors='replace')
+    except OSError:
+        return ''
+    try:
+        result = json.loads(text)
+    except ValueError:
+        return run_records.quota_message('claude', text)
+    if isinstance(result, dict) and (result.get('is_error') or result.get('subtype') != 'success'):
+        message = '\n'.join(str(result.get(k) or '') for k in ('subtype', 'result', 'error', 'errors'))
+        return run_records.quota_message('claude', message)
+    return ''
+
+
+def run_backend(cmd, a, errors):
     if a.backend == 'codex':
         # No OpenAI API key or base URL reaches codex: with one in the environment it can bill the API instead of
         # the subscription (11-19: no pay-as-you-go). The lanes' launcher has run codex this way since 10-18.
@@ -668,8 +795,8 @@ def main(argv=None):
             # Current Codex supports only Responses; Google exposes Chat Completions.
             with bridge() as base_url:
                 cmd[-1:-1] = ['-c', 'model_providers.gemini.base_url=' + json.dumps(base_url)]
-                return run_codex(cmd, a, env)
-        return run_codex(cmd, a, env)
+                return run_codex(cmd, a, env, errors)
+        return run_codex(cmd, a, env, errors)
     # Preserve the provider's JSON result, including usage and budget errors.
     expired = threading.Event()
     with a.output.open('wb') as out:
@@ -678,8 +805,9 @@ def main(argv=None):
         # instead of the job.
         # 11-11: a hook's `ask` prompts even with permissions bypassed, and nobody answers a headless
         # job, so it would stall. RSTACK_UNATTENDED turns every rstack hook's ask into a deny with a reason.
-        proc = subprocess.Popen(cmd, cwd=a.directory, stdout=subprocess.PIPE,
+        proc = subprocess.Popen(cmd, cwd=a.directory, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 start_new_session=True, env=dict(os.environ, RSTACK_UNATTENDED='1'))
+        relay = relay_errors(proc, errors)
         # A watchdog rather than a check inside the read loop: stdout.read(65536) blocks until
         # the buffer fills or the process exits, so a job that goes quiet and hangs never
         # reaches a check placed in that loop. This fires on the clock either way.
@@ -697,6 +825,7 @@ def main(argv=None):
                 sys.stdout.buffer.write(block)
                 sys.stdout.buffer.flush()
             code = proc.wait()
+            relay.join(timeout=1)
         finally:
             if timer:
                 timer.cancel()

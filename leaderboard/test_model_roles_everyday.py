@@ -32,7 +32,7 @@ def test_without_everyday_data_the_seed_order_stands():
     assert order[:len(mr.SEED['batch'])] == mr.SEED['batch']
 
 
-def test_bench_rows_never_rank_and_show_in_their_own_column(tmp_path, monkeypatch):
+def test_bench_rows_never_rank_and_show_in_the_footnote(tmp_path, monkeypatch):
     ledger = tmp_path / 'ledger.jsonl'
     flash = mr.canon('gemini-3.8-flash-low')
     rows = [mr.obs('receipt-review', 'plant-%d' % i, flash, 'batch', 'held', '2026-11-19', ['fixture'], 'plants')
@@ -50,9 +50,10 @@ def test_bench_rows_never_rank_and_show_in_their_own_column(tmp_path, monkeypatc
     page = tmp_path / 'LEADERBOARD.md'
     mr.public(data, page)
     text = page.read_text()
-    assert '| Role | Model | Routing order | Everyday passed | Everyday n | Bench passed | Cost per pass | Date |' in text
-    assert '| batch | claude-opus-5-5 | 1 | 0.917 | 6 |' in text
-    assert '| batch | gemini-3.8-flash-low | ' in text and '| n<5 | 0 | 1.0 |' in text
+    assert '| Model | Rank (Ricardo: taste + cost) |' in text
+    assert '| batch | claude-opus-5-5 | 1 | - |' in text  # unchanged routing
+    assert 'gemini-3.8-flash-low / batch 1.0 (n=8)' in text
+    assert '| Bench passed |' not in text
 
 
 def test_neon_is_the_judgment_candidate_hydrogen_the_batch_one_and_argon_is_in_no_pool():
@@ -128,8 +129,8 @@ def test_a_successor_ranks_on_its_predecessors_record_while_its_own_n_is_smaller
     page = tmp_path / 'LEADERBOARD.md'
     mr.public(data, page)
     text = page.read_text()
-    assert '| batch | gpt-6.2-sol | 1 | 1.0 | inherited from gpt-6.1-sol (n=25); own n=3 |' in text
-    assert '| batch | gpt-6.1-sol | - | 1.0 | 25 |' in text   # historical: visible, not routed
+    assert '| batch | gpt-6.2-sol | 1 | - |' in text  # routing still inherits
+    assert 'inherited from' not in text  # public pass rates never inherit
     assert mr.bootstrap(page)['roles']['batch'][0] == 'gpt-6.2-sol'
 
 
@@ -140,7 +141,7 @@ def test_the_inheritance_drops_when_its_own_n_reaches_the_predecessors(tmp_path,
     # ranked on its own record now: a seed with no data does not pass it, and its 0.5 is what is shown
     page = tmp_path / 'LEADERBOARD.md'
     mr.public(data, page)
-    assert '| batch | gpt-6.2-sol | 1 | 0.5 | 6 |' in page.read_text()
+    assert '| batch | gpt-6.2-sol | 1 | - |' in page.read_text()
 
 
 def test_there_is_no_inheritance_across_families():

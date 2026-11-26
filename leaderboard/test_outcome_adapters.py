@@ -107,7 +107,7 @@ def test_new_model_enters_unscored_and_can_move_only_with_existing_evidence_rule
     page = tmp_path / 'LEADERBOARD.md'
     roles.public(data, page)
     # 11-19: after the two seeds and the four agy candidates (three Flash tiers, Neon medium; 11-20).
-    assert '| design | claude-fable-5-3 | 7 | n<5 | 1 | - | - |' in page.read_text()
+    assert '| design | claude-fable-5-3 | 7 | - |' in page.read_text()
     strong = {'design': {new: dict(n=100, k=100, days={'2026-01-01', '2026-01-02'})}}
     assert roles.rank('design', strong)[0][0] == new
     assert roles.SEED['judge'] == roles.SEED['review']
@@ -143,7 +143,7 @@ def test_ingest_receipts_is_idempotent_and_reversals_supersede(setup_reader, tmp
     write_rows(source, [dict(id='one', source_kind='design', job='designer', referee='FAILS', utc='2026-01-03')])
     assert len(roles.ingest()[0]) == 1
     assert len(roles.validate(ledger.read_text())) == 1
-    assert roles.validate(ledger.read_text())[0]['outcome'] == 'overturned'
+    assert roles.validate(ledger.read_text())[0]['outcome'] == 'fail'
 
 
 def test_daily_dry_run_changes_only_scratch(setup_reader, tmp_path):
@@ -246,7 +246,7 @@ def test_ingest_retains_distinct_long_source_paths_and_multiple_reversals(setup_
         assert len(roles.ingest()[0]) == 2
         active = roles.validate(roles.LEDGER.read_text())
         assert len(active) == 2 and len({r['case'] for r in active}) == 2
-        assert {r['outcome'] for r in active} == ({'held'} if outcome == 'HOLDS' else {'overturned'})
+        assert {r['outcome'] for r in active} == ({'pass'} if outcome == 'HOLDS' else {'fail'})
 
 
 def test_upstream_native_cache_keeps_unlinked_and_pending_separate(setup_reader, tmp_path):
@@ -271,8 +271,11 @@ def test_daily_lands_only_page_in_worktree_and_skips_unchanged_page(setup_reader
     repo.mkdir()
     (repo / 'leaderboard').mkdir()
     (repo / 'rstack/tools').mkdir(parents=True)
-    for name in ('daily.sh', 'model-roles.py', 'model-eval.py', 'outcome_adapters.py', 'grade_ledgers.py', 'job_cost.py'):
+    for name in ('daily.sh', 'model-roles.py', 'model-eval.py', 'outcome_adapters.py', 'grade_ledgers.py', 'run_grades.py', 'driver_grades.py', 'score_canary.py', 'job_cost.py'):
         shutil.copy2(HERE / name, repo / 'leaderboard' / name)
+    (repo / 'harness').mkdir()
+    for name in ('run_records.py', 'agy_quota.py', 'model_slugs.py', 'score_verdicts.py'):
+        shutil.copy2(HERE.parent / 'harness' / name, repo / 'harness' / name)
     shutil.copy2(HERE.parent / 'rstack/tools/egress-gate', repo / 'rstack/tools/egress-gate')
     (repo / 'LEADERBOARD.md').write_text('Initial snapshot\n')
     git = shutil.which('git')
@@ -305,7 +308,7 @@ def test_daily_lands_only_page_in_worktree_and_skips_unchanged_page(setup_reader
     env = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ['PATH'], REAL_GIT=git, PUSH_CALLS=str(calls),
                PYTHON=sys.executable, MODEL_OUTCOMES_ROOT=str(outcomes), RH_LAUNCH_RECEIPTS=str(receipts),
                MODEL_STATE=str(state), MODEL_LEDGER=str(state / 'ledger.jsonl'), RH_ROLES_FILE=str(state / 'roles.json'))
-    command = ['/bin/zsh', str(repo / 'leaderboard/daily.sh')]
+    command = ['/bin/zsh', str(repo / 'leaderboard/daily.sh'), '--publish']
     blocked = dict(env, RSTACK_EGRESS_DIR=str(tmp_path / 'missing-egress-config'))
     result = subprocess.run(command, env=blocked, text=True, capture_output=True)
     assert result.returncode == 2 and not calls.exists()
@@ -554,7 +557,7 @@ def test_public_merge_retains_scored_and_observation_history(setup_reader, tmp_p
     roles.public(data, page)
     for line in historical.splitlines():
         assert line in page.read_text()
-    assert '| design | claude-fable-5-3 | 7 | n<5 | 1 | - | - | 2026-01-03 |' in page.read_text()
+    assert '| design | claude-fable-5-3 | 7 | - | 2026-01-03 |' in page.read_text()
     once = page.read_text()
     roles.public(data, page)
     assert page.read_text() == once
@@ -634,7 +637,7 @@ def test_graded_returned_jobs_beside_the_receipts_are_everyday_outcomes(setup_re
     monkeypatch.delenv('RH_EVIDENCE_ROOT', raising=False)
     monkeypatch.setattr(roles, 'LEDGER', ledger)
     rows, _ = roles.ingest()
-    assert sorted(r['outcome'] for r in rows) == ['held', 'overturned', 'partial']
+    assert sorted(r['outcome'] for r in rows) == ['fail', 'partial', 'pass']
     assert {r['pick_role'] for r in rows} == {'builder'} and not any(roles.is_bench(r) for r in rows)
     e = roles.evidence()['builder']['anthropic/claude-fable-5.2']
     assert (e['n'], e['k']) == (3, 1.5)
@@ -653,4 +656,4 @@ def test_a_retracted_grade_never_counts_against_the_model(setup_reader, tmp_path
     monkeypatch.delenv('RH_EVIDENCE_ROOT', raising=False)
     monkeypatch.setattr(roles, 'LEDGER', tmp_path / 'ledger.jsonl')
     rows, _ = roles.ingest()
-    assert sorted(r['outcome'] for r in rows) == ['held']
+    assert sorted(r['outcome'] for r in rows) == ['pass']

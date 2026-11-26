@@ -632,7 +632,7 @@ def test_a_returned_job_is_graded_into_its_log_and_the_grades_file(tmp_path):
                     '--log', str(log), '--receipt', str(receipt)]) == 0
     assert wm.main(['--grade', 'partial', '--note', 'half the checks', '--receipt', str(receipt), '--log', str(log)]) == 0
     row = json.loads((tmp_path / 'everyday-grades.jsonl').read_text())
-    assert (row['grade'], row['job'], row['model'], row['source_kind']) == ('partial', 'j', 'claude-opus-5-5', 'everyday')
+    assert (row['grade'], row['job'], row['model'], row['source_kind']) == ('partial', 'j', 'anthropic/claude-opus-5.5', 'everyday')
     assert 'MODEL_GRADE' in log.read_text()
 
 
@@ -666,7 +666,7 @@ def test_a_returned_delegated_job_is_recorded_ungraded_at_once_and_a_grade_repla
     receipt = returned_delegate(receipts, 'lane-a-job1', 'lane-a', 0)
     assert wm.main(['--record-ungraded', '--receipt', str(receipt), '--log', str(receipts / 'lane-a-job1.log')]) == 0
     rows = [json.loads(l) for l in (receipts / 'everyday-grades.jsonl').read_text().splitlines()]
-    assert [(r['grade'], r['job']) for r in rows] == [('ungraded', 'lane-a-job1')]
+    assert [(r['grade'], r['job']) for r in rows] == [('void: returned without a grade', 'lane-a-job1')]
     assert 'lane-a-job1' in next((tmp_path / 'state/asks-waiting').glob('*-ungraded.tsv')).read_text()
     assert wm.main(['--grade', 'pass', '--receipt', str(receipt), '--log', str(receipts / 'lane-a-job1.log')]) == 0
     rows = [json.loads(l) for l in (receipts / 'everyday-grades.jsonl').read_text().splitlines()]
@@ -683,7 +683,7 @@ def test_after_24_hours_an_ungraded_job_is_recorded_and_listed_for_the_morning(t
     assert wm.main(['--sweep-ungraded', str(receipts)]) == 0
     assert 'ungraded after 24 h: lane-a-old' in capsys.readouterr().out
     row = json.loads((receipts / 'everyday-grades.jsonl').read_text().splitlines()[-1])
-    assert (row['grade'], row['job']) == ('ungraded', 'lane-a-old')
+    assert (row['grade'], row['job']) == ('void: returned without a grade', 'lane-a-old')
     listed = list((tmp_path / 'state/asks-waiting').glob('*-ungraded.tsv'))
     assert listed and 'lane-a-old' in listed[0].read_text()
 
@@ -800,7 +800,7 @@ def test_retract_marks_a_job_grade_retracted_and_needs_a_reason(tmp_path, capsys
     assert wm.main(['--retract', 'job-a', '--receipt-dir', str(tmp_path)]) != 0
     assert wm.main(['--retract', 'job-a', '--receipt-dir', str(tmp_path), '--reason', 'launcher started agy without Bash']) == 0
     rows = [_json.loads(l) for l in grades.read_text().splitlines()]
-    assert rows[-1]['grade'] == 'retracted' and rows[-1]['retracted'] == 'fail' and rows[-1]['id'] == 'grade-s1'
+    assert rows[-1]['grade'] == 'void: retracted' and rows[-1]['retracted'] == 'fail' and rows[-1]['id'] == 'grade-s1'
     assert 'launcher' in rows[-1]['note']
 
 

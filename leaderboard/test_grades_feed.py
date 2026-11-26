@@ -83,15 +83,15 @@ def test_a_laptop_feed_raises_the_combined_count_keeps_the_split_and_skips_unkno
     assert row['rate'] == round(5.5 / 6, 3) and row['scored']
     assert data['bench']['mechanical']['gpt-6.2-astra']['n'] == 1
     assert data['feed_skipped'] == {'codex-chrome': 1}
-    # The public page shows this machine's own counts unless the owner opts in; the order still uses both.
+    # The public routing snapshot uses the combined order; raw joined grades alone supply pass rates.
     page = tmp_path / 'LEADERBOARD.md'
     mr.public(data, page)
     text = page.read_text()
-    assert '| review | gpt-6.2-astra | ' in text and '| n<5 | 2 |' in text
-    assert 'counts graded rows that are not published here' in text
+    assert '| review | gpt-6.2-astra | ' in text
+    assert '\n| gpt-6.2-astra |' not in text  # no raw run or grade in this fixture
     monkeypatch.setenv('MODEL_PUBLIC_FEED', '1')
     mr.public(data, page, previous=tmp_path / 'none.md')
-    assert '| 0.917 | 6 |' in page.read_text()
+    assert '\n| gpt-6.2-astra |' not in page.read_text()  # a feed cannot fabricate run-linked evidence
 
 
 def test_a_model_graded_only_in_the_feed_has_no_public_row_and_never_stops_the_page(tmp_path):

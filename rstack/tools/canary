@@ -92,7 +92,7 @@ def run_box(argv, stdin_text, timeout, via, session):
             if not tmux or subprocess.run([tmux, 'has-session', '-t', session], capture_output=True).returncode:
                 return 127, '', 'no tmux session named {}'.format(session), False
             (box / 'run.sh').write_text(
-                'cd {b} || exit\n{c} < {b}/in > {b}/out 2> {b}/err\necho $? > {b}/rc.tmp && mv {b}/rc.tmp {b}/rc\n'.format(
+                'cd {b} || exit\nRH_RUN_PURPOSE=probe {c} < {b}/in > {b}/out 2> {b}/err\necho $? > {b}/rc.tmp && mv {b}/rc.tmp {b}/rc\n'.format(
                     b=shlex.quote(str(box)), c=' '.join(shlex.quote(a) for a in argv)))
             made = subprocess.run([tmux, 'new-window', '-d', '-P', '-F', '#{window_id}', '-t', session + ':',
                                    '-n', 'canary-{}'.format(os.getpid()), '/bin/sh ' + shlex.quote(str(box / 'run.sh'))],
@@ -114,7 +114,8 @@ def run_box(argv, stdin_text, timeout, via, session):
             expired = False
             try:
                 with open(box / 'in') as fin, open(box / 'out', 'w') as fout, open(box / 'err', 'w') as ferr:
-                    p = subprocess.Popen(argv, stdin=fin, stdout=fout, stderr=ferr, cwd=str(box), start_new_session=True)
+                    p = subprocess.Popen(argv, stdin=fin, stdout=fout, stderr=ferr, cwd=str(box), start_new_session=True,
+                                         env=dict(os.environ, RH_RUN_PURPOSE='probe'))
                     try:
                         code = p.wait(timeout=timeout)
                     except subprocess.TimeoutExpired:

@@ -427,14 +427,14 @@ def test_a_wrapper_refusal_is_ungraded_not_failed(tmp_path):
     assert auto_grade.main(['--receipt', str(receipt), '--log', str(log), '--dir', str(work),
                             '--spec', str(tmp_path / 'job.md')]) == 0
     row = json.loads((tmp_path / 'everyday-grades.jsonl').read_text().splitlines()[-1])
-    assert (row['grade'], row['grader']) == ('ungraded', 'harness')
+    assert (row['grade'], row['grader']) == ('harness_fail', 'harness')
     assert row['note'] == 'harness: launch-guard: REFUSED math_huntfree_1120: 4 other Codex job-* sessions running'
     # Exit 75 with no refusal line in the log is still the harness's.
     log.write_text('MODEL_SELECTION ' + json.dumps(dict(selection_id='sid1')) + '\n'
                    'MODEL_OUTCOME ' + json.dumps(dict(selection_id='sid1', exit_code=75)) + '\n')
     auto_grade.main(['--receipt', str(receipt), '--log', str(log), '--dir', str(work), '--spec', str(tmp_path / 'job.md')])
     row = json.loads((tmp_path / 'everyday-grades.jsonl').read_text().splitlines()[-1])
-    assert row['grade'] == 'ungraded' and row['note'].startswith('harness: exit 75')
+    assert row['grade'] == 'harness_fail' and row['note'].startswith('harness: exit 75')
 
 
 def test_the_claude_ceiling_without_a_fallback_stays_on_claude(monkeypatch, tmp_path):

@@ -34,12 +34,12 @@ def test_a_returned_job_with_passing_checks_is_graded_pass_with_no_session_step(
     receipt, log, work, spec = returned(tmp_path)
     assert auto_grade.main(['--receipt', str(receipt), '--log', str(log), '--dir', str(work), '--spec', str(spec)]) == 0
     row = graded(tmp_path)
-    assert (row['grade'], row['producer'], row['grader'], row['auto']) == ('pass', 'gemini-4-argon-low', 'checks', True)
+    assert (row['grade'], row['producer'], row['grader'], row['auto']) == ('pass', 'google/gemini-4-argon-low', 'checks', True)
     assert 'MODEL_GRADE' in log.read_text()
 
 
 def test_a_failed_check_is_partial_and_no_exit_0_or_no_shipped_line_is_fail(tmp_path):
-    receipt, log, work, spec = returned(tmp_path, spec='Check: test -f missing.txt\n')
+    receipt, log, work, spec = returned(tmp_path, spec='Check: grep -qx different out.txt\n')
     auto_grade.main(['--receipt', str(receipt), '--log', str(log), '--dir', str(work), '--spec', str(spec)])
     assert graded(tmp_path)['grade'] == 'partial'
     receipt, log, work, spec = returned(tmp_path, rc=1)
@@ -63,7 +63,7 @@ def test_without_checks_the_lanes_reviewing_model_grades_and_is_recorded(tmp_pat
     auto_grade.main(['--receipt', str(receipt), '--log', str(log), '--dir', str(work), '--spec', str(spec),
                      '--roles-file', str(roles)])
     row = graded(tmp_path)
-    assert (row['grade'], row['grader'], row['producer']) == ('partial', 'claude-opus-5-5', 'gemini-4-argon-low')
+    assert (row['grade'], row['grader'], row['producer']) == ('partial', 'claude-opus-5-5', 'google/gemini-4-argon-low')
 
 
 def test_a_grader_that_cannot_answer_leaves_the_job_ungraded(tmp_path, monkeypatch):
@@ -75,7 +75,7 @@ def test_a_grader_that_cannot_answer_leaves_the_job_ungraded(tmp_path, monkeypat
     monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
     auto_grade.main(['--receipt', str(receipt), '--log', str(log), '--dir', str(work), '--spec', str(spec),
                      '--roles-file', str(roles)])
-    assert graded(tmp_path)['grade'] == 'ungraded'
+    assert graded(tmp_path)['grade'] == 'void: grader gave no verdict (exit 1)'
 
 
 def test_the_launcher_grades_a_returned_delegated_job_by_itself(tmp_path):
@@ -101,7 +101,7 @@ def test_the_launcher_grades_a_returned_delegated_job_by_itself(tmp_path):
     receipt = json.loads((jobs / 'fixture.log.selection.json').read_text())
     assert receipt['source'] == 'delegate' and receipt['model'] == 'gpt-6.2-sol'
     row = json.loads((jobs / 'everyday-grades.jsonl').read_text().splitlines()[-1])
-    assert (row['grade'], row['grader'], row['producer']) == ('pass', 'checks', 'gpt-6.2-sol')
+    assert (row['grade'], row['grader'], row['producer']) == ('pass', 'checks', 'openai/gpt-6.2-sol')
 
 
 def test_a_host_jobs_checks_run_on_the_host_where_its_outputs_are(tmp_path, monkeypatch):
@@ -112,6 +112,8 @@ def test_a_host_jobs_checks_run_on_the_host_where_its_outputs_are(tmp_path, monk
     host_side = tmp_path / 'host'
     (host_side / work.relative_to('/')).mkdir(parents=True)
     (host_side / work.relative_to('/') / 'out.txt').write_text('ok')
+    (host_side / work.relative_to('/') / 'STATUS.md').write_text('You asked: a table. I will: build it.\n')
+    (host_side / work.relative_to('/') / 'REPORT.md').write_text('Shipped: the table\n')
     ssh = tmp_path / 'fake-ssh'
     ssh.write_text('#!/bin/sh\nwhile [ "$1" = "-o" ]; do shift 2; done\necho "$1" >> ' + str(tmp_path / 'hosts') +
                    '\nshift\ncd ' + str(host_side) + ' && exec sh -c "$(echo "$*" | sed "s|cd |cd ' + str(host_side) + '|")"\n')
@@ -119,7 +121,8 @@ def test_a_host_jobs_checks_run_on_the_host_where_its_outputs_are(tmp_path, monk
     monkeypatch.setenv('LAUNCH_SSH', str(ssh))
     auto_grade.main(['--receipt', str(receipt), '--log', str(log), '--dir', str(work), '--spec', str(spec), '--host', 'm5'])
     row = graded(tmp_path)
-    assert (row['grade'], row['grader']) == ('pass', 'checks') and (tmp_path / 'hosts').read_text().strip() == 'm5'
+    assert (row['grade'], row['grader']) == ('pass', 'checks') and (tmp_path / 'hosts').read_text().splitlines() == ['m5', 'm5']
+    assert row['grade_host'] == 'm5' and row['grade_dir'] == str(work)
     assert 'cd ' in (REPO / 'tools/launch.sh').read_text() and '--host} ${LAUNCH_HOST:+$LAUNCH_HOST}' in \
         (REPO / 'tools/launch.sh').read_text()
 
@@ -132,4 +135,14 @@ def test_an_executor_that_is_not_installed_is_a_harness_error_not_a_fail(tmp_pat
                    'MODEL_OUTCOME ' + json.dumps(dict(selection_id='sid1', exit_code=1)) + '\n')
     assert auto_grade.main(['--receipt', str(receipt), '--log', str(log), '--dir', str(work), '--spec', str(spec)]) == 0
     row = graded(tmp_path)
-    assert (row['grade'], row['grader']) == ('ungraded', 'harness') and 'agy' in row['note']
+    assert (row['grade'], row['grader']) == ('harness_fail', 'harness') and 'agy' in row['note']
+
+
+def test_incomplete_workdir_stays_ungraded_without_running_the_checks(tmp_path):
+    receipt, log, work, spec = returned(tmp_path, rc=1, spec='Check: grep -q ok "nested/out file.txt"\n')
+    (work / 'STATUS.md').rename(work / 'status.saved')
+    row = auto_grade.grade(receipt, log, work, spec)
+    assert row['grade'] == 'harness_fail'
+    assert row['reason'] == 'workdir incomplete: STATUS.md, nested/out file.txt'
+    assert row['missing_files'] == ['STATUS.md', 'nested/out file.txt']
+    assert row['grade_dir'] == str(work) and row['grade_host']

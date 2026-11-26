@@ -165,7 +165,8 @@ def test_the_remote_shell_records_the_executors_own_pid(tmp_path):
     signal a shell that had already gone."""
     text = LAUNCH.read_text()
     i = text.index('mkdir -p $rmarks')
-    block = text[i:i + 300]
+    j = text.index('exec env RH_JOB=', i)
+    block = text[i:text.index('\n', j)]  # through the end of the exec line
     assert 'echo \\$\\$ >' in block
     # env and nice both exec in place (11-10: env sets RH_JOB for the memory guard), so the pid
     # written above is still the executor's.

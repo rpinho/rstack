@@ -129,17 +129,17 @@ def test_a_quota_hit_is_recorded_ungraded_and_never_pass_partial_or_fail(state):
     mark = agy_quota.MARK + json.dumps(agy_quota.annotate(quota_row('gemini-4-hydrogen-medium', '152h14m46s')))
     receipt, log, work = returned(state, mark)
     row = auto_grade.grade(receipt, log, work, state / 'job.md')
-    assert (row['grade'], row['grader']) == ('ungraded', 'quota') and row['note'].startswith('quota')
+    assert (row['grade'], row['grader']) == ('void: quota', 'quota') and row['note'].startswith('quota')
     assert 'weekly window' in row['note']
     # The controller learns the block from the job log, so a --host job's quota reaches its picker.
     assert ('gemini-4-hydrogen-medium', 'medium') in {(r['model'], r['tier']) for r in agy_quota.rows()}
     # An executor older than the AGY_QUOTA line: agy's own error text is enough.
     receipt, log, work = returned(state, 'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): ' + ERROR.format('4h') + '"}')
-    assert auto_grade.grade(receipt, log, work, state / 'job.md')['grade'] == 'ungraded'
-    # A session's grade for it is recorded ungraded too, with what it said kept in the note.
+    assert auto_grade.grade(receipt, log, work, state / 'job.md')['grade'] == 'void: quota'
+    # A session's grade for it is recorded void: quota too, with what it said kept in the note.
     assert wm.main(['--grade', 'partial', '--note', 'half done', '--receipt', str(receipt), '--log', str(log)]) == 0
     row = json.loads((state / 'everyday-grades.jsonl').read_text().splitlines()[-1])
-    assert row['grade'] == 'ungraded' and row['note'].startswith('quota') and 'given partial: half done' in row['note']
+    assert row['grade'] == 'void: quota' and row['note'].startswith('quota') and 'given partial: half done' in row['note']
     # No quota in the log, or not an agy run: graded as before.
     receipt, log, work = returned(state, 'some output')
     assert auto_grade.grade(receipt, log, work, state / 'job.md')['grade'] == 'fail'
@@ -172,7 +172,7 @@ def test_the_launcher_grades_a_delegated_agy_quota_failure_ungraded_and_the_next
     receipt = json.loads((jobs / 'fixture-q.log.selection.json').read_text())
     assert receipt['executor'] == 'agy'
     row = json.loads((jobs / 'everyday-grades.jsonl').read_text().splitlines()[-1])
-    assert (row['grade'], row['grader']) == ('ungraded', 'quota')
+    assert (row['grade'], row['grader']) == ('void: quota', 'quota')
     blocked = agy_quota.blocked()
     assert [r['window'] for r in blocked.values()] == ['weekly']
     model = next(iter(blocked))[0]

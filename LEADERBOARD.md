@@ -1,5 +1,7 @@
 # Model leaderboard
 
+Ricardo's own rank (2026-11-26): Gemini 4 Neon and Opus 5.5 tied #1.
+
 A dated routing snapshot from selected local harness outcomes. The ranking is everyday delegated work: real tasks handed to workers, graded pass, partial (half) or fail when they came back. "n<5" means fewer than 5 graded everyday tasks, and such a model ranks below every model with data. The bench (planted claims, reproductions with known answers) is a separate check on correctness and cost and never ranks. Starting orders include operator seed choices. This is not a universal benchmark.
 
 | Role | Model | Routing order | Everyday passed | Everyday n | Bench passed | Cost per pass | Date |

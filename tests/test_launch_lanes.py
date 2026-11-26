@@ -99,7 +99,7 @@ def test_a_delegated_agy_job_is_auto_graded_at_return(tmp_path):
     receipt = json.loads((jobs / 'fixture-d.log.selection.json').read_text())
     assert (receipt['source'], receipt['executor']) == ('delegate', 'agy')
     row = json.loads((jobs / 'everyday-grades.jsonl').read_text().splitlines()[-1])
-    assert (row['grade'], row['grader'], row['producer']) == ('pass', 'checks', 'gemini-4-hydrogen-high')
+    assert (row['grade'], row['grader'], row['producer']) == ('pass', 'checks', 'google/gemini-4-hydrogen-high')
 
 
 CLAUDE_ROLES = {'roles': {'batch': ['fixture-claude']},

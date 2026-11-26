@@ -1,8 +1,37 @@
 # Model routing and scoring
 
-[`LEADERBOARD.md`](../LEADERBOARD.md) is the sole committed leaderboard data artifact. It retains dated routing snapshots using an explicit export allowlist. Export merges the existing public tables with new dated rows; it never replaces historical scored rows. Bootstrap uses the newest routing snapshot for each role. It contains models, roles, routing order, held-outcome scores, Wilson lower scores and the source snapshot date. A second table retains active 0–4 observation scores grouped only by recognized role, model and date. It includes operational/proxy labels and preserves repeated scores; observations without a recognized public model or role are omitted. Unranked observations have a dash in routing order; unscored models have dashes in score columns. No task text, case identifiers, prompts, costs or personal overrides are exported. `public` includes active scores from the configured local model ledger when that file exists; it validates the ledger before exporting.
+The public table in [`LEADERBOARD.md`](../LEADERBOARD.md) reads the shared
+`run_grades.table()` join directly, including models with runs and no grades.
+Its default window is 30 days (`model-roles.py public --days N`). Run timestamps
+select joined rows; dates select unmatched historical grades. Rows are grouped
+by assigned role and ordered by the Wilson 95% lower bound, with `n<20, unranked`
+below 20 graded outcomes. Both role and overall rates show a Wilson 95% interval;
+partials retain half credit. These descriptive intervals do not correct for
+selected tasks, repeated jobs, subjective grading, or different task mixes.
 
-The snapshot describes one selected set of local outcomes. Its seeded order is a routing preference and may differ from sorting by measured score. Individual source evidence, task distribution and the original outcome judgments are not shipped, so the scores cannot be independently verified from this snapshot. The 0–4 lists expose only selected recorded labels, not their context. Bootstrap recovers routes, not the private evidence ledger. A new deployment starts its own evidence history.
+`Rank (Ricardo: taste + cost)` copies the owner's values from the previous
+snapshot, falling back to the explicit owner map. It never uses pass rates or
+routing positions. Opus 5.5 and Neon-high remain tied #1; Carbon (10-28) replaced
+Argon. Unknown owner ranks show a dash. Bench results appear in a footnote.
+
+Quota, probe, harness-failure and void grades do not enter the denominator.
+Incomplete-workdir rows and old controller-side grades of remote work are
+excluded with reason counts. For legacy zero-exit automatic failures recording
+both missing headers, the reader checks the files in the workdir named in the
+original spec or saved launch command. Reused sweep job names are matched on the
+full output path. These are read-only exclusions, not historical regradings.
+Driver outputs are counted separately as graded only for pass/partial/fail.
+
+Hourly health calls set `RH_RUN_PURPOSE=probe`; the executor persists
+`purpose=probe` and writes `void: probe`. Old `canary-*` jobs get the same
+read-time disposition. Neither public work counts, intake nor `--owed` includes
+probes. The separate routing snapshot retains candidate order and optional cost
+per pass for bootstrap. Routing code, pools, inheritance and the n<5 routing rule
+are unchanged. Aggregated routing evidence and feeds never fabricate raw public
+grades. Only allowlisted model/role/count/rank/rate fields are exported; task text,
+paths, prompts and private evidence remain local. Existing dated observation
+labels remain separate from the current pass-rate table. The routing details
+below describe the selector, not the owner's or the within-role public rank.
 
 ```sh
 export RH_ROLES_FILE="$PWD/.runtime/roles.json"
@@ -17,9 +46,19 @@ To route an eligible OpenRouter model, register its canonical `provider/model` I
 
 As of 2026-11-18, Google models are excluded from every served role, including candidates introduced by new evidence and routes recovered by bootstrap. The owner's reason: "Spending OpenRouter money on Google is a waste". This routing preference cannot be lifted by a high score. Existing Google route metadata, observations and dated ranking rows remain available as history. The Gemini transport remains available for explicit comparisons; it does not make a Google model eligible for a served role.
 
-Since 2026-11-19 the ranking is everyday delegated work only: real lane tasks graded pass, partial (half) or fail when they come back, keyed by the model the launch receipt ran (`worker_models.py --grade`, and the receipt-linked outcomes above). A model with fewer than 5 graded everyday tasks in a role shows `n<5` and ranks below every model with data, in its seed or candidate order. Planted-claim referee rounds, benches, known-answer reproductions and matched mini-tasks are smoke tests that a route works: their rows (`receipt-review`, or `bench: true`) are shown in a separate Bench column and never change a rank, a pool or a setting. Owner, 11-19: "Those are synthetic tests. I wouldn't use synthetic tests as the guidance... It's everyday work."
+Since 2026-11-19 routing uses everyday delegated work only: real lane tasks
+graded pass, partial (half) or fail when they come back. The selector retains its
+n<5 seed/candidate rule; the public table instead prints every observed rate and
+requires n>=20 for a within-role rank. Planted-claim referee benches, known-answer
+reproductions and matched mini-tasks remain correctness smoke tests. Their
+explicit bench rows never change a rank, pool or setting and appear in the
+public footnote. Owner, 11-19: "Those are synthetic tests. I wouldn't use synthetic
+tests as the guidance... It's everyday work."
 
-Since 2026-11-20 a Cost per pass column shows the share of the weekly plan spent per passed everyday task (`job_cost.py`): the executor's weekly-percent delta over the job's start/end window (Claude: `usage/claude-history.jsonl`; Codex: the budget wrapper's ledger snapshots; agy has no source, so `-`). Jobs that overlap on one executor are shared and left out. It shows once a model has 5 graded everyday tasks with a cost, otherwise `-`. It is never the rank: it only breaks exact ties and keeps Hydrogen-low behind Hydrogen-medium until low earns it. A missing or stale source shows `-` and never blocks anything.
+Since 2026-11-20 cost per pass shows the share of the weekly plan spent per passed
+everyday task (`job_cost.py`). It now appears in the separate routing details.
+The existing cost tie-break, missing-source behavior and routing calculations
+are unchanged by the public table repair.
 
 Since 2026-11-19 only subscription routes are served (`claude`, `codex`, `agy`); OpenRouter and Gemini API models are history only. The exclusion above applies to the Google API routes. Gemini 3.8 Flash on the Antigravity subscription (`agy`, tiers high, medium and low) and Gemini 4 Neon, Argon and Hydrogen (medium tier) enter every role except writing as candidates after the seeds, and move only by the Wilson rule like any other model.
 
@@ -68,14 +107,17 @@ export RH_ROLES_FILE=/path/to/roles.json
 leaderboard/daily.sh --dry-run --scratch-dir /path/to/new-scratch-directory
 ```
 
-Dry run copies an existing ledger into the scratch directory and writes the new
-ledger, roles and page only there. It makes no Git changes and does not fetch or
-push. The scratch directory must not already contain scoring outputs. Omit
-`--dry-run` for publication. `PYTHON` can select an existing interpreter;
-`MODEL_SCORER_REMOTE` and `MODEL_SCORER_BRANCH` default to `origin` and `main`.
-The inactive `com.example.model-scorer.plist` template runs at 06:30 local time.
-Replace its placeholders, remove unused optional source variables, and configure
-Git authentication and executable paths before installing it yourself.
+Dry run copies an existing ledger into scratch and writes the new ledger,
+roles and page there. Give it a scratch directory without scoring outputs.
+The regular hourly tick refreshes the local page and roles, imports driver
+outputs, and runs the scoring canary. Run `leaderboard/score_canary.py` for a
+read-only check. Its `graded` count includes all four grade categories.
+
+Use `--publish` on an authorized tick to publish the page. `PYTHON` can
+select an existing interpreter. `MODEL_SCORER_REMOTE` and `MODEL_SCORER_BRANCH`
+default to `origin` and `main`. The inactive
+`com.example.model-scorer.plist` template uses a one-hour interval.
+Replace its placeholders before installing it.
 
 With `RH_LAUNCH_RECEIPTS` set, receipt-linked adapters replace the legacy
 self-attributed readers. The older review/draft readers remain available through
@@ -151,3 +193,26 @@ native referee reads of one design or ruling retain one active disposition.
 These admission, technical correctness, plant and taste outcomes have different
 meanings and are not matched model trials. When a verdict has no date, its
 issuing launch date is used; no model identity comes from the verdict's prose.
+
+
+### Scoring records and driver sessions
+
+`harness/model_slugs.py:canon` is the shared resolver for model runs, grades and scorer observations. Explicit effort tiers and API routes retain their own keys; bare subscription Hydrogen resolves to high. New score writes accept only `pass`, `partial`, `fail`, `harness_fail` or `void: <reason>`. Quota exits use `void: quota`; harness refusals and incomplete work directories use `harness_fail`. Historical rows remain readable, including retractions.
+
+The executor opens a run before execution and appends its first close under the same run ID. Readers collapse these lifecycle rows to one run. Metrics are reported values or null. `auto_grade` can close an interrupted run and harvest remote executor metrics from the existing job log; a second close is a no-op.
+
+Drivers record each shipped unit explicitly:
+
+```sh
+tools/delegate-log --model gemini-4-neon-high --source session --session agy-example \
+  --task 'example result' --verdict pass --asked 'the requested result' \
+  --did 'the completed work' --shipped 'REPORT.md' --run-id example-result-1
+```
+
+Use one stable `--run-id` per unit to retry a wrap-up safely. A lane driver session (agy-<lane>, claude-<lane>) calls `delegate-log` itself when it ships a unit; it is a plain command on PATH, not a Claude Code hook, so agy drivers can call it too.
+
+`python3 leaderboard/score_canary.py --owed` is read-only. It includes every ungraded run older than 24 hours and retains the hourly canary's existing FAIL rules. `daily.sh` calls this same command with `--alert`; direct inspection never alerts unless explicitly requested.
+
+`python3 harness/tools/score_migrate.py --dry-run` prints translations and per-model raw row counts for configured ledgers, run-linked ledgers and the installed scorer's evaluations. `--write` creates sibling `.migrated.jsonl` files exclusively. It preserves row IDs, supersessions and old verdicts in `legacy_grade`/`legacy_outcome`; it never overwrites the inputs. Model run lifecycle rows and mirrored grades may repeat, so raw migration counts are not ranking totals.
+
+Ricardo's own 2026-11-26 rank is explicit `OWNER_RANK` metadata: Neon and Opus 5.5 tied #1. It appears in generated roles and snapshot prose separately from the measured everyday routing order.

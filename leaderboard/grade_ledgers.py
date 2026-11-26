@@ -10,7 +10,7 @@ Receipts: a ledger named everyday-grades.jsonl has its launch receipts beside it
 <dir>/<slug>.jsonl has them in <dir>/<slug>.receipts/ (the *.selection.json files and log-mtimes.tsv,
 the job logs' last-write times, since the logs themselves are not copied).
 
-Union: one row per grade id, the last one read, except that an "ungraded" row never replaces a grade.
+Union: one row per grade id. For legacy rows, "ungraded" never replaces a grade.
 A retraction (grade=retracted) in any ledger retracts that id in every ledger. RULE #1: a missing or
 unreadable file is skipped, never raised; `grade_ledgers.py check` warns once per scorer tick about a
 configured ledger that is missing or a mirror that has not synced for STALE_HOURS, and always exits 0.
@@ -21,6 +21,10 @@ import os
 from pathlib import Path
 import sys
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'harness'))
+from model_slugs import canon
+import score_verdicts
 
 NAME = 'everyday-grades.jsonl'
 MANIFEST = 'log-mtimes.tsv'     # "<mtime seconds>\t<file name>" per job log, written by the mirror
@@ -93,10 +97,10 @@ def receipts_dir(ledger):
 
 
 def _grade(row):
-    return str(row.get('grade')).lower()
+    return score_verdicts.migrate(row.get('grade'), row)
 
 
-def rows(paths):
+def rows(paths, include_run_retractions=False):
     """[(row, path, line number)] of the active everyday grade rows across every ledger: one per grade id,
     every retracted id left out. Never raises."""
     read = []
@@ -111,17 +115,23 @@ def rows(paths):
             except ValueError:
                 continue
             if isinstance(row, dict) and row.get('source_kind') == 'everyday':
+                row = dict(row, grade=_grade(row), model=canon(row.get('model')) or row.get('model'))
                 read.append((row, Path(path), number))
-    retracted = {r.get('id') for r, _, _ in read if r.get('id') and _grade(r) == 'retracted'}
+    retracted = {r.get('id') for r, _, _ in read if r.get('id') and _grade(r) == 'void: retracted'}
     best = {}
     for row, path, number in read:
-        if _grade(row) == 'retracted' or row.get('id') in retracted:
+        if _grade(row) == 'void: retracted' or row.get('id') in retracted:
             continue
-        key = row.get('id') or (str(path), number)
+        key = row.get('run_id') or row.get('id') or (str(path), number)
         old = best.get(key)
-        if old and _grade(row) == 'ungraded' and _grade(old[0]) != 'ungraded':
+        if old and not row.get('run_id') and _grade(row).startswith('void:') and _grade(old[0]) in ('pass', 'partial', 'fail'):
             continue
         best[key] = (row, path, number)
+    if include_run_retractions:
+        for row, path, number in read:
+            if _grade(row) == 'void: retracted' and row.get('run_id'):
+                best[row['run_id']] = (dict(row, grade='void: retracted', reason='retracted: ' + row.get('note', '')),
+                                   path, number)
     return list(best.values())
 
 
