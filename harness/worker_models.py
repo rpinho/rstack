@@ -550,7 +550,9 @@ def gemini_first(role, data, excluded, top, families=frozenset(), executors=('co
         gemini = None
     if gemini:
         return gemini, 'gemini first (Ricardo 11-24): {} instead of the leaderboard pick {}'.format(gemini, top)
-    codex = codex_pick(role, data, excluded, families, executors)
+    if cli == 'codex' and not os.environ.get('RH_AGY_CLOSED') and not skipped:
+        return None
+    codex = top if cli == 'codex' and 'codex' in executors else codex_pick(role, data, excluded, families, executors)
     return (codex, 'gemini first, but agy\'s model is not open for this job: Codex {}'.format(codex)) if codex else None
 
 
