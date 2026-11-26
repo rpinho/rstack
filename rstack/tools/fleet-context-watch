@@ -27,10 +27,13 @@ FLEET_* values. Environment takes precedence.
 
     fleet-context-watch [--dry]      --dry prints what it would do and types nothing
 """
+import importlib.machinery
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -138,9 +141,22 @@ def panes(cfg):
 
 
 def type_into(cfg, pane, text):
+    """Type and confirm through tell-session, beside this file or on PATH (11-26: text and Enter sent
+    blind sat unsubmitted for hours). Without it, send as before and say so."""
+    for p in (Path(__file__).resolve().parent / 'tell-session', Path(shutil.which('tell-session') or '/nonexistent')):
+        if p.is_file():
+            loader = importlib.machinery.SourceFileLoader('tell_session', str(p))
+            ts = importlib.util.module_from_spec(importlib.util.spec_from_loader('tell_session', loader))
+            loader.exec_module(ts)
+            code, msg = ts.tell(pane, text, tmux=cfg['tmux'])
+            if code:
+                print(msg, file=sys.stderr)
+            return code == 0
+    print('fleet-context-watch: tell-session not found; sent without confirming', file=sys.stderr)
     subprocess.run([cfg['tmux'], 'send-keys', '-t', pane, '-l', '--', text])
     time.sleep(1)
     subprocess.run([cfg['tmux'], 'send-keys', '-t', pane, 'Enter'])
+    return True
 
 
 def main(argv, cfg=None, now=None):
@@ -161,10 +177,16 @@ def main(argv, cfg=None, now=None):
         sf = cfg['state'] / (name + '.json')
         state = json.loads(sf.read_text()) if sf.exists() else {}
         action, new = decide(state, size, saved, now - f.stat().st_mtime, now, cfg)
+        sent = True
         if action == 'ask' and not dry:
-            type_into(cfg, pane, cfg['save_msg'].format(k=size // 1000))
+            sent = type_into(cfg, pane, cfg['save_msg'].format(k=size // 1000))
         elif action == 'compact' and not dry:
-            type_into(cfg, pane, '/compact Full saved state is in ' + (new['path'] or 'your state file'))
+            sent = type_into(cfg, pane, '/compact Full saved state is in ' + (new['path'] or 'your state file'))
+        if not sent:  # state unchanged, so the next run tries again
+            with open(cfg['log'], 'a') as log:
+                log.write('{} {} {}k: {} not confirmed in the pane\n'.format(
+                    time.strftime('%Y-%m-%d %H:%M'), name, size // 1000, action))
+            continue
         if action in ('ask', 'compact'):
             detail = 'asked to save state' if action == 'ask' else 'SAVED seen, sent /compact'
             line = '{} {} {}k: {}'.format(time.strftime('%Y-%m-%d %H:%M'), name, size // 1000, detail)

@@ -1473,6 +1473,7 @@
   "rstack/tools/_grok_ask.py": "response parser",
   "rstack/tools/event-watch": "mentions refusals in docs only",
   "rstack/tools/job-health": "reports failures; refuses nothing",
+  "rstack/tools/tell-session": "message sender: declining to type into a one-key menu is the send failing (nothing sent, exit 2), not a gate on work; its callers log it and retry next run",
   "kb/.claude/hooks/_hookfail.py": "the KB template's copy of rstack/hooks/_hookfail.py (kept identical by test_kb_gates)",
   "rstack/tools/x-usage-reconcile": "mentions an API refusal in a comment only",
   "harness/lane_setup.py": "lane declaration audit: records, never refuses",

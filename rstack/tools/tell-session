@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Type a message into another agent session's tmux pane and confirm it was submitted.
+
+    tell-session [--host H] [--tmux PATH] SESSION "TEXT"
+
+SESSION is a tmux session name (matched exactly) or a pane id such as %3.
+
+1. Reads the pane first and refuses (exit 2) when it shows a one-key menu: an agy survey
+   "[0] Skip", a Codex "c continue / n start fresh" choice, a folder-trust question, a y/n
+   prompt or a numbered choice with a cursor. Typed text answers those menus instead.
+2. Sends the text literally, waits a second, then sends Enter as a separate call. Text and
+   Enter in one call does not submit: the Enter lands inside the paste. Newlines go as spaces,
+   since a raw newline submits early in some CLIs.
+3. Polls the pane for up to 15 s until the input line (the last line after a >, ❯ or › marker)
+   no longer starts with the text, or a session that was idle shows it is working (esc to
+   cancel). A busy session queues the text, so its input line is what counts. If the
+   text is still there after a few seconds it sends Enter once more.
+
+Exit 0 only when confirmed; 1 when the text is still in the input box, with what the pane shows;
+2 when refused or tmux fails. Uses ~/.local/bin/tmux when present, else tmux on PATH.
+--host H runs this same file on H over ssh, with H's tmux.
+
+The bug it ends (11-26): messages typed with send-keys sat unsubmitted in Claude Code input
+boxes for hours, on both machines, and nothing noticed.
+"""
+import argparse
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+MENU = [(re.compile(p, re.I | re.M), why) for p, why in (
+    (r'\[0\]\s*Skip', 'an agy survey ([0] Skip)'),
+    (r'\bn\b\W{0,3}(to\s+)?start fresh', 'a Codex continue / start fresh choice'),
+    (r'trust (this|the files in this) folder', 'a folder-trust question'),
+    (r'[(\[]\s*y\s*/\s*n\s*[)\]]', 'a y/n prompt'),
+    (r'^\s*[│|]?\s*[❯›>]\s*[1-9][.)]\s+\S', 'a numbered choice'),
+    (r'^\s*\[[1-9]\]\s+[A-Z]', 'a numbered choice'),
+)]
+MARKER = re.compile(r'^[\s│┃|]*[>❯›]\s?(.*?)[\s│┃|]*$')
+WORKING = re.compile(r'esc to (cancel|interrupt)', re.I)
+
+
+def default_tmux():
+    local = os.path.expanduser('~/.local/bin/tmux')
+    return local if os.access(local, os.X_OK) else 'tmux'
+
+
+def flat(text):
+    return ' '.join(text.split())
+
+
+def tail(screen, n=15):
+    return [ln for ln in screen.splitlines() if ln.strip()][-n:]
+
+
+def menu(screen):
+    """Why the pane is a one-key menu, or None."""
+    bottom = '\n'.join(tail(screen))
+    return next((why for rx, why in MENU if rx.search(bottom)), None)
+
+
+def in_box(screen, text):
+    """True while the last input line still holds the start of the text (or a paste placeholder)."""
+    lines = [m.group(1) for m in map(MARKER.match, screen.splitlines()) if m]
+    if not lines:
+        return False
+    box = flat(lines[-1])
+    head = flat(text)[:24]
+    return bool(box) and ('[Pasted text' in box or box.startswith(head) or head.startswith(box))
+
+
+def tell(target, text, tmux=None, run=subprocess.run, sleep=time.sleep, polls=30, step=0.5, retry_at=6):
+    """Send and confirm. Returns (code, message): 0 confirmed, 1 still in the box, 2 refused."""
+    tmux = tmux or default_tmux()
+    if not target.startswith(('%', '=')) and not re.search(r'[:.]', target):
+        target = '=' + target + ':'  # exact session match; a bare '=name' is "can't find pane" for pane commands
+    text = flat(text)
+
+    def capture():
+        r = run([tmux, 'capture-pane', '-p', '-t', target], capture_output=True, text=True)
+        return getattr(r, 'returncode', 0), getattr(r, 'stdout', '') or ''
+
+    code, screen = capture()
+    if code:
+        return 2, f'tell-session: cannot read pane {target} (tmux exit {code}); nothing sent'
+    why = menu(screen)
+    if why:
+        return 2, f'tell-session: {target} shows {why}; nothing sent. Pane:\n' + '\n'.join(tail(screen, 8))
+    busy = bool(WORKING.search('\n'.join(tail(screen))))
+    run([tmux, 'send-keys', '-t', target, '-l', '--', text])
+    sleep(1)
+    run([tmux, 'send-keys', '-t', target, 'Enter'])
+    for i in range(polls):
+        sleep(step)
+        _, screen = capture()
+        working = bool(WORKING.search('\n'.join(tail(screen))))
+        if not in_box(screen, text) or (working and not busy):
+            return 0, f'tell-session: submitted to {target}' + (' (working)' if working else '')
+        if i == retry_at:
+            run([tmux, 'send-keys', '-t', target, 'Enter'])
+    return 1, f'tell-session: text still in the input box of {target}. Pane:\n' + '\n'.join(tail(screen, 8))
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog='tell-session', description=__doc__.split('\n\n')[0])
+    ap.add_argument('--host')
+    ap.add_argument('--tmux')
+    ap.add_argument('session')
+    ap.add_argument('text')
+    a = ap.parse_args(argv)
+    if a.host:
+        args = ([] if not a.tmux else ['--tmux', a.tmux]) + [a.session, a.text]
+        with open(os.path.abspath(__file__), 'rb') as src:
+            r = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', a.host,
+                                'python3 - ' + shlex.join(args)], stdin=src)
+        return r.returncode
+    code, msg = tell(a.session, a.text, a.tmux)
+    print(msg, file=sys.stderr if code else sys.stdout)
+    return code
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -96,7 +96,7 @@ def test_end_to_end_ask_then_compact_through_tmux(fleet, monkeypatch):
     os.utime(f, (T0 - 600, T0 - 600))
     fcw.main([], cfg, now=T0)
     typed = keys.read_text()
-    assert 'Context check: you are at 520k tokens' in typed and typed.count('-t %1') == 2
+    assert 'Context check: you are at 520k tokens' in typed and typed.count('send-keys -t %1') == 2
     assert '%2' not in typed and '%3' not in typed, 'the skip list and other sessions are never touched'
     f.write_text(f.read_text() + turn(T0 + 30, 'SAVED /state/h.md') + '\n' + turn(T0 + 200, 'still going') + '\n')
     os.utime(f, (T0 + 200, T0 + 200))

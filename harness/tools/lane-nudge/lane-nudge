@@ -23,10 +23,13 @@ conductor's wake-up was a session cron that could not fire, so nothing resumed u
 import argparse
 import fcntl
 import glob
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -246,10 +249,32 @@ def quiet_until(lane_dir, state, now):
     return line[:200]
 
 
+def tell_session():
+    """rstack/tools/tell-session, installed (<root>/rstack) or in the repo, else on PATH; None if absent."""
+    here = Path(__file__).resolve()
+    for p in (here.parents[2] / 'rstack/tools/tell-session', here.parents[3] / 'rstack/tools/tell-session',
+              Path(shutil.which('tell-session') or '/nonexistent')):
+        if p.is_file():
+            loader = importlib.machinery.SourceFileLoader('tell_session', str(p))
+            mod = importlib.util.module_from_spec(importlib.util.spec_from_loader('tell_session', loader))
+            loader.exec_module(mod)
+            return mod
+    return None
+
+
 def type_into(tmux, pane, text):
-    subprocess.run([tmux, 'send-keys', '-t', pane, '-l', '--', text])
-    time.sleep(1)
-    subprocess.run([tmux, 'send-keys', '-t', pane, 'Enter'])
+    """Type and confirm through tell-session (11-26: text and Enter sent blind sat unsubmitted for hours)."""
+    ts = tell_session()
+    if ts is None:  # fail open: send as before, and say so
+        print('lane-nudge: tell-session not found; sent without confirming', file=sys.stderr)
+        subprocess.run([tmux, 'send-keys', '-t', pane, '-l', '--', text])
+        time.sleep(1)
+        subprocess.run([tmux, 'send-keys', '-t', pane, 'Enter'])
+        return True
+    code, msg = ts.tell(pane, text, tmux=tmux, sleep=time.sleep)
+    if code:
+        print(msg, file=sys.stderr)
+    return code == 0
 
 
 def driver_status(lane_dir, state=None):
@@ -501,7 +526,9 @@ def main():
         say(a.log, f'{label}: nudge ({why}; idle {idle} min)', a.dry)
         if a.dry:
             continue
-        type_into(a.tmux, target_pane, text)
+        if not type_into(a.tmux, target_pane, text):
+            say(a.log, f'{label}: nudge not confirmed in the pane; retried next run')
+            continue
         sf.write_text(json.dumps({'at': time.time(), 'why': why, 'output': unread or saved.get('output')}))
 
 
