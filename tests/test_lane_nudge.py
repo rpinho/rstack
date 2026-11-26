@@ -611,3 +611,21 @@ def test_reset_wake_skips_claude_fallback_when_driver_is_live(tmp_path, monkeypa
     (state / 'weekly-reset.json').write_text(json.dumps({'done': RESET - 7 * 86400}))
     nudge.reset_wake(reset_args(tmp_path, usage, lanes=str(lanes)), registry, state, RESET + 400)
     assert typed == ['%1']
+
+
+def test_nameless_driver_status_defaults_to_agy_lane_and_wakes_it_not_claude(tmp_path, monkeypatch):
+    # 11-25: agy-math rewrote DRIVER_STATUS.md without naming agy-math, so lane-nudge woke claude-math.
+    seen_targets = []
+    sent, _ = _driver_env(tmp_path, monkeypatch, 'Running: sweep 1 on m5.\nNext: check results.\n',
+                          status_age=7200, agy_live=True, claude_idle=120)
+    orig_run = nudge.subprocess.run
+
+    def spy(cmd, **kw):
+        if cmd[1] == 'list-panes':
+            seen_targets.append(cmd[3])
+        return orig_run(cmd, **kw)
+
+    monkeypatch.setattr(nudge.subprocess, 'run', spy)
+    nudge.main()
+    assert seen_targets == ['=agy-math']
+    assert len(sent) == 1 and sent[0][0] == '%agy'

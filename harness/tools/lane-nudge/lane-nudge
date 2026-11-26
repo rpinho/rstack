@@ -264,10 +264,8 @@ def driver_status(lane_dir, state=None):
         except OSError:
             continue
         m = DRIVER_RE.search(text)
-        if not m:
-            return None, False, None
         stopped = any(QUOTA_LINE.search(ln) and not QUOTA_OK.search(ln) for ln in text.splitlines())
-        return m.group(1), stopped, st.st_mtime
+        return (m.group(1) if m else 'agy-' + Path(lane_dir).name), stopped, st.st_mtime
     return None, False, None
 
 
