@@ -206,6 +206,19 @@ def test_x_reply_uses_reply_flag(env):
     assert rc == 1 and 'reply longer' in out
 
 
+def test_x_question_needs_a_need_id(env, monkeypatch):
+    # 11-25: a stranger was asked about spatial data with no need behind it; their contributor's DM found no context.
+    root, lane = env
+    monkeypatch.delenv('RH_X_CHALLENGES', raising=False)
+    (lane / 'CHALLENGES.md').write_text('- Spatial interpolation that keeps neighbourhoods. [need:ve-spatial]\n')
+    ident, path = draft(env, 'Does it work on spatial data?', to='@scientist', channel='x_reply')
+    assert 'a question needs a need id' in cli(root, 'lint', 'test', ident)[1]
+    rc, out, err = cli(root, 'draft', 'test', '--to', '@scientist', '--channel', 'x_reply', '--file', path,
+                       '--purpose', 'need:ve-spatial ask about spatial data')
+    assert rc == 0, err
+    assert 'need id' not in cli(root, 'lint', 'test', out.strip())[1]
+
+
 def test_contact_validation_and_ledger_privacy(env):
     root, lane = env
     path = root / 'private.txt'

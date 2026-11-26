@@ -588,7 +588,7 @@ def test_the_receipt_shows_everyday_rate_and_n_first_and_the_bench_apart(tmp_pat
 
 def delegate_roles(path):
     routes = {'claude-opus-5-5': ('claude', 'anthropic/claude-opus-5.5'), 'gpt-6.2-sol': ('codex', 'openai/gpt-6.2-sol'),
-              'gemini-4-hydrogen-high': ('agy', 'google/gemini-4-hydrogen-high'),
+              'gpt-6.1-sol': ('codex', 'openai/gpt-6.1-sol'), 'gemini-4-hydrogen-high': ('agy', 'google/gemini-4-hydrogen-high'),
               'gemini-4-neon-high': ('agy', 'google/gemini-4-neon-high')}
     path.write_text(json.dumps({'roles': {'review': ['claude-opus-5-5', 'gpt-6.2-sol'], 'batch': ['claude-opus-5-5']},
         'routes': {m: {'cli': c, 'canonical': k} for m, (c, k) in routes.items()},
@@ -608,7 +608,7 @@ def test_an_unpinned_job_goes_to_gemini_first_and_to_codex_only_when_agy_is_clos
     assert got['source'] == 'delegate' and got['delegate'].startswith('gemini first')
     monkeypatch.setenv('RH_AGY_CLOSED', 'quota')       # launch.sh: the agy run failed on quota
     got = wm.select('batch', 'claude', path=p)
-    assert got['model'] == 'gpt-6.2-sol' and got['executor'] == 'codex'
+    assert got['model'] == 'gpt-6.1-sol' and got['executor'] == 'codex'   # 11-26: bulk Codex work off 6.2 Sol
     monkeypatch.delenv('RH_AGY_CLOSED')
     state = tmp_path / 'state'                          # agy_quota.blocked() holds the model
     state.mkdir()
@@ -616,7 +616,7 @@ def test_an_unpinned_job_goes_to_gemini_first_and_to_codex_only_when_agy_is_clos
     (state / 'agy-quota.jsonl').write_text(json.dumps({'model': 'gemini-4-hydrogen-high', 'blocked_until': until}) + '\n')
     monkeypatch.setenv('RSTACK_STATE_DIR', str(state))
     got = wm.select('batch', 'claude', path=p)
-    assert got['model'] == 'gpt-6.2-sol' and 'skipped gemini-4-hydrogen-high' in ' '.join(got['quota_skipped'])
+    assert got['model'] == 'gpt-6.1-sol' and 'skipped gemini-4-hydrogen-high' in ' '.join(got['quota_skipped'])
     monkeypatch.delenv('RSTACK_STATE_DIR')
     monkeypatch.setenv('RH_CODEX_CLOSED', 'quota')
     assert wm.select('batch', 'claude', path=p)['model'] == 'gemini-4-hydrogen-high'

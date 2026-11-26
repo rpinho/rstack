@@ -220,7 +220,7 @@ def gemini_pick(role, data, excluded, families, run, lane=''):
 
 def codex_pick(role, data, excluded, families, run):
     """Codex's default for the role (Sol, Astra for judgment roles), else None."""
-    pick = PROVIDER_DEFAULT['codex'].get(role) or PROVIDER_DEFAULT['codex']['*']
+    pick = provider_default('codex', role, data)
     r = data['routes'].get(pick)
     if ('codex' in run and isinstance(r, dict) and r.get('cli') == 'codex' and pick not in excluded
             and r.get('canonical') not in excluded and maker(pick, r.get('canonical')) not in families):
@@ -300,8 +300,17 @@ def producer_families(made_by='', workdir='', lane_dir=''):
 PROVIDER_DEFAULT = {
     'claude': {'batch': 'claude-sonnet-5-5', 'mechanical': 'claude-sonnet-5-5', 'cheap': 'claude-sonnet-5-5',
                '*': 'claude-opus-5-5'},
+    # 11-26 (OpenAI): 6.2 Sol now burns the Codex limit 25% faster and 6.2 Astra 40%; 6.1 Sol is unchanged. Bulk
+    # work goes to 6.1 Sol; Astra 6.2 keeps the judgment roles, where quality matters.
     'codex': {'review': 'gpt-6.2-astra', 'judge': 'gpt-6.2-astra', 'audit': 'gpt-6.2-astra', 'taste': 'gpt-6.2-astra',
-              'design': 'gpt-6.2-astra', 'ideation': 'gpt-6.2-astra', '*': 'gpt-6.2-sol'}}
+              'design': 'gpt-6.2-astra', 'ideation': 'gpt-6.2-astra', 'batch': 'gpt-6.1-sol',
+              'mechanical': 'gpt-6.1-sol', 'cheap': 'gpt-6.1-sol', '*': 'gpt-6.2-sol'}}
+def provider_default(provider, role, data):
+    """The provider's default for the role when the leaderboard routes it, else its '*' default."""
+    pick = PROVIDER_DEFAULT[provider].get(role)
+    return pick if pick and isinstance(data['routes'].get(pick), dict) else PROVIDER_DEFAULT[provider]['*']
+
+
 HEADROOM_HORIZON_H = 168   # a provider whose reset time is unknown is treated as a full week away
 
 
@@ -356,7 +365,7 @@ def headroom_pick(role, chosen, data, excluded, families, rooms, unknown=None, e
     for provider in order:
         if provider == route.get('cli'):
             return None, None, headroom_line([provider] + [p for p in order if p != provider], rooms)
-        pick = PROVIDER_DEFAULT[provider].get(role) or PROVIDER_DEFAULT[provider]['*']
+        pick = provider_default(provider, role, data)
         r = data['routes'].get(pick)
         if (isinstance(r, dict) and r.get('cli') == provider and pick not in excluded
                 and r.get('canonical') not in excluded and maker(pick, r.get('canonical')) not in families):

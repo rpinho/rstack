@@ -741,6 +741,14 @@ def lint_rows(lane, selected, rh, allow_collision=None):
         questions = URL.sub('', text).count('?')
         if questions > limit:
             checks['questions'].append('at most {} question(s); found {}'.format(limit, questions))
+        # 11-25: x-engage asked a stranger about spatial data with no need behind it, and their contributor's DM found
+        # the owner with no context. Where needs are listed ([need:ID] in RH_X_CHALLENGES or the lane's CHALLENGES.md),
+        # a question in an X reply or DM cites one in its purpose (need:ID).
+        needs = [Path(f).expanduser() for f in (os.environ.get('RH_X_CHALLENGES'), lane / 'CHALLENGES.md') if f]
+        if questions and row['channel'] in ('x_reply', 'x_dm') and any(f.exists() for f in needs):
+            known = set(re.findall(r'\[need:([\w-]+)\]', '\n'.join(f.read_text() for f in needs if f.is_file())))
+            if not known & set(re.findall(r'need:([\w-]+)', row.get('purpose', ''))):
+                checks['questions'].append('a question needs a need id: put need:ID from CHALLENGES.md in --purpose, or drop the question')
         language = None
         if row['channel'] == 'email':
             try:

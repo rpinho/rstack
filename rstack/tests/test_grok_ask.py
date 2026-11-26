@@ -538,10 +538,11 @@ def test_a_rendered_answer_without_fences_still_parses_one_array():
 
 def test_progress_text_counts_as_busy():
     """11-15 digest: 'Queries is typing / Typing…' was returned as the answer (exit 3, no JSON)."""
-    import re as _re
-    src = (TOOLS / '_grok_ask.py').read_text()
-    assert 'is typing|Typing…' in src
-    assert _re.search(r'is typing|Typing…|Typing\.\.\.|Searching X posts|Searching the web', 'Queries is typing\nTyping…')
+    # 11-26: Grok Bot's newer progress strings, which let digest batches exit 3 after 90 s.
+    for text in ('Queries is typing\nTyping…', 'Checking recent posts', 'Parsing X posts',
+                 'Checking more posts', 'Fetching recent X posts'):
+        assert re.search(ask.BUSY_TEXT, text), text
+    assert not re.search(ask.BUSY_TEXT, '[{"post": "Checking in"}]\nposts')
 
 # grok-post uses the same fake CDP transport, with an additional HTTP syndication stub.
 @pytest.fixture

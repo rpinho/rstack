@@ -381,6 +381,9 @@ def js(config, action, prompt=''):
     })()'''
 
 
+BUSY_TEXT = r'is typing|Typing…|Typing\.\.\.|Searching X posts|Searching the web|(?:Checking|Parsing|Fetching)[^\n]{0,30}posts'
+
+
 def query(cdp, config, host, prompt, deadline, state):
     cdp.call('Page.enable')
     cdp.evaluate(js(config, 'new'))
@@ -413,7 +416,7 @@ def query(cdp, config, host, prompt, deadline, state):
             sample = dict(text=raw, busy=False, sent=bool(raw))
         # 11-15 digest: an answer captured while the app showed "Queries is typing / Typing…" failed with no
         # JSON. Progress text is busy, however long it stays the same.
-        if re.search(config.get('busy_text', r'is typing|Typing…|Typing\.\.\.|Searching X posts|Searching the web'),
+        if re.search(config.get('busy_text', BUSY_TEXT),
                      sample['text'] or ''):
             sample = dict(sample, busy=True)
         signature = (sample['text'], sample.get('busy'), sample.get('sent'))
