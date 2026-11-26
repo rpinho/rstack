@@ -33,7 +33,7 @@ class MeteredRefusal(ValueError):
 ROLES_FILE = settings.path('RH_ROLES_FILE', Path('.runtime/roles.json'))
 JUDGMENT = frozenset(('review', 'judge', 'audit', 'taste', 'design', 'ideation'))
 INDEPENDENT = frozenset(('review', 'judge', 'audit'))
-ROLE_ROWS = {'judge': 'review', 'audit': 'review', 'design': 'taste'}
+ROLE_ROWS = {'judge': 'review', 'audit': 'review', 'design': 'taste', 'proof': 'builder'}
 # Historical jobs also attach ref/rev/chk to a subject, e.g. c38ref or l1chk.
 JUDGMENT_JOB = re.compile(
     r'(^|_)(?:ref|referee|review|rev|judge|audit|taste|design|chk|check|verify|'
@@ -150,8 +150,9 @@ def claude_overflow(executor, model):
 # 11-24 (general, for Ricardo: "Just make it the primary driver everywhere"): an unpinned job that would run on Codex,
 # on agy or (Claude off by default) leave Claude goes to agy's Gemini first, and to Codex only when that is closed. 11-20 (Ricardo): Neon is the main Gemini, Hydrogen the cheap one (batch and mechanical).
 # 11-22 (Ricardo via general): Neon also builds a record in biology.
-GEMINI_ROLES = {'neon': ('review', 'judge', 'audit', 'builder', 'biology'), 'hydrogen': ('batch', 'mechanical')}
-NEVER_PICKED = ('gemini-4-carbon',)   # no role, no delegation, no headroom move
+GEMINI_ROLES = {'carbon': ('proof',), 'neon': ('review', 'judge', 'audit', 'builder', 'biology'),
+                'hydrogen': ('batch', 'mechanical')}
+CARBON_LANES = ('math',)   # 11-25 (Google AI Ultra): hard math and proof work runs on Carbon-high
 # 11-23 (Ricardo: "just do median for all of them, and for Neon and Hydrogen, we should try high"): no Gemini job
 # runs below medium; a -low pick (an old ranking, an explicit --model) runs at -medium, and the receipt says so.
 GEMINI_LOW = re.compile(r'^(gemini-[\w.]+(?:-[a-z]+)?)-low$')
@@ -206,9 +207,10 @@ def gate_reviewer(model, reviewers):
     return any('-{}-'.format(r) in '-{}-'.format(model) for r in reviewers)
 
 
-def gemini_pick(role, data, excluded, families, run):
-    """agy's Gemini for the role (Neon, or Hydrogen for batch and mechanical), else None."""
-    gemini = 'gemini-4-hydrogen-high' if role in GEMINI_ROLES['hydrogen'] else 'gemini-4-neon-high'
+def gemini_pick(role, data, excluded, families, run, lane=''):
+    """agy's Gemini for the role/lane (Carbon for math and proof, Hydrogen for batch/mechanical, else Neon)."""
+    gemini = ('gemini-4-carbon-high' if role in GEMINI_ROLES['carbon'] or lane in CARBON_LANES
+              else 'gemini-4-hydrogen-high' if role in GEMINI_ROLES['hydrogen'] else 'gemini-4-neon-high')
     r = data['routes'].get(gemini)
     if ('agy' in run and isinstance(r, dict) and r.get('cli') == 'agy' and gemini not in excluded
             and r.get('canonical') not in excluded and maker(gemini, r.get('canonical')) not in families):
@@ -226,7 +228,7 @@ def codex_pick(role, data, excluded, families, run):
     return None
 
 
-def claude_fallback(role, data, excluded, families, requested, follows_route, chosen, hold=False):
+def claude_fallback(role, data, excluded, families, requested, follows_route, chosen, hold=False, lane=''):
     """Where a job goes when Claude is closed to it (ceiling, pacing, budget line, lane share): (model, executor,
     route_model). Codex's default for the role first, then agy's Sonnet 5.5. Never a family the job judges.
     None when nothing is available. Under a Claude hold (a 0% lane share; 11-22, general) the agy leg is agy's
@@ -238,7 +240,7 @@ def claude_fallback(role, data, excluded, families, requested, follows_route, ch
         return (pick, 'codex', None) if pick else None
 
     def gemini_leg():
-        gemini = gemini_pick(role, data, excluded, families, run)
+        gemini = gemini_pick(role, data, excluded, families, run, lane=lane)
         return (gemini, 'agy', gemini) if gemini else None
 
     got = codex_leg()
@@ -386,7 +388,7 @@ def codex_closed_pick(role, data, ranked, excluded, families):
     not open to it (excluded, or the family the job judges)."""
     def open_to(m):
         r = data['routes'].get(m)
-        return (isinstance(r, dict) and r.get('cli') == 'claude' and m not in excluded and m not in NEVER_PICKED
+        return (isinstance(r, dict) and r.get('cli') == 'claude' and m not in excluded
                 and r.get('canonical') not in excluded and maker(m, r.get('canonical')) not in families)
     first = PROVIDER_DEFAULT['claude'].get(role) or PROVIDER_DEFAULT['claude']['*']
     return next((m for m in [first] + list(ranked) if open_to(m)), None)
@@ -528,7 +530,7 @@ def trial_report(name, ledgers, roles_file=None):
 
 
 def gemini_first(role, data, excluded, top, families=frozenset(), executors=('codex', 'claude', 'agy'),
-                 quota=None, skipped=None, job=''):
+                 quota=None, skipped=None, job='', lane=''):
     """(model, note) for an unpinned job that would run on Codex or agy, or leave Claude (Claude off by default in this
     role): agy's Neon-high (Hydrogen-high for batch and mechanical), else Codex's default for the role when agy's
     model is quota-blocked, closed for this job (RH_AGY_CLOSED) or excluded for the producer's family. The paired
@@ -537,10 +539,10 @@ def gemini_first(role, data, excluded, top, families=frozenset(), executors=('co
     if trial:
         return trial
     cli = (data['routes'].get(top) or {}).get('cli')
-    if (role not in GEMINI_ROLES['neon'] + GEMINI_ROLES['hydrogen']
+    if (role not in GEMINI_ROLES['carbon'] + GEMINI_ROLES['neon'] + GEMINI_ROLES['hydrogen']
             or not (cli in ('codex', 'agy') or (cli == 'claude' and claude_cap.delegate_default(role)))):
         return None
-    gemini = gemini_pick(role, data, excluded, families, executors)
+    gemini = gemini_pick(role, data, excluded, families, executors, lane=lane)
     held = gemini and quota and agy_quota.blocked_until(gemini, os.environ.get('LAUNCH_EFFORT'), table=quota)
     if held:
         if skipped is not None:
@@ -671,7 +673,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     codex_closed = os.environ.get('RH_CODEX_CLOSED', '').strip()
     if codex_closed and (data['routes'].get(chosen) or {}).get('cli') == 'codex':
         held, fam = bool(explore or model or pin), (families if judging else frozenset())
-        moved = None if held else gemini_pick(role, data, excluded, fam, runnable(requested, follows_route))
+        moved = None if held else gemini_pick(role, data, excluded, fam, runnable(requested, follows_route), lane=lane)
         if moved and agy_quota.blocked_until(moved, effort, table=quota):
             moved = None
         if not moved and not held and 'claude' in runnable(requested, follows_route):
@@ -687,7 +689,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     if judging and not families:
         delegate_skip = 'judging job with an unknown producer family: not delegated'
     elif not (explore or model or pin):
-        delegated = gemini_first(role, data, excluded, chosen, fam, run, quota, quota_skipped, job)
+        delegated = gemini_first(role, data, excluded, chosen, fam, run, quota, quota_skipped, job, lane=lane)
     elif explore and not (model or pin):
         delegated = trial_pick(role, data, excluded, fam, run, quota, job, top=chosen)   # explore joins only the trial
     if delegated:
@@ -722,7 +724,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
                 raise ValueError('role {} selected {}: {}; a pinned or explicit model has no fallback'.format(
                     role, chosen, cap['leave']))
             cap_route = claude_fallback(role, data, excluded, families if judging else frozenset(), requested,
-                                        follows_route, chosen, hold=cap.get('hold', False))
+                                        follows_route, chosen, hold=cap.get('hold', False), lane=lane)
             if not cap_route:
                 # RULE #1: the ceiling reroutes work; with nowhere to reroute it to, the job stays on Claude.
                 if harness_blocks.gate('selector.claude-ceiling', 'role {} selected {}: {}; no Codex or agy fallback '

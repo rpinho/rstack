@@ -80,3 +80,14 @@ def test_superseded_versions_are_history_and_never_routed():
     assert mr.rank("batch", {})[0][0] == "openai/gpt-6.2-sol"
     ev = {"batch": {"openai/gpt-6.1-sol": {"k": 170, "n": 171, "days": {str(i) for i in range(9)}}}}
     assert "openai/gpt-6.1-sol" not in mr.rank("batch", ev)[0]
+
+def test_agy_carbon_tiers_have_subscription_routes_and_low_is_below_floor(tmp_path, monkeypatch):
+    monkeypatch.setattr(mr, 'LEDGER', tmp_path / 'absent.jsonl')
+    monkeypatch.delenv('RH_LAUNCH_RECEIPTS', raising=False)
+    monkeypatch.setattr(mr, 'evidence', lambda: {})
+    data = mr.recompute(write=False)
+    for tier in ('low', 'medium', 'high'):
+        native = 'gemini-4-carbon-' + tier
+        canonical = 'google/' + native
+        assert mr.canon(native) == canonical and data['routes'][native] == {'cli': 'agy', 'canonical': canonical}
+    assert 'google/gemini-4-carbon-low' in mr.GEMINI_BELOW_FLOOR

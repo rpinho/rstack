@@ -103,7 +103,7 @@ def spend_down(weekly, now=None):
 KEEP_BACK = 3.0
 # 11-23 (Ricardo via general): Claude only for Ricardo-facing writing, browser work with his logins and sealed
 # cross-lab referees (those are pinned); every other pick in these roles goes to Codex and Gemini.
-OFF_CLAUDE_ROLES = ('builder', 'mechanical', 'batch', 'review', 'judge', 'audit')
+OFF_CLAUDE_ROLES = ('builder', 'mechanical', 'batch', 'review', 'judge', 'audit', 'proof')
 
 
 def delegate_default(role):

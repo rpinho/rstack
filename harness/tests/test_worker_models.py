@@ -1165,21 +1165,37 @@ def test_claude_usage_keeps_a_history_for_pacing(tmp_path):
     assert rows == [{'at': 1000 + 15 * 86400, 'weekly_percent': 9.0}]
 
 
-def test_gemini_picks_run_at_high_and_carbon_or_argon_never(tmp_path, monkeypatch):
-    """11-23 (Ricardo: Neon and Hydrogen at high). 11-24: the Argon share went with the random draw."""
+def test_gemini_picks_run_at_high_with_carbon_for_math_and_proof(tmp_path, monkeypatch):
+    """11-25 (Google AI Ultra): math lane delegated jobs and proof role go to Carbon-high; Neon/Hydrogen elsewhere."""
     routes = {m: {'cli': 'agy', 'canonical': 'google/' + m} for m in (
-        'gemini-4-argon-low', 'gemini-4-argon-medium', 'gemini-4-carbon-medium', 'gemini-4-neon-high',
-        'gemini-4-neon-medium', 'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium', 'gemini-4-hydrogen-high')}
+        'gemini-4-argon-low', 'gemini-4-argon-medium', 'gemini-4-carbon-low', 'gemini-4-carbon-medium',
+        'gemini-4-carbon-high', 'gemini-4-neon-high', 'gemini-4-neon-medium',
+        'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium', 'gemini-4-hydrogen-high')}
     routes['gpt-6.2-sol'] = {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'}
+    routes['claude-opus-5-5'] = {'cli': 'claude', 'canonical': 'anthropic/claude-opus-5.5'}
     gemini_roles = wm.GEMINI_ROLES['neon'] + wm.GEMINI_ROLES['hydrogen']
     p = tmp_path / 'roles.json'
     p.write_text(json.dumps({'roles': {r: ['gpt-6.2-sol'] for r in gemini_roles}, 'routes': routes}))
-    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,agy')
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
+    monkeypatch.setenv('RH_CLAUDE_DELEGATE_DEFAULT', '1')
     for role in gemini_roles:
-        got = wm.select(role, 'codex', path=p, made_by='claude-opus-5-5' if role in wm.INDEPENDENT else '')
+        got = wm.select(role, 'codex', path=p, lane='planets',
+                        made_by='claude-opus-5-5' if role in wm.INDEPENDENT else '')
         assert got['model'] == ('gemini-4-hydrogen-high' if role in wm.GEMINI_ROLES['hydrogen']
                                 else 'gemini-4-neon-high'), (role, got['model'])
+        got_math = wm.select(role, 'codex', path=p, lane='math',
+                             made_by='claude-opus-5-5' if role in wm.INDEPENDENT else '')
+        assert (got_math['model'], got_math['executor']) == ('gemini-4-carbon-high', 'agy'), (role, got_math)
+    # proof role goes to Carbon-high from any lane (even with a Claude leaderboard pick), via ROLE_ROWS -> builder
+    p.write_text(json.dumps({'roles': {**{r: ['gpt-6.2-sol'] for r in gemini_roles}, 'builder': ['claude-opus-5-5']},
+                             'routes': routes}))
+    got_proof = wm.select('proof', 'claude', path=p, lane='planets')
+    assert (got_proof['model'], got_proof['executor']) == ('gemini-4-carbon-high', 'agy')
+    # Cross-family independence still blocks Carbon on a Gemini-produced review in math
+    got_rev = wm.select('review', 'codex', path=p, lane='math', made_by='gemini-4-carbon-high')
+    assert not got_rev['model'].startswith('gemini')
+    assert wm.gemini_floor('gemini-4-carbon-low', json.loads(p.read_text()))[0] == 'gemini-4-carbon-medium'
 
 
 def test_no_gemini_job_runs_below_medium(tmp_path, monkeypatch):

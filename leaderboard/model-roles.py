@@ -61,6 +61,9 @@ MODELS = {'anthropic/claude-opus-5.5': ('claude', 'claude-opus-5-5'),
  # Gemini API routes above, whose history stays as it is. Low and medium are both candidates: effort is chosen
  # like everything else, from graded real lane work at each effort (Ricardo 11-19: "Those are synthetic tests.
  # I wouldn't use synthetic tests as the guidance... It's everyday work.").
+ 'google/gemini-4-carbon-high': ('agy', 'gemini-4-carbon-high'),
+ 'google/gemini-4-carbon-medium': ('agy', 'gemini-4-carbon-medium'),
+ 'google/gemini-4-carbon-low': ('agy', 'gemini-4-carbon-low'),
  'google/gemini-4-neon-high': ('agy', 'gemini-4-neon-high'),
  'google/gemini-4-hydrogen-high': ('agy', 'gemini-4-hydrogen-high'),
  'google/gemini-4-neon-medium': ('agy', 'gemini-4-neon-medium'),
@@ -133,7 +136,7 @@ AGY_FLASH = ['google/gemini-3.8-flash-high', 'google/gemini-3.8-flash-medium']
 AGY_NEON = ['google/gemini-4-neon-high', 'google/gemini-4-neon-medium']
 AGY_HYDROGEN = ['google/gemini-4-hydrogen-high', 'google/gemini-4-hydrogen-medium']
 GEMINI_BELOW_FLOOR = ('google/gemini-3.8-flash-low', 'google/gemini-4-neon-low', 'google/gemini-4-hydrogen-low',
-                      'google/gemini-4-argon-low')
+                      'google/gemini-4-argon-low', 'google/gemini-4-carbon-low')
 GEMINI4_DROPPED = ('google/gemini-4-argon', 'google/gemini-4-argon-medium') + GEMINI_BELOW_FLOOR
 HYDROGEN_ROLES = ('batch', 'mechanical', 'cheap')
 AGY_GEMINI4 = AGY_NEON + AGY_HYDROGEN
