@@ -44,12 +44,15 @@ class HubAnswer:
 
 
 def test_lan_proxy_is_opt_in_and_dns_problem_reaches_existing_alerts(tmp_path, monkeypatch):
-    monkeypatch.setattr(jh, 'resolve_ipv4', lambda host: ['100.64.0.7'])
+    monkeypatch.setattr(jh, 'resolve_ipv4', lambda host: ['10.0.0.7'])
     monkeypatch.setattr(jh.http.client, 'HTTPConnection', HubAnswer)
     assert jh.lan_proxy_problems(None) == []
     rows = jh.lan_proxy_problems({})
     assert len(rows) == 1 and rows[0][0] == 'lan-proxy-dns'
     assert 'outside 192.168.86.x' in rows[0][2]
+    monkeypatch.setattr(jh, 'resolve_ipv4', lambda host: ['100.64.0.9'])
+    assert jh.lan_proxy_problems({}) == []
+    monkeypatch.setattr(jh, 'resolve_ipv4', lambda host: ['10.0.0.7'])
     monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'state'))
     sent = tmp_path / 'sent'
     alert = "/bin/sh -c 'echo \"$0\" >> {}'".format(sent)

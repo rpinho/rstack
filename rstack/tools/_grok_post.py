@@ -51,7 +51,7 @@ def load_config():
                        rh_root=os.environ.get('RH_OUTREACH_ROOT') or os.environ.get('RH_ROOT') or
                        '~/.local/share/research-harness', rh_command=[os.environ.get('RH', 'rh')],
                        ledger_path=str(state_dir() / 'grok-post.jsonl'),
-                       notify_command=['tell-general'],
+                       notify_command=['tell-general'], timeline_command=None,
                        syndication_url='https://cdn.syndication.twimg.com/tweet-result'))
     if path.exists():
         config.update(json.loads(path.read_text()))
@@ -62,7 +62,9 @@ def load_config():
         raise Refused('post_bot_name must be a dedicated bot, distinct from bot_name')
     if not re.fullmatch(r'[A-Za-z0-9_]{1,15}', config['post_account']):
         raise Refused('configure post_account with the fixed Grok X screen_name (without @)')
-    for key in ('rh_command', 'notify_command'):
+    for key in ('rh_command', 'notify_command', 'timeline_command'):
+        if key == 'timeline_command' and config[key] is None:
+            continue
         if (not isinstance(config[key], list) or not config[key] or
                 any(not isinstance(x, str) or not x or '\0' in x for x in config[key])):
             raise Refused(key + ' must be a nonempty argv array')
@@ -378,13 +380,33 @@ def append(path, record):
 
 def notify(config, rh_id, error):
     try:
-        result = subprocess.run([*config['notify_command'],
+        result = subprocess.run([*config['notify_command'], '--from', 'grok-post', 'fyi',
                                  'grok-post verification failed for ' + rh_id + ': ' + error],
                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
         if result.returncode:
             print('grok-post: tell-general command failed', file=sys.stderr)
     except (OSError, subprocess.SubprocessError) as exc:
         print('grok-post: tell-general command failed: ' + str(exc), file=sys.stderr)
+
+
+def on_timeline(config, text, is_reply):
+    """After an uncertain send: read @post_account's timeline once; return the ID of the post with exactly this text."""
+    keys = state_dir() / 'schema-timeline.json'
+    keys.write_text(json.dumps(['post_id', 'text']))
+    query = ('Read only, do not post or take any action. Look at the public X timeline of @' + config['post_account'] +
+             '. Return one object per post or reply from the last 3 days, newest first, with post_id and the exact '
+             'full text (up to 10).')
+    argv = config.get('timeline_command') or [str(Path(__file__).resolve().parent / 'grok-ask'), '--host',
+                                              config['post_host'], '--timeout', '120', '--schema', str(keys)]
+    out = subprocess.run([*argv, query], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=150).stdout
+    want = normal(text).strip()
+    for row in json.loads(out[out.index('['):out.rindex(']') + 1]):
+        shown = normal(str(row.get('text', ''))).strip()
+        if is_reply:
+            shown = re.sub(r'^(@\w+\s+)+', '', shown)
+        if shown == want and str(row.get('post_id', '')).isdecimal():
+            return str(row['post_id'])
+    return None
 
 
 def main(argv=None):
@@ -574,6 +596,22 @@ def main(argv=None):
                 (code if code == 4 else 2 if isinstance(exc, Refused) else 3))
         record['error'] = str(exc) or type(exc).__name__
         print('grok-post: ' + record['error'], file=sys.stderr)
+        if code == 5 and not args.dm and not args.dry_run and 'rh outreach sent failed' not in record['error']:
+            # The send was pressed but not confirmed. One look at the timeline: an exact match is sent.
+            try:
+                found = on_timeline(config, text, bool(args.reply_to))
+                if found:
+                    rhc = subprocess.run([*config['rh_command'], '--root', str(root), 'outreach', 'sent', lane_name,
+                                          ident, '--message-id', found, '--via', 'grok'],
+                                         stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+                    if rhc.returncode == 0:
+                        record.update(posted_id=found, recovered_from=record['error'],
+                                      posted_url='https://x.com/' + config['post_account'] + '/status/' + found)
+                        record.pop('error')
+                        code = 0
+                        print('Verified on timeline after: ' + record['recovered_from'] + '\n' + record['posted_url'])
+            except Exception as exc2:
+                print('grok-post: timeline check failed: ' + str(exc2), file=sys.stderr)
     finally:
         record.update(exit_code=code, event='result')
         if config:

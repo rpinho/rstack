@@ -344,8 +344,8 @@ def lan_proxy_problems(source, resolver=None, connection=None):
         host = source.get('target', 'm5.local')
         label = source.get('label') or host + ' via LAN proxy'
         addresses = (resolver or resolve_ipv4)(host)
-        if not addresses or set(home_lan_addresses(addresses)) != set(addresses):
-            raise ValueError('{} resolves outside 192.168.86.x: {}'.format(host, ','.join(addresses)))
+        if not addresses or any(not (a.startswith('100.') or a in home_lan_addresses([a])) for a in addresses):  # LAN or Tailscale 100.x
+            raise ValueError('{} resolves outside 192.168.86.x and 100.x: {}'.format(host, ','.join(addresses)))
     except (OSError, ValueError, TypeError, subprocess.SubprocessError) as exc:
         rows.append(('lan-proxy-dns', label, str(exc)))
     conn = None

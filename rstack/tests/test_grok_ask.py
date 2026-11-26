@@ -585,6 +585,7 @@ Path(sys.argv[1]).write_text(json.dumps(sys.argv[2:]))
     options = dict(post_account='fixture_account', post_host='local', rh_root=str(root),
                    rh_command=[sys.executable, str(rh_stub), str(sent_log)],
                    notify_command=[sys.executable, str(notify_stub), str(page_log)],
+                   timeline_command=[sys.executable, '-c', 'raise SystemExit(1)'],
                    ledger_path=str(folder / 'post-ledger.jsonl'))
 
     class Posting:
@@ -705,6 +706,30 @@ def test_post_bad_public_verification_exit_five_and_pages(posting, change):
         configure((None, Path(os.environ['GROK_ASK_CONFIG'])), retry.port)
         again = posting.run('--reply-to', posting.row['in_reply_to'])
     assert again.returncode == 2 and not retry.sent_prompts
+
+
+def test_unconfirmed_send_found_on_timeline_counts_as_sent(posting, tmp_path):
+    stub = tmp_path / 'timeline.py'
+    stub.write_text('import json,sys\nprint(json.dumps([{"post_id": "9001", "text": "@fixture_target " + %r}]))\n' % posting.text)
+    posting.row.update(channel='x_reply', in_reply_to='https://x.com/fixture_target/status/12')
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        fake.syndication = {}   # the public check fails after the send, as a timeout would
+        posting.options['timeline_command'] = [sys.executable, str(stub)]
+        posting.save()
+        result = posting.run('--reply-to', posting.row['in_reply_to'])
+    assert result.returncode == 0, result.stderr
+    assert json.loads(posting.sent_log.read_text())[-1:] and '9001' in posting.sent_log.read_text()
+    assert posting.records()[-1]['posted_id'] == '9001' and not posting.page_log.exists()
+
+
+def test_notify_uses_tell_general_from_fyi_form(posting):
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        fake.syndication = {}
+        result = posting.run('--post')
+    assert result.returncode == 5
+    assert json.loads(posting.page_log.read_text())[:3] == ['--from', 'grok-post', 'fyi']
 
 
 def test_post_reply_verified(posting):
