@@ -40,7 +40,7 @@ def test_the_token_goes_in_a_header_and_never_into_an_error():
     assert rec is None and 'HTTP 401' in row and SECRET not in row
 
 
-def test_a_failed_read_keeps_the_last_reading_writes_an_alert_row_and_exits_1(tmp_path, monkeypatch, capsys):
+def test_a_failed_read_keeps_the_last_reading_writes_an_alert_row_and_fails_open(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
     monkeypatch.setenv('RSTACK_HOST', 'm5')
     monkeypatch.setattr(cu, 'fetch', lambda: BODY)
@@ -52,7 +52,8 @@ def test_a_failed_read_keeps_the_last_reading_writes_an_alert_row_and_exits_1(tm
     def broken():
         raise cu.Failure('usage body has no seven_day.utilization (the endpoint may have changed)')
     monkeypatch.setattr(cu, 'fetch', broken)
-    assert cu.main([]) == 1
+    assert cu.main(['--dry']) == 1                    # a manual check still sees the failure
+    assert cu.main([]) == 0                           # the job fails open; the alert row is the signal
     assert json.loads(usage.read_text()) == first     # never overwritten with a guess
     row = alert.read_text().split('\t')
     assert row[1] == 'claude-usage' and 'seven_day.utilization' in row[2] and 'unknown' in row[2]

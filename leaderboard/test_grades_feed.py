@@ -75,14 +75,17 @@ def test_a_laptop_feed_raises_the_combined_count_keeps_the_split_and_skips_unkno
                          ('openai/gpt-6.2-astra', 'everyday', 'review', 'fail', '1'),        # harness: never counts
                          ('openai/gpt-6.2-astra', 'judge', 'review', 'void', '0'),           # void: never counts
                          ('openai/gpt-6.2-astra', 'bench', 'chore', 'pass', '0'),            # bench: bench only
-                         ('codex-chrome', 'everyday', 'build', 'pass', '0')))                # unknown id: skipped
+                         ('codex-chrome', 'everyday', 'build', 'pass', '0'),                 # a surface: void
+                         ('claude-opus-5', 'everyday', 'build', 'pass', '0'),                # Opus 5.5
+                         ('mystery-model', 'everyday', 'build', 'pass', '0')))               # unknown id: skipped
     monkeypatch.setenv('MODEL_GRADES_FEED', str(snap))
     data = mr.recompute(write=False)
     row = data['evidence']['review']['gpt-6.2-astra']
     assert row['n'] == 6 and row['feed'] == {'laptop': {'n': 4, 'k': 3.5}}             # 2 here + 4 from the laptop
     assert row['rate'] == round(5.5 / 6, 3) and row['scored']
     assert data['bench']['mechanical']['gpt-6.2-astra']['n'] == 1
-    assert data['feed_skipped'] == {'codex-chrome': 1}
+    assert data['feed_skipped'] == {'mystery-model': 1}
+    assert data['evidence']['builder']['claude-opus-5-5']['feed'] == {'laptop': {'n': 1, 'k': 1.0}}
     # The public routing snapshot uses the combined order; raw joined grades alone supply pass rates.
     page = tmp_path / 'LEADERBOARD.md'
     mr.public(data, page)

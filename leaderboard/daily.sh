@@ -6,7 +6,6 @@ REPO=${HERE:h}
 PYTHON=${PYTHON:-python3}
 dry_run=false
 publish=false
-canary_rc=0
 scratch=''
 while (( $# )); do
   case "$1" in
@@ -43,7 +42,9 @@ else
   mkdir -p -- "$MODEL_STATE"
   target=$MODEL_STATE/LEADERBOARD.md
   "$PYTHON" "$HERE/driver_grades.py" || true
-  "$PYTHON" "$HERE/score_canary.py" --owed --alert || canary_rc=$?
+  # 11-26: an owed grade is the canary's own alert (--alert), not a failed scorer job. Exiting with its code made
+  # job-health flag the scorer as broken every hour a grade was owed: a second, wrong alarm.
+  "$PYTHON" "$HERE/score_canary.py" --owed --alert || true
   if $publish; then
     "$PYTHON" "$REPO/harness/harness_blocks.py" report --tell ${=RH_BLOCKS_PEER_ARGS:-} || true
   fi
@@ -56,7 +57,7 @@ if $dry_run; then
   print -- "Dry run: $scratch (no commits or pushes)"
   exit 0
 fi
-$publish || exit "$canary_rc"
+$publish || exit 0
 "$PYTHON" "$REPO/rstack/tools/egress-gate" scan "$target"
 # Fetch and branch before touching the repository page. The controller tree is never committed.
 remote=${MODEL_SCORER_REMOTE:-origin}

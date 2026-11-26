@@ -40,7 +40,7 @@ RULE_BLOCKED = re.compile(r'rule-blocked|prohibited|not allowed|forbidden|holdou
 
 # One resolver for every score writer and reader.
 sys.path.insert(0, str(HERE.parent / 'harness'))
-from model_slugs import MODELS, ALIASES, canon
+from model_slugs import MODELS, ALIASES, VOID_IDS, canon
 import score_verdicts
 
 # 11-19 Ricardo: "No pay-as-you-go. Do NOT top up OpenRouter." Every seed is a subscription route
@@ -366,6 +366,8 @@ def graded(kind):
         if row_kind != kind:
             continue
         model = canon(row["model"])
+        if not model and row["model"] in VOID_IDS:
+            continue
         if not model:
             FEED_SKIPPED[row["model"]] = FEED_SKIPPED.get(row["model"], 0) + 1
             continue

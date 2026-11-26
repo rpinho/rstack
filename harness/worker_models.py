@@ -156,6 +156,15 @@ def claude_overflow(executor, model):
 GEMINI_ROLES = {'carbon': ('proof',), 'neon': ('review', 'judge', 'audit', 'builder', 'biology'),
                 'hydrogen': ('batch', 'mechanical')}
 CARBON_LANES = ('math',)   # 11-25 (Google AI Ultra): hard math and proof work runs on Carbon-high
+# 11-26 (Ricardo, via general: "Cinna Davis: best math model"): math producer and builder jobs, and proof work in
+# any lane, run on Codex's Astra 6.2, not throttled for its faster burn (the Codex credits are there to spend).
+# Carbon-high stays math's referee, another family from Astra, so the producer never grades itself, and takes
+# the producer work only when Codex is closed.
+ASTRA, ASTRA_ROLES, ASTRA_LANES = 'gpt-6.2-astra', ('proof',), ('math',)
+
+
+def astra_job(role, lane=''):
+    return role not in JUDGMENT and (role in ASTRA_ROLES or lane in ASTRA_LANES)
 # 11-23 (Ricardo: "just do median for all of them, and for Neon and Hydrogen, we should try high"): no Gemini job
 # runs below medium; a -low pick (an old ranking, an explicit --model) runs at -medium, and the receipt says so.
 GEMINI_LOW = re.compile(r'^(gemini-[\w.]+(?:-[a-z]+)?)-low$')
@@ -221,9 +230,10 @@ def gemini_pick(role, data, excluded, families, run, lane=''):
     return None
 
 
-def codex_pick(role, data, excluded, families, run):
-    """Codex's default for the role (Sol, Astra for judgment roles), else None."""
-    pick = provider_default('codex', role, data)
+def codex_pick(role, data, excluded, families, run, lane=''):
+    """Codex's default for the role (Sol, Astra for judgment roles, math producers and proof), else None."""
+    pick = (ASTRA if astra_job(role, lane) and isinstance(data['routes'].get(ASTRA), dict)
+            else provider_default('codex', role, data))
     r = data['routes'].get(pick)
     if ('codex' in run and isinstance(r, dict) and r.get('cli') == 'codex' and pick not in excluded
             and r.get('canonical') not in excluded and maker(pick, r.get('canonical')) not in families):
@@ -239,7 +249,7 @@ def claude_fallback(role, data, excluded, families, requested, follows_route, ch
     run = runnable(requested, follows_route)
 
     def codex_leg():
-        pick = codex_pick(role, data, excluded, families, run)
+        pick = codex_pick(role, data, excluded, families, run, lane=lane)
         return (pick, 'codex', None) if pick else None
 
     def gemini_leg():
@@ -544,7 +554,8 @@ def trial_report(name, ledgers, roles_file=None):
 def gemini_first(role, data, excluded, top, families=frozenset(), executors=('codex', 'claude', 'agy'),
                  quota=None, skipped=None, job='', lane=''):
     """(model, note) for an unpinned job that would run on Codex or agy, or leave Claude (Claude off by default in this
-    role): agy's Neon-high (Hydrogen-high for batch and mechanical), else Codex's default for the role when agy's
+    role): Codex's Astra 6.2 for math producers and proof, else agy's Neon-high (Hydrogen-high for batch and
+    mechanical, Carbon-high for math referees and math or proof work when Codex is closed), else Codex's default for the role when agy's
     model is quota-blocked, closed for this job (RH_AGY_CLOSED) or excluded for the producer's family. The paired
     trial comes first. None when the pick stays (another provider, or neither is open)."""
     trial = trial_pick(role, data, excluded, families, executors, quota, job, top=top)
@@ -554,6 +565,11 @@ def gemini_first(role, data, excluded, top, families=frozenset(), executors=('co
     if (role not in GEMINI_ROLES['carbon'] + GEMINI_ROLES['neon'] + GEMINI_ROLES['hydrogen']
             or not (cli in ('codex', 'agy') or (cli == 'claude' and claude_cap.delegate_default(role)))):
         return None
+    if astra_job(role, lane) and not os.environ.get('RH_CODEX_CLOSED'):
+        astra = codex_pick(role, data, excluded, families, executors, lane=lane)
+        if astra:
+            return astra, 'math producer and proof on Astra 6.2 (Ricardo 11-26): {} instead of the leaderboard pick {}'.format(
+                astra, top)
     gemini = gemini_pick(role, data, excluded, families, executors, lane=lane)
     held = gemini and quota and agy_quota.blocked_until(gemini, os.environ.get('LAUNCH_EFFORT'), table=quota)
     if held:

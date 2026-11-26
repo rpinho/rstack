@@ -222,6 +222,27 @@ def test_daily_step_failure_is_nonzero_and_does_not_publish(setup_reader, tmp_pa
     assert not (scratch / 'LEADERBOARD.md').exists()
 
 
+def test_an_owed_grade_alerts_and_exits_0_but_a_rollup_error_does_not(setup_reader, tmp_path):
+    """11-26: with a grade owed the hourly job exited with the canary's 1 and job-health called the scorer broken.
+    The owed grade is the canary's own alert; the job's exit code is the rollup's."""
+    _, _, receipts = setup_reader
+    alerts = tmp_path / 'canary-alerts.txt'
+    python = tmp_path / 'fake-python'
+    python.write_text('#!/bin/sh\ncase "$1" in\n'
+                      '  */score_canary.py) echo "owed: math_x_1126" >> "$ALERTS"; exit 1 ;;\n'
+                      '  */model-roles.py) exit "${ROLLUP_RC:-0}" ;;\nesac\nexit 0\n')
+    python.chmod(0o755)
+    state = tmp_path / 'state'
+    env = dict(os.environ, PYTHON=str(python), ALERTS=str(alerts), RH_LAUNCH_RECEIPTS=str(receipts),
+               MODEL_OUTCOMES_ROOT=str(tmp_path), MODEL_STATE=str(state), MODEL_LEDGER=str(state / 'ledger.jsonl'),
+               RH_ROLES_FILE=str(state / 'roles.json'))
+    result = subprocess.run(['/bin/zsh', str(HERE / 'daily.sh')], env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert alerts.read_text() == 'owed: math_x_1126\n'
+    result = subprocess.run(['/bin/zsh', str(HERE / 'daily.sh')], env=dict(env, ROLLUP_RC='3'), capture_output=True)
+    assert result.returncode == 3
+
+
 def test_native_referee_batch_counts_caught_and_missed_without_self_report(setup_reader, tmp_path):
     reader, _, _ = setup_reader
     path = tmp_path / 'REFEREE.jsonl'
