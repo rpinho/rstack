@@ -192,14 +192,50 @@ class Config:
             print('egress-gate: note: ' + note, file=stream)
 
 
-def hits_in(text, pats):
+# 11-25 (general, on Ricardo's "the process is to remove process"): integer runs in math certificates and
+# proof data kept reading as card numbers, and each new erdos folder got its own scoped allow rule (1183, 36,
+# 982, then 293). Instead the card check skips numeric data and proof files, and any digit run that is part
+# of a longer number (a/b, a.b) or of a list of integers. Prose (.md, comments, emails) keeps it: a real
+# card written as four groups has words around it, not more integers.
+CARD_DATA_SUFFIXES = {'.tsv', '.csv', '.json', '.jsonl', '.lean', '.lrat', '.drat', '.cnf', '.cert', '.vipr'}
+CARD_LOG_SUFFIXES = {'.txt', '.log'}
+NEIGHBOUR_NUMBER_BEFORE = re.compile(r'\d[\s,;:/.-]*$')
+NEIGHBOUR_NUMBER_AFTER = re.compile(r'^[\s,;:/.-]*\d')
+
+
+def card_exempt_path(path):
+    """True for numeric data and proof files, where a digit run is data, never a card."""
+    if not path:
+        return False
+    p = str(path).lower()
+    name = p.rsplit('/', 1)[-1]
+    if name.endswith('.gz'):
+        name = name[:-3]
+    suffix = '.' + name.rsplit('.', 1)[-1] if '.' in name else ''
+    if suffix in CARD_DATA_SUFFIXES:
+        return True
+    parts = p.split('/')[:-1]
+    return suffix in CARD_LOG_SUFFIXES and any(c == 'logs' or 'certificate' in c for c in parts)
+
+
+def card_in_number_run(text, m):
+    """True when the match touches another number: part of a fraction, a decimal or an integer list."""
+    return bool(NEIGHBOUR_NUMBER_BEFORE.search(text[max(0, m.start() - 3):m.start()])
+                or NEIGHBOUR_NUMBER_AFTER.search(text[m.end():m.end() + 3]))
+
+
+def hits_in(text, pats, path=None):
     text = CIPHERTEXT.sub(r'\1<ciphertext>\2', text)
     out = []
+    card_off = card_exempt_path(path)
     for label, rx in pats:
         for m in rx.finditer(text):
             if label == 'card':
+                if card_off or card_in_number_run(text, m):
+                    continue
                 digits = re.sub(r'\D', '', m.group(0))
-                if not (13 <= len(digits) <= 19 and luhn(digits)) or len(set(digits)) < 4:
+                # one repeated digit (0000 0000 ...) is filler; 4111 1111 1111 1111 is a card
+                if not (13 <= len(digits) <= 19 and luhn(digits)) or len(set(digits)) < 2:
                     continue
             if label == 'credential':
                 value = m.group(1)
@@ -288,7 +324,7 @@ def scan_paths(paths):
         if b'\0' in raw[:8192]:
             continue
         for ln, line in enumerate(raw.decode('utf-8', 'replace').splitlines(), 1):
-            for label, _ in hits_in(line, cfg.patterns):
+            for label, _ in hits_in(line, cfg.patterns, str(f)):
                 if scan_allowed(label, f, scopes):
                     excused += 1
                 else:
@@ -363,7 +399,7 @@ def pre_push(remote, url):
                     continue
                 if d.startswith('+'):
                     ln += 1
-                    for label, _ in hits_in(d[1:], cfg.patterns):
+                    for label, _ in hits_in(d[1:], cfg.patterns, path):
                         if not allowed(label, path, rules):
                             hits.append(('{}:{}'.format(c[:9], path), ln, label, d[1:].strip()))
                 elif not d.startswith('-'):
