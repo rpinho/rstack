@@ -36,7 +36,9 @@ class _Done(Exception):
 
 
 def normal(text):
-    return text.replace('\r\n', '\n').replace('\r', '\n')
+    # 11-26: an approved file ending in a newline never matched Grok's card, which X trims; compare
+    # without trailing newlines (a trailing space still counts as a change).
+    return text.replace('\r\n', '\n').replace('\r', '\n').rstrip('\n')
 
 
 def state_dir():

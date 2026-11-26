@@ -1002,3 +1002,12 @@ def test_public_check_expands_tco_links_and_still_refuses_a_different_link(monke
     assert fields['text'] == 'More here: https://example.org/repo'
     with pytest.raises(ValueError):
         gp.verify(config, '7', 'More here: https://example.org/other', '12', time.monotonic() + 5)
+
+
+def test_card_check_ignores_a_trailing_newline_x_trims():
+    sys.path.insert(0, str(TOOLS))
+    sys.path.insert(0, str(TOOLS.parents[1] / 'harness'))
+    import _grok_post as gp
+    card = dict(text='Same words here.', author='fixture_account', reply_to='12')
+    assert gp.card_check(card, 'Same words here.\n', 'fixture_account', '12') == []
+    assert gp.card_check(dict(card, text='Other words.'), 'Same words here.\n', 'fixture_account', '12')
