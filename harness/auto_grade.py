@@ -291,8 +291,21 @@ def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, ho
         shipped, restated = report.startswith('Shipped:'), status.startswith('You asked:')
         floor_note = effort_floor_note(receipt) if rc == 0 else ''
         grader = 'checks'
-        if missing:
+        unreachable = 'directory unavailable' in missing or (not host and not workdir.is_dir())
+        if missing and unreachable:
+            # The only harness gap: the files may exist where the job ran, but this grader cannot see them.
             result, grader, reason = 'ungraded', 'harness', 'workdir incomplete: ' + ', '.join(missing)
+        elif missing and '/sweep-work/runs/' in str(Path(log).absolute()):
+            # 11-27: a sweep stage writes its stage output, not STATUS.md/REPORT.md; the sweep reports it.
+            result, grader, reason, missing = 'void: sweep stage', 'harness', 'sweep stage: graded by its sweep', []
+        elif missing:
+            # 11-27: the job's own dir, on the host it ran on, has no REPORT.md (or a checked file): the model did
+            # not ship it. That is the model's result (fail, or partial via the failed check), not a harness gap.
+            reason_missing, missing = ', '.join(missing), []
+            if rc != 0 or not shipped:
+                result, reason = 'fail', 'exit {}; not shipped: {}'.format(rc, reason_missing)
+            else:
+                result, reason = 'partial', 'Shipped, but missing: ' + reason_missing
         elif floor_note:
             result, grader, reason = 'partial', 'effort floor', floor_note
         elif rc != 0 or not shipped:

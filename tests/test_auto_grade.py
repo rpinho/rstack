@@ -138,11 +138,32 @@ def test_an_executor_that_is_not_installed_is_a_harness_error_not_a_fail(tmp_pat
     assert (row['grade'], row['grader']) == ('harness_fail', 'harness') and 'agy' in row['note']
 
 
-def test_incomplete_workdir_stays_ungraded_without_running_the_checks(tmp_path):
-    receipt, log, work, spec = returned(tmp_path, rc=1, spec='Check: grep -q ok "nested/out file.txt"\n')
-    (work / 'STATUS.md').rename(work / 'status.saved')
+def test_files_missing_from_the_jobs_own_dir_are_the_models_result(tmp_path):
+    """11-27: cyvcf2/cperm/cskew exited 1 or 124 with no REPORT.md in their own dir. That is a fail, not a gap."""
+    receipt, log, work, spec = returned(tmp_path, rc=124, spec='Check: grep -q ok "nested/out file.txt"\n')
+    (work / 'REPORT.md').unlink()
     row = auto_grade.grade(receipt, log, work, spec)
+    assert row['grade'] == 'fail' and 'not shipped: REPORT.md, nested/out file.txt' in row['reason']
+    assert not row.get('missing_files')
+    receipt, log, work, spec = returned(tmp_path, spec='Check: test -f missing.txt\n')
+    row = auto_grade.grade(receipt, log, work, spec)
+    assert row['grade'] == 'partial' and 'missing: missing.txt' in row['reason']
+
+
+def test_an_unreachable_workdir_stays_ungraded_without_running_the_checks(tmp_path):
+    receipt, log, work, spec = returned(tmp_path, rc=1, spec='Check: grep -q ok "nested/out file.txt"\n')
+    gone = tmp_path / 'not-here'
+    row = auto_grade.grade(receipt, log, gone, spec)
     assert row['grade'] == 'harness_fail'
-    assert row['reason'] == 'workdir incomplete: STATUS.md, nested/out file.txt'
-    assert row['missing_files'] == ['STATUS.md', 'nested/out file.txt']
-    assert row['grade_dir'] == str(work) and row['grade_host']
+    assert row['reason'].startswith('workdir incomplete: STATUS.md, REPORT.md')
+    assert row['missing_files'][:2] == ['STATUS.md', 'REPORT.md']
+    assert row['grade_dir'] == str(gone) and row['grade_host']
+
+
+def test_a_sweep_stage_without_status_or_report_is_void(tmp_path):
+    stage = tmp_path / 'lanes/planets/sweep-work/runs/r1'
+    stage.mkdir(parents=True)
+    receipt, log, work, spec = returned(stage)
+    (work / 'REPORT.md').unlink(); (work / 'STATUS.md').unlink()
+    row = auto_grade.grade(receipt, log, work, spec)
+    assert row['grade'] == 'void: sweep stage' and not row.get('missing_files')
