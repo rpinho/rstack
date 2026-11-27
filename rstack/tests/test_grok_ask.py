@@ -248,7 +248,8 @@ def dt_fromiso(value):
 
 
 @pytest.mark.parametrize('answer, diagnostic', [
-    ('Nothing here.', 'expected exactly one'),
+    ('Nothing here.', 'timeout'),   # 11-27: a short line with no '[' is a progress label, busy to the deadline
+    ('Nothing here.\nNo posts matched.', 'expected exactly one'),
     ('```json\n[broken]\n```', 'bad JSON'),
     ('```json\n{}\n```', 'array of objects'),
     ('```json\n[1]\n```', 'array of objects'),
@@ -543,6 +544,14 @@ def test_progress_text_counts_as_busy():
                  'Checking more posts', 'Fetching recent X posts'):
         assert re.search(ask.BUSY_TEXT, text), text
     assert not re.search(ask.BUSY_TEXT, '[{"post": "Checking in"}]\nposts')
+
+
+def test_formatting_label_and_short_lines_without_a_bracket_are_busy():
+    """11-27: 'Formatting X posts' was taken as the answer. A short one-line answer with no '[' is still busy."""
+    for text in ('Formatting X posts', 'Formatting posts…', 'Thinking', 'Looking through recent activity'):
+        assert ask.still_busy(text), text
+    for text in ('[]', '[{"post": "Formatting X posts"}]', '```json\n[{"id": "1"}]\n```', 'line one\nline two', ''):
+        assert not ask.still_busy(text), text
 
 # grok-post uses the same fake CDP transport, with an additional HTTP syndication stub.
 @pytest.fixture

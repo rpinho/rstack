@@ -381,7 +381,20 @@ def js(config, action, prompt=''):
     })()'''
 
 
-BUSY_TEXT = r'is typing|Typing…|Typing\.\.\.|Searching X posts|Searching the web|(?:Checking|Parsing|Fetching)[^\n]{0,30}posts'
+BUSY_TEXT = (r'is typing|Typing…|Typing\.\.\.|Searching X posts|Searching the web|'
+             r'(?:Checking|Parsing|Fetching|Formatting|Reading|Gathering|Analy[sz]ing)[^\n]{0,30}posts')
+# 11-27: 'Formatting X posts' was read as the answer. Every real answer is a JSON array, so a short single line with
+# no '[' is a progress label, whatever its wording; it stays busy until the answer or the deadline.
+SHORT_LABEL = 120
+
+
+def still_busy(text, config=None):
+    t = (text or '').strip()
+    # Progress labels sit outside the answer; a post inside the JSON may quote the same words.
+    prose = re.sub(r'\[.*\]', '', re.sub(r'```.*?```', '', t, flags=re.S), flags=re.S)
+    if re.search((config or {}).get('busy_text', BUSY_TEXT), prose):
+        return True
+    return bool(t) and '\n' not in t and '[' not in t and len(t) <= SHORT_LABEL
 
 
 def query(cdp, config, host, prompt, deadline, state):
@@ -416,8 +429,7 @@ def query(cdp, config, host, prompt, deadline, state):
             sample = dict(text=raw, busy=False, sent=bool(raw))
         # 11-15 digest: an answer captured while the app showed "Queries is typing / Typing…" failed with no
         # JSON. Progress text is busy, however long it stays the same.
-        if re.search(config.get('busy_text', BUSY_TEXT),
-                     sample['text'] or ''):
+        if still_busy(sample['text'], config):
             sample = dict(sample, busy=True)
         signature = (sample['text'], sample.get('busy'), sample.get('sent'))
         if signature != previous:
