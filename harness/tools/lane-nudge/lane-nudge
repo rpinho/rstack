@@ -634,6 +634,121 @@ def takeover(a, session, lane, lane_dir, pane, state, run=subprocess.run, sleep=
     return pane, False
 
 
+LIVENESS_HOURS = 2.0
+IDLE_BY_DESIGN = re.compile(r'idle by design', re.I)
+PROMPT = re.compile(r'\? for shortcuts|bypass permissions on|^\s*[>❯›]\s*$', re.M)
+
+
+def lane_output_time(lane, lane_dir, globs, repos, run=subprocess.run):
+    """Newest OUTPUT time for a lane (memory lane-heartbeat-is-output): DRIVER_STATUS.md, RESULTS.jsonl, watch
+    events, finished job outputs (--outputs globs) and the newest commit in its repos. Not what the driver says."""
+    times = []
+    for f in [lane_dir / 'DRIVER_STATUS.md', lane_dir / 'RESULTS.jsonl', *lane_dir.glob('watch/events/*')]:
+        try:
+            times.append(f.stat().st_mtime)
+        except OSError:
+            pass
+    for pattern in globs:
+        for f in glob.glob(os.path.expanduser(pattern.replace('{lane}', lane))):
+            try:
+                times.append(os.path.getmtime(f))
+            except OSError:
+                pass
+    for repo in [lane_dir, *repos]:
+        repo = Path(os.path.expanduser(str(repo)))
+        if (repo / '.git').exists():
+            r = run(['git', '-C', str(repo), 'log', '-1', '--format=%ct', '--all'], capture_output=True, text=True)
+            if r.returncode == 0 and r.stdout.strip().isdigit():
+                times.append(float(r.stdout.strip()))
+    return max(times) if times else None
+
+
+def pane_state(tmux, sessions, run=subprocess.run):
+    """What the lane's driver panes show: quota, menu, prompt, working or missing (for the alarm's text)."""
+    ts = tell_session()
+    shown = []
+    for name in sessions:
+        r = run([tmux, 'capture-pane', '-p', '-t', f'={name}:'], capture_output=True, text=True)
+        if r.returncode:
+            continue
+        lines = [ln for ln in (r.stdout or '').splitlines() if ln.strip()]
+        tail = '\n'.join(lines[-12:])
+        if AGY_QUOTA.search(tail):
+            what = 'quota: ' + next((ln.strip() for ln in reversed(lines) if AGY_QUOTA.search(ln) or 'Resets in' in ln), '')[:120]
+        elif ts is not None and ts.menu(r.stdout or ''):
+            what = 'menu: ' + ts.menu(r.stdout or '')
+        elif re.search(r'esc to (?:interrupt|cancel)', tail):
+            what = 'working'
+        elif RUNNING.search(tail) or re.search(r'\b\d+ shells?\b', tail):
+            what = 'waiting on a background task or shell (a watcher that may never fire)'
+        elif PROMPT.search(tail):
+            what = 'prompt (idle, waiting for input)'
+        else:
+            what = 'unknown: ' + (lines[-1].strip()[:100] if lines else 'empty pane')
+        shown.append(f'{name}: {what}')
+    return '; '.join(shown) or 'no driver pane'
+
+
+def liveness(a, registry, lanes_root, state, now, sessions, run=subprocess.run):
+    """11-27 (Ricardo: "The whole point of rstack is that we're never blocked"): agy-open-source sat 7 h and lean-svm
+    ~6 h before anyone noticed. A lane with a driver session on this Mac whose output has not moved for
+    LANE_LIVENESS_HOURS (2), with no "idle by design" line in DRIVER_STATUS.md and no active QUIET, pages general
+    (LANE_LIVENESS_PAGE, default tell-general break) and pushes Ricardo (LANE_LIVENESS_PUSH, default notify-ricardo)
+    once per stall, naming the lane and what its pane shows. Repos per lane: LANE_LIVENESS_REPOS (a JSON file
+    {"lane": ["path", ...]}, host-local). Returns the lanes it alarmed on."""
+    hours = float(os.environ.get('LANE_LIVENESS_HOURS', '') or LIVENESS_HOURS)
+    page = shlex.split(os.environ.get('LANE_LIVENESS_PAGE', 'tell-general break'))
+    push = shlex.split(os.environ.get('LANE_LIVENESS_PUSH', 'notify-ricardo'))
+    try:
+        repos = json.loads(Path(os.path.expanduser(os.environ.get(
+            'LANE_LIVENESS_REPOS', '~/.config/rstack/lane-liveness.json'))).read_text())
+    except (OSError, ValueError):
+        repos = {}
+    by_lane = {}
+    for name in sessions:
+        kind, _, rest = name.partition('-')
+        if kind in ('agy', 'claude', 'codex') and rest:
+            by_lane.setdefault(registry.lane_of_session(rest), []).append(name)
+    alarmed = []
+    for lane, names in sorted(by_lane.items()):
+        lane_dir = lanes_root / lane
+        if not lane_dir.is_dir() or registry.status(lane) in ('retired', 'ended', 'held'):
+            continue
+        try:
+            if IDLE_BY_DESIGN.search((lane_dir / 'DRIVER_STATUS.md').read_text(errors='replace')):
+                continue
+        except OSError:
+            pass
+        if quiet_until(lane_dir, state, now):
+            continue
+        last = lane_output_time(lane, lane_dir, getattr(a, 'outputs_globs', []), repos.get(lane, []), run=run)
+        mark = state / f'{lane}.liveness.json'
+        try:
+            seen = json.loads(mark.read_text())
+        except (OSError, ValueError):
+            seen = {}
+        if last is not None and now - last < hours * 3600:
+            if seen:
+                mark.unlink()               # output moved: the stall is over, a new one alarms again
+            continue
+        if seen.get('last') == last:
+            continue                        # this stall was already reported
+        since = 'never' if last is None else '{:.1f} h ago'.format((now - last) / 3600)
+        msg = ('lane-liveness: lane {} has produced no output for {:g}+ h (DRIVER_STATUS, RESULTS, job outputs, '
+               'commits; last {}) and is not idle by design. Pane: {}').format(lane, hours, since,
+                                                                             pane_state(a.tmux, names, run=run))
+        if not a.dry:
+            for cmd, text in ((page, msg), (push, msg[:300])):
+                try:
+                    run(cmd + [text], capture_output=True, text=True, timeout=60)
+                except (OSError, subprocess.SubprocessError) as exc:
+                    say(a.log, f'lane-liveness: could not run {cmd[0]}: {exc!r}')
+            mark.write_text(json.dumps({'last': last, 'at': now}))
+        say(a.log, msg, a.dry)
+        alarmed.append(lane)
+    return alarmed
+
+
 def main():
     home = Path.home()
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
@@ -676,6 +791,16 @@ def main():
         say(a.log, f'weekly-reset wake failed: {exc!r}', a.dry)
     if a.reset_only:
         return
+    a.outputs_globs = outputs
+    try:
+        root = Path(os.path.expanduser(a.lanes))
+        active = root.is_dir() and any(d.is_dir() and registry.status(registry.lane_of_session(d.name))
+                                       not in ('retired', 'ended', 'held') for d in root.iterdir())
+        if active:
+            listed = subprocess.run([a.tmux, 'ls', '-F', '#{session_name}'], capture_output=True, text=True).stdout.split()
+            liveness(a, registry, root, state, time.time(), listed)
+    except Exception as exc:                        # RULE #1: the alarm never stops the idle nudges
+        say(a.log, f'lane-liveness failed: {exc!r}', a.dry)
     cad, error = cadence(a.rh)
     failed = report_failure(error, state, a.alert, a.dry)
     if failed:

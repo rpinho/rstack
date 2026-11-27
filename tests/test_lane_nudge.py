@@ -793,3 +793,40 @@ def test_a_both_groups_stop_starts_a_missing_fallback_and_hands_it_the_lane_once
     assert len(typed) == 1                                   # handed once per 12 h, not every tick
     nudge.takeover(a, 'lean-svm', 'lean-svm', lane_dir, pane, tmp_path, run=run, sleep=lambda s: None, now=10**6 + 13 * 3600)
     assert len(typed) == 2
+
+
+def test_liveness_pages_once_for_a_stale_lane_and_names_the_pane(tmp_path, monkeypatch):
+    """11-27: agy-open-source sat 7 h and lean-svm ~6 h before anyone noticed. Output, not claims, decides."""
+    import types
+    lanes = tmp_path / 'lanes'
+    lane = lanes / 'stale'
+    lane.mkdir(parents=True)
+    status = lane / 'DRIVER_STATUS.md'
+    status.write_text('Driver: agy-stale. Working on round 4.\n')
+    now = 10**9
+    os.utime(status, (now - 3 * 3600, now - 3 * 3600))
+    sent = []
+    def run(cmd, **kw):
+        if cmd[0] == 'tmux':
+            out = ('⚠ Third-party quota reached. Please switch to Gemini models. Resets in 151h30m.\n'
+                   '>\n? for shortcuts   auto · Claude Opus 5.5 · high\n')
+            return types.SimpleNamespace(returncode=0, stdout=out)
+        sent.append(cmd)
+        return types.SimpleNamespace(returncode=0, stdout='')
+    monkeypatch.setenv('LANE_LIVENESS_PAGE', 'page-general')
+    monkeypatch.setenv('LANE_LIVENESS_PUSH', 'push-ricardo')
+    monkeypatch.setenv('LANE_LIVENESS_REPOS', str(tmp_path / 'none.json'))
+    registry = types.SimpleNamespace(lane_of_session=lambda s: s, status=lambda l: 'active')
+    a = types.SimpleNamespace(tmux='tmux', log='', dry=False, outputs_globs=[])
+    state = tmp_path / 'state'; state.mkdir()
+    assert nudge.liveness(a, registry, lanes, state, now, ['agy-stale'], run=run) == ['stale']
+    assert [c[0] for c in sent] == ['page-general', 'push-ricardo']
+    assert 'lane stale' in sent[0][-1] and 'quota' in sent[0][-1] and 'agy-stale' in sent[0][-1]
+    assert nudge.liveness(a, registry, lanes, state, now + 1800, ['agy-stale'], run=run) == []   # once per stall
+    os.utime(status, (now + 3000, now + 3000))                                                  # output moved
+    assert nudge.liveness(a, registry, lanes, state, now + 3600, ['agy-stale'], run=run) == []
+    os.utime(status, (now - 3 * 3600, now - 3 * 3600))
+    status.write_text('Waiting on the referee. idle by design until the review lands.\n')
+    os.utime(status, (now - 3 * 3600, now - 3 * 3600))
+    assert nudge.liveness(a, registry, lanes, state, now + 7200, ['agy-stale'], run=run) == []   # idle by design
+    assert nudge.liveness(a, registry, lanes, state, now, ['agy-other'], run=run) == []          # no lane dir here
