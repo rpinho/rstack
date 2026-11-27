@@ -5,6 +5,7 @@ import datetime as dt
 import difflib
 import fcntl
 import hashlib
+import html
 import json
 import math
 import os
@@ -53,10 +54,13 @@ def load_config():
                        rh_root=os.environ.get('RH_OUTREACH_ROOT') or os.environ.get('RH_ROOT') or
                        '~/.local/share/research-harness', rh_command=[os.environ.get('RH', 'rh')],
                        ledger_path=str(state_dir() / 'grok-post.jsonl'),
-                       notify_command=['tell-general'], timeline_command=None,
+                       notify_command=['tell-general'], timeline_command=None, link_ask_seconds=45,
                        syndication_url='https://cdn.syndication.twimg.com/tweet-result'))
     if path.exists():
         config.update(json.loads(path.read_text()))
+    wait = config['link_ask_seconds']
+    if isinstance(wait, bool) or not isinstance(wait, (int, float)) or not math.isfinite(wait) or wait <= 0:
+        raise Refused('config link_ask_seconds must be a positive number of seconds (default 45)')
     for key in ('post_bot_name', 'post_host', 'rh_root', 'ledger_path'):
         if not isinstance(config[key], str) or not config[key].strip():
             raise Refused('config requires ' + key)
@@ -216,6 +220,9 @@ def card_check(card, text, account, target):
     return problems
 
 
+LINK_ASK = 'Do not post, reply, or change anything. Reply with only the link to the post you just published.'
+
+
 def card_flow(cdp, config, args, text, target, deadline, record, send_gate):
     """Draft card path for public posts. Returns the posted ID (after send_gate()); raises Refused (code
     in record['code']) before any press of the send button, ValueError after it."""
@@ -260,7 +267,7 @@ def card_flow(cdp, config, args, text, target, deadline, record, send_gate):
         return None
     send_gate()
     record['pressed'] = cdp.evaluate(card_js('press', dict(mine, which='send')))
-    found, allowed = None, False
+    found, allowed, pressed_at = None, False, time.monotonic()
     # 11-19 live: Grok answered with https://x.com/i/status/ID, not the account path.
     pattern = re.compile(r'(?:x|twitter)\.com/(?:' + re.escape(config['post_account']) + r'|i)/status/(\d+)', re.I)
     while not found:
@@ -272,6 +279,14 @@ def card_flow(cdp, config, args, text, target, deadline, record, send_gate):
         if len(ids) > 1:
             raise ValueError('Grok reported more than one posted ID')
         found = ids.pop() if ids else None
+        # 11-26 live: Grok often posts without printing the link. Ask once, in the same chat; the answer
+        # lands after the card, so the same read catches it. Never press or post again.
+        if not found and 'link_asked' not in record and time.monotonic() - pressed_at >= config['link_ask_seconds']:
+            record['link_asked'] = True
+            try:
+                insert(cdp, config, LINK_ASK)
+            except ask.AskError as exc:
+                record['link_asked'] = 'failed: ' + str(exc)
         if not found:
             ask.pause(deadline, config['poll_seconds'])
     return found
@@ -352,6 +367,8 @@ def verify(config, ident, text, target, deadline):
             raise ValueError('oversized syndication response')
     tweet = json.loads(raw)
     shown = tweet.get('text')
+    # 11-27 live: the public text escapes &, < and > as HTML entities ('n &gt;= 450,000'); decode them first.
+    shown = html.unescape(shown) if isinstance(shown, str) else shown
     # 11-19 live: the public text carries t.co links; put back each entity's expanded_url to compare.
     for entity in sorted((tweet.get('entities') or {}).get('urls') or [], key=lambda e: -len(e.get('url', ''))):
         if isinstance(shown, str) and entity.get('url') and entity.get('expanded_url'):
@@ -611,7 +628,9 @@ def main(argv=None):
                                       posted_url='https://x.com/' + config['post_account'] + '/status/' + found)
                         record.pop('error')
                         code = 0
-                        print('Verified on timeline after: ' + record['recovered_from'] + '\n' + record['posted_url'])
+                        # x_gate and x-route read only the 'Verified: <url>' line (11-26: a recovery logged uncertain).
+                        print('Verified on timeline after: ' + record['recovered_from'] + '\nVerified: ' +
+                              record['posted_url'])
             except Exception as exc2:
                 print('grok-post: timeline check failed: ' + str(exc2), file=sys.stderr)
     finally:

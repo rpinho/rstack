@@ -567,6 +567,18 @@ def test_xr_never_retries_an_uncertain_grok_post(local, tmp_path, monkeypatch):
     assert route_rows(tmp_path)[-1]['uncertain'] is True
 
 
+def test_xr_accepts_a_post_grok_post_recovered_on_the_timeline(local, tmp_path, monkeypatch):
+    # 11-26 14:46: grok-post found the post on the timeline and exited 0, but xr logged it uncertain.
+    approve(local)
+    grok_stub(tmp_path, monkeypatch, 0, 'Verified on timeline after: timeout\n'
+              'Verified: https://x.com/test_account/status/555')
+    run = xr_pipe(local, payload(), 'enforce')
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout)['data']['id'] == '555'
+    assert not Path(os.environ['XURL_TEST_RECORD']).exists()
+    assert [(r['route'], r['ok']) for r in route_rows(tmp_path)] == [('grok', True)]
+
+
 def test_xr_keeps_media_posts_on_the_api(local, tmp_path, monkeypatch):
     record = grok_stub(tmp_path, monkeypatch, 0)
     value = dict(payload(), media={'media_ids': ['1']})

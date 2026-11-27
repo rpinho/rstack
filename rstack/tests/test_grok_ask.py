@@ -722,6 +722,8 @@ def test_unconfirmed_send_found_on_timeline_counts_as_sent(posting, tmp_path):
     assert result.returncode == 0, result.stderr
     assert json.loads(posting.sent_log.read_text())[-1:] and '9001' in posting.sent_log.read_text()
     assert posting.records()[-1]['posted_id'] == '9001' and not posting.page_log.exists()
+    # 11-26: x_gate and x-route read only this line; without it a recovered post was logged uncertain.
+    assert re.search(r'Verified: https://x\.com/\S+/status/(\d+)', result.stdout)[1] == '9001'
 
 
 def test_notify_uses_tell_general_from_fyi_form(posting):
@@ -971,6 +973,44 @@ def test_card_path_no_posted_url_is_uncertain_and_pages(posting):
     assert json.loads(posting.ledger_path.read_text().splitlines()[-1])['gate_attempt']['path'] == 'grok-post'
 
 
+def link_ask(posting, fake, link):
+    """11-26 live: Grok posts but prints no link; the follow-up ask may or may not get one."""
+    posting.options.update(draft_card=True, link_ask_seconds=0.3)
+    posting.setup(fake)
+    fake.card = card(posting)
+    fake.after_text = 'Done.'
+    def answer(prompt):
+        asked = prompt.startswith('Do not post, reply, or change anything.')
+        fake.events.append('ask' if asked else 'draft')
+        if asked and link:
+            fake.after_text = 'Done.\nhttps://x.com/fixture_account/status/9001'
+    fake.on_send = answer
+    return posting.run('--post')
+
+
+def test_card_path_asks_once_for_the_link_and_verifies(posting):
+    with FakeCDP() as fake:
+        result = link_ask(posting, fake, link=True)
+    assert result.returncode == 0, result.stderr
+    assert fake.events == ['draft', 'press-send', 'ask', 'syndication'] and fake.pressed == ['send']
+    assert 'Verified: https://x.com/fixture_account/status/9001' in result.stdout
+    assert posting.records()[-1]['link_asked'] is True
+
+
+def test_card_path_no_link_after_the_ask_stays_uncertain_and_is_not_retried(posting):
+    with FakeCDP() as fake:
+        result = link_ask(posting, fake, link=False)
+    assert result.returncode == 5, result.stderr
+    assert fake.events == ['draft', 'press-send', 'ask'] and fake.pressed == ['send']
+    assert posting.page_log.exists() and not posting.sent_log.exists()
+    row = json.loads(posting.ledger_path.read_text().splitlines()[-1])
+    assert row['status'] == 'approved' and row['gate_attempt']['path'] == 'grok-post'
+    with FakeCDP() as retry:
+        configure((None, Path(os.environ['GROK_ASK_CONFIG'])), retry.port)
+        again = posting.run('--post')
+    assert again.returncode == 2 and not retry.sent_prompts
+
+
 def test_card_path_accepts_the_i_status_url_form(posting):
     posting.options['draft_card'] = True
     with FakeCDP() as fake:
@@ -985,7 +1025,7 @@ def test_public_check_expands_tco_links_and_still_refuses_a_different_link(monke
     sys.path.insert(0, str(TOOLS))
     sys.path.insert(0, str(TOOLS.parents[1] / 'harness'))
     import _grok_post as gp
-    tweet = dict(id_str='7', text='More here: https://t.co/abc', user=dict(screen_name='fixture_account'),
+    tweet = dict(id_str='7', text='n &gt;= 5 &amp; more here: https://t.co/abc', user=dict(screen_name='fixture_account'),
                  in_reply_to_status_id_str='12',
                  entities=dict(urls=[dict(url='https://t.co/abc', expanded_url='https://example.org/repo')]))
 
@@ -998,10 +1038,11 @@ def test_public_check_expands_tco_links_and_still_refuses_a_different_link(monke
         def __exit__(self, *a): return False
     monkeypatch.setattr(gp.urllib.request, 'urlopen', lambda url, timeout: Reply(url))
     config = dict(syndication_url='https://cdn.syndication.twimg.com/tweet-result', post_account='fixture_account')
-    fields = gp.verify(config, '7', 'More here: https://example.org/repo', '12', time.monotonic() + 5)
-    assert fields['text'] == 'More here: https://example.org/repo'
+    # 11-27 live: the endpoint HTML-escapes &, < and >, so an exact post with '>=' looked changed.
+    fields = gp.verify(config, '7', 'n >= 5 & more here: https://example.org/repo', '12', time.monotonic() + 5)
+    assert fields['text'] == 'n >= 5 & more here: https://example.org/repo'
     with pytest.raises(ValueError):
-        gp.verify(config, '7', 'More here: https://example.org/other', '12', time.monotonic() + 5)
+        gp.verify(config, '7', 'n >= 5 & more here: https://example.org/other', '12', time.monotonic() + 5)
 
 
 def test_card_check_ignores_a_trailing_newline_x_trims():
