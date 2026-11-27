@@ -19,7 +19,11 @@ import os
 from pathlib import Path
 import re
 
-ROUTES = {'reply': ('grok',), 'post': ('grok', 'api'), 'like': ('api',), 'follow': ('api',)}
+# 11-27 (Ricardo: "we're getting in the way of ourselves"): the API refuses likes and follows for this account
+# (403, unsupported authentication), so they go straight to the browser; X_ROUTE_API_ENGAGE=1 restores the API first.
+ROUTES = {'reply': ('grok',), 'post': ('grok', 'api')}
+if os.environ.get('X_ROUTE_API_ENGAGE') == '1':
+    ROUTES.update(like=('api',), follow=('api',))
 BROWSER_WINDOW = 15
 
 

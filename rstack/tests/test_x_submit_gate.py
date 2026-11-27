@@ -79,7 +79,19 @@ def test_failure_older_than_fifteen_minutes_or_uncertain_or_done_refuses(env):
     assert 'already done' in gate(env, REPLY)
 
 
+def test_like_and_follow_go_straight_to_the_browser(env, tmp_path):
+    """11-27 (Ricardo: "we're getting in the way of ourselves"): the API 403s likes and follows for this account,
+    so Chrome is their route with no x-route step first. The probe still has to pass."""
+    like = "Likes @someone's post 1234567 on X"
+    follow = 'Follows @someone on X'
+    probe(env)
+    assert gate(env, like) is None and gate(env, follow) is None
+    out, rows = route(env, tmp_path, 'like', '1234567', xr='raise SystemExit("the API must not be called")')
+    assert out.returncode == 10 and 'BROWSER ALLOWED' in out.stdout and rows == []
+
+
 def test_like_and_follow_need_a_failed_api_attempt(env):
+    env['X_ROUTE_API_ENGAGE'] = '1'
     probe(env)
     like = "Likes @someone's post 1234567 on X"
     follow = 'Follows @someone on X'
@@ -199,6 +211,7 @@ def test_reply_spacing_waits_instead_of_using_the_browser(env, tmp_path):
 
 
 def test_like_goes_through_the_api_as_the_posting_account(env, tmp_path):
+    env['X_ROUTE_API_ENGAGE'] = '1'
     out, rows = route(env, tmp_path, 'like', 'https://x.com/a/status/1234567',
                       xr='print(json.dumps({"data": {"liked": True}, "argv": sys.argv[1:]}))')
     assert out.returncode == 0 and rows[-1]['route'] == 'api' and rows[-1]['ok']
@@ -207,6 +220,7 @@ def test_like_goes_through_the_api_as_the_posting_account(env, tmp_path):
 
 
 def test_api_refusal_opens_the_browser(env, tmp_path):
+    env['X_ROUTE_API_ENGAGE'] = '1'
     out, rows = route(env, tmp_path, 'like', '1234567', xr='print("403 spend-cap-reached"); sys.exit(1)')
     assert out.returncode == 10 and 'BROWSER ALLOWED' in out.stdout
     probe(env)
@@ -214,6 +228,7 @@ def test_api_refusal_opens_the_browser(env, tmp_path):
 
 
 def test_follow_looks_up_the_id_through_grok_then_follows(env, tmp_path):
+    env['X_ROUTE_API_ENGAGE'] = '1'
     out, rows = route(env, tmp_path, 'follow', '@someone', xr='print(json.dumps({"data": {"following": True}}))',
                       ask='assert json.load(open(sys.argv[sys.argv.index("--schema") + 1])) == ["id", "username"]\n'
                           'print(json.dumps([{"id": "42", "username": "someone"}]))')

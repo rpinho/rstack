@@ -1061,3 +1061,23 @@ def test_card_check_ignores_a_trailing_newline_x_trims():
     card = dict(text='Same words here.', author='fixture_account', reply_to='12')
     assert gp.card_check(card, 'Same words here.\n', 'fixture_account', '12') == []
     assert gp.card_check(dict(card, text='Other words.'), 'Same words here.\n', 'fixture_account', '12')
+
+
+def test_an_unconfirmed_send_is_checked_on_the_api_timeline_not_grok(posting, tmp_path):
+    """11-27: four UNCERTAIN sends were all live; the recovery asked Grok, which was what timed out. It reads the
+    posting account's own timeline from the X API (xr GET /2/users/<id>/tweets) now."""
+    xr = tmp_path / 'xr'
+    xr.write_text('#!/bin/sh\necho "$@" > %s\ncat <<\'J\'\n%s\nJ\n' % (
+        tmp_path / 'xr.argv', json.dumps({'data': [{'id': '9002', 'text': '@fixture_target ' + posting.text.replace(
+            '&', '&amp;')}]})))
+    xr.chmod(0o755)
+    posting.row.update(channel='x_reply', in_reply_to='https://x.com/fixture_target/status/12')
+    with FakeCDP() as fake:
+        posting.setup(fake)
+        fake.syndication = {}
+        posting.options.update(post_account_id='1001', xr=str(xr), timeline_command=None)
+        posting.save()
+        result = posting.run('--reply-to', posting.row['in_reply_to'])
+    assert result.returncode == 0, result.stderr
+    assert posting.records()[-1]['posted_id'] == '9002'
+    assert (tmp_path / 'xr.argv').read_text().startswith('/2/users/1001/tweets?')

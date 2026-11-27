@@ -182,6 +182,11 @@ def decide(args, cfg, config_error):
             # route order is Grok for posts, then this API for likes and follows, then the browser.
             # Only as the configured posting account; X's own cycle spend cap still applies.
             allow, why = True, 'like/follow as the posting account'
+        elif method == 'GET' and str(cfg.get('engage_id') or '').isdigit() and p == '/2/users/{}/tweets'.format(
+                cfg['engage_id']):
+            # 11-27 (Ricardo, via general): grok-post confirms an unconfirmed send from the posting account's own
+            # timeline here instead of asking Grok, which was what timed out.
+            allow, why = True, 'own timeline read (grok-post verification)'
         elif method == 'POST' and p == '/2/tweets':
             allow, why = True, 'own post (x_gate applies)'
         elif method == 'DELETE' and re.fullmatch(r'/2/tweets/\d+', p):

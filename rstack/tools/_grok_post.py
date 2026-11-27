@@ -408,23 +408,65 @@ def notify(config, rh_id, error):
         print('grok-post: tell-general command failed: ' + str(exc), file=sys.stderr)
 
 
+def timeline_account_id(config):
+    """The posting account's numeric ID: grok-post.json post_account_id, else x-route.json account_id."""
+    ident = str(config.get('post_account_id') or '')
+    if not ident:
+        try:
+            path = Path(os.environ.get('X_ROUTE_CONFIG') or '~/.config/rstack/x-route.json').expanduser()
+            ident = str(json.loads(path.read_text()).get('account_id') or '')
+        except (OSError, ValueError):
+            ident = ''
+    return ident if ident.isdecimal() else ''
+
+
+def timeline_rows(out):
+    """[(post_id, text)] from the X API's user-timeline JSON, or from a [{post_id, text}] list (a stub, or Grok)."""
+    starts = [i for i in (out.find('{'), out.find('[')) if i >= 0]
+    if not starts:
+        return []
+    data = json.loads(out[min(starts):])
+    if isinstance(data, dict):
+        rows = []
+        for tweet in data.get('data') or []:
+            shown = ((tweet.get('note_tweet') or {}).get('text') or tweet.get('text') or '')
+            shown = html.unescape(shown)
+            for entity in sorted((tweet.get('entities') or {}).get('urls') or [], key=lambda e: -len(e.get('url', ''))):
+                if entity.get('url') and entity.get('expanded_url'):
+                    shown = shown.replace(entity['url'], entity['expanded_url'])
+            rows.append((str(tweet.get('id', '')), shown))
+        return rows
+    return [(str(row.get('post_id', '')), str(row.get('text', ''))) for row in data if isinstance(row, dict)]
+
+
 def on_timeline(config, text, is_reply):
-    """After an uncertain send: read @post_account's timeline once; return the ID of the post with exactly this text."""
-    keys = state_dir() / 'schema-timeline.json'
-    keys.write_text(json.dumps(['post_id', 'text']))
-    query = ('Read only, do not post or take any action. Look at the public X timeline of @' + config['post_account'] +
-             '. Return one object per post or reply from the last 3 days, newest first, with post_id and the exact '
-             'full text (up to 10).')
-    argv = config.get('timeline_command') or [str(Path(__file__).resolve().parent / 'grok-ask'), '--host',
-                                              config['post_host'], '--timeout', '120', '--schema', str(keys)]
-    out = subprocess.run([*argv, query], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=150).stdout
+    """After an uncertain send: read @post_account's timeline once; return the ID of the post with exactly this text.
+
+    11-27 (Ricardo: "we're getting in the way of ourselves"): four sends came back UNCERTAIN though all four were
+    live, because this asked Grok, which was the thing timing out. It now reads the posting account's own timeline
+    from the X API (xr, GET /2/users/<id>/tweets, allowed by xurl-policy); Grok only when no account ID is set."""
+    ident = timeline_account_id(config)
+    if config.get('timeline_command'):
+        argv = config['timeline_command']
+    elif ident:
+        argv = [config.get('xr') or 'xr', '/2/users/{}/tweets?max_results=10&tweet.fields=text,note_tweet,entities'
+                .format(ident)]
+    else:
+        keys = state_dir() / 'schema-timeline.json'
+        keys.write_text(json.dumps(['post_id', 'text']))
+        argv = [str(Path(__file__).resolve().parent / 'grok-ask'), '--host', config['post_host'], '--timeout', '120',
+                '--schema', str(keys),
+                'Read only, do not post or take any action. Look at the public X timeline of @' + config['post_account']
+                + '. Return one object per post or reply from the last 3 days, newest first, with post_id and the '
+                'exact full text (up to 10).']
+    out = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=150).stdout
     want = normal(text).strip()
-    for row in json.loads(out[out.index('['):out.rindex(']') + 1]):
-        shown = normal(str(row.get('text', ''))).strip()
+    for post_id, shown in timeline_rows(out):
+        shown = normal(shown).strip()
         if is_reply:
             shown = re.sub(r'^(@\w+\s+)+', '', shown)
-        if shown == want and str(row.get('post_id', '')).isdecimal():
-            return str(row['post_id'])
+        if shown == want and post_id.isdecimal():
+            return post_id
     return None
 
 

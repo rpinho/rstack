@@ -3,8 +3,8 @@
 
   x-route reply  --rh LANE/ID --reply-to URL --text-file FILE   grok-post
   x-route post   --rh LANE/ID --text-file FILE                  grok-post
-  x-route like   URL_OR_ID                                      API, as the posting account
-  x-route follow @HANDLE                                        API, as the posting account
+  x-route like   URL_OR_ID                                      the browser (11-27; API with X_ROUTE_API_ENGAGE=1)
+  x-route follow @HANDLE                                        the browser (11-27; API with X_ROUTE_API_ENGAGE=1)
   x-route browser-ok KIND TARGET                                may the browser do it now?
 
 Exit 0: done (the URL or result is printed). Exit 10: the first route failed and nothing was sent;
@@ -143,6 +143,11 @@ def main(argv=None):
         if args.kind == 'post':
             args.reply_to = None
         return grok(args.kind, args, cfg)
+    if args.kind not in x_route.ROUTES:
+        # 11-27: no API step for likes and follows; the browser (Chrome) is their route, so say so and stop.
+        print('BROWSER ALLOWED: {} goes through the browser (the X API refuses likes and follows for this '
+              'account)'.format(args.kind))
+        return BROWSER
     if not cfg['account_id'].isdigit():
         print('x-route: configure account_id (the posting account\'s numeric X id)', file=sys.stderr)
         return REFUSED
