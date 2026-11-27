@@ -757,3 +757,17 @@ def test_the_conversation_comes_from_the_open_db_else_the_process_log(tmp_path, 
         monkeypatch.setattr(nudge.subprocess, 'run', lambda *a, **k: SimpleNamespace(stdout=outs[kind]))
         assert nudge.conversation_of('1').startswith(want)
     assert nudge.conversation_of('') is None
+
+
+def test_auto_dismiss_answers_the_agy_survey_and_never_a_real_choice():
+    """11-27 pane scan: agy-meccog-apoe4 and agy-paper-audit sat on the agy survey ([0] Skip)."""
+    sent = []
+    run = lambda cmd, **kw: sent.append(cmd)
+    survey = 'Resets in 1h38m6s.\n How\'s the CLI experience so far? Help us improve:\n [1] Good  [2] Fine  [3] Bad  [0] Skip\n? for shortcuts\n'
+    assert nudge.dismiss('tmux', '%1', survey, run=run) == 'agy feedback survey'
+    assert sent == [['tmux', 'send-keys', '-t', '%1', '0']]
+    sent.clear()
+    codex = '🔒  Continue in a new chat\n  c continue in new chat · n start fresh · esc other chats\n'
+    for screen in (codex, 'Overwrite file? (y/n)\n', '❯ 1. Yes\n  2. No\n', ''):
+        assert nudge.dismiss('tmux', '%1', screen, run=run) is None
+    assert sent == []

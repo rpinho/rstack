@@ -57,6 +57,22 @@ AGY_QUOTA = re.compile(r'Individual quota reached|exhausted your quota|weekly (?
                        r'quota (?:reached|exceeded|exhausted)|RESOURCE_EXHAUSTED', re.I)
 AGY_MODEL = re.compile(r'·\s*([A-Z][\w .-]*?)\s*·\s*(?:low|medium|high|xhigh|max)\b')   # "auto · Gemini 4 Neon · high"
 AGY_TRUST = re.compile(r'Do you trust the contents of this project')
+# 11-27: one-key menus that block a lane and have one harmless answer. lane-nudge answers them before anything else;
+# a menu that is a real choice (Codex "c continue / n start fresh", y/n, numbered options) is never answered here.
+# Add a row when a pane scan finds a new one: (pattern on the pane's last lines, key to send, what it is).
+AUTO_DISMISS = [
+    (re.compile(r'\[0\]\s*Skip'), '0', 'agy feedback survey'),
+]
+
+
+def dismiss(tmux, pane, screen, run=subprocess.run):
+    """Answer a known harmless one-key menu on the pane's last lines. Returns what it dismissed, or None."""
+    bottom = '\n'.join([ln for ln in screen.splitlines() if ln.strip()][-6:])
+    for rx, key, what in AUTO_DISMISS:
+        if rx.search(bottom):
+            run([tmux, 'send-keys', '-t', pane, key], capture_output=True)
+            return what
+    return None
 AGY_CLAUDE = 'claude-opus-5-5-high'     # Ultra's second agy quota group, separate from the owner's Claude plan
 SWITCH_MSG = ("Gemini quota is out until {reset}; you are now on Claude Opus 5.5 through agy (Ultra's second quota "
               "group). Continue the lane from DRIVER_STATUS.md.")
@@ -661,6 +677,13 @@ def main():
             last_act = now - idle * 60
         tail = subprocess.run([a.tmux, 'capture-pane', '-p', '-t', target_pane, '-S', '-15'],
                               capture_output=True, text=True).stdout
+        if not a.dry:
+            gone = dismiss(a.tmux, target_pane, tail)
+            if gone:
+                say(a.log, f'{label}: dismissed {gone}')
+                time.sleep(1)
+                tail = subprocess.run([a.tmux, 'capture-pane', '-p', '-t', target_pane, '-S', '-15'],
+                                      capture_output=True, text=True).stdout
         sf = state / f'{drv[0] if drv else session}.json'
         saved = json.loads(sf.read_text()) if sf.exists() else {}
         last = saved.get('at', 0)
