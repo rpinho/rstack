@@ -18,9 +18,9 @@ from test_outreach import cli
 
 @pytest.fixture(autouse=True)
 def _legacy_one_post_quota(monkeypatch):
-    """These tests were written for the original 1-per-day rule with no gap; the 3-per-day default is tested explicitly."""
-    monkeypatch.setenv('RH_X_ORIGINALS_PER_DAY', '1')
-    monkeypatch.setenv('RH_X_MIN_GAP_MINUTES', '0')
+    """11-27: no daily cap on originals; these tests run on the default 5-minute burst gap."""
+    monkeypatch.delenv('RH_X_ORIGINALS_PER_DAY', raising=False)
+    monkeypatch.delenv('RH_X_MIN_GAP_MINUTES', raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -105,14 +105,24 @@ def test_missing_media_fails(state):
     assert 'media file missing' in lint(state, ident)[1]
 
 
-@pytest.mark.parametrize('status', ['sent', 'approved'])
-def test_one_original_per_utc_day_cross_lane(state, status, monkeypatch):
+def test_a_fourth_original_in_one_utc_day_passes(state, monkeypatch):
+    """11-27 Ricardo: "What daily limit? Why are we limiting ourselves? Just remove it." No daily cap, even when
+    the old RH_X_ORIGINALS_PER_DAY is still set; only the few-minute burst gap applies."""
     monkeypatch.setenv('RH_X_ORIGINALS_PER_DAY', '1')
-    # An approval holds a slot only while it is fresh (11-17); a sent post holds it all day.
-    history(state, status=status, age=3 if status == 'sent' else 0.2)
+    monkeypatch.delenv('RH_X_MIN_GAP_MINUTES', raising=False)
+    for n, age in enumerate((0.5, 1.0, 1.5)):
+        history(state, ident='past{}'.format(n), text='Earlier result {}.'.format(n), age=age)
     ident, _ = draft(state)
     rc, out, _ = lint(state, ident)
-    assert rc == 1 and 'x_post daily limit (1 per UTC day' in out and 'b/past' in out
+    assert 'daily limit' not in out and 'within' not in out, out
+
+
+def test_originals_minutes_apart_still_refused_as_a_burst(state, monkeypatch):
+    monkeypatch.delenv('RH_X_MIN_GAP_MINUTES', raising=False)
+    history(state, age=2 / 60)   # two minutes ago, inside the 5-minute default
+    ident, _ = draft(state)
+    rc, out, _ = lint(state, ident)
+    assert rc == 1 and 'within 5 min of another original: b/past' in out
 
 
 def test_an_old_unsent_approval_holds_no_slot(state, monkeypatch):
@@ -125,13 +135,13 @@ def test_an_old_unsent_approval_holds_no_slot(state, monkeypatch):
     ident, _ = draft(state)
     rc, out, _ = lint(state, ident)
     assert rc == 0, out
-    # A fresh approval (under 30 min) is about to go out, so it still holds the gap and the cap.
-    history(state, ident='fresh', status='approved', age=0.25)
+    # A fresh approval (under 30 min) is about to go out, so it still holds the burst gap.
+    history(state, ident='fresh', status='approved', age=2 / 60)
     rc, out, _ = lint(state, ident)
-    assert rc == 1 and 'within 120 min of another original: b/fresh' in out and 'daily limit' in out
+    assert rc == 1 and 'within 5 min of another original: b/fresh' in out and 'daily limit' not in out
 
 
-def test_default_allows_three_originals_spaced_out(state, monkeypatch):
+def test_default_allows_many_originals_spaced_out(state, monkeypatch):
     monkeypatch.delenv('RH_X_ORIGINALS_PER_DAY', raising=False)
     monkeypatch.delenv('RH_X_MIN_GAP_MINUTES', raising=False)
     history(state, ident='p1', age=3)
@@ -141,16 +151,16 @@ def test_default_allows_three_originals_spaced_out(state, monkeypatch):
     history(state, ident='p3', age=7)
     ident, _ = draft(state)
     rc, out, _ = lint(state, ident)
-    assert rc == 1 and 'x_post daily limit (3 per UTC day' in out
+    assert rc == 0 and 'daily limit' not in out, out   # 11-27: no daily cap; a 4th original passes
 
 
 def test_originals_need_a_gap(state, monkeypatch):
     monkeypatch.delenv('RH_X_ORIGINALS_PER_DAY', raising=False)
     monkeypatch.delenv('RH_X_MIN_GAP_MINUTES', raising=False)
-    history(state, ident='recent', age=1)
+    history(state, ident='recent', age=3 / 60)
     ident, _ = draft(state)
     rc, out, _ = lint(state, ident)
-    assert rc == 1 and 'within 120 min of another original' in out
+    assert rc == 1 and 'within 5 min of another original' in out
 
 
 @pytest.mark.parametrize('extra', [{}, {'gate_attempt': {'utc': (CLOCK - dt.timedelta(hours=1)).isoformat()}}])
@@ -166,7 +176,7 @@ def test_a_dropped_original_takes_no_slot(state, monkeypatch, extra):
     rc, out, _ = lint(state, ident)
     assert rc == 0, out
     # An attempt that was not dropped still takes its slot: the hook cannot know it failed.
-    history(state, ident='attempted', age=1, status='approved', gate_attempt={'utc': (CLOCK - dt.timedelta(hours=1)).isoformat()})
+    history(state, ident='attempted', age=2 / 60, status='approved', gate_attempt={'utc': (CLOCK - dt.timedelta(minutes=2)).isoformat()})
     rc, out, _ = lint(state, ident)
     assert rc == 1 and 'attempted' in out
 
@@ -175,14 +185,6 @@ def test_original_yesterday_does_not_consume_today(state):
     history(state, age=20)
     ident, _ = draft(state)
     assert lint(state, ident)[0] == 0
-
-
-def test_utc_offset_converted_before_day_limit(state):
-    row = history(state, age=1)
-    row['sent']['utc'] = '2026-11-02T23:30:00-05:00'
-    rh.append(state[0] / 'lanes/b/OUTREACH.jsonl', row)
-    ident, _ = draft(state)
-    assert lint(state, ident)[0] == 1
 
 
 def test_daily_reservation_is_atomic_at_approval(state):
@@ -209,9 +211,9 @@ def test_parallel_approvals_across_lanes_use_root_lock(state):
 
 def test_daily_limit_rechecked_when_recording_sent(state):
     ident, _ = approved(state)
-    history(state)
+    history(state, age=2 / 60)   # another original went out 2 minutes ago, after this one was approved
     result = cli(state[0], 'sent', 'a', ident, '--message-id', '123', '--via', 'browser')
-    assert result[0] == 2 and 'x_post daily limit' in result[2]
+    assert result[0] == 2 and 'within 5 min of another original' in result[2]
 
 
 def test_batch_multiple_originals_fails(state):
@@ -390,12 +392,11 @@ def test_standing_does_not_bypass_failed_or_changed_lint(state):
 def test_a_retracted_original_takes_no_slot(state, monkeypatch):
     """general, 11-09: a post that went out with the wrong video was deleted, and its replacement, same
     text, was held 120 min by the post it replaced. `retract` records the deletion once X confirms it."""
-    monkeypatch.setenv('RH_X_ORIGINALS_PER_DAY', '1')
     monkeypatch.delenv('RH_X_MIN_GAP_MINUTES', raising=False)
-    history(state, ident='wrong-video', age=1)
+    history(state, ident='wrong-video', age=2 / 60)
     ident, _ = draft(state)
     rc, out, _ = lint(state, ident)
-    assert rc == 1 and 'within 120 min of another original' in out and 'daily limit' in out
+    assert rc == 1 and 'within 5 min of another original' in out
     root = state[0]
     monkeypatch.setattr(outreach, 'post_gone', lambda pid: False)
     rc, _, err = cli(root, 'retract', 'b', 'wrong-video', '--reason', 'wrong video')
@@ -411,7 +412,7 @@ def test_a_retracted_original_takes_no_slot(state, monkeypatch):
     rc, out, _ = lint(state, ident)
     assert rc == 0, out
     # A sent post that was not retracted still holds its slot.
-    history(state, ident='kept', age=1)
+    history(state, ident='kept', age=2 / 60)
     rc, out, _ = lint(state, ident)
     assert rc == 1 and 'kept' in out
 

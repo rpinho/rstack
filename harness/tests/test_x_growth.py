@@ -77,10 +77,12 @@ def test_the_original_gap_is_a_lane_setting(state, minutes_ago, ok):
     assert ok or 'within 90 min of another original' in out
 
 
-def test_the_original_gap_defaults_to_two_hours(state):
-    history(state, age=1.5)
+def test_the_original_gap_defaults_to_five_minutes(state):
+    """11-27 Ricardo: no daily limit; only a few minutes between originals so they don't land as a burst."""
+    history(state, age=3 / 60)
     ident, _ = draft(state)
-    assert 'within 120 min of another original' in lint(state, ident)[1]
+    assert 'within 5 min of another original' in lint(state, ident)[1]
+    history(state, ident='older', age=0.25)
 
 
 @pytest.mark.parametrize('line', ['x_reply_gap_minutes = -1', 'x_reply_gap_minutes = "3"',

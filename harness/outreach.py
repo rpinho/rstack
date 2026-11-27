@@ -135,7 +135,7 @@ def x_defaults():
     See docs/outreach.md, "Growing a small account on X". The original gap keeps its older
     environment override, RH_X_MIN_GAP_MINUTES, so an installation that set it is unchanged.
     """
-    return dict(x_original_gap_minutes=int(os.environ.get('RH_X_MIN_GAP_MINUTES', '') or 120),
+    return dict(x_original_gap_minutes=int(os.environ.get('RH_X_MIN_GAP_MINUTES', '') or 5),   # 11-27: was 120
                 x_reply_gap_minutes=3,
                 x_reply_human_approval=True)
 
@@ -599,25 +599,19 @@ def x_checks(row, text, everyone, clock, selected=(), cfg=None, posting=False):
         failures.append('filler post (a greeting with nothing in it); post when there is something '
                         'real, or not at all')
     if original(row):
-        # 11-03: the daily limit was 1; now RH_X_ORIGINALS_PER_DAY (default 3) across all lanes,
-        # and x_original_gap_minutes (OUTREACH.toml; default 120, or RH_X_MIN_GAP_MINUTES) between
-        # originals so they don't land as a burst.
-        limit = int(os.environ.get('RH_X_ORIGINALS_PER_DAY', '3'))
+        # 11-27 Ricardo: "What daily limit? Why are we limiting ourselves? Just remove it." No daily cap on
+        # originals. Only x_original_gap_minutes (OUTREACH.toml; default 5, or RH_X_MIN_GAP_MINUTES) between
+        # originals remains, so they don't land as a burst. Link self-replies are not originals.
         gap = dt.timedelta(minutes=cfg['x_original_gap_minutes'])
-        today = []
+        if sum(original(r) for r in selected) > 1:
+            failures.append('a batch holds one original; post the others at least {} min apart'.format(
+                int(gap.total_seconds() // 60)))
         for other in others:
             if original(other):
                 stamp = activity_time(other, clock)
-                if stamp and stamp.astimezone(UTC).date() == clock.astimezone(UTC).date():
-                    today.append(other)
                 if stamp and abs(clock - stamp) < gap:
                     failures.append('x_post within {} min of another original: {}/{}'.format(
                         int(gap.total_seconds() // 60), other['lane'], other['id']))
-        if len(today) >= limit:
-            failures.append('x_post daily limit ({} per UTC day across all lanes) reached: {}'.format(
-                limit, ', '.join('{}/{}'.format(o['lane'], o['id']) for o in today)))
-        if sum(original(r) for r in selected) > limit:
-            failures.append('x_post daily limit ({}); split batch contains more originals'.format(limit))
         for match in X_URL.finditer(text):
             url = match.group().rstrip('.,;!?)]}')
             try:

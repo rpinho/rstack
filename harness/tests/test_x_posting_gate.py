@@ -21,8 +21,7 @@ from test_outreach import cli
 
 @pytest.fixture(autouse=True)
 def _legacy_one_post_quota(monkeypatch):
-    """These tests were written for the original 1-per-day rule with no gap; the 3-per-day default is tested explicitly."""
-    monkeypatch.setenv('RH_X_ORIGINALS_PER_DAY', '1')
+    """No gap in most tests (11-27: there is no daily cap any more; the burst gap is tested explicitly)."""
     monkeypatch.setenv('RH_X_MIN_GAP_MINUTES', '0')
 
 
@@ -298,18 +297,21 @@ def test_replied_registry_rechecked_after_approval(local):
     assert hook_pipe(local, event('bash'))['hookSpecificOutput']['permissionDecision'] == 'deny'
 
 
-def test_daily_limit_rechecked_at_posting_gate(local):
+def test_no_daily_limit_at_posting_gate(local):
+    """11-27: no daily cap on originals; a 4th original today passes once it is outside the burst gap."""
     approve(local, channel='x_post', text='A checked certificate is ready.')
     other = local / 'lanes/other'
     other.mkdir()
-    rh.append(other / 'OUTREACH.jsonl', dict(id='past', lane='other', channel='x_post', text='A previous original.', status='sent', sent={'utc': rh.now()}))
-    assert hook_pipe(local, event('bash', payload('A checked certificate is ready.', None)))['hookSpecificOutput']['permissionDecision'] == 'deny'
+    for n in range(3):
+        stamp = (dt.datetime.now(outreach.UTC) - dt.timedelta(minutes=30 + 20 * n)).isoformat()
+        rh.append(other / 'OUTREACH.jsonl', dict(id='past{}'.format(n), lane='other', channel='x_post',
+                                                 text='A previous original {}.'.format(n), status='sent', sent={'utc': stamp}))
+    assert hook_pipe(local, event('bash', payload('A checked certificate is ready.', None))) is None
 
 
-@pytest.mark.parametrize('gap, refused', [('', True), ('120', True), ('30', False), ('0', False)])
+@pytest.mark.parametrize('gap, refused', [('', False), ('120', True), ('30', False), ('0', False)])
 def test_posting_gate_honours_the_gap_override(local, monkeypatch, gap, refused):
-    """11-17: the xr gate must apply RH_X_MIN_GAP_MINUTES the way lint and approve do."""
-    monkeypatch.setenv('RH_X_ORIGINALS_PER_DAY', '3')
+    """11-17: the xr gate must apply RH_X_MIN_GAP_MINUTES the way lint and approve do (default 5 min since 11-27)."""
     approve(local, channel='x_post', text='A checked certificate is ready.')
     other = local / 'lanes/other'
     other.mkdir()
