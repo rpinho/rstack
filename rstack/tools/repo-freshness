@@ -686,11 +686,23 @@ def check(cfg, gh='gh', now=None, workers=6):
     has_remote = {(h.name, p): any(str(r).lower().startswith(tuple('github.com/{}/'.format(o) for o in mine))
                                    for r in remotes.values()) if mine else bool(remotes)
                   for h, p, remotes in clones}
+    # 11-27 (general): 91 findings, mostly scratch and job clones with a private owned remote (32 game worktrees,
+    # 10 ple-agent-harness copies, deleted local upstreams). clone_scope "public": only clones with a remote that
+    # is one of the owners' PUBLIC repos are checked, plus `local_only` (the KB); every other clone says nothing.
+    scope_public = cfg.get('clone_scope') == 'public'
+    if scope_public:
+        try:
+            listed = set(public_repos(cfg.get('owners', []), gh))
+        except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
+            listed = None   # GitHub unreadable: fall back to owned remotes; the inventory below reports the failure
+        if listed is not None:
+            has_remote = {(h.name, p): any(str(r).lower() in listed for r in remotes.values())
+                          for h, p, remotes in clones}
     local_only = {((e.get('host') or LOCAL), host_of(e.get('host')).path(e['path'])) for e in cfg.get('local_only', [])}
     for key, (h, p) in targets.items():
         if key in discovered and (has_remote.get(key, True) or (h.name, p) in local_only):
             problems += clone_problems(h, p, fresh_states[key], cfg, now)
-        elif fresh_states[key].get('fetch_error'):
+        elif fresh_states[key].get('fetch_error') and not scope_public:
             problems.append(('fetch', '{}:{}'.format(h.name or 'local', p),
                              'fetch failed: ' + fresh_states[key]['fetch_error'][:300]))
     inventory_ok = bool(cfg.get('owners'))

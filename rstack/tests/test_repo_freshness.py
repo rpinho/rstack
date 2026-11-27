@@ -566,3 +566,22 @@ def test_remote_clone_and_backup_findings_name_the_host(clone_pair, monkeypatch)
     rows = rf.check(cfg, now=now)[1]
     assert [r[0] for r in rows] == ['no-upstream', 'backup']
     assert all(r[1].startswith('other-mac:' + str(checkout)) for r in rows)
+
+
+def test_public_clone_scope_checks_only_public_clones_and_local_only(clone_pair, tmp_path):
+    """11-27: 91 findings, mostly scratch/job clones with a private owned remote. clone_scope public: only those count."""
+    checkout, _, _ = clone_pair
+    git(checkout, 'branch', '--unset-upstream')
+    gh = tmp_path / 'fake-gh'
+    gh.write_text('#!/bin/sh\necho \'[{"nameWithOwner": "example-owner/public-tool", "isArchived": false, '
+                  '"defaultBranchRef": {"name": "main"}}]\'\n')
+    gh.chmod(0o755)
+    git(checkout, 'remote', 'set-url', 'origin', 'git@github.com:example-owner/scratch-private.git')
+    cfg = clone_config(checkout, owners=['example-owner'], clone_scope='public')
+    kinds = lambda: {k for k, _, _ in rf.check(cfg, gh=str(gh))[1]}
+    assert 'no-upstream' not in kinds()          # a private owned clone (a job or worktree) says nothing
+    cfg['local_only'] = [{'path': str(checkout), 'why': 'the KB'}]
+    assert 'no-upstream' in kinds()              # an explicitly listed path (the KB) is still checked
+    cfg.pop('local_only')
+    git(checkout, 'remote', 'set-url', 'origin', 'git@github.com:example-owner/public-tool.git')
+    assert 'no-upstream' in kinds()              # a clone of a public repo is checked
