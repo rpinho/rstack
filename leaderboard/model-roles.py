@@ -26,9 +26,11 @@ RH_LANES = Path(os.environ.get('RH_EVIDENCE_ROOT', str(STATE / 'no-evidence-root
 MIN_N, MIN_DAYS, SEED_RATE, LIFT_N, SETTLE_DAYS, Z = 5, 2, 0.75, 20, 14, 1.96
 # Ricardo's own rank (taste + cost), copied from the KB leaderboard page "11-26 CURRENT RANK"; never computed from
 # pass rates. A family rank covers every effort tier of that model; Neon's #1 is the high tier only.
-OWNER_RANK = {'anthropic/claude-opus-5.5': 1, 'google/gemini-4-neon-high': 1, 'anthropic/claude-fable-5.2': 2,
-              'openai/gpt-6.2-astra': 3, 'openai/gpt-6.2-sol': 4, 'anthropic/claude-sonnet-5.5': '5-6',
+# 11-27 (Ricardo, via general 1127j: "Yes"): Astra up to #2, Fable 5.2 down to #3.
+OWNER_RANK = {'anthropic/claude-opus-5.5': 1, 'google/gemini-4-neon-high': 1, 'openai/gpt-6.2-astra': 2,
+              'anthropic/claude-fable-5.2': 3, 'openai/gpt-6.2-sol': 4, 'anthropic/claude-sonnet-5.5': '5-6',
               **{f'google/gemini-4-{m}-{t}': 7 for m in ('argon', 'hydrogen') for t in ('low', 'medium', 'high')}}
+OWNER_RANK_LINE = "Ricardo's own rank (2026-11-27): Opus 5.5 and Neon tied #1, Astra #2, Fable #3."
 MIN_LABS = {'ideation': 2}
 OVERRIDES = {}  # Set via a private MODEL_OVERRIDES config file; never included in export.
 if os.environ.get('MODEL_OVERRIDES'):
@@ -821,7 +823,7 @@ def public(data, path, observations=(), previous=None, days=30):
     pairs, historical = run_grades.table()
     totals, by_role, dropped, drivers = public_counts(pairs, historical, stamp, days)
     lines = ['# Model leaderboard', '',
-             "Ricardo's own rank (2026-11-26): Gemini 4 Neon and Opus 5.5 tied #1.", '',
+             OWNER_RANK_LINE, '',
              'Everyday work over {} days: {} through {} (UTC). Runs is the recorded model total across roles, including ungraded work; n counts only pass, partial or fail (partial=half). Historical grades without run records count in n, so n can exceed Runs. Each rate shows a Wilson 95% interval. Within-role ranks use the Wilson lower bound and require n>=20; owner ranks retain taste + cost. Task mix, correlated jobs and subjective grades limit comparisons; these are descriptive intervals, not matched trials.'.format(
                  days, (stamp - dt.timedelta(days=days)).date().isoformat(), stamp.date().isoformat()), '',
              '| Model | Rank (Ricardo: taste + cost) | Runs | Overall passed (Wilson 95%) | Role | Role passed (Wilson 95%) | Within-role rank |',

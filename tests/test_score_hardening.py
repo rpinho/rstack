@@ -129,6 +129,9 @@ def test_delegate_row_is_counted_by_leaderboard(tmp_path, monkeypatch):
     spec.loader.exec_module(roles)
     assert roles.evidence()['builder'][row['model']]['n'] == 1
     assert roles.OWNER_RANK['google/gemini-4-neon-high'] == roles.OWNER_RANK['anthropic/claude-opus-5.5'] == 1
+    # 11-27 (Ricardo via general 1127j): Astra #2, Fable 5.2 #3, and the page header says so.
+    assert (roles.OWNER_RANK['openai/gpt-6.2-astra'], roles.OWNER_RANK['anthropic/claude-fable-5.2']) == (2, 3)
+    assert 'Astra #2, Fable #3' in roles.OWNER_RANK_LINE
     # A historical native slug in evaluations must not duplicate the canonical observation.
     ledger.write_text(json.dumps(dict(row, model='gemini-4-neon-high', outcome='held')) + '\n')
     again = subprocess.run([sys.executable, str(REPO / 'leaderboard/model-roles.py'), 'ingest'],
