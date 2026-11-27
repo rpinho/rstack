@@ -43,6 +43,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import harness_blocks
 import lane_registry
+try:
+    import settings  # noqa: F401  loads the host env file (LANE_NUDGE_FALLBACK_DIR and the rest)
+except ImportError:
+    pass
 
 BEHIND = ('WARN', 'STALLED', 'BROKEN')
 RUNNING = re.compile(r'esc to (?:interrupt|cancel)|shells? still running|agents? running|still running|\b[1-9]\d* task\(s\)')
@@ -583,6 +587,53 @@ def say(log, line, dry=False):
             fh.write(time.strftime('%Y-%m-%d %H:%M:%S ') + line + '\n')
 
 
+TAKEOVER_MSG = ("Harness check (lane-nudge): agy-{lane} is out of both agy quota groups (Gemini and Claude through agy). "
+                "You are {lane}'s driver now, as its Claude fallback, until agy's quota resets: continue the lane from "
+                "DRIVER_STATUS.md, put bounded work on background jobs and arm a watcher on each one.")
+TAKEOVER_EVERY = 12 * 3600
+
+
+def takeover(a, session, lane, lane_dir, pane, state, run=subprocess.run, sleep=time.sleep, now=None):
+    """11-27: the log said "waking the Claude fallback" every 30 min while nothing woke: lean-svm and paper-audit
+    had no fallback session, and meccog's idle one only got the usual idle check. When agy is out of both groups,
+    start claude-<lane> if it is missing (in the lane's KB worktree, else the lane dir) and hand it the lane once
+    per TAKEOVER_EVERY. Returns (pane, handed); pane is None when it could not be started (logged; RULE #1)."""
+    now = time.time() if now is None else now
+    name = f'{a.prefix}{session}'
+    if pane is None:
+        # LANE_NUDGE_FALLBACK_DIR (host env file; "{lane}" is replaced): where the other fallbacks run, e.g. a
+        # per-lane worktree. Unset or missing: the lane dir.
+        pattern = os.environ.get('LANE_NUDGE_FALLBACK_DIR', '')
+        wanted = Path(os.path.expanduser(pattern.replace('{lane}', lane))) if pattern else None
+        cwd = wanted if wanted and wanted.is_dir() else lane_dir
+        cmd = 'env -u CLAUDE_CODE_OAUTH_TOKEN {} --permission-mode bypassPermissions --remote-control {} --name {}'.format(
+            shlex.quote(str(Path.home() / '.local/bin/claude')), shlex.quote(lane), shlex.quote(lane))
+        if run([a.tmux, 'new-session', '-d', '-s', name, '-c', str(cwd), cmd], capture_output=True, text=True).returncode:
+            say(a.log, f'{name}: could not start the Claude fallback')
+            return None, False
+        say(a.log, f'{name}: started the Claude fallback in {cwd}')
+        pane = f'={name}:'
+        for _ in range(30):
+            sleep(2)
+            screen = run([a.tmux, 'capture-pane', '-p', '-t', pane], capture_output=True, text=True).stdout or ''
+            if 'trust this folder' in screen:     # the lane's own folder: Claude Code's workspace-trust question
+                run([a.tmux, 'send-keys', '-t', pane, 'Down'], capture_output=True)
+                run([a.tmux, 'send-keys', '-t', pane, 'Enter'], capture_output=True)
+                continue
+            if 'bypass permissions on' in screen:
+                break
+    mark = state / f'{lane}.takeover.json'
+    try:
+        last = json.loads(mark.read_text()).get('at', 0)
+    except (OSError, ValueError):
+        last = 0
+    if now - last >= TAKEOVER_EVERY and type_into(a.tmux, pane, TAKEOVER_MSG.format(lane=lane)):
+        mark.write_text(json.dumps({'at': now, 'pane': pane}))
+        say(a.log, f'{name}: handed the lane (agy out of both quota groups)')
+        return pane, True
+    return pane, False
+
+
 def main():
     home = Path.home()
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
@@ -658,6 +709,14 @@ def main():
         if switched[lane] == 'switched':
             continue
         drv = None if switched[lane] == 'stopped' else active_driver(lane_dir, a.tmux, state)
+        if switched[lane] == 'stopped' and not a.dry:
+            try:
+                started, handed = takeover(a, session, lane, lane_dir, pane, state)
+                pane = started or pane
+                if handed:
+                    continue                        # the handover is this tick's message; no idle nudge on top
+            except Exception as exc:                # RULE #1: a failed takeover never stops the idle nudges
+                say(a.log, f'{lane}: Claude fallback takeover failed: {exc!r}')
         if not drv and pane is None:
             continue
         label = drv[0] if drv else f'{a.prefix}{session}'

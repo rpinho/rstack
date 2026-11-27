@@ -771,3 +771,25 @@ def test_auto_dismiss_answers_the_agy_survey_and_never_a_real_choice():
     for screen in (codex, 'Overwrite file? (y/n)\n', '❯ 1. Yes\n  2. No\n', ''):
         assert nudge.dismiss('tmux', '%1', screen, run=run) is None
     assert sent == []
+
+
+def test_a_both_groups_stop_starts_a_missing_fallback_and_hands_it_the_lane_once(tmp_path, monkeypatch):
+    """11-27: "waking the Claude fallback" was logged every 30 min while lean-svm and paper-audit had none."""
+    import types
+    calls, typed = [], []
+    def run(cmd, **kw):
+        calls.append(cmd)
+        out = '⏵⏵ bypass permissions on' if cmd[1] == 'capture-pane' else ''
+        return types.SimpleNamespace(returncode=0, stdout=out)
+    monkeypatch.setattr(nudge, 'type_into', lambda tmux, pane, text: typed.append((pane, text)) or True)
+    a = types.SimpleNamespace(prefix='claude-', tmux='tmux', log='')
+    lane_dir = tmp_path / 'lanes/lean-svm'; lane_dir.mkdir(parents=True)
+    pane, handed = nudge.takeover(a, 'lean-svm', 'lean-svm', lane_dir, None, tmp_path, run=run, sleep=lambda s: None, now=10**6)
+    assert pane == '=claude-lean-svm:' and handed
+    new = [c for c in calls if c[1] == 'new-session'][0]
+    assert new[new.index('-s') + 1] == 'claude-lean-svm' and '--remote-control lean-svm' in new[-1]
+    assert len(typed) == 1 and 'agy-lean-svm is out of both agy quota groups' in typed[0][1]
+    nudge.takeover(a, 'lean-svm', 'lean-svm', lane_dir, pane, tmp_path, run=run, sleep=lambda s: None, now=10**6 + 1000)
+    assert len(typed) == 1                                   # handed once per 12 h, not every tick
+    nudge.takeover(a, 'lean-svm', 'lean-svm', lane_dir, pane, tmp_path, run=run, sleep=lambda s: None, now=10**6 + 13 * 3600)
+    assert len(typed) == 2
