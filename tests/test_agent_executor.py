@@ -474,9 +474,10 @@ def test_an_agy_quota_error_is_logged_with_its_model_and_tier(tmp_path):
     assert ok.returncode == 0 and len((state / 'agy-quota.jsonl').read_text().splitlines()) == 1
 
 
-@pytest.mark.parametrize('cap,expected', [('0', 'claude overflow via agy (weekly at 90%)'),
-                                          ('1', 'claude cap: claude weekly at 90% >= 80% ceiling')])
-def test_the_launcher_runs_a_claude_overflow_on_agy_and_logs_why(tmp_path, cap, expected):
+@pytest.mark.parametrize('cap', ['0', '1'])
+def test_a_claude_job_never_overflows_onto_agys_claude(tmp_path, cap):
+    """11-27 (Ricardo: "agy runs Neon only, never agy's Claude"): at 90% weekly the launcher used to run a Claude
+    job on agy's Claude route. It no longer does, with or without the cap; the job stays on Claude Code."""
     import os, time
     repo = Path(__file__).resolve().parents[1]
     jobs = tmp_path/'jobs'; jobs.mkdir()
@@ -494,15 +495,11 @@ def test_the_launcher_runs_a_claude_overflow_on_agy_and_logs_why(tmp_path, cap, 
     env = dict(os.environ, AGENT_BACKEND='claude', LAUNCH_AGY=str(fake), LAUNCH_CLAUDE='/nonexistent-claude',
                LAUNCH_ARTIFACT_DIR=str(jobs), LAUNCH_STATE=str(tmp_path/'registry'), RH_ROLES_FILE=str(roles),
                FORCE_LAUNCH='1', RSTACK_STATE_DIR=str(state), RH_CLAUDE_OVERFLOW_PERCENT='85', RH_CLAUDE_CAP=cap)
-    proc = subprocess.run(['zsh', str(repo/'tools/launch.sh'), 'fixture', str(tmp_path)],
-                          env=env, capture_output=True, text=True, timeout=20)
-    assert proc.returncode == 0, proc.stderr
-    argv = json.loads(Path(str(fake) + '.argv').read_text())
-    assert argv[argv.index('--model') + 1] == 'claude-opus-5-5-high'
-    log = (jobs/'fixture.log').read_text()
-    assert expected in log
+    subprocess.run(['zsh', str(repo/'tools/launch.sh'), 'fixture', str(tmp_path)],
+                   env=env, capture_output=True, text=True, timeout=60)
+    assert not Path(str(fake) + '.argv').exists()
     receipt = json.loads((jobs/'fixture.log.selection.json').read_text())
-    assert receipt['executor'] == 'agy' and receipt['model'] == 'claude-opus-5-5'
+    assert receipt['executor'] == 'claude' and 'via agy' not in (jobs/'fixture.log').read_text()
 
 
 def test_codex_runs_without_an_openai_api_key_or_base_url(tmp_path):

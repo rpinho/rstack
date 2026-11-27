@@ -34,10 +34,6 @@ import re
 import sys
 import time
 
-if __package__:
-    from . import lane_registry
-else:
-    import lane_registry
 
 try:
     import settings  # noqa: F401  11-22: loads the harness env file, so the Agent hook sees the selector's knobs
@@ -346,6 +342,19 @@ def main(argv=None):
 
 # ---- the decision ----------------------------------------------------------------------------------------
 
+def _live_deadline(lane, now):
+    """The lane's live deadline, or None. Imported here, not at load: the pace-gate hook loads this module from a
+    minimal install, and a missing or broken registry module must never stop the pacing it enforces (RULE #1)."""
+    try:
+        if __package__:
+            from . import lane_registry
+        else:
+            import lane_registry
+        return lane_registry.live_deadline(lane, now)
+    except Exception:
+        return None
+
+
 def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, projects=None, *,
            deadline=_DEADLINE_UNSET):
     """What a Claude pick may do. Returns dict(model, leave, notes, warning, opus_reason):
@@ -357,7 +366,7 @@ def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, proj
     if not enabled():
         return out
     if deadline is _DEADLINE_UNSET:
-        deadline = lane_registry.live_deadline(lane, now)
+        deadline = _live_deadline(lane, now)
     if deadline:
         notes.append('deadline lane {}: {} {} ends {}; pacing and share do not apply'.format(
             lane, deadline['kind'], ' '.join(deadline['what'].splitlines()), deadline['ends']))

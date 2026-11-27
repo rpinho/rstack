@@ -102,11 +102,12 @@ def test_a_claude_job_does_not_overflow_to_an_agy_claude_out_of_quota(state, mon
     (state / 'state/usage/claude.json').write_text(json.dumps({'weekly_percent': 90, 'at': time.time()}))
     roles = {'roles': {'writing': ['claude-opus-5-5']}, 'routes': ROLES['routes']}
     (state / 'roles.json').write_text(json.dumps(roles))
-    assert wm.select('writing', 'claude', path=state / 'roles.json')['route_model'] == 'claude-opus-5-5-high'
+    # 11-27: agy never runs Claude, so there is no overflow route to skip, quota or not.
+    receipt = wm.select('writing', 'claude', path=state / 'roles.json')
+    assert receipt['executor'] == 'claude' and 'route_model' not in receipt
     write(state, quota_row('claude-opus-5-5-high', '4h52m1s', utc=dt.datetime.now(dt.timezone.utc)))
     receipt = wm.select('writing', 'claude', path=state / 'roles.json')
     assert receipt['executor'] == 'claude' and 'route_model' not in receipt
-    assert receipt['quota_skipped'][0].startswith('skipped claude-opus-5-5-high: agy quota until ')
 
 
 def returned(tmp_path, quota_line, executor='agy'):
