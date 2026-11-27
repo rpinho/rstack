@@ -160,7 +160,33 @@ def claude_overflow(executor, model):
 # 11-22 (Ricardo via general): Neon also builds a record in biology.
 GEMINI_ROLES = {'carbon': ('proof',), 'neon': ('review', 'judge', 'audit', 'builder', 'biology'),
                 'hydrogen': ('batch', 'mechanical')}
-CARBON_LANES = ('math',)   # 11-25 (Google AI Ultra): hard math and proof work runs on Carbon-high
+CARBON_LANES = ('math',)   # kept for RH_GEMINI_ONLY=''; 11-27 every Gemini job runs on Neon (gemini_only())
+def gemini_only():
+    """RH_GEMINI_ONLY, default Neon-high; '' restores the per-role Gemini picks."""
+    return os.environ.get('RH_GEMINI_ONLY', 'gemini-4-neon-high')
+
+
+def retired_pick(model, route):
+    """Why a leaderboard pick is out of rotation (11-27, Ricardo): any Gemini model but Neon, and every OpenRouter
+    route ("OpenRouter = cut"; KB outbox/roi-1127). '' when the pick stays."""
+    route = route if isinstance(route, dict) else {}
+    name = '{} {}'.format(model, route.get('canonical') or '').lower()
+    if route.get('cli') == 'openrouter' and os.environ.get('RH_OPENROUTER_CUT', '1') != '0':
+        return 'OpenRouter cut'
+    if gemini_only() and (route.get('cli') in ('agy', 'gemini') or 'gemini' in name) and 'neon' not in name:
+        return 'Gemini is Neon only'
+    return ''
+
+
+def neon_only(data):
+    """The leaderboard with retired picks dropped from every role's ranking. An explicit --model still runs (its route
+    stays); a role left with nothing keeps its list (RULE #1: never an empty role)."""
+    routes = data.get('routes') or {}
+    roles = {}
+    for role, ranked in (data.get('roles') or {}).items():
+        kept = [m for m in ranked if not retired_pick(m, routes.get(m))] if isinstance(ranked, list) else ranked
+        roles[role] = kept or ranked
+    return dict(data, roles=roles)   # 11-25 (Google AI Ultra): hard math and proof work runs on Carbon-high
 # 11-26 (Ricardo, via general: "Cinna Davis: best math model"): math producer and builder jobs, and proof work in
 # any lane, run on Codex's Astra 6.2, not throttled for its faster burn (the Codex credits are there to spend).
 # Carbon-high stays math's referee, another family from Astra, so the producer never grades itself, and takes
@@ -225,9 +251,10 @@ def gate_reviewer(model, reviewers):
 
 
 def gemini_pick(role, data, excluded, families, run, lane=''):
-    """agy's Gemini for the role/lane (Carbon for math and proof, Hydrogen for batch/mechanical, else Neon)."""
-    gemini = ('gemini-4-carbon-high' if role in GEMINI_ROLES['carbon'] or lane in CARBON_LANES
-              else 'gemini-4-hydrogen-high' if role in GEMINI_ROLES['hydrogen'] else 'gemini-4-neon-high')
+    """agy's Gemini for the role: Neon-high for every role (Ricardo 11-27: "GEMINI = NEON ONLY", RH_GEMINI_ONLY); Carbon, Argon and
+    Hydrogen draw on the same weekly pool and spent it 181 runs to Neon's 311 since 11-25)."""
+    gemini = gemini_only() or ('gemini-4-carbon-high' if role in GEMINI_ROLES['carbon'] or lane in CARBON_LANES
+                             else 'gemini-4-hydrogen-high' if role in GEMINI_ROLES['hydrogen'] else 'gemini-4-neon-high')
     r = data['routes'].get(gemini)
     if ('agy' in run and isinstance(r, dict) and r.get('cli') == 'agy' and gemini not in excluded
             and r.get('canonical') not in excluded and maker(gemini, r.get('canonical')) not in families):
@@ -600,6 +627,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     data = json.loads(raw)
     if not isinstance(data, dict) or not isinstance(data.get('roles'), dict) or not isinstance(data.get('routes'), dict):
         raise ValueError('leaderboard requires roles and routes objects')
+    data = neon_only(data)
     row = role if role in data['roles'] else ROLE_ROWS.get(role, role)
     ranked = data['roles'].get(row)
     if not isinstance(ranked, list) or not ranked or any(not isinstance(m, str) or not m for m in ranked):

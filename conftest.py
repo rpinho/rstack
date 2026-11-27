@@ -65,6 +65,13 @@ os.environ['RH_SCIENCE_CHECK_COMMAND'] = shlex.join([sys.executable, str(FIXTURE
 @pytest.fixture(autouse=True)
 def no_internet(monkeypatch, tmp_path):
     monkeypatch.setenv('RH_MODEL_RUNS_LOG', str(tmp_path / '.local/state/model-runs.jsonl'))
+    # 11-27: the launcher's concurrency guard counted this host's real Codex job-* sessions, so a launch.sh fixture
+    # queued (and timed out) whenever the machine was busy. Tests never wait on real jobs.
+    monkeypatch.setenv('LAUNCH_MAX_CONCURRENT', '100000')
+    # 11-27 (Ricardo): Gemini is Neon only and OpenRouter is cut. The older routing tests exercise the per-role
+    # Gemini picks and the OpenRouter routes, so they run with both switched back; the defaults have their own test.
+    monkeypatch.setenv('RH_GEMINI_ONLY', '')
+    monkeypatch.setenv('RH_OPENROUTER_CUT', '0')
     connect, connect_ex = socket.socket.connect, socket.socket.connect_ex
     def guarded(self, address):
         if self.family in (socket.AF_INET, socket.AF_INET6):

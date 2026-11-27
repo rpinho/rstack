@@ -857,3 +857,26 @@ def test_an_idled_lane_is_not_handed_to_its_claude_fallback(tmp_path, monkeypatc
     (lane / 'QUIET').unlink()
     nudge.main()
     assert handed == ['math']
+
+
+def test_bookmark_leads_reach_their_lane_once_and_candidates_reach_the_harness(tmp_path, monkeypatch):
+    """11-27 (Ricardo): bookmarks reach the lanes automatically. The nightly writes leads/<lane>-<day>.md and
+    new-lane-candidates-<day>.md; lane-nudge types each to its lane's driver once."""
+    import types
+    leads = tmp_path / 'leads'; leads.mkdir()
+    (leads / 'open-source-2026-11-28.md').write_text('- bio idea one (https://x.com/a/status/1)\n- bio idea two\n')
+    (leads / 'new-lane-candidates-2026-11-28.md').write_text('- a chemistry idea; suggested lane: chem\n')
+    old = leads / 'open-source-2026-11-20.md'; old.write_text('- stale\n')
+    now = __import__("time").time()
+    os.utime(old, (now - 5 * 86400, now - 5 * 86400))
+    monkeypatch.setenv('LANE_LEADS_DIR', str(leads))
+    typed = []
+    monkeypatch.setattr(nudge, 'type_into', lambda tmux, pane, text: typed.append((pane, text)) or True)
+    a = types.SimpleNamespace(tmux='tmux', log='')
+    state = tmp_path / 'state'; state.mkdir()
+    assert nudge.deliver_leads(a, 'open-source', '%os', state, now)
+    assert typed[-1][0] == '%os' and 'open-source-2026-11-28.md' in typed[-1][1] and '(2 leads' in typed[-1][1]
+    assert not nudge.deliver_leads(a, 'open-source', '%os', state, now)          # once per file; the stale one never
+    assert not nudge.deliver_leads(a, 'math', '%math', state, now)               # nothing for math
+    assert nudge.deliver_leads(a, 'harness', '%h', state, now) and 'new-lane candidates' in typed[-1][1]
+    assert len(typed) == 2

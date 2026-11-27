@@ -434,6 +434,8 @@ def agy_switch(a, lane, lane_dir, state, now):
     found = re.search(r'--model[ =]["\']?([\w.-]+)', start)
     model = sw.get('from') or (found.group(1) if found and not found.group(1).startswith('claude') else None) \
         or (slug(shown) if shown and not on_claude else None) or AGY_GEMINI
+    if 'neon' not in model:
+        model = AGY_GEMINI              # 11-27 Ricardo: "GEMINI = NEON ONLY"; a Carbon/Argon/Hydrogen pane comes back on Neon
     found = re.search(r'--effort[ =]["\']?(\w+)', start)
     effort = sw.get('effort') or (found.group(1) if found else 'high')
     reset_at = sw.get('reset')
@@ -640,6 +642,44 @@ def takeover(a, session, lane, lane_dir, pane, state, run=subprocess.run, sleep=
         say(a.log, f'{name}: handed the lane (agy out of both quota groups)')
         return pane, True
     return pane, False
+
+
+LEADS_MSG = ("Harness (lane-nudge): new bookmark leads for {lane} are in {path} ({n} leads, from Ricardo's bookmarks "
+             "via the nightly digest). Read them, take the ones that fit this lane's ask, and log what you picked up "
+             "or why not.")
+CANDIDATES_MSG = ("Harness (lane-nudge): new-lane candidates from Ricardo's bookmarks are in {path} ({n} rows): ideas no "
+                  "active lane owns. Route each to the closest lane, propose a new lane to general, or drop it with a "
+                  "reason.")
+
+
+def deliver_leads(a, lane, pane, state, now, days=2):
+    """11-27 (Ricardo: "the bookmark ingest and the morning digest should all be contributing to those lanes
+    automatically"): the nightly writes <lane>-<YYYY-MM-DD>.md into LANE_LEADS_DIR (one file per lane per day,
+    new-lane-candidates-<day>.md for ideas no lane owns, which go to the harness lane). Each file is typed to the
+    lane's driver once, the first quiet tick after it appears. Returns True when it sent one."""
+    leads = Path(os.path.expanduser(os.environ.get('LANE_LEADS_DIR', '~/.local/share/lane-briefs/leads')))
+    if not leads.is_dir():
+        return False
+    mark = state / f'{lane}.leads.json'
+    try:
+        done = set(json.loads(mark.read_text()).get('delivered', []))
+    except (OSError, ValueError):
+        done = set()
+    prefixes = [(f'{lane}-', LEADS_MSG)] + ([('new-lane-candidates-', CANDIDATES_MSG)] if lane == 'harness' else [])
+    for prefix, msg in prefixes:
+        for f in sorted(leads.glob(prefix + '*.md')):
+            day = f.name[len(prefix):-3]
+            if f.name in done or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', day) or now - f.stat().st_mtime > days * 86400:
+                continue
+            n = sum(1 for line in f.read_text(errors='replace').splitlines() if line.lstrip().startswith(('- ', '* ')))
+            if not type_into(a.tmux, pane, msg.format(lane=lane, path=f, n=n)):
+                say(a.log, f'{lane}: lead file {f.name} not confirmed in the pane; retried next run')
+                return False
+            done.add(f.name)
+            mark.write_text(json.dumps({'delivered': sorted(done)[-60:]}))
+            say(a.log, f'{lane}: handed {f.name} ({n} leads)')
+            return True
+    return False
 
 
 def idled(lane_dir, state, now=None):
@@ -893,6 +933,12 @@ def main():
                 time.sleep(1)
                 tail = subprocess.run([a.tmux, 'capture-pane', '-p', '-t', target_pane, '-S', '-15'],
                                       capture_output=True, text=True).stdout
+        if not a.dry and not quiet[lane] and not RUNNING.search(tail):
+            try:
+                if deliver_leads(a, lane, target_pane, state, now):
+                    continue                        # the leads are this tick's message; no idle nudge on top
+            except Exception as exc:                # RULE #1: lead delivery never stops the idle nudges
+                say(a.log, f'{label}: lead delivery failed: {exc!r}')
         sf = state / f'{drv[0] if drv else session}.json'
         saved = json.loads(sf.read_text()) if sf.exists() else {}
         last = saved.get('at', 0)

@@ -1564,3 +1564,25 @@ def test_a_trial_of_one_model_still_runs_when_the_jobs_pick_is_another(tmp_path,
     data['roles']['builder'] = ['gemini-4-neon-high']                  # the job's own pick: nothing to compare
     p.write_text(json.dumps(data))
     assert 'trial' not in wm.select('builder', 'agy', path=p, job='j2')
+
+
+def test_gemini_is_neon_only_and_openrouter_is_cut_by_default(tmp_path, monkeypatch):
+    """11-27 (Ricardo): "GEMINI = NEON ONLY" (Carbon, Argon and Hydrogen drain the same weekly pool) and
+    "OpenRouter = cut". Every role's ranking drops them; an explicit --model still runs."""
+    monkeypatch.delenv('RH_GEMINI_ONLY', raising=False)
+    monkeypatch.delenv('RH_OPENROUTER_CUT', raising=False)
+    routes = {'gemini-4-carbon-high': {'cli': 'agy', 'canonical': 'google/gemini-4-carbon-high'},
+              'gemini-4-hydrogen-high': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-high'},
+              'gemini-4-neon-high': {'cli': 'agy', 'canonical': 'google/gemini-4-neon-high'},
+              'kimi-k3': {'cli': 'openrouter', 'canonical': 'moonshot/kimi-k3'},
+              'gpt-6.2-sol': {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'}}
+    data = {'roles': {'batch': ['gemini-4-hydrogen-high', 'kimi-k3', 'gpt-6.2-sol'],
+                      'proof': ['gemini-4-carbon-high', 'gemini-4-neon-high'],
+                      'odd': ['kimi-k3']}, 'routes': routes}
+    kept = wm.neon_only(data)['roles']
+    assert kept['batch'] == ['gpt-6.2-sol'] and kept['proof'] == ['gemini-4-neon-high']
+    assert kept['odd'] == ['kimi-k3']                       # never an empty role (RULE #1)
+    for role in ('proof', 'batch', 'mechanical', 'review'):
+        assert wm.gemini_pick(role, data, [], frozenset(), {'agy'}, lane='math') == 'gemini-4-neon-high'
+    monkeypatch.setenv('RH_GEMINI_ONLY', '')
+    assert wm.gemini_pick('proof', data, [], frozenset(), {'agy'}, lane='math') == 'gemini-4-carbon-high'
