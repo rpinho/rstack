@@ -297,7 +297,9 @@ echo "head $(git symbolic-ref -q --short HEAD)"
 git for-each-ref --format='%(refname:short) %(upstream:short)' refs/heads | while read -r br up; do
   [ "$up" = "$r/$b" ] && echo "track $br $(git rev-list --count "$br" --not "$up" 2>/dev/null)"
 done
-[ -d .git ] && grep -qE '<!--[[:space:]]*auto:' README.md 2>/dev/null && echo "readme README.md"
+# 11-27: a README is a readme-blocks README only when its readme-blocks.json defines blocks; other generators
+# (the hubs' "PRs: refresh status") use the same <!-- auto: prefix and are not this check's to read.
+[ -d .git ] && grep -qE '<!--[[:space:]]*auto:' README.md 2>/dev/null && python3 -c 'import json,sys; sys.exit(0 if json.load(open("readme-blocks.json")).get("blocks") else 1)' 2>/dev/null && echo "readme README.md"
 exit 0
 '''
 
@@ -748,8 +750,9 @@ def check(cfg, gh='gh', now=None, workers=6):
         if what == 'published':
             h = c[0]
             out = published_problems(public[rid]['name'], branch, c, agent_globs(h), gh, gate)
-            rc, txt, _ = h.sh('[ -d "$1/.git" ] && grep -qE "<!--[[:space:]]*auto:" "$1/README.md" 2>/dev/null && echo y',
-                              c[1])
+            rc, txt, _ = h.sh('[ -d "$1/.git" ] && grep -qE "<!--[[:space:]]*auto:" "$1/README.md" 2>/dev/null && '
+                              'python3 -c \'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("blocks") else 1)\' '
+                              '"$1/readme-blocks.json" 2>/dev/null && echo y', c[1])
             if txt.strip() == 'y':
                 out += readme_problem(h, c[1], 'README.md', rb)
             return job, None, out

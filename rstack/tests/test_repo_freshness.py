@@ -176,6 +176,18 @@ def test_stale_readme_blocks_are_a_problem(tmp_path):
     assert not [r for r in rows if r[0] == 'readme']
 
 
+def test_auto_markers_of_another_generator_are_not_a_readme_blocks_problem(tmp_path):
+    """11-27: the hubs' PR-status generator uses <!-- auto: markers with no readme-blocks.json (or an empty one)."""
+    cfg, gh, p = world(tmp_path)
+    clean = p['clean']
+    commit(clean, 'README.md', '<!-- auto:bio-prs -->\n123 PRs to 50 repositories.\n')
+    git(clean, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+    cfg['readme_blocks'] = '{} {}'.format(sys.executable, TOOLS / 'readme-blocks')
+    assert not [r for r in rf.check(cfg, gh)[1] if r[0] == 'readme']
+    commit(clean, 'readme-blocks.json', json.dumps({'blocks': {}}))
+    git(clean, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+    assert not [r for r in rf.check(cfg, gh)[1] if r[0] == 'readme']
+
 def test_installed_retro_and_backup_checks(tmp_path):
     cfg, gh, paths = world(tmp_path)
     live, src = tmp_path / 'bin', tmp_path / 'repo-tools'
