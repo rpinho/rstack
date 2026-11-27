@@ -145,7 +145,7 @@ def main(argv=None):
         return grok(args.kind, args, cfg)
     if args.kind not in x_route.ROUTES:
         # 11-27: no API step for likes and follows; the browser (Chrome) is their route, so say so and stop.
-        print('BROWSER ALLOWED: {} goes through the browser (the X API refuses likes and follows for this '
+        print('BROWSER ALLOWED: {} goes through the browser (the X API answers 403 to likes and follows for this '
               'account)'.format(args.kind))
         return BROWSER
     if not cfg['account_id'].isdigit():
