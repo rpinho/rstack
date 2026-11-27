@@ -29,6 +29,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -83,10 +84,11 @@ def spill(target, text):
     short line that starts like the message and names the file."""
     folder = Path(os.path.expanduser(os.environ.get('TELL_SESSION_SPILL', '~/.local/state/tell-session')))
     folder.mkdir(parents=True, exist_ok=True)
-    name = '{}-{}.md'.format(time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()), re.sub(r'[^\w.-]', '', target) or 'pane')
-    path = folder / name
-    path.write_text(text + '\n')
-    return '{} ... [long message: read the full text in {}]'.format(text[:200].rstrip(), path)
+    name = re.sub(r'[^\w.-]', '', target) or 'pane'
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=folder, prefix=name + '-',
+                                     suffix='.md', delete=False) as saved:
+        saved.write(text)
+    return '{} ... [long message: read the full text in {}]'.format(flat(text[:200]), saved.name)
 
 
 def tell(target, text, tmux=None, run=subprocess.run, sleep=time.sleep, polls=30, step=0.5, retry_at=6):
@@ -94,10 +96,6 @@ def tell(target, text, tmux=None, run=subprocess.run, sleep=time.sleep, polls=30
     tmux = tmux or default_tmux()
     if not target.startswith(('%', '=')) and not re.search(r'[:.]', target):
         target = '=' + target + ':'  # exact session match; a bare '=name' is "can't find pane" for pane commands
-    text = flat(text)
-    if len(text) > long_limit():
-        text = spill(target, text)
-
     def capture():
         r = run([tmux, 'capture-pane', '-p', '-t', target], capture_output=True, text=True)
         return getattr(r, 'returncode', 0), getattr(r, 'stdout', '') or ''
@@ -108,6 +106,7 @@ def tell(target, text, tmux=None, run=subprocess.run, sleep=time.sleep, polls=30
     why = menu(screen)
     if why:
         return 2, f'tell-session: {target} shows {why}; nothing sent. Pane:\n' + '\n'.join(tail(screen, 8))
+    text = spill(target, text) if len(text) > long_limit() else flat(text)
     busy = bool(WORKING.search('\n'.join(tail(screen))))
     run([tmux, 'send-keys', '-t', target, '-l', '--', text])
     sleep(1)

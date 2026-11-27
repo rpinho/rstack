@@ -1,0 +1,27 @@
+--- tell-general.current
++++ tell-general
+@@ -23,3 +23,3 @@
+ """
+-import sys, os, json, time, re, pathlib
++import sys, os, json, time, re, pathlib, tempfile
+ 
+@@ -136,2 +136,14 @@
+ 
++# The inbox and its wake marker are on general's host. Spill the visible message there
++# after the existing inbox filter, with the same inline limit as tell-session.
++spilled = len(text) > int(os.environ.get('TELL_SESSION_LONG', '600'))
++if spilled:
++    messages = D / 'messages'
++    messages.mkdir(exist_ok=True)
++    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=messages,
++                                     suffix='.md', delete=False) as saved:
++        saved.write(text)
++    preview = ' '.join(text[:100].split())
++    text = f'{preview} ... [long message: read the full text in {saved.name}]'
++
+ row = {'utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'from': frm, 'kind': kind, 'text': text}
+@@ -149,3 +161,3 @@
+     (D / 'wake').mkdir(exist_ok=True)
+-    (D / 'wake' / f'{time.time_ns()}-{frm}-{kind}').write_text(text[:200])
++    (D / 'wake' / f'{time.time_ns()}-{frm}-{kind}').write_text(text if spilled else text[:200])
+ 

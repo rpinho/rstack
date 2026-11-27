@@ -252,6 +252,7 @@ def test_a_fail_open_hook_lets_real_work_through_and_survives_its_own_crash(name
     probe = row['probe']
     env = dict(os.environ, RSTACK_STATE_DIR=str(tmp_path / 'state'), HOME=str(tmp_path),
                RSTACK_UNATTENDED='1')
+    env.update(probe.get('env', {}))
     env.pop('RH_GATES_REGISTRY', None)
     (tmp_path / 'probe-lane').mkdir()
     event = dict(probe['event'], cwd=str(tmp_path / 'probe-lane'))

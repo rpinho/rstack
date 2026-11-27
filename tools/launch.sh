@@ -351,7 +351,13 @@ if [[ $job == */* ]]; then registry_name=paths/$registry_name; mkdir -p "$reg/pa
 remote_marks=${LAUNCH_REMOTE_JOBS:-.local/state/research-harness/remote-jobs}
 # restarts= is job-watchdog's per-job restart cap and path= the PATH it resumes with.
 print -l "dir=$dir" "pid=$$" "restarts=${LAUNCH_RESTARTS:-0}" "path=$PATH" ${LAUNCH_HOST:+"host=$LAUNCH_HOST"} ${LAUNCH_HOST:+"remote_marks=$remote_marks"} > "$reg/$registry_name.job"
+pending_grade=
 finished() {
+  # A signal can end a local executor pipeline before record_outcome or the normal grade.
+  # The detached remote runner can still be working when its launcher exits.
+  if [[ -n $pending_grade && -z $LAUNCH_HOST ]]; then
+    grade_attempt --launcher-exit
+  fi
   [[ ! -f $reg/$registry_name.job ]] || mv "$reg/$registry_name.job" "$reg/$registry_name.finished"
 }
 trap finished EXIT
@@ -550,6 +556,7 @@ grade_attempt() {
   python3 "$H/auto_grade.py" --receipt "$log.selection.json" --log "$log" --dir "$dir" \
     --spec "$spec" ${LAUNCH_HOST:+--host} ${LAUNCH_HOST:+$LAUNCH_HOST} "$@" >> "$log" 2>&1 || true
   python3 "$selector" --record-ungraded --receipt "$log.selection.json" --log "$log" >/dev/null 2>&1 || true
+  pending_grade=
 }
 driver=${RH_LAUNCH_DRIVER:-}
 launch_group=$(python3 -c 'import uuid; print(uuid.uuid4().hex)')
@@ -583,6 +590,7 @@ try:
 except (OSError, ValueError) as exc:
     print("run records: " + str(exc), file=sys.stderr)
 print(row["run_id"])' "$log.selection.json" "$log" "$launch_group" "$driver" "$dir" "$H" "$LAUNCH_EFFORT") || run_id=
+  pending_grade=$run_id
   print -- "=== attempt $i model $m${LAUNCH_HOST:+ host $LAUNCH_HOST} $(date)" >> "$log"
   attempt_log="$log.attempt-$i"
   out=${spec:r}.last.md

@@ -1,0 +1,8 @@
+[
+  {"item":"tell-session","type":"tool","layer":"01-fleet","enforcer":"rstack/tools/tell-session","why":"Long tmux messages reached the reader with only their tail; the tell-general patch also files the full text on the destination host."},
+  {"item":"purchase-approval-gate.py","type":"hook","layer":"11-life-admin","enforcer":"rstack/hooks/purchase-approval-gate.py","why":"A cable and hub reached a cart whose approval covered only glue."},
+  {"item":"wispr-add","type":"tool","layer":"03-comms","enforcer":"rstack/tools/wispr-add","why":"Wispr queued --help as a dictionary word."},
+  {"item":"auto_grade.py","type":"tool","layer":"04-harness","enforcer":"harness/auto_grade.py","why":"Interrupted no-lease Codex runs could close before the launcher wrote a grade."},
+  {"item":"lane-nudge","type":"tool","layer":"01-fleet","enforcer":"harness/tools/lane-nudge/lane-nudge","why":"A watcher wait made a quota-stopped agy driver look busy and delayed Claude takeover."},
+  {"item":"absence-claim-check.py","type":"hook","layer":"07-memory-kb","enforcer":"rstack/hooks/absence-claim-check.py","why":"A narrow grep led to an uncited claim that an application was never made."}
+]

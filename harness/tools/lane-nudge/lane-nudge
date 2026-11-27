@@ -51,6 +51,7 @@ except ImportError:
 
 BEHIND = ('WARN', 'STALLED', 'BROKEN')
 RUNNING = re.compile(r'esc to (?:interrupt|cancel)|shells? still running|agents? running|still running|\b[1-9]\d* task\(s\)')
+WATCHER_WAIT = re.compile(r'waiting (?:for|on) (?:the |a )?watcher|watcher armed|until \S*\.last\.md', re.I)
 DRIVER_RE = re.compile(r'\b(agy-[A-Za-z0-9_.-]+)\b')
 QUOTA_LINE = re.compile(r'\b(?:quota|rate[- ]?limit(?:ed)?)\b', re.I)
 QUOTA_OK = re.compile(
@@ -313,21 +314,27 @@ def type_into(tmux, pane, text):
     return code == 0
 
 
-def driver_status(lane_dir, state=None):
-    """Read DRIVER_STATUS.md -> (session_name, quota_stopped, mtime), or (None, False, None)."""
+def read_driver_status(lane_dir, state=None):
     paths = [Path(lane_dir) / 'DRIVER_STATUS.md']
     if state is not None:
         paths.append(Path(state).parent / Path(lane_dir).name / 'DRIVER_STATUS.md')
     for path in paths:
         try:
-            st = path.stat()
-            text = path.read_text(errors='replace')
+            mtime = path.stat().st_mtime
+            return path.read_text(errors='replace'), mtime
         except OSError:
             continue
-        m = DRIVER_RE.search(text)
-        stopped = any(QUOTA_LINE.search(ln) and not QUOTA_OK.search(ln) for ln in text.splitlines())
-        return (m.group(1) if m else 'agy-' + Path(lane_dir).name), stopped, st.st_mtime
-    return None, False, None
+    return '', None
+
+
+def driver_status(lane_dir, state=None):
+    """Read DRIVER_STATUS.md -> (session_name, quota_stopped, mtime), or (None, False, None)."""
+    text, mtime = read_driver_status(lane_dir, state)
+    if mtime is None:
+        return None, False, None
+    m = DRIVER_RE.search(text)
+    stopped = any(QUOTA_LINE.search(ln) and not QUOTA_OK.search(ln) for ln in text.splitlines())
+    return (m.group(1) if m else 'agy-' + Path(lane_dir).name), stopped, mtime
 
 
 def driver_pane(tmux, name):
@@ -430,7 +437,8 @@ def agy_switch(a, lane, lane_dir, state, now):
     shown = shown_model(screen) or ''
     on_claude = shown.startswith('Claude') or '--model claude' in start
     block = above_prompt(screen)
-    quota = AGY_QUOTA.search(block) and not re.search(r'esc to (?:interrupt|cancel)', screen)
+    waiting = WATCHER_WAIT.search(block)
+    quota = AGY_QUOTA.search(block) and (waiting or not re.search(r'esc to (?:interrupt|cancel)', screen))
     found = re.search(r'--model[ =]["\']?([\w.-]+)', start)
     model = sw.get('from') or (found.group(1) if found and not found.group(1).startswith('claude') else None) \
         or (slug(shown) if shown and not on_claude else None) or AGY_GEMINI
@@ -439,15 +447,24 @@ def agy_switch(a, lane, lane_dir, state, now):
     found = re.search(r'--effort[ =]["\']?(\w+)', start)
     effort = sw.get('effort') or (found.group(1) if found else 'high')
     reset_at = sw.get('reset')
-    if on_claude or sw.get('stopped'):
+    blocked = None
+    if waiting or on_claude or sw.get('stopped'):
         # The quota ledger wins over an older reset guess: never respawn onto a Gemini model that is still out.
-        row = agy_quota.blocked_until(model, effort, now=now)
+        quota_table = agy_quota.blocked(now=datetime.fromtimestamp(now, timezone.utc))
+        row = agy_quota.blocked_until(model, effort, table=quota_table)
+        if not row and (tier := agy_quota.tier_of(model, effort)):
+            suffix = '-' + tier
+            alias = model.removesuffix(suffix) if model.endswith(suffix) else model + suffix
+            row = agy_quota.blocked_until(alias, tier, table=quota_table)
         try:
             blocked = datetime.fromisoformat(str(row['blocked_until']).replace('Z', '+00:00')).timestamp() if row else None
         except (KeyError, TypeError, ValueError):
-            blocked = None
+            pass
+    if on_claude or sw.get('stopped'):
         reset_at = max(reset_at or now, blocked or 0) if (reset_at or blocked) else now
-    if reset_at and now >= reset_at and (on_claude or sw.get('stopped')) and not RUNNING.search(screen):
+    if reset_at and now >= reset_at and (on_claude or sw.get('stopped')) and (waiting or not RUNNING.search(screen)):
+        if idled(lane_dir, state, now):
+            return 'stopped'
         reset = datetime.fromtimestamp(reset_at, timezone.utc).strftime('%Y-%m-%d %H:%MZ')
         say(a.log, f'{name}: Gemini quota back (reset {reset}); moving agy back to {model}', a.dry)
         if a.dry:
@@ -464,18 +481,21 @@ def agy_switch(a, lane, lane_dir, state, now):
         return 'switched'
     if on_claude or (reset_at and now < reset_at and sw.get('stopped')):
         return 'stopped'
-    if not quota and not (noted and mtime > sw.get('back_at', 0)):
+    watcher_blocked = waiting and blocked and now < blocked
+    if not quota and not watcher_blocked and not (noted and mtime > sw.get('back_at', 0)):
         return None
     text = block if quota else 'DRIVER_STATUS.md quota note'
     seconds = agy_quota.reset_seconds(text)
-    reset_at = now + (seconds if seconds is not None else agy_quota.FIVE_HOURS)
+    reset_at = blocked if watcher_blocked else now + (seconds if seconds is not None else agy_quota.FIVE_HOURS)
     reset = datetime.fromtimestamp(reset_at, timezone.utc).strftime('%Y-%m-%d %H:%MZ')
-    say(a.log, f'{name}: Gemini quota stop on {model} (reset {reset}{"" if seconds is not None else ", assumed"}); '
+    say(a.log, f'{name}: Gemini quota stop on {model} (reset {reset}{"" if watcher_blocked or seconds is not None else ", assumed"}); '
                'handing the lane to its Claude Code fallback (agy never runs Claude)', a.dry)
     if a.dry:
         return 'stopped'
     sf.write_text(json.dumps({'from': model, 'effort': effort, 'at': now, 'reset': reset_at, 'stopped': True,
                               'back_at': sw.get('back_at', 0)}))
+    if watcher_blocked:
+        return 'stopped'  # The quota ledger already has this stop and reset.
     try:
         import run_records
         tier = model if agy_quota.tier_of(model) else f'{model}-{effort}'
@@ -684,19 +704,27 @@ def deliver_leads(a, lane, pane, state, now, days=2):
 
 def idled(lane_dir, state, now=None):
     """Why the lane is idled on purpose (an active QUIET, or "idle by design" in DRIVER_STATUS.md), else ''."""
-    q = quiet_until(lane_dir, state, time.time() if now is None else now)
+    now = time.time() if now is None else now
+    q = quiet_until(lane_dir, state, now)
     if q:
         return f'QUIET {q}'
-    try:
-        if IDLE_BY_DESIGN.search((lane_dir / 'DRIVER_STATUS.md').read_text(errors='replace')):
+    text, _ = read_driver_status(lane_dir, state)
+    for line in text.splitlines():
+        if IDLE_BY_DESIGN.search(line):
+            until = IDLE_UNTIL.search(line)
+            if until:
+                try:
+                    if datetime.fromisoformat(until.group(1) + '+00:00').timestamp() <= now:
+                        continue
+                except ValueError:
+                    pass
             return 'idle by design'
-    except OSError:
-        pass
     return ''
 
 
 LIVENESS_HOURS = 2.0
 IDLE_BY_DESIGN = re.compile(r'idle by design', re.I)
+IDLE_UNTIL = re.compile(r'idle by design until (\d{4}-\d\d-\d\d[T ]\d\d:\d\d(?::\d\d)?)(?:Z|\+00:00|\s*UTC)', re.I)
 PROMPT = re.compile(r'\? for shortcuts|bypass permissions on|^\s*[>❯›]\s*$', re.M)
 
 
@@ -775,12 +803,7 @@ def liveness(a, registry, lanes_root, state, now, sessions, run=subprocess.run):
         lane_dir = lanes_root / lane
         if not lane_dir.is_dir() or registry.status(lane) in ('retired', 'ended', 'held'):
             continue
-        try:
-            if IDLE_BY_DESIGN.search((lane_dir / 'DRIVER_STATUS.md').read_text(errors='replace')):
-                continue
-        except OSError:
-            pass
-        if quiet_until(lane_dir, state, now):
+        if idled(lane_dir, state, now):
             continue
         last = lane_output_time(lane, lane_dir, getattr(a, 'outputs_globs', []), repos.get(lane, []), run=run)
         mark = state / f'{lane}.liveness.json'
@@ -895,10 +918,12 @@ def main():
         if switched[lane] == 'switched':
             continue
         drv = None if switched[lane] == 'stopped' else active_driver(lane_dir, a.tmux, state)
-        if switched[lane] == 'stopped' and not a.dry and idled(lane_dir, state):
+        paused = idled(lane_dir, state) if switched[lane] == 'stopped' else ''
+        if paused:
             # 11-27 (general, budget): a lane idled until the Claude reset (QUIET, or "idle by design" in
             # DRIVER_STATUS.md) is not handed to its Claude fallback; before, takeover started it again every 12 h.
-            say(a.log, f'{lane}: agy stopped, but the lane is idled ({idled(lane_dir, state)}); no Claude takeover')
+            say(a.log, f'{lane}: agy stopped, but the lane is idled ({paused}); no Claude takeover', a.dry)
+            continue
         elif switched[lane] == 'stopped' and not a.dry:
             try:
                 started, handed = takeover(a, session, lane, lane_dir, pane, state)

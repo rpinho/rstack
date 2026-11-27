@@ -287,18 +287,27 @@ def shipped_in_response(text):
     return bool(lines) and lines[-1].startswith('Shipped:')
 
 
-def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, host='', retried=False):
+def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, host='', retried=False,
+          launcher_exit=False):
     receipt = json.loads(Path(receipt_path).read_text())
     workdir = Path(workdir).absolute()
     spec_text = Path(spec).read_text(errors='replace') if spec and Path(spec).is_file() else ''
     model = receipt.get('route_model') or receipt['model']
     model = canon(model) or model
     run_id = receipt.get('run_id')
+    grade_id = 'grade-' + (run_id or receipt['selection_id'])
+    ledger = Path(receipt_path).with_name('everyday-grades.jsonl')
+    if launcher_exit:
+        existing = next((row for row in run_records.read_jsonl(ledger) if row.get('id') == grade_id), None)
+        if existing:
+            return existing
     rc = exit_code(log, receipt.get('selection_id'), run_id)
+    closed = None
     if run_id:
         try:
             metrics = {'rc': rc}
-            for line in Path(log).read_text(errors='replace').splitlines():
+            lines = Path(log).read_text(errors='replace').splitlines() if Path(log).exists() else []
+            for line in lines:
                 if line.startswith('EXECUTOR_RUN '):
                     try:
                         summary = json.loads(line[len('EXECUTOR_RUN '):])
@@ -307,14 +316,17 @@ def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, ho
                                        if key in summary}
                     except (ValueError, AttributeError):
                         continue
-            run_records.close_run(run_id, **metrics)
-            if rc is None and metrics.get('rc') is not None:
-                # 11-27 sourmash: the launcher's link to a --host executor was stopped by a signal after the executor
-                # finished; the executor's own EXECUTOR_RUN line for this run still carries its exit code.
-                rc = metrics['rc']
+            closed = run_records.close_run(run_id, **metrics)
+            if rc is None:
+                # An executor can close its run even when the launcher loses its outcome or log output.
+                rc = metrics.get('rc')
+                if rc is None and closed:
+                    rc = closed.get('rc')
         except OSError as exc:
             run_records.warn(exc)
     quota = wm.quota_failure(log, receipt)
+    if not quota and closed and closed.get('reason') == 'quota':
+        quota = 'quota'
     cached = []
 
     def response():   # read once, and only when the log and REPORT.md do not settle it (an ssh call for host jobs)
@@ -333,6 +345,9 @@ def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, ho
         result, grader, reason = 'ungraded', 'quota', quota
     elif refused:
         result, grader, reason = 'ungraded', 'harness', refused
+    elif rc in (-15, -2, -1, 129, 130, 143) or (launcher_exit and rc is None):
+        result, grader, reason = 'void: launcher interrupted', 'launcher', 'launcher interrupted (exit {})'.format(
+            rc if rc is not None else 'unknown')
     elif retried and rc == 0:
         result, grader, reason = 'ungraded', 'launcher', 'attempt continued before grading'
     else:
@@ -379,14 +394,14 @@ def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, ho
                 result, grader, reason = review(receipt, spec_text, workdir, roles_file)
                 result = result or 'ungraded'
     result = score_verdicts.migrate(result, dict(reason='quota' if quota else reason, grader=grader))
-    row = dict(id='grade-' + (run_id or receipt['selection_id']), date=dt.date.today().isoformat(),
+    row = dict(id=grade_id, date=dt.date.today().isoformat(),
                source_kind='everyday', job=receipt.get('job'), grade=result, model=model, producer=model,
                grader=grader, role=receipt.get('role'), auto=True, note=reason[:500],
                reason='quota' if quota else reason, grade_host=host or socket.gethostname(),
                grade_dir=str(workdir), missing_files=missing)
     if run_id:
         row['run_id'] = run_id
-    wm.log_record(Path(receipt_path).with_name('everyday-grades.jsonl'), '', row)
+    wm.log_record(ledger, '', row)
     wm.log_record(log, 'MODEL_GRADE', row)
     if result.startswith('void:') and receipt.get('source') == 'delegate' and grader not in ('harness', 'quota', 'launcher', 'probe'):
         wm.morning_report([(row['job'], receipt.get('lane'), model)], reason=reason)
@@ -403,11 +418,12 @@ def main(argv=None):
     p.add_argument('--no-checks', action='store_true', help='skip Check: commands')
     p.add_argument('--host', default='', help='the work ran on this ssh host: run the Check: commands there')
     p.add_argument('--retried', action='store_true')
+    p.add_argument('--launcher-exit', action='store_true', help='grade an attempt left pending when the launcher exited')
     a = p.parse_args(argv)
     try:
         if a.host and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,62}', a.host):
             raise ValueError('--host must be an ssh alias')
-        row = grade(a.receipt, a.log, a.dir, a.spec, a.roles_file, a.no_checks, a.host, a.retried)
+        row = grade(a.receipt, a.log, a.dir, a.spec, a.roles_file, a.no_checks, a.host, a.retried, a.launcher_exit)
         print('auto-graded {} {} (producer {}, grader {})'.format(row['job'], row['grade'], row['producer'],
                                                                   row['grader']))
         return 0

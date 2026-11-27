@@ -104,6 +104,40 @@ def test_the_launcher_grades_a_returned_delegated_job_by_itself(tmp_path):
     assert (row['grade'], row['grader'], row['producer']) == ('pass', 'checks', 'openai/gpt-6.2-sol')
 
 
+def test_the_launcher_grades_an_interrupted_no_lease_codex_run(tmp_path):
+    jobs = tmp_path / 'jobs'
+    jobs.mkdir()
+    (jobs / 'fixture.md').write_text('Write an exact result.\n')
+    work = tmp_path / 'work'
+    work.mkdir()
+    roles = tmp_path / 'roles.json'
+    roles.write_text(json.dumps({'roles': {'batch': ['gpt-6.2-sol']}, 'routes': {
+        'gpt-6.2-sol': {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'}}}))
+    # Terminate the launch shell during the executor pipeline. The fake Codex
+    # child returns a signal-style exit code, as in the LTS close records.
+    fake = tmp_path / 'fake-codex'
+    fake.write_text('#!' + sys.executable + '\nimport os, signal\nfrom pathlib import Path\n'
+                    'registry = Path(os.environ["LAUNCH_STATE"]) / "fixture.job"\n'
+                    'launcher = int(next(line[4:] for line in registry.read_text().splitlines() if line.startswith("pid=")))\n'
+                    'os.kill(launcher, signal.SIGTERM)\nraise SystemExit(143)\n')
+    fake.chmod(0o755)
+    guard = tmp_path / 'launch-guard.py'
+    guard.write_text('')
+    env = dict(os.environ, AGENT_BACKEND='codex', LAUNCH_CODEX=str(fake), LAUNCH_ARTIFACT_DIR=str(jobs),
+               LAUNCH_STATE=str(tmp_path / 'registry'), FORCE_LAUNCH='1', LAUNCH_GUARD=str(guard),
+               RH_MODEL_RUNS_LOG=str(tmp_path / 'model-runs.jsonl'), RSTACK_STATE_DIR=str(tmp_path / 'state'),
+               RH_ROLES_FILE=str(roles), RH_HEADROOM_ROUTING='0')
+    result = subprocess.run(['zsh', str(REPO / 'tools/launch.sh'), 'fixture', str(work),
+                             '--model', 'gpt-6.2-sol', '--model-override', 'fixture fast lane'],
+                            env=env, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 143, result.stderr + (jobs / 'fixture.log').read_text()
+    receipt = json.loads((jobs / 'fixture.log.selection.json').read_text())
+    assert receipt['source'] == 'override' and not receipt.get('lease')
+    grade, = [json.loads(line) for line in (jobs / 'everyday-grades.jsonl').read_text().splitlines()]
+    assert (grade['run_id'], grade['grade']) == (receipt['run_id'], 'void: launcher interrupted')
+    assert 'MODEL_GRADE ' in (jobs / 'fixture.log').read_text()
+
+
 def test_a_host_jobs_checks_run_on_the_host_where_its_outputs_are(tmp_path, monkeypatch):
     # 11-20: jobs run on the m5 from the M4 wrote out.txt there; the M4 has only STATUS.md and REPORT.md back, and
     # a reviewer reading the M4's copy graded all three fail.
@@ -198,6 +232,20 @@ def test_a_lost_launcher_exit_uses_the_executors_own_rc(tmp_path):
     data = json.loads(receipt.read_text()); data['run_id'] = 'r1'; receipt.write_text(json.dumps(data))
     log.write_text('EXECUTOR_RUN ' + json.dumps({'run_id': 'r1', 'rc': 0}) + '\nexit stopped by signal\n')
     assert auto_grade.grade(receipt, log, work, spec)['grade'] == 'pass'
+
+
+def test_a_closed_override_run_can_be_graded_with_only_its_run_record(tmp_path, monkeypatch):
+    monkeypatch.setenv('RH_MODEL_RUNS_LOG', str(tmp_path / 'model-runs.jsonl'))
+    receipt, log, work, spec = returned(tmp_path, model='gpt-6.2-sol')
+    data = json.loads(receipt.read_text())
+    data.update(run_id='r1', source='override', executor='codex')
+    receipt.write_text(json.dumps(data))
+    log.write_text('MODEL_ATTEMPT ' + json.dumps(data) + '\nexit stopped by signal\n')
+    auto_grade.run_records.open_run(dict(run_id='r1', utc=auto_grade.run_records.utc_now()))
+    auto_grade.run_records.close_run('r1', rc=0)
+    assert auto_grade.grade(receipt, log, work, spec, launcher_exit=True)['grade'] == 'pass'
+    assert auto_grade.grade(receipt, log, work, spec, launcher_exit=True)['grade'] == 'pass'
+    assert len((tmp_path / 'everyday-grades.jsonl').read_text().splitlines()) == 1
 
 
 def test_a_lost_exit_code_on_a_shipped_job_is_the_harnesss(tmp_path):

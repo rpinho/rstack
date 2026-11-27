@@ -859,6 +859,43 @@ def test_an_idled_lane_is_not_handed_to_its_claude_fallback(tmp_path, monkeypatc
     assert handed == ['math']
 
 
+@pytest.mark.parametrize('watcher_line', ['waiting for the watcher', 'watcher armed', 'sleep until .last.md'])
+def test_quota_stopped_watcher_hands_off_unless_driver_is_idled(tmp_path, monkeypatch, watcher_line):
+    import agy_quota
+
+    screen = IDLE_SCREEN.replace('  ok\n', f'  {watcher_line}\n')
+    screen += '1 task(s) · esc to interrupt\n'
+    log, _, _, state = _agy_env(tmp_path, monkeypatch, screen)
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(state))
+    agy_quota.record({'model': 'gemini-4-neon-high', 'tier': 'high', 'job': 'fixture',
+                      'utc': '1970-01-12T00:00:00Z', 'blocked_until': '2099-01-01T00:00:00Z'})
+    handed = []
+    monkeypatch.setattr(nudge, 'takeover', lambda *a, **k: handed.append(a[2]) or (None, True))
+    status = state.parent / 'math/DRIVER_STATUS.md'
+    status.parent.mkdir()
+    (tmp_path / 'lanes/math/DRIVER_STATUS.md').rename(status)
+    status.write_text('Driver: agy-math\nIdle by design until 2099-01-01T00:00:00Z\n')
+    nudge.main()
+    assert not handed and not log.sent
+    assert 'no Claude takeover' in (tmp_path / 'log').read_text()
+    status.write_text('Driver: agy-math\nIdle by design until 1970-01-01T00:00:00Z\n')
+    nudge.main()
+    assert handed == ['math']
+
+
+def test_watcher_does_not_mask_a_visible_quota_stop(tmp_path, monkeypatch):
+    import agy_quota
+
+    screen = QUOTA_SCREEN.replace('Started the sweep.', 'Waiting for the watcher.') + 'esc to interrupt\n'
+    _, _, _, state = _agy_env(tmp_path, monkeypatch, screen)
+    monkeypatch.setattr(agy_quota, 'blocked_until', lambda *a, **k: None)
+    handed = []
+    monkeypatch.setattr(nudge, 'takeover', lambda *a, **k: handed.append(a[2]) or (None, True))
+    nudge.main()
+    assert handed == ['math']
+    assert json.loads((state / 'agy-math.agy-switch.json').read_text())['stopped']
+
+
 def test_bookmark_leads_reach_their_lane_once_and_candidates_reach_the_harness(tmp_path, monkeypatch):
     """11-27 (Ricardo): bookmarks reach the lanes automatically. The nightly writes leads/<lane>-<day>.md and
     new-lane-candidates-<day>.md; lane-nudge types each to its lane's driver once."""

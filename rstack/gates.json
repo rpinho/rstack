@@ -4,6 +4,44 @@
  "principle": "rstack/principles/harness-never-in-the-way.md",
  "gates": [
   {
+   "gate": "purchase-approval-gate.py",
+   "files": [
+    "rstack/hooks/purchase-approval-gate.py"
+   ],
+   "class": "hard-line",
+   "kind": "hook",
+   "hard_line": "money",
+   "added": "2026-11-27",
+   "why": "An order included a cable and hub alongside the only approved item, glue.",
+   "sunset": false,
+   "last_changed_outcome": null,
+   "fix": "Read the cart, remove unapproved items or obtain Ricardo's approval, and include the current cart and total on the checkout click."
+  },
+  {
+   "gate": "absence-claim-check.py",
+   "files": [
+    "rstack/hooks/absence-claim-check.py"
+   ],
+   "class": "fail-open",
+   "kind": "hook",
+   "added": "2026-11-27",
+   "why": "A narrow grep was treated as evidence that an application was never made.",
+   "sunset": true,
+   "last_changed_outcome": null,
+   "fix": "Name the searched sources or say where the record was not found.",
+   "probe": {
+    "hook": "rstack/hooks/absence-claim-check.py",
+    "env": {
+     "RSTACK_ATTENDED": "1",
+     "RSTACK_UNATTENDED": "0"
+    },
+    "event": {
+     "hook_event_name": "Stop",
+     "last_assistant_message": "We never applied for the handle."
+    }
+   }
+  },
+  {
    "gate": "claude-pace-gate.limit",
    "files": [
     "rstack/hooks/claude-pace-gate.py"

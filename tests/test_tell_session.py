@@ -6,11 +6,11 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from pathlib import Path
 
 import pytest
 
 TOOL = Path(__file__).resolve().parents[1] / 'rstack/tools/tell-session'
+GENERAL_BASELINE = TOOL.with_name('tell-general.current')
 loader = importlib.machinery.SourceFileLoader('tell_session', str(TOOL))
 spec = importlib.util.spec_from_loader('tell_session', loader)
 ts = importlib.util.module_from_spec(spec)
@@ -125,3 +125,41 @@ def test_a_long_message_goes_to_a_file_and_the_pane_gets_a_pointer(fake, tmp_pat
     short = fake(IDLE, IDLE)
     ts.tell('claude-harness', 'short one', sleep=lambda _: None)
     assert sends(short())[-2][-1] == 'short one'
+
+
+def test_ssh_long_message_preserves_the_full_text_on_the_target(fake, tmp_path, monkeypatch):
+    ssh = tmp_path / 'bin/ssh'
+    ssh.write_text('#!/bin/sh\nfor remote_command do :; done\n'
+                   'export TELL_SESSION_SPILL="$FAKE_REMOTE_SPILL"\n'
+                   'exec /bin/sh -c "$remote_command"\n')
+    ssh.chmod(0o755)
+    remote_spill = tmp_path / 'remote-spill'
+    monkeypatch.setenv('FAKE_REMOTE_SPILL', str(remote_spill))
+    monkeypatch.setenv('TELL_SESSION_SPILL', str(tmp_path / 'sender-spill'))
+    monkeypatch.setenv('TELL_SESSION_LONG', '600')
+    calls = fake(IDLE, IDLE)
+    message = 'From general: first line.\n\n    ' + 'é' * 700 + "\nLast line with 'quotes' and spaces.  "
+    assert ts.main(['--host', 'fixture-host', 'claude-harness', message]) == 0
+    pointer, enter = [call[-1] for call in sends(calls())]
+    assert enter == 'Enter' and pointer.startswith('From general: first line.')
+    assert 'Last line' not in pointer and len(pointer) < 600
+    path = Path(pointer.rsplit('read the full text in ', 1)[1].removesuffix(']'))
+    assert path.parent == remote_spill and path.read_text() == message
+    assert not (tmp_path / 'sender-spill').exists()
+
+
+@pytest.mark.skipif(not GENERAL_BASELINE.is_file(), reason='requires the supplied operator snapshot')
+def test_tell_general_patch_files_full_text_and_wakes_with_its_pointer(tmp_path, monkeypatch):
+    tool = tmp_path / 'tell-general'
+    subprocess.run(['patch', '-s', '-o', str(tool), str(GENERAL_BASELINE),
+                    str(TOOL.with_name('tell-general.patch'))], check=True)
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setenv('TELL_SESSION_LONG', '600')
+    inbox = tmp_path / '.local/state/general-inbox'
+    message = 'First paragraph.\n\n' + '字' * 700 + '\nFinal line.  '
+    subprocess.run([sys.executable, str(tool), 'decision', message], check=True)
+    row = json.loads((inbox / 'inbox.jsonl').read_text())
+    marker, = (inbox / 'wake').iterdir()
+    assert marker.read_text() == row['text'] and len(row['text']) < 600
+    path = Path(row['text'].rsplit('read the full text in ', 1)[1].removesuffix(']'))
+    assert path.parent == inbox / 'messages' and path.read_text() == message

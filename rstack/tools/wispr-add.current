@@ -1,0 +1,14 @@
+#!/bin/zsh
+# Queue words for Wispr Flow's dictionary (Ricardo 11-04: "every time you notice a word is wrong because of voice-to-text,
+# add that word"). Never drives the GUI itself: wispr-apply does that only when the Mac has been idle 5+ minutes.
+# Usage: wispr-add "Word" ["Another Word" ...]   |   wispr-add --list
+# 11-09: Wispr Flow moved to the M5 (Ricardo). On the M4 this forwards to the M5's queue, its one writer.
+if [[ $(hostname -s) != *m5* && -z $WISPR_LOCAL ]] && ssh -o BatchMode=yes -o ConnectTimeout=5 m5 true 2>/dev/null; then
+  exec ssh -o BatchMode=yes m5 '~/.local/bin/wispr-add' "${(q)@}"
+fi
+Q=~/.local/state/wispr/queue.txt; A=~/.local/state/wispr/added.txt; touch $Q $A
+if [[ $1 == --list ]]; then echo "queued:"; cat $Q; echo "added: $(wc -l < $A | tr -d ' ')"; exit 0; fi
+for w in "$@"; do
+  [[ -z $w ]] && continue
+  if grep -qxF -- "$w" $A $Q; then echo "already: $w"; else print -r -- "$w" >> $Q; echo "queued: $w"; fi
+done
