@@ -20,7 +20,7 @@ from bug_verdicts import maker
 from agent_executor import metered_refusal
 import agy_quota
 import run_records
-from model_slugs import canon
+from model_slugs import MODELS, SUPERSEDED, canon
 import score_verdicts
 import claude_cap
 from claude_cap import load_allowance as _allowance
@@ -191,6 +191,30 @@ def neon_only(data):
         kept = [m for m in ranked if not retired_pick(m, routes.get(m))] if isinstance(ranked, list) else ranked
         roles[role] = kept or ranked
     return dict(data, roles=roles)   # 11-25 (Google AI Ultra): hard math and proof work runs on Carbon-high
+
+
+RETIRED_NATIVE = {MODELS[old][1]: old for old in SUPERSEDED}
+
+
+def successor_model(model, routes):
+    """Replace a retired launch choice, supplying the built-in successor route for older snapshots."""
+    route = routes.get(model)
+    canonical = route.get('canonical') if isinstance(route, dict) else None
+    new = SUPERSEDED.get(RETIRED_NATIVE.get(model, model))
+    if not new and isinstance(canonical, str):
+        new = SUPERSEDED.get(canonical)
+    if not new:
+        return model
+    executor, native = MODELS[new]
+    existing = routes.get(native)
+    if not isinstance(existing, dict) or (existing.get('cli'), existing.get('canonical')) != (executor, new):
+        routes[native] = {'cli': executor, 'canonical': new}
+    return native
+
+
+def retirement_note(old, new):
+    return 'retired model {} replaced by {}'.format(old, new)
+
 # 11-26 (Ricardo, via general: "Cinna Davis: best math model"): math producer and builder jobs, and proof work in
 # any lane, run on Codex's Astra 6.2, not throttled for its faster burn (the Codex credits are there to spend).
 # Carbon-high stays math's referee, another family from Astra, so the producer never grades itself, and takes
@@ -342,11 +366,8 @@ def producer_families(made_by='', workdir='', lane_dir=''):
 PROVIDER_DEFAULT = {
     'claude': {'batch': 'claude-sonnet-5-5', 'mechanical': 'claude-sonnet-5-5', 'cheap': 'claude-sonnet-5-5',
                '*': 'claude-opus-5-5'},
-    # 11-26 (OpenAI): 6.2 Sol now burns the Codex limit 25% faster and 6.2 Astra 40%; 6.1 Sol is unchanged. Bulk
-    # work goes to 6.1 Sol; Astra 6.2 keeps the judgment roles, where quality matters.
     'codex': {'review': 'gpt-6.2-astra', 'judge': 'gpt-6.2-astra', 'audit': 'gpt-6.2-astra', 'taste': 'gpt-6.2-astra',
-              'design': 'gpt-6.2-astra', 'ideation': 'gpt-6.2-astra', 'batch': 'gpt-6.1-sol',
-              'mechanical': 'gpt-6.1-sol', 'cheap': 'gpt-6.1-sol', '*': 'gpt-6.2-sol'}}
+              'design': 'gpt-6.2-astra', 'ideation': 'gpt-6.2-astra', '*': 'gpt-6.2-sol'}}
 def provider_default(provider, role, data):
     """The provider's default for the role when the leaderboard routes it, else its '*' default."""
     pick = PROVIDER_DEFAULT[provider].get(role)
@@ -510,18 +531,23 @@ def trial_pick(role, data, excluded, families, executors, quota, job, top=''):
     models = [top if m == TRIAL_TOP else m for m in arms if m != TRIAL_TOP or top]
     # 11-23 (general): a trial whose every arm is one model (Neon-high, for volume) still runs, unless that model
     # is already the job's own pick.
-    if len(set(models)) < 2 and (not models or models[0] == top):
+    if len({successor_model(m, data['routes']) for m in models}) < 2 and (
+            not models or successor_model(models[0], data['routes']) == top):
         return None                    # the job's own pick is the trial model: nothing to compare here
     first = mine['model'] if mine else models[(k - 1) % len(models)]
-    for m in [first] + list(dict.fromkeys(x for x in models if x != first)):
+    for candidate in [first] + list(dict.fromkeys(x for x in models if x != first)):
+        m = successor_model(candidate, data['routes'])
         route = data['routes'].get(m)
         if (not isinstance(route, dict) or route.get('cli') not in executors or m in excluded
                 or route.get('canonical') in excluded or maker(m, route.get('canonical')) in families):
             continue
         if route.get('cli') == 'agy' and quota and agy_quota.blocked_until(m, os.environ.get('LAUNCH_EFFORT'), table=quota):
             continue
-        return m, 'model trial {} ({} job {} of {}): {} by turns{}'.format(
-            t['name'], role, k, int(t.get('n') or 20), m, '' if m == first else ' ({} unavailable)'.format(first)), t['name']
+        note = 'model trial {} ({} job {} of {}): {} by turns{}'.format(
+            t['name'], role, k, int(t.get('n') or 20), m, '' if candidate == first else ' ({} unavailable)'.format(first))
+        if candidate != m:
+            note += ' (' + retirement_note(candidate, m) + ')'
+        return m, note, t['name']
     return None
 
 
@@ -632,10 +658,24 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     if not isinstance(data, dict) or not isinstance(data.get('roles'), dict) or not isinstance(data.get('routes'), dict):
         raise ValueError('leaderboard requires roles and routes objects')
     data = neon_only(data)
+    routes = data['routes']
+    for native in tuple(routes):
+        successor_model(native, routes)
+    named = model or explore
+    replacement = successor_model(named, routes)
+    migration = retirement_note(named, replacement) if replacement != named else ''
+    if migration and model:
+        model, override = replacement, override or migration
+    elif migration:
+        explore = replacement
     row = role if role in data['roles'] else ROLE_ROWS.get(role, role)
     ranked = data['roles'].get(row)
     if not isinstance(ranked, list) or not ranked or any(not isinstance(m, str) or not m for m in ranked):
         raise ValueError('missing/empty leaderboard role: ' + role)
+    ranked_origins = {}
+    for candidate in ranked:
+        ranked_origins.setdefault(successor_model(candidate, routes), candidate)
+    ranked = list(ranked_origins)
     excluded = data.get('overrides', {}).get(row, {}).get('exclude', [])
     excluded = excluded + data.get('overrides', {}).get(role, {}).get('exclude', [])
     eligible = ranked
@@ -776,7 +816,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
             or (judging and families and chosen != (explore or model or ranked[0]))):
         executor = route['cli']   # named in the receipt and the log below; not a silent swap
     # Exploration and deadline-ranked picks can follow their own compatible route, like delegates.
-    if (explore or (deadline and not model)) and isinstance(route, dict) and route.get('cli') in run:
+    if (explore or migration or (deadline and not model)) and isinstance(route, dict) and route.get('cli') in run:
         executor = route['cli']
     if isinstance(route, dict) and (role in JUDGMENT or (not model and route.get('cli') in ('openrouter', 'gemini'))):
         executor = route.get('cli')
@@ -860,6 +900,9 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     if floor:
         receipt['gemini_floor'] = floor[1]
         print('worker model: ' + floor[1], file=sys.stderr)
+    original = ranked_origins.get(chosen, chosen)
+    if migration or (not (named or delegated or switched) and original != chosen):
+        receipt['retired_model'] = migration or retirement_note(original, chosen)
     if codex_closed:
         receipt['codex_refused'] = codex_closed
     if explore_outside:
@@ -1238,7 +1281,7 @@ def main(argv=None):
             with Path(args.log).open('a') as stream:
                 stream.write('{} job={}\n'.format(receipt['delegate'], args.job))
             print('worker model: ' + receipt['delegate'], file=sys.stderr)
-        for key in ('explore_outside_pool', 'claude_cap', 'claude_warning'):
+        for key in ('retired_model', 'explore_outside_pool', 'claude_cap', 'claude_warning'):
             if receipt.get(key):
                 with Path(args.log).open('a') as stream:
                     stream.write('{}: {} job={}\n'.format(key, receipt[key], args.job))

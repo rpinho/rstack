@@ -44,6 +44,10 @@ MODELS = {'anthropic/claude-opus-5.5': ('claude', 'claude-opus-5-5'),
  'google/gemini-4-argon-low': ('agy', 'gemini-4-argon-low'),
  'google/gemini-4-hydrogen-low': ('agy', 'gemini-4-hydrogen-low')}
 
+# Explicit successor -> predecessor pairs for routing evidence and retired launch requests.
+INHERITS = {'openai/gpt-6.2-sol': 'openai/gpt-6.1-sol', 'openai/gpt-6.2-astra': 'openai/gpt-6-astra'}
+SUPERSEDED = {old: new for new, old in INHERITS.items()}
+
 # bare 'opus': family-alert-watch rows, 11-10..16; 'claude-opus-5': one laptop grades-feed row, 10-28
 ALIASES = [('opus[- ]?5[.-]5|^opus$|^claude-opus-5$', 'anthropic/claude-opus-5.5'),
  ('fable[- ]?5[.-]1|fable-5-1', 'anthropic/claude-fable-5.1'),

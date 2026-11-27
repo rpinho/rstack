@@ -337,7 +337,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--setup', choices=SETUPS, required=True)
     parser.add_argument('--backend', choices=['codex', 'stub'], default=os.environ.get('AGENT_BACKEND', 'codex'))
-    parser.add_argument('--model', default='gpt-6.1-sol')
+    parser.add_argument('--model', default='gpt-6.2-sol')
     parser.add_argument('--allow-paid', action='store_true')
     parser.add_argument('--cases', default='toy,concrete,crab')
     parser.add_argument('--data-root', type=Path, default=REPO/'bench/data')

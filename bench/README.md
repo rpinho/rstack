@@ -26,7 +26,7 @@ are imported unchanged. Data provenance, terms, limits and split hashes are in
 `--setup` is required: v2 is opt-in. Codex requires an explicit `--allow-paid` and
 the existing CLI login; no credentials are copied. Only `codex` and `stub` are
 supported, with no backend substitution. `--model` defaults to the repository toy's
-`gpt-6.1-sol` route. One call is shared across all three cases to bound spend.
+`gpt-6.2-sol` route. One call is shared across all three cases to bound spend.
 There are no automatic paid retries. The durable paid-attempt ledger allows at
 most two starts, one per setup, in a runtime root, including failed attempts.
 Future independently authorized comparisons need an explicit fresh `--runtime`.

@@ -42,7 +42,7 @@ RULE_BLOCKED = re.compile(r'rule-blocked|prohibited|not allowed|forbidden|holdou
 
 # One resolver for every score writer and reader.
 sys.path.insert(0, str(HERE.parent / 'harness'))
-from model_slugs import MODELS, ALIASES, VOID_IDS, canon
+from model_slugs import MODELS, ALIASES, VOID_IDS, INHERITS, SUPERSEDED, canon
 import score_verdicts
 
 # 11-19 Ricardo: "No pay-as-you-go. Do NOT top up OpenRouter." Every seed is a subscription route
@@ -98,12 +98,10 @@ CANDIDATES = {role: AGY_FLASH + (AGY_HYDROGEN if role in HYDROGEN_ROLES else AGY
 # Owner, 2026-11-18: "Astra 6.2 should replace Astra on the leaderboard. Sol 6.2 should/could replace Sol 6.1."
 # 11-19 (general): a superseded version is history, not a fallback: shown with its own everyday record, never
 # routed, and its successor earns its own n from zero.
-SUPERSEDED = {'openai/gpt-6-astra': 'openai/gpt-6.2-astra', 'openai/gpt-6.1-sol': 'openai/gpt-6.2-sol'}
 # Ricardo, 11-19: "I think 6.2 should inherit the scores of 6.1 in the rank until we get a larger sample size."
 # Explicit successor -> predecessor pairs, never inferred from names. A successor ranks on its predecessor's
 # everyday record until its own graded n reaches the predecessor's n; then on its own. Its own outcomes count the
 # whole time. Same lab only: a pair across labs is refused when this module loads.
-INHERITS = {'openai/gpt-6.2-sol': 'openai/gpt-6.1-sol', 'openai/gpt-6.2-astra': 'openai/gpt-6-astra'}
 
 
 def check_inherits(pairs):
@@ -824,9 +822,10 @@ def public(data, path, observations=(), previous=None, days=30):
     totals, by_role, dropped, drivers = public_counts(pairs, historical, stamp, days)
     lines = ['# Model leaderboard', '',
              OWNER_RANK_LINE, '',
-             'Everyday work over {} days: {} through {} (UTC). Runs is the recorded model total across roles, including ungraded work; n counts only pass, partial or fail (partial=half). Historical grades without run records count in n, so n can exceed Runs. Each rate shows a Wilson 95% interval. Within-role ranks use the Wilson lower bound and require n>=20; owner ranks retain taste + cost. Task mix, correlated jobs and subjective grades limit comparisons; these are descriptive intervals, not matched trials.'.format(
+             "Everyday work over {} days: {} through {} (UTC). The window uses run start time when available and grade time or date for historical grades. This table uses eligible grades from the scorer's grade ledgers, including mirrors. The weighted score uses pass=1, partial=half and fail=0. The daily grades-feed tally uses observation dates and reports each verdict separately. Routing positions below may use inherited evidence. Each weighted score here uses grades for the displayed model version.".format(
                  days, (stamp - dt.timedelta(days=days)).date().isoformat(), stamp.date().isoformat()), '',
-             '| Model | Rank (Ricardo: taste + cost) | Runs | Overall passed (Wilson 95%) | Role | Role passed (Wilson 95%) | Within-role rank |',
+             'Runs includes ungraded work. The score denominator n counts eligible pass, partial and fail grades, including historical grades without a run record, so n can exceed Runs. Within-role ranks use the Wilson lower bound and require n>=20. Owner ranks retain taste + cost. The intervals describe these observations. Task mix, correlated jobs and subjective grades limit comparisons.', '',
+             '| Model | Rank (Ricardo: taste + cost) | Runs | Overall weighted score (Wilson 95%) | Role | Role weighted score (Wilson 95%) | Within-role rank |',
              '|---|---:|---:|---|---|---|---|']
     for role, models in sorted(by_role.items()):
         ordered = sorted(models, key=lambda m: (-wilson_low(models[m][2], models[m][1]) if models[m][1] >= 20 else 1, m))

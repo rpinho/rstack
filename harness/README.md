@@ -91,7 +91,7 @@ an integer sequence and search/read/kill reports, and verifies the exact result.
 It writes `receipts/toy.json`, a hash-bound `receipts/selection.json`, model selection
 and outcome events in `jobs/toy-worker.log`, the provider output in
 `jobs/toy-worker.last.md`, and a finished registry record under the chosen root.
-A fresh root is mandatory. The toy uses `gpt-6.1-sol` or `claude-haiku-5-5`, low
+A fresh root is mandatory. The toy uses `gpt-6.2-sol` or `claude-haiku-5-5`, low
 effort and a three-minute timeout. Claude has a $1 per-run CLI budget and no
 launcher retries; actual pricing and account access depend on the provider.
 Codex has no dollar cap in this launcher. The toy claims no statistical holdout.

@@ -204,6 +204,9 @@ def stage(tsv_path, staging, machine='mini', to='laptop', now=None):
         '# Grades feed from the {} ({})'.format(machine, now.date().isoformat()), '',
         'Full snapshot of the {}\'s graded model rows, {} rows, in `{}/grades.tsv`. Columns: {}. No task text.'.format(
             machine, len(rows), stamp, ', '.join(COLUMNS)),
+        'Dates are observation dates. A weekly tally needs explicit date bounds and counts pass, partial and fail separately. '
+        'For everyday work, use everyday and judge rows with harness_fail=0 and a pass, partial or fail verdict. '
+        'The leaderboard uses a run-based window and half credit for partial grades.',
         'Ingest it as the {} snapshot under the standing grades-feed rule (replace the previous one).'.format(machine),
         '')))
     return md

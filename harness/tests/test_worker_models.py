@@ -340,7 +340,7 @@ def test_review_requires_maker_and_uses_first_other_family(tmp_path, role):
     got = wm.select(role, 'codex', path=path, made_by='gpt-6.1-sol')
     assert (got['model'], got['executor']) == ('claude-opus-5-5', 'claude')
     got = wm.select(role, 'claude', path=path, made_by='claude-opus-5-5')
-    assert (got['model'], got['executor']) == ('gpt-6-astra', 'codex')
+    assert (got['model'], got['executor']) == ('gpt-6.2-astra', 'codex')
 
 
 def test_judgment_own_row_and_exclusions_are_respected(tmp_path):
@@ -471,7 +471,7 @@ def test_judgment_spec_names_are_refused_before_executor(fake_home, name):
 
 
 @pytest.mark.parametrize('made_by,expected', [('gpt-6.1-sol', 'claude-opus-5-5'),
-                                           ('claude-opus-5-5', 'gpt-6-astra')])
+                                               ('claude-opus-5-5', 'gpt-6.2-astra')])
 @pytest.mark.parametrize('job,role_args', [('fixture-job', ['--role', 'review']),
                                          ('math_c38ref_1104', ['--role', 'review']),
                                          ('math_c38ref_1104', [])])
@@ -593,7 +593,7 @@ def test_an_unpinned_job_goes_to_gemini_first_and_to_codex_only_when_agy_is_clos
     assert got['source'] == 'delegate' and got['delegate'].startswith('gemini first')
     monkeypatch.setenv('RH_AGY_CLOSED', 'quota')       # launch.sh: the agy run failed on quota
     got = wm.select('batch', 'claude', path=p)
-    assert got['model'] == 'gpt-6.1-sol' and got['executor'] == 'codex'   # 11-26: bulk Codex work off 6.2 Sol
+    assert got['model'] == 'gpt-6.2-sol' and got['executor'] == 'codex'
     monkeypatch.delenv('RH_AGY_CLOSED')
     state = tmp_path / 'state'                          # agy_quota.blocked() holds the model
     state.mkdir()
@@ -601,13 +601,53 @@ def test_an_unpinned_job_goes_to_gemini_first_and_to_codex_only_when_agy_is_clos
     (state / 'agy-quota.jsonl').write_text(json.dumps({'model': 'gemini-4-hydrogen-high', 'blocked_until': until}) + '\n')
     monkeypatch.setenv('RSTACK_STATE_DIR', str(state))
     got = wm.select('batch', 'claude', path=p)
-    assert got['model'] == 'gpt-6.1-sol' and 'skipped gemini-4-hydrogen-high' in ' '.join(got['quota_skipped'])
+    assert got['model'] == 'gpt-6.2-sol' and 'skipped gemini-4-hydrogen-high' in ' '.join(got['quota_skipped'])
     monkeypatch.delenv('RSTACK_STATE_DIR')
     monkeypatch.setenv('RH_CODEX_CLOSED', 'quota')
     assert wm.select('batch', 'claude', path=p)['model'] == 'gemini-4-hydrogen-high'
     monkeypatch.delenv('RH_CODEX_CLOSED')
     got = wm.select('review', 'codex', path=p, made_by='gemini-3')     # a Google producer: no Gemini judge
     assert not got['model'].startswith('gemini')
+
+
+@pytest.mark.parametrize('retired,successor', [
+    ('gpt-6.1-sol', 'gpt-6.2-sol'),
+    ('openai/gpt-6-astra', 'gpt-6.2-astra'),
+])
+@pytest.mark.parametrize('options,source', [([], 'leaderboard'), (['--model'], 'override'), (['--explore'], 'explore')])
+def test_retired_launch_choice_has_a_successor_even_with_stale_roles(
+        tmp_path, monkeypatch, capsys, retired, successor, options, source):
+    p = tmp_path / 'roles.json'
+    old_native = retired.split('/')[-1]
+    p.write_text(json.dumps({'roles': {'batch': [old_native]}, 'routes': {
+        old_native: {'cli': 'codex', 'canonical': 'openai/' + old_native}}}))
+    monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex')
+    monkeypatch.setenv('RH_MODEL_TRIAL', str(tmp_path / 'no-trial'))
+    log, receipt = tmp_path / 'job.log', tmp_path / 'job.log.selection.json'
+    assert wm.main(['--role', 'batch', '--executor', 'codex', '--roles-file', str(p),
+                    '--job', 'j', '--print-route', '--log', str(log), '--receipt', str(receipt),
+                    *(options + [retired] if options else [])]) == 0
+    result = json.loads(receipt.read_text())
+    assert (result['model'], result['canonical'], result['source']) == (successor, 'openai/' + successor, source)
+    requested = retired if options else old_native
+    note = f'retired model {requested} replaced by {successor}'
+    assert result['retired_model'] == note and note in log.read_text()
+    assert capsys.readouterr().out.splitlines() == [successor, 'codex']
+    assert successor not in json.loads(p.read_text())['routes']
+
+
+def test_retired_trial_arm_moves_to_successor_and_keeps_its_turn(tmp_path, monkeypatch):
+    p = roles(tmp_path / 'roles.json')
+    trial = tmp_path / 'trial.json'
+    trial.write_text(json.dumps({'name': 't', 'role': 'batch', 'models': ['gpt-6.1-sol', 'fixture-fast']}))
+    monkeypatch.setenv('RH_MODEL_TRIAL', str(trial))
+    monkeypatch.setenv('RH_MODEL_TRIAL_LEDGER', str(tmp_path / 'trial.jsonl'))
+    monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex')
+    got = wm.select('batch', 'codex', path=p, job='trial-job')
+    assert (got['model'], got['trial']) == ('gpt-6.2-sol', 't')
+    assert 'retired model gpt-6.1-sol replaced by gpt-6.2-sol' in got['delegate']
 
 
 def test_a_returned_job_is_graded_into_its_log_and_the_grades_file(tmp_path):

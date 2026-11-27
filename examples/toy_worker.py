@@ -81,7 +81,7 @@ def main(argv=None):
     for folder in ('runs', 'reports'):
         (lane/folder).mkdir(exist_ok=True)
     jobs = root/'jobs'; jobs.mkdir()
-    model = 'gpt-6.1-sol' if backend == 'codex' else 'claude-haiku-5-5'
+    model = 'gpt-6.2-sol' if backend == 'codex' else 'claude-haiku-5-5'
     roles = root/'roles.json'
     roles.write_text(json.dumps(dict(roles={'toy': [model]}, routes={model: {'canonical': model, 'cli': backend}})))
     (jobs/'toy-worker.md').write_text('''Use only this synthetic lane. Do not browse, contact anyone, spawn workers, or publish.
