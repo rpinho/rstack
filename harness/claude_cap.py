@@ -380,9 +380,16 @@ def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, proj
         out.update(pressure='pacing', used=used, rate=rate, hours=hours)
         line = 'claude pacing: {:.0f}% + {:.1f}%/h ({}) x {:.0f} h to reset projects {:.0f}% > {:g}%'.format(
             used, rate, basis, hours, projected, ceiling)
-        if projected >= pace_off:
+        if projected >= pace_off and not pinned:
             out['pressure'] = 'pace-off'
             out['leave'] = line + '; on course for the wall, job leaves Claude'
+            return out
+        if projected >= pace_off:
+            # 11-27 (RULE #1): a projection is not the ceiling. A pinned or gated job (a science-publish review
+            # has no other family to go to) stays on its model, as it does above the budget line; the ceiling
+            # above still refuses it.
+            out['pressure'] = 'pace-off'
+            notes.append(line + '; pinned, so it stays on Claude')
             return out
         if is_opus(model) and sonnet_ok and not pinned:
             out['model'] = model = SONNET

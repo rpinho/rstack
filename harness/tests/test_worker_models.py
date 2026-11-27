@@ -1089,6 +1089,19 @@ def test_pacing_downshifts_opus_to_sonnet_then_claude_to_codex(tmp_path, monkeyp
     assert wm.claude_cap.burn_rate(wm._allowance(), __import__('time').time(), 28, 100)[1].startswith('week average')
 
 
+def test_a_pinned_job_on_course_for_the_wall_stays_on_claude(tmp_path, monkeypatch):
+    # 11-27: a math referee (science-publish gate, GPT producer) had no route at a 130% projection and was refused.
+    # A projection is not the ceiling, so a pinned or gated job stays on its model with the reason in the receipt.
+    p = cap_setup(tmp_path, monkeypatch, 40, history=[(5, 35), (0, 40)])
+    got = wm.select('review', 'claude', path=p, made_by='gpt-6.2-sol', model='claude-opus-5-5', override='test pin')
+    assert got['executor'] == 'claude' and got['model'] == 'claude-opus-5-5'
+    assert 'projects 140%' in got['claude_cap'] and 'pinned, so it stays on Claude' in got['claude_cap']
+    # the ceiling itself still refuses a pinned job
+    p = cap_setup(tmp_path, monkeypatch, 85, history=[(5, 84), (0, 85)])
+    with pytest.raises(ValueError, match='ceiling'):
+        wm.select('review', 'claude', path=p, made_by='gpt-6.2-sol', model='claude-opus-5-5', override='test pin')
+
+
 def test_burn_rate_ignores_readings_from_before_a_reset(tmp_path, monkeypatch):
     cap_setup(tmp_path, monkeypatch, 5, history=[(5, 90), (3, 1), (0, 5)])
     import time
