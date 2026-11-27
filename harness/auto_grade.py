@@ -35,6 +35,7 @@ import run_records
 import score_verdicts
 from model_slugs import canon  # noqa: E402
 
+PROVIDER_REFUSAL = re.compile(r'flagged for possible cybersecurity risk|content was flagged|violates our usage polic', re.I)
 CHECK = re.compile(r'^[ \t]*[-*]?[ \t]*check:[ \t]*(\S.*)$', re.I | re.M)
 VERDICT = re.compile(r'\b(PASS|PARTIAL|FAIL)\b')
 CHECK_SECONDS = 600
@@ -257,21 +258,24 @@ def final_response(spec, host=''):
     if not spec:
         return ''
     path = Path(str(spec)[:-3] + '.last.md') if str(spec).endswith('.md') else Path(str(spec) + '.last.md')
-    try:
-        text = path.read_text(errors='replace')
-    except OSError:
-        if not host:
-            return ''
+    text = ''
+    if host:
+        # The executor writes .last.md where it ran; a controller's copy can be an earlier attempt's (11-27 sourmash).
         try:
             result = subprocess.run(ssh_command(host, 'cat ' + shlex.quote(str(path))), capture_output=True,
                                     text=True, timeout=30)
+            text = result.stdout if result.returncode == 0 else ''
         except (OSError, subprocess.TimeoutExpired):
+            text = ''
+    if not text:
+        try:
+            text = path.read_text(errors='replace')
+        except OSError:
             return ''
-        text = result.stdout if result.returncode == 0 else ''
     try:
         data = json.loads(text)
-        if isinstance(data, dict):
-            text = '\n'.join(str(data.get(k) or '') for k in ('result', 'error'))
+        if isinstance(data, dict):   # claude: result; agy: response; both: error
+            text = '\n'.join(str(data.get(k) or '') for k in ('result', 'response', 'error'))
     except ValueError:
         pass
     return text
@@ -304,6 +308,10 @@ def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, ho
                     except (ValueError, AttributeError):
                         continue
             run_records.close_run(run_id, **metrics)
+            if rc is None and metrics.get('rc') is not None:
+                # 11-27 sourmash: the launcher's link to a --host executor was stopped by a signal after the executor
+                # finished; the executor's own EXECUTOR_RUN line for this run still carries its exit code.
+                rc = metrics['rc']
         except OSError as exc:
             run_records.warn(exc)
     quota = wm.quota_failure(log, receipt)
@@ -314,13 +322,13 @@ def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, ho
             cached.append(final_response(spec, host))
         return cached[0]
 
-    if not quota and rc != 0:
-        # 11-27: cyvcf2/augur ended on agy "Individual quota reached" in their final output, not in the log.
-        quota = next((q for q in (run_records.quota_message(b, response()) for b in ('agy', 'codex', 'claude')) if q), '')
     refused = harness_refusal(log, receipt, rc)
     missing = []
     if run_records.is_probe(receipt) or os.environ.get('RH_RUN_PURPOSE') == 'probe':
         result, grader, reason = 'void: probe', 'probe', 'probe'
+    elif rc != 0 and PROVIDER_REFUSAL.search(selection_text(log, receipt.get('selection_id'), run_id)):
+        # 11-27 lean-svm round2: OpenAI's filter stopped three audits in 5-45 s; the model never worked on them.
+        result, grader, reason = 'void: provider refused', 'harness', 'provider safety filter refused the spec'
     elif quota:
         result, grader, reason = 'ungraded', 'quota', quota
     elif refused:

@@ -177,12 +177,27 @@ def test_shipped_at_the_end_of_the_final_response_counts(tmp_path):
     assert row['grade'] == 'pass', row
 
 
-def test_a_quota_error_in_the_final_response_is_void(tmp_path):
-    """11-27 cyvcf2/augur: agy's quota error was only in the .last.md, so they were graded fail."""
+def test_an_earlier_attempts_quota_output_is_not_charged_to_the_next_model(tmp_path):
+    """11-27 (M4 harness): attempt 1 (neon) hit the quota, attempt 2 (sol) failed before writing .last.md; the stale
+    quota text in .last.md made sol's grade void: quota."""
     receipt, log, work, spec = returned(tmp_path, rc=1, report='Working.')
-    Path(str(spec)[:-3] + '.last.md').write_text(json.dumps({'error': 'Individual quota reached. Please upgrade your subscription. Resets in 2h6m15s.', 'finished_reason': 'error'}))
+    Path(str(spec)[:-3] + '.last.md').write_text(json.dumps({'error': 'Individual quota reached. Resets in 2h.'}))
     row = auto_grade.grade(receipt, log, work, spec)
-    assert row['grade'].startswith('void') or 'quota' in row['reason'], row
+    assert row['grade'] == 'fail', row
+
+
+def test_agy_json_response_field_is_read_for_shipped(tmp_path):
+    """11-27 pairtools: agy's .last.md is {"status": "SUCCESS", "response": "... Shipped: ...\\n"}."""
+    receipt, log, work, spec = returned(tmp_path, report='# Fix')
+    Path(str(spec)[:-3] + '.last.md').write_text(json.dumps({'status': 'SUCCESS', 'response': 'Fixed #279.\nShipped: fix.patch\n'}))
+    assert auto_grade.grade(receipt, log, work, spec)['grade'] == 'pass'
+
+
+def test_a_lost_launcher_exit_uses_the_executors_own_rc(tmp_path):
+    receipt, log, work, spec = returned(tmp_path)
+    data = json.loads(receipt.read_text()); data['run_id'] = 'r1'; receipt.write_text(json.dumps(data))
+    log.write_text('EXECUTOR_RUN ' + json.dumps({'run_id': 'r1', 'rc': 0}) + '\nexit stopped by signal\n')
+    assert auto_grade.grade(receipt, log, work, spec)['grade'] == 'pass'
 
 
 def test_a_lost_exit_code_on_a_shipped_job_is_the_harnesss(tmp_path):
@@ -190,3 +205,12 @@ def test_a_lost_exit_code_on_a_shipped_job_is_the_harnesss(tmp_path):
     log.write_text('exit stopped by signal Thu Nov 26 20:25:55 EST 2026\n')
     row = auto_grade.grade(receipt, log, work, spec)
     assert row['grade'] == 'harness_fail' and 'exit unknown' in row['reason']
+
+
+def test_a_provider_safety_refusal_is_void_not_the_models_fail(tmp_path):
+    receipt, log, work, spec = returned(tmp_path, rc=1, report='Working.')
+    log.write_text('MODEL_SELECTION ' + json.dumps(dict(selection_id='sid1')) + '\n'
+                   'ERROR: This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing.\n'
+                   'MODEL_OUTCOME ' + json.dumps(dict(selection_id='sid1', exit_code=1)) + '\n')
+    row = auto_grade.grade(receipt, log, work, spec)
+    assert row['grade'] == 'void: provider refused'
