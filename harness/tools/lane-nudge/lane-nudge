@@ -642,6 +642,19 @@ def takeover(a, session, lane, lane_dir, pane, state, run=subprocess.run, sleep=
     return pane, False
 
 
+def idled(lane_dir, state, now=None):
+    """Why the lane is idled on purpose (an active QUIET, or "idle by design" in DRIVER_STATUS.md), else ''."""
+    q = quiet_until(lane_dir, state, time.time() if now is None else now)
+    if q:
+        return f'QUIET {q}'
+    try:
+        if IDLE_BY_DESIGN.search((lane_dir / 'DRIVER_STATUS.md').read_text(errors='replace')):
+            return 'idle by design'
+    except OSError:
+        pass
+    return ''
+
+
 LIVENESS_HOURS = 2.0
 IDLE_BY_DESIGN = re.compile(r'idle by design', re.I)
 PROMPT = re.compile(r'\? for shortcuts|bypass permissions on|^\s*[>❯›]\s*$', re.M)
@@ -842,7 +855,11 @@ def main():
         if switched[lane] == 'switched':
             continue
         drv = None if switched[lane] == 'stopped' else active_driver(lane_dir, a.tmux, state)
-        if switched[lane] == 'stopped' and not a.dry:
+        if switched[lane] == 'stopped' and not a.dry and idled(lane_dir, state):
+            # 11-27 (general, budget): a lane idled until the Claude reset (QUIET, or "idle by design" in
+            # DRIVER_STATUS.md) is not handed to its Claude fallback; before, takeover started it again every 12 h.
+            say(a.log, f'{lane}: agy stopped, but the lane is idled ({idled(lane_dir, state)}); no Claude takeover')
+        elif switched[lane] == 'stopped' and not a.dry:
             try:
                 started, handed = takeover(a, session, lane, lane_dir, pane, state)
                 pane = started or pane

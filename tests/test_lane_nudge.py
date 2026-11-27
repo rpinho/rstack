@@ -836,3 +836,24 @@ def test_no_respawn_onto_a_gemini_model_the_quota_ledger_still_blocks(tmp_path, 
     monkeypatch.setattr(agy_quota, 'blocked_until', lambda *a, **k: {'blocked_until': '2099-01-01T00:00:00+00:00'})
     nudge.main()
     assert log.respawns == [] and any(p == '%claude' for p, _ in log.sent)   # the Claude Code fallback drives
+
+
+def test_an_idled_lane_is_not_handed_to_its_claude_fallback(tmp_path, monkeypatch):
+    """11-27 (general, budget): paper-audit, digest and meccog were idled until the Claude reset. takeover would
+    have restarted and re-handed them every 12 h; QUIET or "idle by design" now keeps the fallback idle."""
+    log, *_ = _agy_env(tmp_path, monkeypatch, IDLE_SCREEN, model='claude-opus-5-5-high')
+    import agy_quota
+    monkeypatch.setattr(agy_quota, 'blocked_until', lambda *a, **k: {'blocked_until': '2099-01-01T00:00:00+00:00'})
+    handed = []
+    monkeypatch.setattr(nudge, 'takeover', lambda *a, **k: handed.append(a[2]) or (None, True))
+    lane = tmp_path / 'lanes/math'
+    (lane / 'DRIVER_STATUS.md').write_text('Driver: agy-math. Idle by design until late December.\n')
+    nudge.main()
+    assert handed == [] and 'no Claude takeover' in (tmp_path / 'log').read_text()
+    (lane / 'DRIVER_STATUS.md').write_text('Driver: agy-math\n')
+    (lane / 'QUIET').write_text('until 2099-01-01T00:00:00Z by general: Claude budget, idle to the reset\n')
+    nudge.main()
+    assert handed == []
+    (lane / 'QUIET').unlink()
+    nudge.main()
+    assert handed == ['math']
