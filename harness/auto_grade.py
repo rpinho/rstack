@@ -252,6 +252,37 @@ def effort_floor_note(receipt):
     return ''
 
 
+def final_response(spec, host=''):
+    """The job's final response (<spec>.last.md), as text: agy/claude JSON results are unwrapped. '' if unavailable."""
+    if not spec:
+        return ''
+    path = Path(str(spec)[:-3] + '.last.md') if str(spec).endswith('.md') else Path(str(spec) + '.last.md')
+    try:
+        text = path.read_text(errors='replace')
+    except OSError:
+        if not host:
+            return ''
+        try:
+            result = subprocess.run(ssh_command(host, 'cat ' + shlex.quote(str(path))), capture_output=True,
+                                    text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return ''
+        text = result.stdout if result.returncode == 0 else ''
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            text = '\n'.join(str(data.get(k) or '') for k in ('result', 'error'))
+    except ValueError:
+        pass
+    return text
+
+
+def shipped_in_response(text):
+    """11-27: some lanes' specs ask for "Shipped: ..." at the end of the final response, not in REPORT.md."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return bool(lines) and lines[-1].startswith('Shipped:')
+
+
 def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, host='', retried=False):
     receipt = json.loads(Path(receipt_path).read_text())
     workdir = Path(workdir).absolute()
@@ -276,6 +307,16 @@ def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, ho
         except OSError as exc:
             run_records.warn(exc)
     quota = wm.quota_failure(log, receipt)
+    cached = []
+
+    def response():   # read once, and only when the log and REPORT.md do not settle it (an ssh call for host jobs)
+        if not cached:
+            cached.append(final_response(spec, host))
+        return cached[0]
+
+    if not quota and rc != 0:
+        # 11-27: cyvcf2/augur ended on agy "Individual quota reached" in their final output, not in the log.
+        quota = next((q for q in (run_records.quota_message(b, response()) for b in ('agy', 'codex', 'claude')) if q), '')
     refused = harness_refusal(log, receipt, rc)
     missing = []
     if run_records.is_probe(receipt) or os.environ.get('RH_RUN_PURPOSE') == 'probe':
@@ -288,7 +329,8 @@ def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, ho
         result, grader, reason = 'ungraded', 'launcher', 'attempt continued before grading'
     else:
         missing, status, report = inspect_workdir(workdir, required_files(spec_text), host)
-        shipped, restated = report.startswith('Shipped:'), status.startswith('You asked:')
+        shipped = report.startswith('Shipped:') or shipped_in_response(response())
+        restated = status.startswith('You asked:')
         floor_note = effort_floor_note(receipt) if rc == 0 else ''
         grader = 'checks'
         unreachable = 'directory unavailable' in missing or (not host and not workdir.is_dir())
@@ -308,6 +350,10 @@ def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, ho
                 result, reason = 'partial', 'Shipped, but missing: ' + reason_missing
         elif floor_note:
             result, grader, reason = 'partial', 'effort floor', floor_note
+        elif rc is None and shipped:
+            # 11-27 sourmash: the executor finished (rc 0 on its host) but the launcher's link to it was stopped by a
+            # signal, so no exit code reached the log. A job that shipped is not failed for the harness's lost exit.
+            result, grader, reason = 'ungraded', 'harness', 'exit unknown: the launcher lost the executor; shipped'
         elif rc != 0 or not shipped:
             result, reason = 'fail', 'exit {}; Shipped line {}'.format(rc, 'yes' if shipped else 'no')
         else:

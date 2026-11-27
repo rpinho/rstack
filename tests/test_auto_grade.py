@@ -167,3 +167,26 @@ def test_a_sweep_stage_without_status_or_report_is_void(tmp_path):
     (work / 'REPORT.md').unlink(); (work / 'STATUS.md').unlink()
     row = auto_grade.grade(receipt, log, work, spec)
     assert row['grade'] == 'void: sweep stage' and not row.get('missing_files')
+
+
+def test_shipped_at_the_end_of_the_final_response_counts(tmp_path):
+    """11-27 sourmash/pairtools: the spec asks for 'Shipped:' at the end of the final response."""
+    receipt, log, work, spec = returned(tmp_path, report='# Mixed-scale containment')
+    Path(str(spec)[:-3] + '.last.md').write_text(json.dumps({'result': 'Done.\nShipped: fix.patch, REPORT.md'}))
+    row = auto_grade.grade(receipt, log, work, spec)
+    assert row['grade'] == 'pass', row
+
+
+def test_a_quota_error_in_the_final_response_is_void(tmp_path):
+    """11-27 cyvcf2/augur: agy's quota error was only in the .last.md, so they were graded fail."""
+    receipt, log, work, spec = returned(tmp_path, rc=1, report='Working.')
+    Path(str(spec)[:-3] + '.last.md').write_text(json.dumps({'error': 'Individual quota reached. Please upgrade your subscription. Resets in 2h6m15s.', 'finished_reason': 'error'}))
+    row = auto_grade.grade(receipt, log, work, spec)
+    assert row['grade'].startswith('void') or 'quota' in row['reason'], row
+
+
+def test_a_lost_exit_code_on_a_shipped_job_is_the_harnesss(tmp_path):
+    receipt, log, work, spec = returned(tmp_path)
+    log.write_text('exit stopped by signal Thu Nov 26 20:25:55 EST 2026\n')
+    row = auto_grade.grade(receipt, log, work, spec)
+    assert row['grade'] == 'harness_fail' and 'exit unknown' in row['reason']
