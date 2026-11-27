@@ -119,6 +119,37 @@ class Ledger:
             os.fsync(stream.fileno())
 
 
+CLAIM_GRACE = dt.timedelta(minutes=10)
+
+
+def stale_claim(attempt, clock):
+    """11-27 math/7a76024bfff54db9: the hook claimed the row at 13:45:56, the command then failed before xurl ran,
+    and the approval was gone for good. A bash-xurl claim older than CLAIM_GRACE with no allowed tweet POST in the
+    xurl ledger after it never reached X, so it no longer blocks the row. Browser claims stay single-use."""
+    if attempt.get('path') != 'bash-xurl':
+        return False
+    try:
+        since = outreach.time_of(attempt['utc'])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if clock - since < CLAIM_GRACE:
+        return False
+    ledger = settings.path('RH_XURL_LEDGER', Path.home() / '.local/state/xurl-ledger.jsonl')
+    try:
+        lines = ledger.read_text().splitlines()
+    except OSError:
+        return False   # cannot show nothing was posted: keep the claim
+    for line in lines:
+        try:
+            r = json.loads(line)
+            if (r.get('decision') == 'ALLOW' and r.get('method') == 'POST' and str(r.get('path', '')).startswith('/2/tweets')
+                    and outreach.time_of(r['utc']) >= since - dt.timedelta(seconds=5)):
+                return False
+        except (ValueError, KeyError, TypeError):
+            continue
+    return True
+
+
 def candidates(root, payload=None, browser=False, clock=None, blocked=None):
     """Approved rows this post may claim. A row that matches but fails a reach check now (a
     reply too soon after the last one) goes to `blocked`, so the refusal can say why."""
@@ -150,7 +181,7 @@ def candidates(root, payload=None, browser=False, clock=None, blocked=None):
                 continue
             # A successful precheck is a single-use posting intent. This also prevents
             # two concurrent hook calls from borrowing one approved browser reply.
-            if row.get('gate_attempt'):
+            if row.get('gate_attempt') and not stale_claim(row['gate_attempt'], clock):
                 continue
             cfg = outreach.settings(root / 'lanes' / row['lane'], Ledger)
             failures, _ = outreach.x_checks(row, text, everyone, clock, cfg=cfg, posting=True)

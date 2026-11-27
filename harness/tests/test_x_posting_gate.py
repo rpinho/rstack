@@ -599,3 +599,21 @@ def test_browser_claim_waits_for_the_first_route(local, tmp_path):
     _, message = x_gate.check(local, 'browser', browser=True)
     assert message and 'run x-route reply first' in message
     assert not outreach.current(local / 'lanes/test', rh)[row['id']].get('gate_attempt')
+
+
+def test_a_stale_bash_claim_with_no_post_in_the_xurl_ledger_is_released(local, monkeypatch, tmp_path):
+    """11-27 math/7a76024bfff54db9: claimed at 13:45:56, the command failed before xurl ran, no POST was logged,
+    and the approval stayed used up. After 10 minutes with no allowed tweet POST the claim no longer blocks."""
+    text = 'Here it is. https://github.com/example/results/tree/abc'
+    row = approve(local, channel='x_post', text=text, self_reply_to='111')
+    ledger = tmp_path / 'xurl-ledger.jsonl'
+    ledger.write_text('')
+    monkeypatch.setenv('RH_XURL_LEDGER', str(ledger))
+    claimed = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=11)).isoformat()
+    update(local, row, gate_attempt={'utc': claimed, 'path': 'bash-xurl'})
+    assert hook_pipe(local, event('bash', payload(text, '111'))) is None          # nothing reached X: reusable
+    row = approve(local, channel='x_post', text=text + ' Again.', self_reply_to='112')
+    update(local, row, gate_attempt={'utc': claimed, 'path': 'bash-xurl'})
+    ledger.write_text(json.dumps({'utc': dt.datetime.now(dt.timezone.utc).isoformat(), 'decision': 'ALLOW',
+                                  'method': 'POST', 'path': '/2/tweets'}) + '\n')
+    assert hook_pipe(local, event('bash', payload(text + ' Again.', '112')))['hookSpecificOutput']['permissionDecision'] == 'deny'
