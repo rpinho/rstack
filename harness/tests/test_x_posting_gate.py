@@ -237,7 +237,7 @@ def test_exact_payload_and_approval_binding(local, change):
     row = approve(local)
     value = payload()
     if change == 'text':
-        value['text'] = TEXT.strip()
+        value['text'] = TEXT.strip() + ' Or two?'
     elif change == 'disk':
         Path(row['draft_path']).write_text('Changed disk bytes.')
     elif change == 'hash':
@@ -283,6 +283,13 @@ def test_link_self_reply_gate(local):
     text = 'The certificate is at https://github.com/example/results.'
     approve(local, channel='x_post', text=text, self_reply_to='111')
     assert hook_pipe(local, event('bash', payload(text, '111'))) is None
+
+
+def test_a_post_without_the_drafts_trailing_newline_still_matches(local):
+    """11-27 math/7a76024bfff54db9: the draft file ends with a newline, the xurl POST does not; it was refused."""
+    text = 'Here it is. https://github.com/example/results/tree/abc\n'
+    approve(local, channel='x_post', text=text, self_reply_to='111')
+    assert hook_pipe(local, event('bash', payload(text.rstrip('\n'), '111'))) is None
 
 
 def test_replied_registry_rechecked_after_approval(local):

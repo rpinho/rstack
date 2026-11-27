@@ -124,7 +124,10 @@ def candidates(root, payload=None, browser=False, clock=None, blocked=None):
     reply too soon after the last one) goes to `blocked`, so the refusal can say why."""
     clock = clock or dt.datetime.now(outreach.UTC)
     everyone = list(outreach.all_rows(root, Ledger))
-    digest = hashlib.sha256(payload['text'].encode('utf-8')).hexdigest() if payload else None
+    # 11-27: the approved draft file ends with a newline; the xurl POST sends the text without it (X drops
+    # trailing whitespace too), so an approved self-reply never matched. Match on the text with trailing
+    # whitespace removed on both sides; the approval's own sha256 still covers the file exactly.
+    digest = hashlib.sha256(payload['text'].rstrip().encode('utf-8')).hexdigest() if payload else None
     target = str(payload.get('reply', {}).get('in_reply_to_tweet_id', '')) if payload else None
     for row in everyone:
         approval = row.get('approval') or {}
@@ -139,7 +142,7 @@ def candidates(root, payload=None, browser=False, clock=None, blocked=None):
             actual = hashlib.sha256(text.encode('utf-8')).hexdigest()
             if actual != approval.get('sha256') or actual != row['lint'].get('sha256'):
                 continue
-            if digest and digest != actual:
+            if digest and digest != hashlib.sha256(text.rstrip().encode('utf-8')).hexdigest():
                 continue
             if target is not None and (outreach.reply_target(row) or '') != target:
                 continue
