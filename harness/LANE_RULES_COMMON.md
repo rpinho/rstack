@@ -6,6 +6,10 @@ Rounds launched, jobs run, designs scored, tests passed, checks added, ideas log
 spent are not results. The only result is the thing that was asked for, shipped. A lane that
 measures itself by how much it ran has already lost the ask.
 
+**Fast lane (general, 11-27).** If the venue has an automatic checker, run it and submit; the checker is
+the gate. Referee after merge. Target: first submission within 2 h of picking the problem. Declare it once
+as `checker = "..."` in SWEEP.toml. A leaderboard's final pick still never goes by the visible board.
+
 **Restate the ask.** The first line of each round, job or campaign note is
 `You asked: <the ask, in the spec's or Ricardo's words>. I will: <what this run does differently from the last one>.`
 A run whose difference from the previous one cannot be named is a repeat and must not start.

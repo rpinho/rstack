@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import selection_policy
+import toml_subset
 
 EXCLUDED = settings.names('RH_POLICY_EXCLUDED')
 SOURCES = ('github', 'x', 'papers', 'leaderboards')
@@ -22,8 +23,18 @@ RECEIPT_ERRORS = frozenset((
 STRONG_DECIDERS = ('claude-opus-5-5', 'claude-fable-5-2', 'claude-fable-5-1', 'gpt-6-astra')  # 5.2: 11-09
 
 
+def checker(lane):
+    """The venue checker a lane declares in SWEEP.toml (`checker = "lake build"`, a verifier command or
+    "leaderboard"), else ''. 11-27 fast lane (Ricardo: "we're too slow"): where an automatic checker
+    exists it IS the gate, so no freeze or referee verdict waits before a submission."""
+    try:
+        return str(toml_subset.config(Path(lane) / 'SWEEP.toml').get('checker', '')).strip()
+    except Exception:
+        return ''
+
+
 def enabled(lane):
-    return lane.name not in EXCLUDED
+    return lane.name not in EXCLUDED and not checker(lane)
 
 
 def digest(value):

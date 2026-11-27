@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import idea_policy
 import selection_policy
 import lessons
 
@@ -196,7 +197,12 @@ def audit(lane, rh):
         cadence.load(lane, rh)
         import sweep
         sweep.load(lane, rh)
+        fast = idea_policy.checker(lane)
         for row in rh.rows(lane / 'IDEAS.jsonl'):
+            # 11-27: a venue with a checker submits without a frozen selection. Only a leaderboard's
+            # final pick (status shipped) still needs one, so the visible board never picks it.
+            if fast and (fast != 'leaderboard' or row.get('status') == 'testing'):
+                continue
             if row.get('status') in ('testing', 'shipped'):
                 if row.get('policy_version') != 2:
                     raise ValueError('new lanes require v2 before an experiment')

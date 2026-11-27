@@ -17,11 +17,12 @@ their table is homework, not a gift. The point is a result they would want to kn
 3. **Reproduce, then beat.** Same data and metric. Freeze any held-out set before modelling. Run the
    trivial predictor and a simple baseline beside any predictive claim. Exact claims get a verifier
    written apart from the search. A big jump is a warning until a control explains it.
-4. **Referee.** A separate job rebuilds each claim from the paper with its own code, tries to break
+4. **Referee.** Where the venue has an automatic checker (Lean CI, a verifier, a scorer), run it and submit first;
+   the checker is the gate and this step runs after merge (`checker = "..."` in SWEEP.toml). Otherwise a separate job rebuilds each claim from the paper with its own code, tries to break
    it, and ends HOLDS, HOLDS WITH CAVEATS or FAILS, naming the author's strongest objection. Judging
    novelty is a separate, stronger model's call, not the checker's. The objection becomes the next
    round's bar.
-5. **Report.** Only refereed results, reviewed once adversarially on the exact final text, read by
+5. **Report.** Emails carry only refereed results, reviewed once adversarially on the exact final text, read by
    the owner, and sent through `rh outreach` with `--kind paper`: one email per person per day, the
    lane's required questions, the contact's scrutiny level. The author is the judge of whether it is
    useful; record their answer and let it steer their next targets.

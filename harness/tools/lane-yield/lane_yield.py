@@ -256,7 +256,7 @@ def check_lane(name, cfg, now):
             except Exception:   # an old list still judges; a missing one counts nothing as shipped
                 pass
         up = upstream.summary(up_lane)
-    gated_week = None
+    gated_week, unrefereed = None, {}
     for g in c.get('results', []):
         for p in glob.glob(os.path.expanduser(g)):
             try:
@@ -273,6 +273,11 @@ def check_lane(name, cfg, now):
                 gated_week = (gated_week or 0) + sum(
                     1 for r in rows if r.get('new') is True and str(r.get('referee', '')).upper().startswith('HOLDS')
                     and result_gates.counts(gates, r) and _within(r, now - 7 * 86400, end))
+            # 11-27 fast lane: a submission the venue's checker accepted is logged `--referee NONE` and
+            # refereed after merge; it stays listed here until a later row on the same link has a verdict.
+            for r in rows:
+                if r.get('new') is True and r.get('kind') != 'rerun':
+                    unrefereed[r.get('link')] = str(r.get('referee', '')).upper() == 'NONE'
             for r in rows:
                 try:
                     t = datetime.fromisoformat(str(r['utc']).replace('Z', '+00:00')).timestamp()
@@ -326,6 +331,8 @@ def check_lane(name, cfg, now):
                attempts=attempts, new_yes=new_yes, verdicts=verdicts, pass_share=round(share, 3), status='FAIL' if fails else 'PASS', fails=fails)
     if gated_week is not None:
         row['gated_holds_7d'] = gated_week
+    if any(unrefereed.values()):
+        row['awaiting_referee'] = sorted(k for k, v in unrefereed.items() if v)
     if c.get('upstream'):
         anyone, ours = (up or {}).get('last_merge_anyone'), (up or {}).get('last_merge_ours')
         gap = (upstream.parse(anyone) - upstream.parse(ours)).days if anyone and ours else None
