@@ -140,3 +140,24 @@ def test_a_line_separator_inside_a_record_does_not_hide_its_tool_result(tmp_path
     (d / 's.jsonl').write_text(json.dumps(use) + '\n' + json.dumps(result, ensure_ascii=False) + '\n'
                                + json.dumps(say('Done; event-watch armed.', 7000, cwd='/src/digest')) + '\n')
     assert aw.scan_sessions(p, time.time()) == []
+
+
+def test_an_unchanged_ungraded_list_is_not_a_stopped_scan(tmp_path, monkeypatch, capsys):
+    """11-27: mac-ungraded.tsv changes only when a job is recorded or graded; 1168 min old was a false alarm."""
+    import io
+    registry = tmp_path / 'registry.json'
+    registry.write_text(json.dumps({'lanes': {}}))
+    monkeypatch.setenv('RH_LANE_REGISTRY', str(registry))
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
+    monkeypatch.setenv('CONDUCTOR_CWD_SUFFIX', '/conductor')
+    d = tmp_path / 'asks-waiting'
+    d.mkdir()
+    old = time.time() - 3 * 3600
+    for name in ('mac-ungraded.tsv', 'm5-jobs.tsv'):
+        (d / name).write_text('')
+        os.utime(d / name, (old, old))
+    monkeypatch.setattr(aw.sys, 'stdin', io.StringIO('{"cwd":"/src/conductor"}'))
+    aw.hook()
+    out = capsys.readouterr().out
+    assert 'mac-ungraded: list is' not in out
+    assert 'm5-jobs: list is' in out and 'scan may have stopped' in out

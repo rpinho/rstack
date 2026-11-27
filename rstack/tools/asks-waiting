@@ -220,7 +220,9 @@ def hook():
     for f in sorted(state_dir().glob('*.tsv')):
         age = (time.time() - f.stat().st_mtime) / 60
         body = [l for l in f.read_text().splitlines() if l.strip()]
-        if age > 30:
+        # 11-27: <host>-ungraded.tsv is written only when a job is recorded ungraded or graded (worker_models.py),
+        # never by a periodic scan, so an unchanged list is normal and says nothing about a stopped scan.
+        if age > 30 and not f.stem.endswith('-ungraded'):
             lines.append('{}: list is {:.0f} min old; its scan may have stopped'.format(f.stem, age))
         for row in body:
             row = classify(row, registry)
