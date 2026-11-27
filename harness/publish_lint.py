@@ -41,6 +41,7 @@ VERIFIED = re.compile(r'\b(?:verified|certified|certifies|proves|rigorous)\b', r
 NUMBER = re.compile(r'(?<![\w#])[-+]?(?:\d[\d,]*\s*/\s*\d[\d,]*|(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][-+]?\d+)?(?:\s*\^\s*[-+]?\d+)?)(?![\w])')
 SCRIPT = re.compile(r'(?<![\w/])(?:[\w.-]+/)*[\w.-]+\.(?:py|sage|sh|cpp|cc|c|jl|wl)\b')
 FILE = re.compile(r'(?<![\w/])(?:\.{1,2}/|[\w@+-]+/)*[\w@+.-]+\.(?:md|markdown|tex|pdf|json|jsonl|py|sage|sh|cpp|cc|c|h|hpp|jl|wl|txt|csv|tsv|gz|xz|npz|npy|pkl|yaml|yml|toml|lean|log)\b', re.I)
+EXACT_MATH = frozenset({'isqrt', 'gcd', 'lcm', 'comb', 'perm', 'factorial'})
 
 
 def sha(data):
@@ -373,6 +374,13 @@ def arithmetic(snapshot, producer, seen=None):
         tokens += [n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)]
         tokens += [a.name for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names]
         tokens += [n.module or '' for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)]
+        # 11-27 (math): math.isqrt, gcd, comb and the like are exact integer functions. `math` counts as floating
+        # point only when the checker uses something else from it (sqrt, log, pi, ...).
+        used = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
+                and isinstance(n.value, ast.Name) and n.value.id == 'math'}
+        used |= {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == 'math' for a in n.names}
+        if used <= EXACT_MATH:
+            tokens = [t for t in tokens if t != 'math' and t not in used]
         clean = ' '.join(tokens)
     else:
         if not path.endswith(('.c', '.cc', '.cpp', '.h', '.hpp')):
@@ -1125,8 +1133,9 @@ class Linter:
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 self.fail(key, str(exc))
         target = self.meta.get('target', '')
-        if not isinstance(target, str) or not re.fullmatch(r'teorth/[\w.-]+(?:#\d+)?', target):
-            self.fail('paths', 'PUBLISH.json target must be teorth/REPO[#NUMBER]')
+        # 11-27 (math): a packet whose home is our own certificates repo (an OEIS counterexample) names it truthfully.
+        if not isinstance(target, str) or not re.fullmatch(r'(?:teorth/[\w.-]+|rpinho/math-certificates)(?:#\d+)?', target):
+            self.fail('paths', 'PUBLISH.json target must be teorth/REPO[#NUMBER] or rpinho/math-certificates[#NUMBER]')
         return {'version': VERSION, 'status': 'FAIL' if any(self.errors.values()) else 'PASS',
                 'packet': str(self.s.packet), 'repo_root': str(self.s.root), 'prefix': self.s.prefix,
                 'commit': self.s.commit, 'target': target, 'tree_sha256': self.s.fingerprint(),

@@ -1087,3 +1087,26 @@ def test_initial_does_not_split_a_credit_sentence(packet):
     credited(packet, 'V. Patankar', 'V. Patankar', 'V. Patankar')
     packet.body.write_text('I credit V. Patankar. Older files name the #17 author wrongly; this packet credits V. Patankar.\n')
     check(packet, 'credit', True)
+
+
+@pytest.mark.parametrize('body, exact', [('import math\nprint(math.isqrt(10), math.gcd(4, 6), math.comb(5, 2))\n', True),
+                                         ('from math import isqrt\nprint(isqrt(10))\n', True),
+                                         ('import math\nprint(math.isqrt(10), math.sqrt(2))\n', False)])
+def test_rigor_exact_integer_math_functions_are_not_floating_point(packet, body, exact):
+    # 11-27 (math, A270594 packet): a referee checker using math.isqrt was audited as floating point.
+    packet.write('isqrt.py', body)
+    packet.write('PROOF.md', 'The leaves are verified.\n')
+    packet.steps = [dict(document='PROOF.md', statement='The leaves are verified.', producer='isqrt.py', arithmetic='exact')]
+    if exact:
+        assert packet.lint()['checks']['rigor']['advisory'] == []
+    else:
+        advise(packet, 'rigor')
+
+
+@pytest.mark.parametrize('target, passing', [('rpinho/math-certificates', True), ('rpinho/math-certificates#7', True),
+                                             ('rpinho/other-repo', False)])
+def test_paths_target_may_be_our_certificates_repo(packet, target, passing):
+    # 11-27 (math): an OEIS counterexample's home is rpinho/math-certificates, not a teorth repo.
+    packet.meta['target'] = target
+    failures = packet.lint()['checks']['paths']['failures']
+    assert (not any('target must be' in str(f) for f in failures)) == passing, failures
