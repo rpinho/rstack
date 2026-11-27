@@ -675,6 +675,8 @@ export RSTACK_LANE=${(q)lane} RSTACK_CALL_ROLE=${(q)RSTACK_CALL_ROLE}
 $remote_auth
 mkdir -p ${(q)${out:h}} 2>/dev/null || { echo ${(q)nodir} >&2; exit 2; }
 mkdir -p $rmarks 2>/dev/null || true
+[ -n \"\$(find $rmarks -maxdepth 1 -name ${(q)${job:t}}.stop -mmin -3 2>/dev/null)\" ] && { rm -f $rmarks/${(q)${job:t}}.stop; echo 'launch: stopped by job-stop before the executor started' >&2; exit 143; }
+rm -f $rmarks/${(q)${job:t}}.stop 2>/dev/null
 echo \$\$ > $rmarks/${(q)${job:t}}.pid 2>/dev/null || true
 exec env RH_JOB=${(q)${job:t}} RH_LAUNCH_RUN_ID=${(q)run_id} RH_LAUNCH_GRADE_LEDGER=${(q)grade_ledger} RH_LAUNCH_DRIVER=${(q)driver} RH_LAUNCH_GROUP=${(q)launch_group} ${(j: :)${(q)cache_env[@]}} ${(j: :)${(q)effort_env[@]}} nice -n 10 python3 $rexec --backend ${(q)backend} --executable ${(q)cx} --directory ${(q)dir} --model ${(q)m} --effort ${(q)LAUNCH_EFFORT} --output ${(q)out} --budget ${(q)attempt_budget} --allowed-tools ${(q)LAUNCH_CLAUDE_TOOLS} --timeout-seconds ${(q)attempt_timeout}"
     # 11-08: this was one foreground ssh, so the job lived exactly as long as the connection. A

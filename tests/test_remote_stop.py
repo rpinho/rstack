@@ -92,7 +92,48 @@ def test_no_pid_file_on_the_host_says_so_rather_than_claiming_success(tmp_path):
     reg = tmp_path / 'reg'
     entry(reg, 'j', host='m5', remote_marks=str(tmp_path / 'absent'))
     out = run(tmp_path, 'j', reg, ssh=local_ssh(tmp_path))
-    assert 'no pid file' in out.stdout
+    assert 'not started on this host yet' in out.stdout
+    # 11-27: and it leaves a stop marker, so an executor still being staged does not start afterwards
+    assert (tmp_path / 'absent' / 'j.stop').exists()
+
+
+def remote_guard(marks, job):
+    """The launcher's remote lines from `mkdir -p $rmarks` to the pid write, expanded by zsh as launch.sh does."""
+    text = LAUNCH.read_text()
+    i = text.index('mkdir -p $rmarks')
+    block = text[i:text.index('\n', text.index('echo \\$\\$ >', i))]
+    z = subprocess.run(['zsh', '-c', 'rmarks=$1; job=$2; s="' + block + '"; print -r -- "$s"', 'z', str(marks), job],
+                       capture_output=True, text=True, timeout=30)
+    assert z.returncode == 0, z.stderr
+    return z.stdout
+
+
+def test_a_stop_before_the_executor_starts_keeps_it_from_starting(tmp_path):
+    # 11-27, math: job-stop ran 4 s after launch, while remote_run was still staging; the executor started 38 s
+    # later on the m5. The remote side now refuses when a fresh stop marker is there, and clears it.
+    marks = tmp_path / 'marks'
+    reg = tmp_path / 'reg'
+    entry(reg, 'j', host='m5', remote_marks=str(marks))
+    run(tmp_path, 'j', reg, ssh=local_ssh(tmp_path))
+    code = remote_guard(marks, 'j') + '\necho STARTED\n'
+    out = subprocess.run(['sh', '-c', code], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 143 and 'STARTED' not in out.stdout and 'stopped by job-stop' in out.stderr
+    assert not (marks / 'j.stop').exists() and not (marks / 'j.pid').exists()
+    # the next launch of the same job starts normally
+    out = subprocess.run(['sh', '-c', code], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0 and 'STARTED' in out.stdout and (marks / 'j.pid').exists()
+
+
+def test_a_stale_stop_marker_does_not_block_a_relaunch(tmp_path):
+    marks = tmp_path / 'marks'
+    marks.mkdir()
+    stop = marks / 'j.stop'
+    stop.touch()
+    old = time.time() - 600
+    os.utime(stop, (old, old))
+    out = subprocess.run(['sh', '-c', remote_guard(marks, 'j') + '\necho STARTED\n'],
+                         capture_output=True, text=True, timeout=30)
+    assert 'STARTED' in out.stdout and not stop.exists()
 
 
 def test_a_junk_pid_file_does_not_signal_anything(tmp_path):
