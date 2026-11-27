@@ -287,8 +287,10 @@ def launch(tmp_path, job, spec, *args, **extra):
     return proc, jobs, env
 
 
-def test_launch_gates_warn_and_run(tmp_path):
+def test_launch_gates_warn_and_run(tmp_path, monkeypatch):
     """The spec word cap, the load ceiling and an unpromoted idea used to stop the job; now it runs, warned."""
+    stub(tmp_path / 'sysctl', 'print("{ 1.25 1.00 0.75 }")\n')
+    monkeypatch.setenv('PATH', str(tmp_path), prepend=os.pathsep)
     long_spec = ' '.join(['word'] * 1300) + '\n'
     proc, jobs, env = launch(tmp_path, 'fixture-long', long_spec, LAUNCH_MAX_LOAD='-1', FORCE_LAUNCH='',
                              LAUNCH_IDEA='nope-1', RH_ROOT=str(tmp_path / 'runtime'))

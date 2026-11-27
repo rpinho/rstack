@@ -985,6 +985,123 @@ def cap_setup(tmp_path, monkeypatch, used, hours=100, history=None, shares=None)
     return p
 
 
+@pytest.fixture
+def deadline_registry(tmp_path):
+    entry = dict(kind='competition', what='Fixture final',
+                 ends=(dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=4)).isoformat(timespec='minutes'))
+    lanes = tmp_path / 'lanes'
+    lanes.mkdir()
+    (lanes / 'REGISTRY.json').write_text(json.dumps({'lanes': {
+        'timed': {'status': 'active', 'deadlines': [entry]},
+        'plain': {'status': 'active'},
+    }}))
+    return lanes, entry
+
+
+@pytest.mark.parametrize('history,pressure', [
+    ([(5, 35), (0, 40)], 'projects 140%'),
+    ([(5, 40), (0, 40)], 'budget line'),
+])
+def test_live_deadline_keeps_opus_above_pacing_or_budget_line(tmp_path, monkeypatch, deadline_registry,
+                                                           history, pressure):
+    lanes, entry = deadline_registry
+    p = cap_setup(tmp_path, monkeypatch, 40, history=history)
+    monkeypatch.setenv('RH_CLAUDE_BUDGET_LINE', '1')
+    plain = wm.select('batch', 'claude', path=p, lane='plain', lane_dir=lanes / 'plain')
+    assert plain['executor'] == 'codex' and pressure in plain['claude_cap']
+    timed = wm.select('batch', 'claude', path=p, lane='timed', lane_dir=lanes / 'timed')
+    assert (timed['executor'], timed['model']) == ('claude', 'claude-opus-5-5')
+    assert timed['deadline'] == entry
+    assert 'Fixture final ends ' + entry['ends'] in timed['claude_cap']
+
+
+def test_live_deadline_is_exempt_from_share(tmp_path, monkeypatch, deadline_registry):
+    lanes, _ = deadline_registry
+    p = cap_setup(tmp_path, monkeypatch, 10, history=[(5, 10), (0, 10)],
+                  shares={'default': {'max_week_percent': 0, 'models': ['sonnet']}})
+    plain = wm.select('review', 'claude', path=p, lane='plain', made_by='gemini-3')
+    assert plain['executor'] == 'codex' and '0% share' in plain['claude_cap']
+    monkeypatch.setenv('RH_LANE_REGISTRY', str(lanes / 'REGISTRY.json'))
+    timed = wm.claude_cap.decide('claude-opus-5-5', 'timed', 'review', True, wm._allowance())
+    assert timed['leave'] == '' and timed['model'] == 'claude-opus-5-5'
+    assert any('share do not apply' in note for note in timed['notes'])
+
+
+def test_live_deadline_still_hits_claude_ceiling(tmp_path, monkeypatch, deadline_registry):
+    lanes, entry = deadline_registry
+    p = cap_setup(tmp_path, monkeypatch, 80)
+    result = wm.select('batch', 'claude', path=p, lane='timed', lane_dir=lanes / 'timed')
+    assert result['executor'] == 'codex' and '>= 80% ceiling' in result['claude_cap']
+    assert result['deadline'] == entry
+
+
+def test_live_deadline_skips_gemini_first_and_exploration(tmp_path, monkeypatch, deadline_registry):
+    lanes, entry = deadline_registry
+    p = delegate_roles(tmp_path / 'roles.json')
+    monkeypatch.setenv('RH_CLAUDE_DELEGATE_DEFAULT', '1')
+    monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
+    plain = wm.select('batch', 'claude', path=p, lane='plain')
+    assert plain['model'] == 'gemini-4-hydrogen-high' and 'gemini first' in plain['delegate']
+    log, receipt = tmp_path / 'timed.log', tmp_path / 'timed.selection.json'
+    assert wm.main(['--role', 'batch', '--executor', 'codex', '--roles-file', str(p),
+                    '--lane', 'timed', '--lane-dir', str(lanes / 'timed'), '--print-route',
+                    '--log', str(log), '--receipt', str(receipt)]) == 0
+    timed = json.loads(receipt.read_text())
+    assert (timed['executor'], timed['model'], timed['source']) == ('claude', 'claude-opus-5-5', 'leaderboard')
+    assert timed['deadline'] == entry
+    logged = next(line for line in log.read_text().splitlines() if line.startswith('MODEL_SELECTION '))
+    assert json.loads(logged.split(' ', 1)[1])['deadline'] == entry
+    trial = tmp_path / 'trial.json'
+    trial.write_text(json.dumps(dict(name='fixture trial', role='batch',
+                                     models=['gemini-4-hydrogen-high', '@leaderboard'])))
+    monkeypatch.setenv('RH_MODEL_TRIAL', str(trial))
+    plain = wm.select('batch', 'claude', path=p, lane='plain', job='plain-job', explore='gpt-6.2-sol')
+    assert plain['trial'] == 'fixture trial'
+    timed = wm.select('batch', 'claude', path=p, lane='timed', lane_dir=lanes / 'timed',
+                      job='timed-job', explore='gpt-6.2-sol')
+    # an explicit --explore is the operator's own choice and runs; a deadline lane only skips joining the trial
+    assert timed['model'] == 'gpt-6.2-sol' and 'trial' not in timed
+
+
+def test_deadline_ranking_respects_quota_family_and_executor(tmp_path, monkeypatch, deadline_registry):
+    lanes, entry = deadline_registry
+    p = delegate_roles(tmp_path / 'roles.json')
+    data = json.loads(p.read_text())
+    data['roles']['review'].insert(0, 'gemini-4-neon-high')
+    p.write_text(json.dumps(data))
+    monkeypatch.setenv('RH_HEADROOM_ROUTING', '0')
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
+    select = dict(path=p, lane='timed', lane_dir=lanes / 'timed', made_by='claude-sonnet-5-5')
+    top = wm.select('review', 'codex', **select)
+    assert top['model'] == 'gemini-4-neon-high' and top['deadline'] == entry
+
+    until = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).isoformat()
+    (tmp_path / 'agy-quota.jsonl').write_text(json.dumps(
+        {'model': 'gemini-4-neon-high', 'blocked_until': until}) + '\n')
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path))
+    quota = wm.select('review', 'codex', **select)
+    assert quota['model'] == 'gpt-6.2-sol' and 'gemini-4-neon-high' in quota['quota_skipped'][0]
+
+    monkeypatch.setenv('RSTACK_STATE_DIR', str(tmp_path / 'no-quota'))
+    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'claude')
+    available = wm.select('review', 'claude', **dict(select, made_by='gpt-6.2-sol'))
+    assert (available['executor'], available['model']) == ('claude', 'claude-opus-5-5')
+
+
+def test_unreadable_deadline_registry_changes_nothing(tmp_path, monkeypatch, deadline_registry):
+    lanes, entry = deadline_registry
+    p = cap_setup(tmp_path, monkeypatch, 40, history=[(5, 35), (0, 40)])
+    valid = wm.select('batch', 'claude', path=p, lane='timed', lane_dir=lanes / 'timed')
+    assert valid['deadline'] == entry and valid['executor'] == 'claude'
+    plain = wm.select('batch', 'claude', path=p, lane='plain', lane_dir=lanes / 'plain')
+    (tmp_path / 'broken.json').write_text('{')
+    for registry in ('missing.json', 'broken.json'):
+        monkeypatch.setenv('RH_LANE_REGISTRY', str(tmp_path / registry))
+        timed = wm.select('batch', 'claude', path=p, lane='timed', lane_dir=lanes / 'timed')
+        assert timed['executor'] == plain['executor'] == 'codex'
+        assert timed['claude_cap'] == plain['claude_cap'] and 'deadline' not in timed
+
+
 def test_sonnet_is_preferred_only_for_mechanical_and_batch_claude_picks(tmp_path, monkeypatch):
     # 11-20 (Ricardo): "it shouldn't be the default ... it's more for mechanical work." No global Sonnet default.
     p = cap_setup(tmp_path, monkeypatch, 10, hours=160, history=[(2, 9.5), (0, 10)])

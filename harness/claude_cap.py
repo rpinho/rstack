@@ -33,6 +33,12 @@ from pathlib import Path
 import re
 import sys
 import time
+
+if __package__:
+    from . import lane_registry
+else:
+    import lane_registry
+
 try:
     import settings  # noqa: F401  11-22: loads the harness env file, so the Agent hook sees the selector's knobs
 except ImportError:
@@ -44,6 +50,7 @@ PACE_OFF = 100.0
 SONNET = 'claude-sonnet-5-5'
 LOW_JUDGMENT = ('mechanical', 'batch', 'cheap')   # roles where Sonnet is the preferred Claude model
 WEEK_H = 168.0
+_DEADLINE_UNSET = object()
 
 
 def load_allowance():
@@ -339,7 +346,8 @@ def main(argv=None):
 
 # ---- the decision ----------------------------------------------------------------------------------------
 
-def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, projects=None):
+def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, projects=None, *,
+           deadline=_DEADLINE_UNSET):
     """What a Claude pick may do. Returns dict(model, leave, notes, warning, opus_reason):
     leave is a reason string when Claude must be left for a fallback route, else ''.
     pressure describes account usage independently of lane shares. Pacing includes used, rate and hours."""
@@ -348,11 +356,16 @@ def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, proj
     out = dict(model=model, leave='', notes=notes, warning='', pressure='normal')
     if not enabled():
         return out
+    if deadline is _DEADLINE_UNSET:
+        deadline = lane_registry.live_deadline(lane, now)
+    if deadline:
+        notes.append('deadline lane {}: {} {} ends {}; pacing and share do not apply'.format(
+            lane, deadline['kind'], ' '.join(deadline['what'].splitlines()), deadline['ends']))
     ceiling, warn, pace_off = ceiling_knob(now), _f('RH_CLAUDE_WARN_PERCENT', WARN), \
         _f('RH_CLAUDE_PACE_OFF_PERCENT', PACE_OFF)
     # Within the leaderboard's Claude picks, Sonnet is preferred for low-judgment roles only; judgment roles keep
     # the leaderboard's pick (an explicit --model or spec pin is the operator's own choice).
-    if is_opus(model) and role in LOW_JUDGMENT and sonnet_ok and not pinned:
+    if is_opus(model) and role in LOW_JUDGMENT and sonnet_ok and not (pinned or deadline):
         out['model'] = model = SONNET
         notes.append('claude Sonnet 5.5 preferred for the {} role'.format(role))
     weekly = allowance.claude_weekly(now) if allowance else None
@@ -374,6 +387,8 @@ def decide(model, lane, role, sonnet_ok, allowance, now=None, pinned=False, proj
         return out
     if used >= warn:
         out['warning'] = 'claude weekly at {:.0f}%: warning from {:g}%, ceiling {:g}%'.format(used, warn, ceiling)
+    if deadline:
+        return out
     rate, basis = burn_rate(allowance, now, used, hours)
     projected = used + rate * hours
     if projected > ceiling and pacing:

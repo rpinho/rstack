@@ -54,8 +54,8 @@ esac
 #
 # 11-27, math: a job-stop 4 s after launch found no pid file (remote_run was still staging the attempt over
 # ssh), so it stopped nothing and the executor started on the m5 38 s later. With no pid file yet this leaves
-# $BASE.stop beside it; the launcher's remote command checks for it before it writes its pid, and refuses to
-# start. The pid file is checked again after the marker is down, which closes the window between the two.
+# $BASE.stop beside it. The launcher's remote command checks the marker before writing its pid and skips startup
+# if the marker exists. The pid file is checked again after the marker is written, closing the race.
 $SSH -o BatchMode=yes "$HOST" "
   mark=$REMOTE_MARKS/$BASE.pid
   if [ ! -f \"\$mark\" ]; then

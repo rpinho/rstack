@@ -25,6 +25,7 @@ import score_verdicts
 import claude_cap
 from claude_cap import load_allowance as _allowance
 import harness_blocks
+import lane_registry
 
 
 class MeteredRefusal(ValueError):
@@ -594,6 +595,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     made_by = (made_by or os.environ.get('LAUNCH_MADE_BY', '')).strip()
     if explore and (model or override):
         raise ValueError('--explore cannot be combined with --model or --model-override')
+    deadline = lane_registry.live_deadline(lane, lanes_root=Path(lane_dir).parent if lane_dir else None)
     raw = Path(path).read_bytes()
     data = json.loads(raw)
     if not isinstance(data, dict) or not isinstance(data.get('roles'), dict) or not isinstance(data.get('routes'), dict):
@@ -652,6 +654,14 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         raise ValueError('hard-coded model refused: --model requires --model-override REASON')
     if override and not model:
         raise ValueError('--model-override requires --model')
+    run = runnable(requested, follows_route)
+    if deadline and not (model or explore):
+        # The top pick this launcher can run. None runnable: the deadline adds nothing and the normal path
+        # decides (RULE #1: priority never turns into a refusal).
+        deadline_executors = run | {'openrouter', 'gemini'}
+        eligible = [m for m in eligible if (data['routes'].get(m) or {}).get('cli') in deadline_executors] or eligible
+        if (data['routes'].get(eligible[0]) or {}).get('cli') not in deadline_executors:
+            deadline = None
     # 11-20 (general): an explore pick is a deliberate experiment, so a model outside the role's pool runs as asked,
     # warned, and the receipt says so (math: `--explore claude-sonnet-5-5` for builder was rerouted to the
     # leaderboard pick, so the experiment never ran). It still needs a route.
@@ -687,7 +697,7 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
                 role, '; '.join(quota_skipped)))
     chosen = explore or model or eligible[0]
     switched, executor_choice = None, None
-    if not (explore or model or pin):
+    if not (explore or model or pin or deadline):
         rooms, unknown = headroom() if os.environ.get("RH_HEADROOM_ROUTING", "1") != "0" else ({}, None)
         switched, provider, executor_choice = headroom_pick(role, chosen, data, excluded,
                                                             families if judging else frozenset(), rooms, unknown, executor)
@@ -712,17 +722,19 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
         executor = data['routes'][moved]['cli']
         executor_choice = 'executor {}: Codex failed this job ({})'.format(executor, codex_closed)
     delegated, delegate_skip = None, ''
-    fam, run = families if judging else frozenset(), runnable(requested, follows_route) & {'claude', 'codex', 'agy'}
-    if judging and not families:
+    fam, delegate_run = families if judging else frozenset(), run & {'claude', 'codex', 'agy'}
+    if not deadline and judging and not families:
         delegate_skip = 'judging job with an unknown producer family: not delegated'
-    elif not (explore or model or pin):
-        delegated = gemini_first(role, data, excluded, chosen, fam, run, quota, quota_skipped, job, lane=lane)
-    elif explore and not (model or pin):
-        delegated = trial_pick(role, data, excluded, fam, run, quota, job, top=chosen)   # explore joins only the trial
+    elif not (explore or model or pin or deadline):
+        delegated = gemini_first(role, data, excluded, chosen, fam, delegate_run,
+                                 quota, quota_skipped, job, lane=lane)
+    elif explore and not (model or pin or deadline):
+        delegated = trial_pick(role, data, excluded, fam, delegate_run,
+                               quota, job, top=chosen)   # explore joins only the trial
     if delegated:
         chosen = delegated[0]
-    elif (data['routes'].get(chosen) or {}).get('cli') == 'claude' and claude_cap.delegate_default(role) and not (
-            explore or model or pin or delegate_skip):
+    elif not (explore or model or pin or delegate_skip or deadline) and (
+            data['routes'].get(chosen) or {}).get('cli') == 'claude' and claude_cap.delegate_default(role):
         delegate_skip = 'Claude off by default for {}, but neither Codex nor Gemini is open: stays on {}'.format(role, chosen)
     floor = gemini_floor(chosen, data)
     if floor:
@@ -731,9 +743,8 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     if (delegated or switched or gate or floor or (quota_skipped and chosen != ranked[0])
             or (judging and families and chosen != (explore or model or ranked[0]))):
         executor = route['cli']   # named in the receipt and the log below; not a silent swap
-    # 11-20: an explored model runs on its own CLI when the launcher can run it, as a delegate does; before, a
-    # Claude model explored from a Codex job failed "no compatible codex route" and was rerouted away.
-    if explore and isinstance(route, dict) and route.get('cli') in runnable(requested, follows_route):
+    # Exploration and deadline-ranked picks can follow their own compatible route, like delegates.
+    if (explore or (deadline and not model)) and isinstance(route, dict) and route.get('cli') in run:
         executor = route['cli']
     if isinstance(route, dict) and (role in JUDGMENT or (not model and route.get('cli') in ('openrouter', 'gemini'))):
         executor = route.get('cli')
@@ -743,7 +754,8 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     cap, cap_route = None, None
     if executor == 'claude' and route and route.get('cli') == 'claude' and claude_cap.enabled():
         held = bool(explore or model or pin or gate)
-        cap = claude_cap.decide(chosen, lane, role, claude_cap.SONNET in data['routes'], _allowance(), pinned=held)
+        cap = claude_cap.decide(chosen, lane, role, claude_cap.SONNET in data['routes'], _allowance(),
+                                pinned=held, deadline=deadline)
         if cap['model'] != chosen:
             chosen, route = cap['model'], data['routes'][cap['model']]
         if cap['leave']:
@@ -797,6 +809,8 @@ def select(role, executor, model='', override='', path=None, made_by='', job='',
     # batch on a hunter's claims.
     receipt['call_role'] = ('referee' if role in INDEPENDENT | {'referee'}
                             or any(src.startswith('hunter ') for src in family_sources) else role)
+    if deadline:
+        receipt['deadline'] = deadline
     if delegated:
         receipt['delegate'] = delegated[1]
         if len(delegated) > 2:

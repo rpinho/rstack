@@ -160,6 +160,8 @@ boolean and is independent of lifecycle status. Aliases resolve to the same poli
 `x:true` cannot override an explicit no-X rule in the canonical or alias RULES.md.
 Encode prose restrictions with `x:false` so consumers need no natural-language inference.
 
+An active lane may declare `"deadlines": [{"kind": "competition", "what": "Final submission", "ends": "2026-11-29T17:00Z", "starts": "2026-11-29T15:00Z"}]` in the registry. Kinds are `competition`, `leaderboard`, `bounty` and `event`. Use ISO 8601 UTC timestamps. Priority begins `RH_DEADLINE_LEAD_HOURS` hours before the optional `starts` (48 by default), or immediately without it, and expires at `ends`. The soonest live deadline gives the lane the top eligible model and exempts it from Claude pacing, the budget line and lane shares. The weekly ceiling still applies. Run `python3 harness/lane_registry.py ticker` (optionally `--json` or `--lanes-root PATH`) to list live and upcoming deadlines by end time.
+
 ## Claude ceiling, pacing, Sonnet default, lane shares (11-20)
 
 Ricardo: Claude must never reach 100% (general runs on it), Sonnet is the default, MecCog sits at the bottom.

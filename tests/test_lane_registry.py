@@ -1,6 +1,9 @@
 """One lifecycle decision for lane names, session aliases and inclusive end dates."""
-from datetime import date
+from datetime import date, datetime, timezone
 import json
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -109,3 +112,75 @@ def test_invalid_registry_never_becomes_an_active_lane(tmp_path, monkeypatch, da
     monkeypatch.setenv('RH_LANE_REGISTRY', str(path))
     with pytest.raises(ValueError):
         lr.load()
+
+
+@pytest.mark.parametrize('deadline', [
+    {'kind': 'other'},
+    {'what': ''},
+    {'ends': '2026-11-30T17:00'},
+    {'ends': '2026-11-30T17:00+01:00'},
+    {'starts': '2026-12-01T17:00Z'},
+])
+def test_malformed_deadline_names_the_lane(deadline):
+    entry = dict(kind='event', what='Fixture', ends='2026-11-30T17:00Z') | deadline
+    with pytest.raises(ValueError, match='deadline.*fixture-lane'):
+        lr.LaneRegistry({'lanes': {'fixture-lane': {'status': 'active', 'deadlines': [entry]}}})
+
+
+def test_live_deadline_window_and_soonest_end(monkeypatch):
+    monkeypatch.delenv('RH_DEADLINE_LEAD_HOURS', raising=False)
+    event = dict(kind='event', what='Fixture event', starts='2026-11-29T17:00Z', ends='2026-11-29T19:00Z')
+    bounty = dict(kind='bounty', what='Open bounty', ends='2026-11-30T17:00Z')
+    registry = lr.LaneRegistry({'lanes': {
+        'math': {'status': 'active', 'aliases': ['theory'], 'deadlines': [bounty, event]},
+    }})
+
+    def check(when):
+        return registry.live_deadline('theory', datetime.fromisoformat(when + '+00:00'))
+
+    assert check('2026-11-27T16:59:59') == bounty
+    assert check('2026-11-27T17:00:00') == event
+    assert check('2026-11-29T19:00:00') == bounty
+    assert check('2026-11-30T17:00:00') is None
+    monkeypatch.setenv('RH_DEADLINE_LEAD_HOURS', '1')
+    assert check('2026-11-29T15:59:59') == bounty
+    assert check('2026-11-29T16:00:00') == event
+
+
+@pytest.mark.parametrize('status', ['retired', 'held'])
+def test_inactive_lane_has_no_live_deadline(status):
+    entry = dict(kind='event', what='Fixture', ends='2026-11-30T17:00Z')
+    registry = lr.LaneRegistry({'lanes': {'math': {'status': status, 'deadlines': [entry]}}})
+    assert registry.live_deadline('math', datetime(2026, 11, 27, tzinfo=timezone.utc)) is None
+
+
+def test_ticker_lists_live_and_upcoming_in_end_order(tmp_path, monkeypatch):
+    def when(days):
+        return datetime.fromtimestamp(now + days * 86400, timezone.utc).isoformat()
+
+    now = datetime.now(timezone.utc).timestamp()
+    upcoming = dict(kind='leaderboard', what='Upcoming fixture', starts=when(4), ends=when(5))
+    early = dict(kind='bounty', what='Early fixture', ends=when(1))
+    late = dict(kind='competition', what='Later fixture', starts=when(1), ends=when(6))
+    (tmp_path / 'REGISTRY.json').write_text(json.dumps({'lanes': {
+        'first': {'status': 'active', 'deadlines': [late, early]},
+        'second': {'status': 'active', 'deadlines': [upcoming, dict(early, ends=when(-1))]},
+        'retired': {'status': 'retired', 'deadlines': [early]},
+    }}))
+    monkeypatch.delenv('RH_LANE_REGISTRY', raising=False)
+    monkeypatch.setenv('RH_DEADLINE_LEAD_HOURS', '48')
+    cmd = [sys.executable, str(Path(lr.__file__)), 'ticker', '--lanes-root', str(tmp_path)]
+    lines = subprocess.check_output(cmd, text=True).splitlines()
+    assert len(lines) == 3
+    for line, fields in zip(lines, [
+        ('first', 'bounty', 'Early fixture', 'left'),
+        ('second', 'leaderboard', 'Upcoming fixture', 'starts in'),
+        ('first', 'competition', 'Later fixture', 'left'),
+    ]):
+        assert all(field in line for field in fields)
+    rows = json.loads(subprocess.check_output(cmd + ['--json'], text=True))
+    assert [(r['lane'], r['what'], r['status']) for r in rows] == [
+        ('first', 'Early fixture', 'live'),
+        ('second', 'Upcoming fixture', 'upcoming'),
+        ('first', 'Later fixture', 'live'),
+    ]
