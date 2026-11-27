@@ -161,9 +161,13 @@ def claude_overflow(executor, model):
 GEMINI_ROLES = {'carbon': ('proof',), 'neon': ('review', 'judge', 'audit', 'builder', 'biology'),
                 'hydrogen': ('batch', 'mechanical')}
 CARBON_LANES = ('math',)   # kept for RH_GEMINI_ONLY=''; 11-27 every Gemini job runs on Neon (gemini_only())
-def gemini_only():
-    """RH_GEMINI_ONLY, default Neon-high; '' restores the per-role Gemini picks."""
-    return os.environ.get('RH_GEMINI_ONLY', 'gemini-4-neon-high')
+def gemini_only(role=''):
+    """RH_GEMINI_ONLY, default Neon-medium; '' restores the per-role Gemini picks. 11-27 (Ricardo, "How can we burn
+    through Gemini so quickly?"): every delegated run was at high effort and the 11-26 reset lasted ~18 h, so jobs run
+    Neon at medium. A role whose graded runs show it needs high goes in RH_NEON_HIGH_ROLES (comma list)."""
+    pick = os.environ.get('RH_GEMINI_ONLY', 'gemini-4-neon-medium')
+    high = {r.strip() for r in os.environ.get('RH_NEON_HIGH_ROLES', '').split(',') if r.strip()}
+    return pick.replace('-medium', '-high') if pick.startswith('gemini-4-neon') and role in high else pick
 
 
 def retired_pick(model, route):
@@ -251,9 +255,9 @@ def gate_reviewer(model, reviewers):
 
 
 def gemini_pick(role, data, excluded, families, run, lane=''):
-    """agy's Gemini for the role: Neon-high for every role (Ricardo 11-27: "GEMINI = NEON ONLY", RH_GEMINI_ONLY); Carbon, Argon and
+    """agy's Gemini for the role: Neon-medium for every role (high per RH_NEON_HIGH_ROLES) (Ricardo 11-27: "GEMINI = NEON ONLY", RH_GEMINI_ONLY); Carbon, Argon and
     Hydrogen draw on the same weekly pool and spent it 181 runs to Neon's 311 since 11-25)."""
-    gemini = gemini_only() or ('gemini-4-carbon-high' if role in GEMINI_ROLES['carbon'] or lane in CARBON_LANES
+    gemini = gemini_only(role) or ('gemini-4-carbon-high' if role in GEMINI_ROLES['carbon'] or lane in CARBON_LANES
                              else 'gemini-4-hydrogen-high' if role in GEMINI_ROLES['hydrogen'] else 'gemini-4-neon-high')
     r = data['routes'].get(gemini)
     if ('agy' in run and isinstance(r, dict) and r.get('cli') == 'agy' and gemini not in excluded

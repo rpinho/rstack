@@ -67,6 +67,15 @@
             "command": "python3 ~/src/rstack/rstack/hooks/lane-no-questions.py"
           }
         ]
+      },
+      {
+        "matcher": "mcp__claude-in-chrome__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/src/rstack/rstack/hooks/purchase-approval-gate.py"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -93,6 +102,14 @@
           {
             "type": "command",
             "command": "python3 ~/src/rstack/rstack/hooks/general-relay-check.py"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/src/rstack/rstack/hooks/absence-claim-check.py"
           }
         ]
       }

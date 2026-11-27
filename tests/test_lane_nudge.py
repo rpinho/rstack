@@ -708,8 +708,35 @@ def test_a_gemini_quota_stop_hands_the_lane_to_claude_code_not_agys_claude(tmp_p
 def test_a_pane_found_on_agys_claude_moves_back_to_neon(tmp_path, monkeypatch):
     log, *_ = _agy_env(tmp_path, monkeypatch, IDLE_SCREEN, model='claude-opus-5-5-high')
     nudge.main()
-    assert len(log.respawns) == 1 and '--model gemini-4-neon-high' in log.respawns[0]
-    assert any('back on gemini-4-neon-high' in text for _, text in log.sent)
+    assert len(log.respawns) == 1 and '--model gemini-4-neon --effort medium' in log.respawns[0]
+    assert any('back on gemini-4-neon' in text for _, text in log.sent)
+
+
+def test_a_respawned_driver_runs_neon_at_medium_and_the_driver_cap_holds(tmp_path, monkeypatch):
+    """11-27 (general 1127f, Ricardo: "How can we burn through Gemini so quickly?"): driver panes spent 703M of 1.18B
+    Gemini input tokens since 11-25, all at high effort. A respawn caps the effort at RH_AGY_DRIVER_EFFORT, and a host
+    already running RH_AGY_MAX_DRIVERS agy drivers leaves the lane with its Claude fallback, unless it has a deadline."""
+    assert nudge.driver_effort('gemini-4-neon-high', 'high') == ('gemini-4-neon', 'medium')
+    assert nudge.driver_effort('gemini-4-neon', 'low') == ('gemini-4-neon', 'low')
+    monkeypatch.setenv('RH_AGY_DRIVER_EFFORT', 'high')
+    assert nudge.driver_effort('gemini-4-neon', 'max') == ('gemini-4-neon', 'high')
+    monkeypatch.delenv('RH_AGY_DRIVER_EFFORT')
+    rows = ('agy-a\tagy\tagy --model gemini-4-neon\nagy-b\tagy\tagy --model gemini-4-neon\n'
+            'agy-c\tagy\tagy --model claude-opus-5-5-high\nclaude-d\tclaude\tclaude\n')
+    held = nudge.agy_drivers('tmux', run=lambda *a, **k: SimpleNamespace(stdout=rows))
+    assert held == {'agy-a', 'agy-b'}                # a pane parked on agy's Claude is not a Gemini driver
+    a = SimpleNamespace(tmux='tmux', lanes=tmp_path)
+    monkeypatch.setenv('RH_AGY_MAX_DRIVERS', '2')
+    monkeypatch.setattr(nudge.lane_registry, 'live_deadline', lambda *_: None)
+    assert not nudge.driver_slot(a, 'math', NOW, held=held)
+    assert nudge.driver_slot(a, 'a', NOW, held=held)          # its own pane does not count against it
+    monkeypatch.setattr(nudge.lane_registry, 'live_deadline', lambda *_: {'kind': 'bounty'})
+    assert nudge.driver_slot(a, 'math', NOW, held=held)       # a deadline lane is never held back
+    log, *_ = _agy_env(tmp_path / 'x', monkeypatch, IDLE_SCREEN, model='claude-opus-5-5-high')
+    monkeypatch.setattr(nudge.lane_registry, 'live_deadline', lambda *_: None)
+    monkeypatch.setattr(nudge, 'agy_drivers', lambda *_: {'agy-a', 'agy-b'})
+    nudge.main()
+    assert log.respawns == [] and 'agy drivers already run here' in (tmp_path / 'x/log').read_text()
 
 
 def test_a_failed_respawn_leaves_the_claude_fallback_driving(tmp_path, monkeypatch):
@@ -727,7 +754,7 @@ def test_the_driver_goes_back_to_its_gemini_model_after_the_reset(tmp_path, monk
     assert log.respawns == []
     clock.now = NOW + 7200 + 60
     nudge.main()
-    assert len(log.respawns) == 1 and '--model gemini-4-neon --effort high' in log.respawns[0]
+    assert len(log.respawns) == 1 and '--model gemini-4-neon --effort medium' in log.respawns[0]   # 1127f cap
     assert any('back on gemini-4-neon' in text for p, text in log.sent if p == '%agy')
     assert any('stop driving' in text for _, text in log.sent)               # the fallback hands back
     assert 'stopped' not in json.loads((state / 'agy-math.agy-switch.json').read_text())

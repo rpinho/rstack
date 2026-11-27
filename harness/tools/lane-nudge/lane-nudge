@@ -79,7 +79,46 @@ def dismiss(tmux, pane, screen, run=subprocess.run):
             run([tmux, 'send-keys', '-t', pane, key], capture_output=True)
             return what
     return None
-AGY_GEMINI = 'gemini-4-neon-high'      # 11-27 Ricardo: agy runs Neon (Gemini only), never agy's Claude
+AGY_GEMINI = 'gemini-4-neon'           # 11-27 Ricardo: agy runs Neon (Gemini only), never agy's Claude
+# 11-27 (general 1127f): driver panes spent 703M of the 1.18B Gemini input tokens since 11-25, all at high effort, and
+# the weekly pool lasted ~18 h. A respawned driver runs at no more than RH_AGY_DRIVER_EFFORT, and at most
+# RH_AGY_MAX_DRIVERS agy drivers run on this host; a lane with a live deadline is never held back by the cap.
+EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
+
+
+def driver_effort(model, effort):
+    """(model, effort) capped at RH_AGY_DRIVER_EFFORT (default medium); a tier suffix on the model is capped too."""
+    cap = os.environ.get('RH_AGY_DRIVER_EFFORT', 'medium')
+    cap = cap if cap in EFFORTS else 'medium'
+    for tier in EFFORTS:
+        if model.endswith('-' + tier):
+            model = model.removesuffix('-' + tier)
+            effort = effort if effort in EFFORTS else tier
+    effort = effort if effort in EFFORTS else cap
+    return model, (effort if EFFORTS.index(effort) <= EFFORTS.index(cap) else cap)
+
+
+def agy_drivers(tmux, run=subprocess.run):
+    """Sessions on this host whose pane is an agy driving Gemini (agy-<lane>)."""
+    out = run([tmux, 'list-panes', '-a', '-F', '#{session_name}\t#{pane_current_command}\t#{pane_start_command}'],
+              capture_output=True, text=True).stdout
+    return {row.split('\t')[0] for row in out.splitlines() if row.startswith('agy-') and '\tagy' in row
+            and '--model claude' not in row}
+
+
+def driver_slot(a, lane, now, held=None):
+    """True when the lane may start an agy driver: under RH_AGY_MAX_DRIVERS (default 3) or holding a live deadline."""
+    try:
+        cap = int(os.environ.get('RH_AGY_MAX_DRIVERS', '3'))
+    except ValueError:
+        cap = 3
+    held = agy_drivers(a.tmux) if held is None else held
+    if len(held - {f'agy-{lane}'}) < cap:
+        return True
+    try:
+        return bool(lane_registry.live_deadline(lane, datetime.fromtimestamp(now, timezone.utc), a.lanes))
+    except Exception:                               # RULE #1: an unreadable registry never blocks the respawn
+        return True
 HANDBACK_MSG = ("Harness check (lane-nudge): agy-{lane} is back on {model} and drives the lane again. Finish your "
                 "current step, write where you stopped in DRIVER_STATUS.md, and stop driving.")
 BACK_MSG = ("The Gemini quota reset at {reset}; you are back on {model} through agy. Continue the lane from "
@@ -466,7 +505,12 @@ def agy_switch(a, lane, lane_dir, state, now):
         if idled(lane_dir, state, now):
             return 'stopped'
         reset = datetime.fromtimestamp(reset_at, timezone.utc).strftime('%Y-%m-%d %H:%MZ')
-        say(a.log, f'{name}: Gemini quota back (reset {reset}); moving agy back to {model}', a.dry)
+        model, effort = driver_effort(model, effort)   # the stop above is recorded at the effort the pane ran
+        say(a.log, f'{name}: Gemini quota back (reset {reset}); moving agy back to {model} at {effort}', a.dry)
+        if not driver_slot(a, lane, now):
+            say(a.log, f'{name}: {os.environ.get("RH_AGY_MAX_DRIVERS", "3")} agy drivers already run here; '
+                       'the Claude fallback keeps driving (RH_AGY_MAX_DRIVERS)', a.dry)
+            return 'stopped'
         if a.dry:
             return 'switched'
         if not respawn(a, pane, path, model, effort, conversation_of(pid)):

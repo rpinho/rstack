@@ -560,3 +560,22 @@ def test_agy_runs_append_to_model_runs_jsonl_across_direct_tmux_and_gui_routes(t
         ('job-err', 'agy', 'gemini-fixture', 'low', 1),
     ]
     assert all(r['utc'].endswith('Z') and r['transcript'] for r in rows)
+
+
+def test_a_claude_job_writes_its_last_md_only_when_it_ends(tmp_path):
+    # 11-27 (math): the Claude path opened --output at the start, so event-watch's 'new _codex/math_*.last.md' rule
+    # fired on an empty file while the job ran and had no signal left for the real end. Codex writes it at the end.
+    out = tmp_path / 'job.last.md'
+    seen = tmp_path / 'seen'
+    fake = tmp_path / 'claude'
+    fake.write_text('#!' + sys.executable + '\nimport json, os, sys\nsys.stdin.read()\n'
+                    'open(' + repr(str(seen)) + ', "w").write(str(os.path.exists(' + repr(str(out)) + ')))\n'
+                    'print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "ok"}))\n')
+    fake.chmod(0o755)
+    done = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / 'harness/agent_executor.py'),
+                           '--backend', 'claude', '--executable', str(fake), '--model', 'claude-sonnet-5-5',
+                           '--effort', 'low', '--directory', str(tmp_path), '--output', str(out)],
+                          input='prompt', capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert seen.read_text() == 'False'                       # nothing at --output while the CLI ran
+    assert json.loads(out.read_text())['result'] == 'ok' and not out.with_name(out.name + '.partial').exists()

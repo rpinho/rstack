@@ -799,7 +799,10 @@ def run_backend(cmd, a, errors):
         return run_codex(cmd, a, env, errors)
     # Preserve the provider's JSON result, including usage and budget errors.
     expired = threading.Event()
-    with a.output.open('wb') as out:
+    # 11-27 (math): the result streams to a side file and lands at --output only when the CLI exits, so a
+    # watcher on JOB.last.md never fires on an empty file at the job's start (Codex writes it only at the end).
+    partial = a.output.with_name(a.output.name + '.partial')
+    with partial.open('wb') as out:
         # Its own session, so the wall-clock kill signals the CLI's process group and not ours.
         # Without this, getpgid(child) is our own group and the cap would kill the launcher
         # instead of the job.
@@ -829,6 +832,7 @@ def run_backend(cmd, a, errors):
         finally:
             if timer:
                 timer.cancel()
+            os.replace(partial, a.output)
     if expired.is_set():
         print('wall-clock cap of {:g}s reached; stopped'.format(a.timeout_seconds),
               file=sys.stderr)

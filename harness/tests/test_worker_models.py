@@ -1574,6 +1574,7 @@ def test_gemini_is_neon_only_and_openrouter_is_cut_by_default(tmp_path, monkeypa
     routes = {'gemini-4-carbon-high': {'cli': 'agy', 'canonical': 'google/gemini-4-carbon-high'},
               'gemini-4-hydrogen-high': {'cli': 'agy', 'canonical': 'google/gemini-4-hydrogen-high'},
               'gemini-4-neon-high': {'cli': 'agy', 'canonical': 'google/gemini-4-neon-high'},
+              'gemini-4-neon-medium': {'cli': 'agy', 'canonical': 'google/gemini-4-neon-medium'},
               'kimi-k3': {'cli': 'openrouter', 'canonical': 'moonshot/kimi-k3'},
               'gpt-6.2-sol': {'cli': 'codex', 'canonical': 'openai/gpt-6.2-sol'}}
     data = {'roles': {'batch': ['gemini-4-hydrogen-high', 'kimi-k3', 'gpt-6.2-sol'],
@@ -1583,6 +1584,11 @@ def test_gemini_is_neon_only_and_openrouter_is_cut_by_default(tmp_path, monkeypa
     assert kept['batch'] == ['gpt-6.2-sol'] and kept['proof'] == ['gemini-4-neon-high']
     assert kept['odd'] == ['kimi-k3']                       # never an empty role (RULE #1)
     for role in ('proof', 'batch', 'mechanical', 'review'):
-        assert wm.gemini_pick(role, data, [], frozenset(), {'agy'}, lane='math') == 'gemini-4-neon-high'
+        assert wm.gemini_pick(role, data, [], frozenset(), {'agy'}, lane='math') == 'gemini-4-neon-medium'
+    # 11-27 (general 1127f): delegated Neon runs at medium; high only for a role graded as needing it.
+    monkeypatch.setenv('RH_NEON_HIGH_ROLES', 'proof')
+    assert wm.gemini_pick('proof', data, [], frozenset(), {'agy'}, lane='math') == 'gemini-4-neon-high'
+    assert wm.gemini_pick('review', data, [], frozenset(), {'agy'}, lane='math') == 'gemini-4-neon-medium'
+    monkeypatch.delenv('RH_NEON_HIGH_ROLES')
     monkeypatch.setenv('RH_GEMINI_ONLY', '')
     assert wm.gemini_pick('proof', data, [], frozenset(), {'agy'}, lane='math') == 'gemini-4-carbon-high'
