@@ -137,6 +137,10 @@ AGY_CLAUDE = {'claude-opus-5-5', 'claude-sonnet-5-5'}
 
 def claude_overflow(executor, model):
     """(agy model, note) when a Claude job should overflow to agy's Claude; None leaves it unchanged."""
+    # 11-27 Ricardo: "why are we using that? we obviously have a Claude subscription. I think we should focus on Neon
+    # when using agy." agy never runs Claude: Claude work stays on the Claude Code subscription (or leaves Claude
+    # for Codex/Gemini). RH_CLAUDE_OVERFLOW_PERCENT is ignored.
+    return None
     limit = os.environ.get('RH_CLAUDE_OVERFLOW_PERCENT', '').strip()
     if executor != 'claude' or model not in AGY_CLAUDE or not limit:
         return None
@@ -259,15 +263,8 @@ def claude_fallback(role, data, excluded, families, requested, follows_route, ch
     got = codex_leg()
     if got:
         return got
-    if hold:
-        return gemini_leg()
-    model = chosen if chosen in AGY_CLAUDE else claude_cap.SONNET
-    r = data['routes'].get(model)
-    if ('agy' in run and isinstance(r, dict) and model not in excluded
-            and maker(model, r.get('canonical')) not in families):
-        effort = os.environ.get('LAUNCH_EFFORT', '')
-        return model, 'agy', model + '-' + (effort if effort in ('low', 'medium', 'high') else 'high')
-    return None
+    # 11-27 Ricardo: agy runs Gemini (Neon first), never agy's Claude.
+    return gemini_leg()
 
 
 def spec_pin(text):

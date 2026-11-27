@@ -535,29 +535,14 @@ def overflow_setup(tmp_path, monkeypatch, percent, limit='85'):
     return p
 
 
-def test_above_the_threshold_a_claude_job_overflows_to_agys_claude_and_says_so(tmp_path, monkeypatch):
+def test_agy_never_runs_claude_even_above_the_overflow_threshold(tmp_path, monkeypatch):
+    """11-27 Ricardo: "why are we using that? we obviously have a Claude subscription. I think we should focus on
+    Neon when using agy." The old 85% overflow to agy's Claude is gone."""
     p = overflow_setup(tmp_path, monkeypatch, 91)
-    monkeypatch.delenv('RH_LAUNCHER_EXECUTORS', raising=False)
-    # A caller that reads only the model name cannot run agy; one that follows the route can (11-20).
-    assert wm.select('batch', 'claude', path=p, follows_route=False)['executor'] == 'claude'
-    assert wm.select('batch', 'claude', path=p)['executor'] == 'agy'
-    monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude')   # a host without agy says so
-    assert wm.select('batch', 'claude', path=p)['executor'] == 'claude'
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     got = wm.select('batch', 'claude', path=p)
-    assert (got['model'], got['canonical']) == ('claude-opus-5-5', 'anthropic/claude-opus-5.5')
-    assert (got['executor'], got['route_model']) == ('agy', 'claude-opus-5-5-high')
-    assert got['overflow'] == 'claude overflow via agy (weekly at 91%)'
-    log, receipt = tmp_path / 'job.log', tmp_path / 'r.json'
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        assert wm.main(['--role', 'batch', '--executor', 'claude', '--roles-file', str(p), '--print-route',
-                        '--job', 'fixture-job', '--log', str(log), '--receipt', str(receipt)]) == 0
-    assert out.getvalue().split() == ['claude-opus-5-5-high', 'agy']
-    assert 'claude overflow via agy (weekly at 91%) job=fixture-job' in log.read_text()
-    assert json.loads(receipt.read_text())['overflow'] == 'claude overflow via agy (weekly at 91%)'
-    # agy serves only Opus and Sonnet; any other Claude model stays where it is.
-    assert wm.select('cheap', 'claude', path=p)['executor'] == 'claude'
+    assert not (got['executor'] == 'agy' and str(got.get('route_model') or got['model']).startswith('claude')), got
+    assert 'overflow' not in got and wm.claude_overflow('claude', 'claude-opus-5-5') is None
 
 
 @pytest.mark.parametrize('percent,limit', [(84, '85'), (99, None)])
@@ -847,14 +832,13 @@ def test_codex_takes_claude_work_when_claude_is_tight(tmp_path, monkeypatch):
     assert wm.select('review', 'codex', path=p, made_by='gemini-4-hydrogen-low')['model'] == 'claude-opus-5-5'
 
 
-def test_the_85_percent_brake_still_sends_claude_to_agy(tmp_path, monkeypatch):
+def test_the_85_percent_brake_no_longer_sends_claude_to_agy(tmp_path, monkeypatch):
     p = headroom_roles(tmp_path / 'roles.json')
     stub_allowance(monkeypatch, claude=(90, 20), codex=(99, 100))
     monkeypatch.setenv('RH_CLAUDE_OVERFLOW_PERCENT', '85')
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'codex,claude,agy')
     got = wm.select('batch', 'codex', path=p)
-    assert got['model'] == 'claude-sonnet-5-5' and got['executor'] == 'agy'
-    assert got['route_model'] == 'claude-sonnet-5-5-high' and 'weekly at 90%' in got['overflow']
+    assert not (got['executor'] == 'agy' and str(got.get('route_model') or got['model']).startswith('claude')), got
 
 
 def test_the_headroom_pick_keeps_the_referee_out_of_the_producers_family(tmp_path, monkeypatch):
@@ -1030,7 +1014,7 @@ def test_at_the_ceiling_claude_is_refused_and_the_job_takes_codex_then_agy(tmp_p
     assert '>= 80% ceiling' in got['claude_cap'] and 'general' in got['claude_cap']
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'claude,agy')   # no Codex on this launcher
     got = wm.select('batch', 'claude', path=p)
-    assert (got['executor'], got['route_model']) == ('agy', 'claude-sonnet-5-5-high')
+    assert not (got['executor'] == 'agy' and str(got.get('route_model') or got['model']).startswith('claude')), got
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'claude')
     # RULE #1 (11-20): with nowhere to reroute, the job stays on Claude with a warning instead of stopping
     got = wm.select('batch', 'claude', path=p)
@@ -1072,7 +1056,7 @@ def test_a_referee_never_falls_back_into_the_family_it_judges(tmp_path, monkeypa
     p.write_text(json.dumps(data))
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'claude,agy')
     got = wm.select('review', 'claude', path=p, made_by='gpt-6.2-sol')
-    assert got['executor'] == 'agy'                      # judging GPT work: agy's Claude is another family
+    assert not (got['executor'] == 'agy' and str(got.get('route_model') or got['model']).startswith('claude')), got
     monkeypatch.setenv('RH_LAUNCHER_EXECUTORS', 'claude,codex')   # Codex is the producer's family, agy absent
     got = wm.select('review', 'claude', path=p, made_by='gpt-6.2-sol')
     assert got['executor'] == 'claude' and 'no fallback route' in got['claude_cap']   # never into GPT
@@ -1321,7 +1305,7 @@ def test_the_last_hours_before_the_reset_spend_down_on_their_own(tmp_path, monke
     p = cap_setup(tmp_path / "c", monkeypatch, 85, hours=30, history=[(2, 84), (0, 85)])
     assert '>= 80% ceiling' in wm.select('batch', 'claude', path=p)['claude_cap']      # earlier in the week: 80
     monkeypatch.setenv('RH_CLAUDE_OVERFLOW_PERCENT', '85')   # cap_setup clears it
-    assert wm.claude_overflow('claude', 'claude-opus-5-5')[0] == 'claude-opus-5-5-high'
+    assert wm.claude_overflow('claude', 'claude-opus-5-5') is None                     # 11-27: agy never runs Claude
 
 def test_a_returned_review_job_owes_a_grade_however_it_was_picked(tmp_path, monkeypatch, capsys):
     # 11-22: Astra is the leaderboard's own review pick, so its referee runs were never on the ungraded list.

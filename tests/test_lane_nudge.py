@@ -633,14 +633,14 @@ def test_nameless_driver_status_defaults_to_agy_lane_and_wakes_it_not_claude(tmp
     assert len(sent) == 1 and sent[0][0] == '%agy'
 
 
-# ---- 11-26: a Gemini quota stop moves the agy driver onto Claude through agy, and back after the reset ----------
+# ---- 11-27: a Gemini quota stop hands the lane to the Claude Code fallback; agy never runs Claude ----------
 
 QUOTA_SCREEN = ('  Started the sweep.\n'
                 '⚠ Individual quota reached. Please upgrade your subscription to increase your\n'
                 'limits. Resets in 2h0m0s.\nError ID: fixture\n' + '─' * 40 + '\n>\n' + '─' * 40 + '\n'
                 '? for shortcuts                       auto · {model} · high\n')
 IDLE_SCREEN = '  ok\n' + '─' * 40 + '\n>\n' + '─' * 40 + '\n? for shortcuts            auto · {model} · high\n'
-SHOWN = {'gemini-4-neon': 'Gemini 4 Neon', 'claude-opus-5-5-high': 'Claude Opus 5.5'}
+SHOWN = {'gemini-4-neon': 'Gemini 4 Neon', 'gemini-4-neon-high': 'Gemini 4 Neon', 'claude-opus-5-5-high': 'Claude Opus 5.5'}
 
 
 def _agy_env(tmp_path, monkeypatch, screen, model='gemini-4-neon', respawn_ok=True, comes_up_on=None):
@@ -688,53 +688,51 @@ def _agy_env(tmp_path, monkeypatch, screen, model='gemini-4-neon', respawn_ok=Tr
     return log, pane, clock, state
 
 
-def test_a_gemini_quota_pane_moves_to_claude_through_agy_and_wakes_no_fallback(tmp_path, monkeypatch):
+def test_a_gemini_quota_stop_hands_the_lane_to_claude_code_not_agys_claude(tmp_path, monkeypatch):
+    """11-27 Ricardo: "why are we using that? we obviously have a Claude subscription. I think we should focus on
+    Neon when using agy." No respawn onto agy's Claude; the Claude Code fallback takes the lane."""
     log, pane, clock, state = _agy_env(tmp_path, monkeypatch, QUOTA_SCREEN)
-    nudge.main()
-    assert len(log.respawns) == 1
-    assert '--model claude-opus-5-5-high' in log.respawns[0]
-    assert '--conversation 0a1b2c3d-0000-4000-8000-000000000001' in log.respawns[0]
-    assert [p for p, _ in log.sent] == ['%agy'] and 'now on Claude Opus 5.5 through agy' in log.sent[0][1]
-    saved = json.loads((state / 'agy-math.agy-switch.json').read_text())
-    assert (saved['to'], saved['from'], saved['reset']) == ('claude-opus-5-5-high', 'gemini-4-neon', NOW + 7200)
-    hit, = [json.loads(ln) for ln in (tmp_path / 'quota-hits.jsonl').read_text().splitlines()]
-    assert (hit['model'], hit['lane']) == ('google/gemini-4-neon-high', 'math') and hit['reset_time']
-    assert 'switching to claude-opus-5-5-high' in (tmp_path / 'log').read_text()
-    nudge.main()                                     # on Claude now: no second respawn, the driver stays primary
-    assert len(log.respawns) == 1
-
-
-def test_a_pane_already_on_claude_is_not_respawned(tmp_path, monkeypatch):
-    log, *_ = _agy_env(tmp_path, monkeypatch, IDLE_SCREEN, model='claude-opus-5-5-high')
     nudge.main()
     assert log.respawns == []
-    log, *_ = _agy_env(tmp_path / 'b', monkeypatch, QUOTA_SCREEN, model='claude-opus-5-5-high')
-    nudge.main()                                     # the Claude group is out too: the fallback is woken
-    assert log.respawns == [] and [p for p, _ in log.sent] == ['%claude']
+    assert [p for p, _ in log.sent] == ['%claude'] and 'Claude Code fallback' in log.sent[0][1]
+    saved = json.loads((state / 'agy-math.agy-switch.json').read_text())
+    assert (saved['from'], saved['reset'], saved['stopped']) == ('gemini-4-neon', NOW + 7200, True)
+    hit, = [json.loads(ln) for ln in (tmp_path / 'quota-hits.jsonl').read_text().splitlines()]
+    assert (hit['model'], hit['lane']) == ('google/gemini-4-neon-high', 'math') and hit['reset_time']
+    assert 'handing the lane to its Claude Code fallback' in (tmp_path / 'log').read_text()
+    clock.now = NOW + 600
+    nudge.main()                                     # still stopped: no respawn, no second handover
+    assert log.respawns == [] and sum('Claude Code fallback' in t for _, t in log.sent) == 1
 
 
-@pytest.mark.parametrize('respawn_ok,comes_up_on', [(False, None), (True, 'gemini-4-neon')])
-def test_a_failed_respawn_wakes_the_claude_fallback(tmp_path, monkeypatch, respawn_ok, comes_up_on):
-    log, *_ = _agy_env(tmp_path, monkeypatch, QUOTA_SCREEN, respawn_ok=respawn_ok, comes_up_on=comes_up_on)
+def test_a_pane_found_on_agys_claude_moves_back_to_neon(tmp_path, monkeypatch):
+    log, *_ = _agy_env(tmp_path, monkeypatch, IDLE_SCREEN, model='claude-opus-5-5-high')
     nudge.main()
-    assert len(log.respawns) == 1 and [p for p, _ in log.sent] == ['%claude']
-    assert 'failed; waking the Claude fallback' in (tmp_path / 'log').read_text()
+    assert len(log.respawns) == 1 and '--model gemini-4-neon-high' in log.respawns[0]
+    assert any('back on gemini-4-neon-high' in text for _, text in log.sent)
 
 
-def test_the_driver_switches_back_to_its_model_after_the_reset(tmp_path, monkeypatch):
+def test_a_failed_respawn_leaves_the_claude_fallback_driving(tmp_path, monkeypatch):
+    log, *_ = _agy_env(tmp_path, monkeypatch, IDLE_SCREEN, model='claude-opus-5-5-high', respawn_ok=False)
+    nudge.main()
+    assert len(log.respawns) == 1 and any(p == '%claude' for p, _ in log.sent)
+    assert 'failed; the Claude fallback keeps driving' in (tmp_path / 'log').read_text()
+
+
+def test_the_driver_goes_back_to_its_gemini_model_after_the_reset(tmp_path, monkeypatch):
     log, pane, clock, state = _agy_env(tmp_path, monkeypatch, QUOTA_SCREEN)
     nudge.main()
-    pane['screen'] = QUOTA_SCREEN.format(model='Claude Opus 5.5').replace('Individual quota reached', 'Done')
-    clock.now = NOW + 3600                           # before the reset: stays on Claude
+    clock.now = NOW + 3600                           # before the reset: the Claude Code fallback drives
     nudge.main()
-    assert len(log.respawns) == 1
+    assert log.respawns == []
     clock.now = NOW + 7200 + 60
     nudge.main()
-    assert len(log.respawns) == 2 and '--model gemini-4-neon --effort high' in log.respawns[1]
-    assert 'back on gemini-4-neon' in log.sent[-1][1]
-    assert json.loads((state / 'agy-math.agy-switch.json').read_text())['to'] is None
-    nudge.main()                                     # the old quota line is gone from above the prompt: no flapping
-    assert len(log.respawns) == 2
+    assert len(log.respawns) == 1 and '--model gemini-4-neon --effort high' in log.respawns[0]
+    assert any('back on gemini-4-neon' in text for p, text in log.sent if p == '%agy')
+    assert any('stop driving' in text for _, text in log.sent)               # the fallback hands back
+    assert 'stopped' not in json.loads((state / 'agy-math.agy-switch.json').read_text())
+    nudge.main()                                     # back on Neon and no quota above the prompt: no flapping
+    assert len(log.respawns) == 1
 
 
 def test_the_quota_line_is_read_only_above_the_prompt():
@@ -788,7 +786,7 @@ def test_a_both_groups_stop_starts_a_missing_fallback_and_hands_it_the_lane_once
     assert pane == '=claude-lean-svm:' and handed
     new = [c for c in calls if c[1] == 'new-session'][0]
     assert new[new.index('-s') + 1] == 'claude-lean-svm' and '--remote-control lean-svm' in new[-1]
-    assert len(typed) == 1 and 'agy-lean-svm is out of both agy quota groups' in typed[0][1]
+    assert len(typed) == 1 and 'agy-lean-svm is out of its Gemini quota' in typed[0][1]
     nudge.takeover(a, 'lean-svm', 'lean-svm', lane_dir, pane, tmp_path, run=run, sleep=lambda s: None, now=10**6 + 1000)
     assert len(typed) == 1                                   # handed once per 12 h, not every tick
     nudge.takeover(a, 'lean-svm', 'lean-svm', lane_dir, pane, tmp_path, run=run, sleep=lambda s: None, now=10**6 + 13 * 3600)
@@ -830,3 +828,11 @@ def test_liveness_pages_once_for_a_stale_lane_and_names_the_pane(tmp_path, monke
     os.utime(status, (now - 3 * 3600, now - 3 * 3600))
     assert nudge.liveness(a, registry, lanes, state, now + 7200, ['agy-stale'], run=run) == []   # idle by design
     assert nudge.liveness(a, registry, lanes, state, now, ['agy-other'], run=run) == []          # no lane dir here
+
+
+def test_no_respawn_onto_a_gemini_model_the_quota_ledger_still_blocks(tmp_path, monkeypatch):
+    log, *_ = _agy_env(tmp_path, monkeypatch, IDLE_SCREEN, model='claude-opus-5-5-high')
+    import agy_quota
+    monkeypatch.setattr(agy_quota, 'blocked_until', lambda *a, **k: {'blocked_until': '2099-01-01T00:00:00+00:00'})
+    nudge.main()
+    assert log.respawns == [] and any(p == '%claude' for p, _ in log.sent)   # the Claude Code fallback drives

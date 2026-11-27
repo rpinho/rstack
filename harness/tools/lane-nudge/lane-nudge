@@ -20,9 +20,10 @@ every idle Claude session, the conductor included and --skip ignored, once per r
 for a launchd job every 5 minutes. 11-22: the account reached 100% at 20:38 ET, every session stopped, and the
 conductor's wake-up was a session cron that could not fire, so nothing resumed until morning.
 
-A Gemini quota stop on an agy driver (seen above its input box, or noted in DRIVER_STATUS.md) restarts that driver
-on claude-opus-5-5-high through agy, in the same conversation, and back on its own model after the reset agy named.
-The Claude fallback session is woken only when that restart fails or the Claude group is out too (11-26).
+A Gemini quota stop on an agy driver (seen above its input box, or noted in DRIVER_STATUS.md) hands the lane to its
+Claude Code fallback session (started if missing), and after the reset the agy pane goes back on its own Gemini model
+(Neon when unknown) and the fallback is told to hand back. agy never runs Claude (11-27 Ricardo: "we obviously have a
+Claude subscription. I think we should focus on Neon when using agy").
 """
 import argparse
 import fcntl
@@ -77,9 +78,9 @@ def dismiss(tmux, pane, screen, run=subprocess.run):
             run([tmux, 'send-keys', '-t', pane, key], capture_output=True)
             return what
     return None
-AGY_CLAUDE = 'claude-opus-5-5-high'     # Ultra's second agy quota group, separate from the owner's Claude plan
-SWITCH_MSG = ("Gemini quota is out until {reset}; you are now on Claude Opus 5.5 through agy (Ultra's second quota "
-              "group). Continue the lane from DRIVER_STATUS.md.")
+AGY_GEMINI = 'gemini-4-neon-high'      # 11-27 Ricardo: agy runs Neon (Gemini only), never agy's Claude
+HANDBACK_MSG = ("Harness check (lane-nudge): agy-{lane} is back on {model} and drives the lane again. Finish your "
+                "current step, write where you stopped in DRIVER_STATUS.md, and stop driving.")
 BACK_MSG = ("The Gemini quota reset at {reset}; you are back on {model} through agy. Continue the lane from "
             "DRIVER_STATUS.md.")
 MSG = ("Harness check (lane-nudge): lane {lane} is {why}, and this session has been idle {idle} min with nothing "
@@ -407,9 +408,12 @@ def respawn(a, pane, path, model, effort, conv):
 
 
 def agy_switch(a, lane, lane_dir, state, now):
-    """11-26: a Gemini quota stop moves the agy driver onto Claude Opus 5.5 through agy, in the same conversation,
-    and back to its own model after the reset. Returns 'switched' (the driver was told; nothing else to do this
-    run), 'stopped' (wake the Claude fallback) or None (no quota stop; route as usual)."""
+    """11-27 Ricardo: "why are we using that? we obviously have a Claude subscription. I think we should focus on
+    Neon when using agy." agy runs Gemini only. A Gemini quota stop hands the lane to its Claude Code fallback
+    (takeover); after the reset the agy pane is respawned on its own Gemini model (Neon when unknown) and the
+    fallback is told to hand back. A pane found on agy's Claude (the 11-26 rule) is treated as stopped until Neon's
+    block ends, then moved back. Returns 'switched' (handled this run), 'stopped' (the Claude fallback drives) or
+    None (no quota stop; route as usual)."""
     import agy_quota
     name, noted, mtime = driver_status(lane_dir, state)
     pane = driver_pane(a.tmux, name) if name else None
@@ -427,41 +431,48 @@ def agy_switch(a, lane, lane_dir, state, now):
     on_claude = shown.startswith('Claude') or '--model claude' in start
     block = above_prompt(screen)
     quota = AGY_QUOTA.search(block) and not re.search(r'esc to (?:interrupt|cancel)', screen)
-    if on_claude:
-        if sw.get('to') and now >= sw.get('reset', 0) and not RUNNING.search(screen):
-            reset = datetime.fromtimestamp(sw['reset'], timezone.utc).strftime('%Y-%m-%d %H:%MZ')
-            say(a.log, f'{name}: Gemini reset {reset} passed, switching back to {sw["from"]}', a.dry)
-            if a.dry:
-                return 'switched'
-            if not respawn(a, pane, path, sw['from'], sw.get('effort', 'high'), conversation_of(pid)):
-                say(a.log, f'{name}: switch back to {sw["from"]} failed; waking the Claude fallback')
-                return 'stopped'
-            sf.write_text(json.dumps(dict(sw, to=None, back_at=now)))
-            if not type_into(a.tmux, pane, BACK_MSG.format(reset=reset, model=sw['from'])):
-                say(a.log, f'{name}: back on {sw["from"]}, but the note was not confirmed in the pane')
+    found = re.search(r'--model[ =]["\']?([\w.-]+)', start)
+    model = sw.get('from') or (found.group(1) if found and not found.group(1).startswith('claude') else None) \
+        or (slug(shown) if shown and not on_claude else None) or AGY_GEMINI
+    found = re.search(r'--effort[ =]["\']?(\w+)', start)
+    effort = sw.get('effort') or (found.group(1) if found else 'high')
+    reset_at = sw.get('reset')
+    if on_claude or sw.get('stopped'):
+        # The quota ledger wins over an older reset guess: never respawn onto a Gemini model that is still out.
+        row = agy_quota.blocked_until(model, effort, now=now)
+        try:
+            blocked = datetime.fromisoformat(str(row['blocked_until']).replace('Z', '+00:00')).timestamp() if row else None
+        except (KeyError, TypeError, ValueError):
+            blocked = None
+        reset_at = max(reset_at or now, blocked or 0) if (reset_at or blocked) else now
+    if reset_at and now >= reset_at and (on_claude or sw.get('stopped')) and not RUNNING.search(screen):
+        reset = datetime.fromtimestamp(reset_at, timezone.utc).strftime('%Y-%m-%d %H:%MZ')
+        say(a.log, f'{name}: Gemini quota back (reset {reset}); moving agy back to {model}', a.dry)
+        if a.dry:
             return 'switched'
-        if quota:
-            say(a.log, f'{name}: Claude quota group also out ({block[-120:]}); waking the Claude fallback', a.dry)
+        if not respawn(a, pane, path, model, effort, conversation_of(pid)):
+            say(a.log, f'{name}: respawn on {model} failed; the Claude fallback keeps driving')
             return 'stopped'
-        return None
+        sf.write_text(json.dumps({'from': model, 'effort': effort, 'back_at': now}))
+        type_into(a.tmux, pane, BACK_MSG.format(reset=reset, model=model))
+        fallback = f'{a.prefix}{lane}'
+        if subprocess.run([a.tmux, 'has-session', '-t', f'={fallback}'], capture_output=True).returncode == 0:
+            type_into(a.tmux, f'={fallback}:', HANDBACK_MSG.format(lane=lane, model=model))
+        (state / f'{lane}.takeover.json').unlink(missing_ok=True)
+        return 'switched'
+    if on_claude or (reset_at and now < reset_at and sw.get('stopped')):
+        return 'stopped'
     if not quota and not (noted and mtime > sw.get('back_at', 0)):
         return None
     text = block if quota else 'DRIVER_STATUS.md quota note'
     seconds = agy_quota.reset_seconds(text)
     reset_at = now + (seconds if seconds is not None else agy_quota.FIVE_HOURS)
     reset = datetime.fromtimestamp(reset_at, timezone.utc).strftime('%Y-%m-%d %H:%MZ')
-    found = re.search(r'--model[ =]["\']?([\w.-]+)', start)
-    model = found.group(1) if found else (slug(shown) if shown else 'gemini-4-neon')
-    found = re.search(r'--effort[ =]["\']?(\w+)', start)
-    effort = found.group(1) if found else 'high'
     say(a.log, f'{name}: Gemini quota stop on {model} (reset {reset}{"" if seconds is not None else ", assumed"}); '
-               f'switching to {AGY_CLAUDE}', a.dry)
+               'handing the lane to its Claude Code fallback (agy never runs Claude)', a.dry)
     if a.dry:
-        return 'switched'
-    if not respawn(a, pane, path, AGY_CLAUDE, 'high', conversation_of(pid)):
-        say(a.log, f'{name}: switch to {AGY_CLAUDE} failed; waking the Claude fallback')
         return 'stopped'
-    sf.write_text(json.dumps({'to': AGY_CLAUDE, 'from': model, 'effort': effort, 'at': now, 'reset': reset_at,
+    sf.write_text(json.dumps({'from': model, 'effort': effort, 'at': now, 'reset': reset_at, 'stopped': True,
                               'back_at': sw.get('back_at', 0)}))
     try:
         import run_records
@@ -469,12 +480,9 @@ def agy_switch(a, lane, lane_dir, state, now):
         run_records.record_quota({'run_id': f'lane-nudge-{name}-{int(now)}', 'model': tier, 'lane': lane,
                                   'utc': datetime.fromtimestamp(now, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')},
                                  text)
-    except Exception as exc:                        # RULE #1: a ledger that cannot be written never blocks the switch
-        say(a.log, f'{name}: quota-hits row not written: {exc!r}')
-    if not type_into(a.tmux, pane, SWITCH_MSG.format(reset=reset)):
-        say(a.log, f'{name}: on {AGY_CLAUDE}, but the note was not confirmed in the pane')
-    return 'switched'
-
+    except Exception as exc:                        # RULE #1: the record never stops the handover
+        say(a.log, f'{name}: quota record failed: {exc!r}')
+    return 'stopped'
 
 def panes(tmux, prefix):
     out = subprocess.run([tmux, 'list-panes', '-a', '-F', '#{session_name}\t#{pane_id}\t#{pane_current_path}'],
@@ -587,8 +595,8 @@ def say(log, line, dry=False):
             fh.write(time.strftime('%Y-%m-%d %H:%M:%S ') + line + '\n')
 
 
-TAKEOVER_MSG = ("Harness check (lane-nudge): agy-{lane} is out of both agy quota groups (Gemini and Claude through agy). "
-                "You are {lane}'s driver now, as its Claude fallback, until agy's quota resets: continue the lane from "
+TAKEOVER_MSG = ("Harness check (lane-nudge): agy-{lane} is out of its Gemini quota (agy runs Gemini only, never Claude). "
+                "You are {lane}'s driver now, as its Claude Code fallback, until the reset: continue the lane from "
                 "DRIVER_STATUS.md, put bounded work on background jobs and arm a watcher on each one.")
 TAKEOVER_EVERY = 12 * 3600
 
