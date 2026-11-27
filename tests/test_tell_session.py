@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from pathlib import Path
 
 import pytest
 
@@ -108,3 +109,19 @@ def test_missing_session_is_an_error_not_a_send():
     code, msg = ts.tell('nope', TEXT, run=lambda *a, **k: subprocess.CompletedProcess(a, 1, '', ''),
                         sleep=lambda _: None)
     assert code == 2 and 'nothing sent' in msg
+
+
+def test_a_long_message_goes_to_a_file_and_the_pane_gets_a_pointer(fake, tmp_path, monkeypatch):
+    """11-27: general's long messages over --host lost their start in the input box. Above TELL_SESSION_LONG the
+    full text is written on the target host and the pane gets the opening plus the file path."""
+    monkeypatch.setenv('TELL_SESSION_SPILL', str(tmp_path / 'spill'))
+    long_text = 'From general: item one. ' + 'x' * 900 + ' END-OF-MESSAGE'
+    calls = fake(IDLE, IDLE)
+    code, msg = ts.tell('claude-harness', long_text, sleep=lambda _: None)
+    typed = sends(calls())[0][-1]
+    assert typed.startswith('From general: item one.') and 'END-OF-MESSAGE' not in typed and len(typed) < 600
+    path = typed.rsplit('read the full text in ', 1)[1].rstrip(']')
+    assert Path(path).read_text().strip() == long_text
+    short = fake(IDLE, IDLE)
+    ts.tell('claude-harness', 'short one', sleep=lambda _: None)
+    assert sends(short())[-2][-1] == 'short one'
