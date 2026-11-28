@@ -223,22 +223,20 @@ def test_batch_multiple_originals_fails(state):
 
 
 @pytest.mark.parametrize('url', ['https://example.org/paper', 'http://github.com/a', 'github.com/a', 'www.example.org/a',
-                                'https://x.com.evil.test/a', 'https://x.com@evil.test/a', 'ftp://example.org/a', 'https://t.co/123'])
-def test_external_links_fail_main_post(state, url):
+                                'https://x.com.evil.test/a', 'ftp://example.org/a', 'https://t.co/123'])
+def test_links_go_in_the_main_post(state, url):
+    # 11-28 Ricardo: "That's a stupid rule. I hate that rule." Links go in the main post, any site.
     ident, _ = draft(state, text='The result is here. ' + url)
     result = lint(state, ident)
-    assert result[0] == 1 and 'external URL' in result[1]
+    assert 'external URL' not in result[1] and 'user@host' not in result[1], result
 
 
-@pytest.mark.parametrize('url, ok', [('https://github.com/owner/lean-golf', True), ('github.com/owner/lean-golf', True),
-                                     ('https://owner.github.io/lean-golf/', True), ('https://github.com/ownerx/repo', False),
-                                     ('https://github.com/other/repo', False), ('https://evil.test/github.com/owner/a', False),
-                                     ('https://owner@github.com/owner/a', False)])
-def test_the_owners_own_repo_link_may_sit_in_the_main_post(state, monkeypatch, url, ok):
-    # 11-28 (general 1128c): Ricardo approved the Lean Golf launch post with its repo link in the post (X shows the card).
-    monkeypatch.setenv('RH_X_OWN_LINKS', 'github.com/owner/,owner.github.io/')
+@pytest.mark.parametrize('url', ['https://x.com@evil.test/a', 'https://owner@github.com/owner/a'])
+def test_a_url_hiding_its_host_behind_user_at_still_fails(state, url):
     ident, _ = draft(state, text='The result is here. ' + url)
-    assert ('external URL' in lint(state, ident)[1]) != ok
+    result = lint(state, ident)
+    # Refused either way: as an email-like string in the ledger (2) or by the main-post URL check (1).
+    assert result[0] in (1, 2) and ('user@host' in result[1] or 'email address' in result[2]), result
 
 
 def test_owner_approved_text_may_carry_a_link_in_the_main_post(state):
@@ -395,7 +393,7 @@ def test_public_x_standing_approval_and_email_dm_exclusion(state, monkeypatch):
 
 
 def test_standing_does_not_bypass_failed_or_changed_lint(state):
-    ident, _ = draft(state, text='A result at https://example.org.')
+    ident, _ = draft(state, text='Is this the right bound?')
     assert lint(state, ident)[0] == 1
     assert cli(state[0], 'approve', 'a', ident, '--quote', outreach.STANDING_APPROVAL)[0] == 2
     ident, path = draft(state)
@@ -496,7 +494,7 @@ def test_without_the_marker_math_lane_or_certificate_line_both_rules_hold(math_l
     row = dict(REFEREED, **change)
     ident, _ = draft(math_lane, **row)
     rc, out, _ = lint(math_lane, ident, row['lane'])
-    assert rc == 1 and 'VOICE_CUTS_MISSING' in out and 'external URL' in out, out
+    assert rc == 1 and 'VOICE_CUTS_MISSING' in out, out
 
 
 def test_a_refereed_math_result_still_says_i(math_lane):
