@@ -39,7 +39,7 @@ RECEIPT = '.harness-sync.json'
 # Spend enforcement and its dependencies ship with the harness, at a distinct namespace.
 RSTACK_TOOLS = ('codex', 'allowance', 'job-health', 'claude-usage', 'launch-guard', 'x-reply-review', '_lan.py', 'lan-proxy', 'lan-proxy-pf-refresh', 'ask_lint.py', 'resets-check',
                 'grok-post', '_grok_post.py', '_grok_ask.py', 'grok-ask.json.example', 'grok-post.json.example',
-                'x-handle-guard', 'grok-ask', 'x-route', 'x-submit-gate', 'xurl', 'xurl-policy', 'x-log', 'net-deletion', 'canary', 'canary.json.example', 'tell-session')
+                'x-handle-guard', 'grok-ask', 'x-route', 'x-submit-gate', 'xurl', 'xurl-policy', 'x-log', 'net-deletion', 'canary', 'canary.json.example', 'tell-session', 'x-campaign-canary')
 # The job launcher, installed at <root>/launcher/ so the lanes run committed launcher code (11-20: their
 # per-host _codex/launch.sh is now a thin exec into it). It finds the harness as the root it sits in.
 LAUNCHER = {'tools/launch.sh': 'launcher/launch.sh', 'tools/RULES.md': 'launcher/RULES.md',
