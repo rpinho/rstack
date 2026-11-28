@@ -129,9 +129,19 @@ def test_delegate_row_is_counted_by_leaderboard(tmp_path, monkeypatch):
     spec.loader.exec_module(roles)
     assert roles.evidence()['builder'][row['model']]['n'] == 1
     assert roles.OWNER_RANK['google/gemini-4-neon-high'] == roles.OWNER_RANK['anthropic/claude-opus-5.5'] == 1
-    # 11-27 (Ricardo via general 1127j): Astra #2, Fable 5.2 #3, and the page header says so.
+    # 11-28 (Ricardo's final 8 via general 1128j): Astra #2, Fable 5.2 #3, and the page header says so.
     assert (roles.OWNER_RANK['openai/gpt-6.2-astra'], roles.OWNER_RANK['anthropic/claude-fable-5.2']) == (2, 3)
-    assert 'Astra #2, Fable #3' in roles.OWNER_RANK_LINE
+    assert 'just use Opus 5.5 or Gemini 4 Neon' in roles.OWNER_RANK_LINE and 'Fable 5.2 #3' in roles.OWNER_RANK_LINE
+    # A newer dated decision in code beats the older page's Rank column and roles.json; a newer hand edit carries.
+    page = tmp_path / 'old.md'
+    header = '| Model | Rank (Ricardo: taste + cost) | Runs |\n'
+    page.write_text("Ricardo's own rank (2026-11-27): old.\n\n" + header + '| gemini-4-hydrogen-low | 7 | 3 |\n')
+    stale = {'owner_rank': {'google/gemini-4-hydrogen-high': 7}}
+    ranks = roles.owner_ranks(stale, page)
+    assert ranks['google/gemini-4-hydrogen-low'] == ranks['google/gemini-4-hydrogen-high'] == '—'
+    assert ranks['google/gemini-4-carbon-medium'] == '6-7' and ranks['google/gemini-4-neon-medium'] == '1'
+    page.write_text("Ricardo's own rank (2999-01-01): hand edit.\n\n" + header + '| gemini-4-hydrogen-low | 8 | 3 |\n')
+    assert roles.owner_ranks({}, page)['google/gemini-4-hydrogen-low'] == '8'
     # A historical native slug in evaluations must not duplicate the canonical observation.
     ledger.write_text(json.dumps(dict(row, model='gemini-4-neon-high', outcome='held')) + '\n')
     again = subprocess.run([sys.executable, str(REPO / 'leaderboard/model-roles.py'), 'ingest'],

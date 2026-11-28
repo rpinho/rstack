@@ -28,10 +28,16 @@ MIN_N, MIN_DAYS, SEED_RATE, LIFT_N, SETTLE_DAYS, Z = 5, 2, 0.75, 20, 14, 1.96
 # Ricardo's own rank (taste + cost), copied from the KB leaderboard page "11-26 CURRENT RANK"; never computed from
 # pass rates. A family rank covers every effort tier of that model; Neon's #1 is the high tier only.
 # 11-27 (Ricardo, via general 1127j: "Yes"): Astra up to #2, Fable 5.2 down to #3.
-OWNER_RANK = {'anthropic/claude-opus-5.5': 1, 'google/gemini-4-neon-high': 1, 'openai/gpt-6.2-astra': 2,
-              'anthropic/claude-fable-5.2': 3, 'openai/gpt-6.2-sol': 4, 'anthropic/claude-sonnet-5.5': '5-6',
-              **{f'google/gemini-4-{m}-{t}': 7 for m in ('argon', 'hydrogen') for t in ('low', 'medium', 'high')}}
-OWNER_RANK_LINE = "Ricardo's own rank (2026-11-27): Opus 5.5 and Neon tied #1, Astra #2, Fable #3."
+# 11-28 Ricardo's final 8 (owner decision via general 1128j). Every Gemini effort tier of a ranked model shares its rank;
+# '—' marks a model he left unranked (Kimi retired here, Hydrogen too low at 30.3%, GLM and DeepSeek n=1).
+OWNER_RANK = {'anthropic/claude-opus-5.5': 1, 'openai/gpt-6.2-astra': 2, 'anthropic/claude-fable-5.2': 3,
+              'openai/gpt-6.2-sol': 4, 'anthropic/claude-sonnet-5.5': 5,
+              **{f'google/gemini-4-{m}{t}': r for m, r in (('neon', 1), ('argon', '6-7'), ('carbon', '6-7'), ('hydrogen', '—'))
+                 for t in ('', '-low', '-medium', '-high')},
+              'moonshotai/kimi-k3.1-pro': '—', 'z-ai/glm-5.3-flash': '—', 'deepseek/deepseek-v4.1-flash-1017': '—'}
+OWNER_RANK_DATE = '2026-11-28'
+OWNER_RANK_LINE = ("Ricardo's own rank (" + OWNER_RANK_DATE + "): just use Opus 5.5 or Gemini 4 Neon. Opus 5.5 and Neon tied #1, "
+                   "Astra #2, Fable 5.2 #3, Sol #4, Sonnet 5.5 #5, Argon and Carbon #6-7; the rest are unranked.")
 MIN_LABS = {'ideation': 2}
 OVERRIDES = {}  # Set via a private MODEL_OVERRIDES config file; never included in export.
 if os.environ.get('MODEL_OVERRIDES'):
@@ -795,11 +801,18 @@ def public_counts(pairs, historical, stamp, days, costs=None):
 
 def owner_ranks(data, previous):
     """Owner taste/cost is copied, never inferred from evidence or routing positions."""
-    ranks = {canon(m): str(v) for m, v in OWNER_RANK.items()}
-    ranks.update({canon(m): str(v) for m, v in data.get('owner_rank', {}).items()})
+    # roles.json carries a copy of OWNER_RANK from the last recompute; the code is the newer copy.
+    ranks = {canon(m): str(v) for m, v in data.get('owner_rank', {}).items()}
+    ranks.update({canon(m): str(v) for m, v in OWNER_RANK.items()})
     header = []
-    if previous and Path(previous).is_file():
-        for line in Path(previous).read_text().splitlines():
+    # Hand edits to the page's Rank column carry over, unless the owner's dated decision in code is newer than the
+    # page (11-28: the final-8 ranks would otherwise have been overwritten by the 11-27 page on every render).
+    text = Path(previous).read_text() if previous and Path(previous).is_file() else ''
+    dated = re.search(r"Ricardo's own rank \((\d{4}-\d{2}-\d{2})\)", text)
+    if not dated or dated.group(1) < OWNER_RANK_DATE:
+        text = ''
+    if text:
+        for line in text.splitlines():
             if not line.startswith('| '):
                 continue
             cells = [c.strip() for c in line.strip('|').split('|')]

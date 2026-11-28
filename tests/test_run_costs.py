@@ -200,3 +200,16 @@ def test_no_token_data_and_invalid_config_fail_open(tmp_path):
     cost = run_costs.cost_for(job, prices={'openai/gpt-6.2-sol': {'input': True}}, plans={'openai': []})
     assert (cost['api'], cost['plan']) == ('unknown', 'unknown')
     assert run_costs.tokens_for(job) == tokens
+
+
+def test_shipped_prices_cover_gpt_cache_writes():
+    """11-28 (laptop handoff 0130): GPT-6.x cache_write was null, so any Codex run with cache writes priced UNKNOWN."""
+    used = dict(input=1_000_000, cached_input=600_000, cache_write=100_000, output=10_000, reasoning=0,
+                served_models=['gpt-6.2-astra'])
+    reader = type('Reader', (), {'measure': lambda self, job: (used, None)})()
+    cost = run_costs.cost_for({'model': 'gpt-6.2-astra', 'backend': 'codex'}, reader=reader)
+    # 300k uncached x $8 + 600k cached x $0.40 + 100k written x $10 + 10k out x $40, per 1M
+    assert cost['api'] == pytest.approx(2.4 + 0.24 + 1.0 + 0.4)
+    shipped = run_costs.config('prices')
+    for model in ('openai/gpt-6.2-astra', 'openai/gpt-6.2-sol', 'openai/gpt-6.1-sol', 'openai/gpt-6-astra'):
+        assert shipped[model]['cache_write'] == pytest.approx(1.25 * shipped[model]['input'])
