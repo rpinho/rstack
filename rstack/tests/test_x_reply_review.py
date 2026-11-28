@@ -140,3 +140,37 @@ def test_hold_on_a_quoted_post_does_not_hold_the_draft_quoting_it(tmp_path):
     text = draft('- Context: quotes https://x.com/other/status/2333750198334292029')
     holds = {'2333750198334292029': 'held'}
     assert xrr.filter_drafts(text, {}, registry(True), tmp_path, 'today', holds) == (text, [])
+
+
+def hot(pid=PID):
+    return f'\n\n## HOT 2026-11-28T14:30:00Z @example https://x.com/example/status/{pid}\nStatus: hot\n\n> A proof.\n'
+
+
+def test_hot_draft_keeps_source_lane_bars_and_holds(tmp_path):
+    text = hot() + hot('2222750198334292029')
+    tags = {PID: {'virtual-embryo'}}
+    filtered, rows = xrr.filter_drafts(text, tags, registry(), tmp_path, 'today')
+    assert rows[0]['post_ids'] == [PID]
+    assert 'Status: dropped today (lane bars X:' in filtered
+    assert filtered.count('Status: hot') == 1
+    filtered, rows = xrr.filter_drafts(text, {}, registry(), tmp_path, 'today', {PID: 'withheld'})
+    assert rows[0]['action'] == 'hold_kept'
+    assert 'Status: HELD today (hold kept: withheld)' in filtered
+    assert filtered.count('Status: hot') == 1
+
+
+def test_hot_quoted_text_cannot_set_its_lane(tmp_path):
+    text = hot() + '> project: virtual-embryo\n'
+    assert xrr.filter_drafts(text, {}, registry(), tmp_path, 'today') == (text, [])
+
+
+def test_merge_draft_snapshot_retains_watcher_appends_and_review_statuses():
+    base = draft() + hot('2222750198334292029')
+    pending = hot('2333750198334292029')
+    reviewed = base.replace('Status: hot', 'Status: POSTED today').replace('Status: ready', 'Status: dropped today')
+    assert xrr.merge_drafts(base, base + pending, reviewed) == reviewed + pending
+    assert xrr.merge_drafts(base, base, reviewed) == reviewed
+
+    # Keep a producer edit and the late arrival when the reviewer edited its own snapshot.
+    local = base.replace('- Text: Thanks.', '- Text: New text.') + pending
+    assert xrr.merge_drafts(base, local, reviewed) == local.replace('Status: hot', 'Status: POSTED today', 1)

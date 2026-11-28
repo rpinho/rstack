@@ -11,7 +11,9 @@ time a held Status line is seen its hold is written to the log, so it survives t
 Only a later release_hold row for the post releases it.
 """
 import argparse
+from contextlib import nullcontext
 from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -25,6 +27,9 @@ from lane_registry import load
 
 TAG = re.compile(r'\b(?:lane|project|owner)\s*:\s*`?([A-Za-z0-9][A-Za-z0-9_.-]*)', re.I)
 STATUS = re.compile(r'(?im)^([-*]\s*)?Status:\s*ready[^\n]*')
+HOT_STATUS = re.compile(r'(?im)^([-*][ \t]*)?Status:[ \t]*hot[ \t]*$')
+HOT_HEADING = re.compile(r'^## HOT \S+ @\w+ https://x\.com/\w+/status/(\d{15,20})$')
+HEADING = re.compile(r'(?m)(?=^#{1,6}\s)')
 POST_ID = re.compile(r'(?:/status/|drafts/)(\d+)|(?<!\d)(\d{15,22})(?!\d)')
 HELD_STATUS = re.compile(r'(?im)^(?:[-*]\s*)?Status:\s*(?:held|hold|on hold)\b[^\n]*')
 HOLD_ACTIONS = {'draft_reply_held', 'draft_held', 'hold_draft'}
@@ -96,7 +101,7 @@ def filter_drafts(text, tags, registry, lanes_root, stamp, holds=None):
     holds = dict(holds or {})
     refusals = []
     # Keep heading boundaries so a tag on one draft never contaminates its neighbour.
-    blocks = re.split(r'(?m)(?=^#{1,6}\s)', text)
+    blocks = HEADING.split(text)
     sections = {}
     for i, block in enumerate(blocks):
         heading = re.match(r'^(#{1,6})\s+([^\n]*)', block)
@@ -116,10 +121,12 @@ def filter_drafts(text, tags, registry, lanes_root, stamp, holds=None):
                                      post_ids=new, target_url='https://x.com/i/status/' + new[0],
                                      session='x-reply-review'))
             continue
-        if not STATUS.search(block):
+        hot = HOT_HEADING.fullmatch(block.split('\n', 1)[0])
+        status = HOT_STATUS if hot and HOT_STATUS.search(block) else STATUS
+        if not status.search(block):
             continue
-        ids = post_ids(block)
-        lanes = set(TAG.findall(block))
+        ids = {hot[1]} if hot else post_ids(block)
+        lanes = set(TAG.findall(block)) if not hot else set()
         for section_tags in sections.values():
             lanes.update(section_tags)
         for pid in ids:
@@ -128,7 +135,7 @@ def filter_drafts(text, tags, registry, lanes_root, stamp, holds=None):
                    if (reason := registry.x_refusal(lane, lanes_root))]
         if reasons:
             reason = '; '.join(reasons)
-            blocks[i] = STATUS.sub(lambda m: (m.group(1) or '') + 'Status: dropped ' + stamp
+            blocks[i] = status.sub(lambda m: (m.group(1) or '') + 'Status: dropped ' + stamp
                                    + ' (lane bars X: ' + reason.replace('\n', ' ') + ')', block)
             refusals.append(dict(utc=stamp, action='drop_draft', reason=reason,
                                  post_ids=sorted(ids), lanes=sorted(lanes), session='x-reply-review'))
@@ -137,10 +144,32 @@ def filter_drafts(text, tags, registry, lanes_root, stamp, holds=None):
         if held:
             # Honor the earlier hold; the log already carries it, so no new row.
             reason = holds[held[0]].replace('\n', ' ')
-            blocks[i] = STATUS.sub(lambda m: (m.group(1) or '') + 'Status: HELD ' + stamp
+            blocks[i] = status.sub(lambda m: (m.group(1) or '') + 'Status: HELD ' + stamp
                                    + ' (hold kept: ' + reason + ')', block)
             refusals.append(dict(action='hold_kept', reason=reason, post_ids=held))
     return ''.join(blocks), refusals
+
+
+def merge_drafts(base, local, remote):
+    """Keep watcher appends made on the M4 while the M5 had the draft snapshot."""
+    if local == base:
+        return remote
+    if local.startswith(base):
+        appended = HEADING.split(local[len(base):])
+        if not appended[0].strip() and all(HOT_HEADING.fullmatch(block.split('\n', 1)[0])
+                                          for block in appended[1:]):
+            return remote + local[len(base):]
+
+    # The M4 producer can also edit the queue. Keep its work and import terminal
+    # HOT statuses only for matching headings that still have a pending status.
+    terminal = {}
+    for block in HEADING.split(remote):
+        heading, _, rest = block.partition('\n')
+        if HOT_HEADING.fullmatch(heading) and re.match(r'Status: (?:posted|dropped)\b', rest, re.I):
+            terminal[heading] = rest.split('\n', 1)[0]
+    return ''.join(HOT_STATUS.sub(lambda _: terminal[heading], block, count=1)
+                   if (heading := block.split('\n', 1)[0]) in terminal else block
+                   for block in HEADING.split(local))
 
 
 def main(argv=None):
@@ -150,19 +179,31 @@ def main(argv=None):
     parser.add_argument('--lanes-root', type=Path, default=Path(os.environ.get('RH_ROOT') or
                         '~/.local/share/research-harness').expanduser() / 'lanes')
     parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--merge-drafts', type=Path, nargs=2, metavar=('SNAPSHOT', 'REVIEWED'),
+                        help='merge the reviewed M5 snapshot with the current M4 queue')
     args = parser.parse_args(argv)
     try:
-        registry = load(args.lanes_root)
-        text = args.drafts.read_text()
-        filtered, refusals = filter_drafts(text, log_tags(args.log), registry, args.lanes_root,
-                                          datetime.now(timezone.utc).isoformat(), log_holds(args.log))
-        if args.apply and refusals:
-            if filtered != text:
-                args.drafts.write_text(filtered)
-            with args.log.open('a') as stream:
-                for row in refusals:
-                    if row['action'] != 'hold_kept':
-                        stream.write(json.dumps(row) + '\n')
+        lock_path = args.drafts.with_name('.reply-drafts.lock')
+        with lock_path.open('a') if args.apply or args.merge_drafts else nullcontext() as lock:
+            if lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+            text = args.drafts.read_text()
+            if args.merge_drafts:
+                base, remote = (path.read_text() for path in args.merge_drafts)
+                merged = merge_drafts(base, text, remote)
+                if merged != text:
+                    args.drafts.write_text(merged)
+                return 0
+            registry = load(args.lanes_root)
+            filtered, refusals = filter_drafts(text, log_tags(args.log), registry, args.lanes_root,
+                                              datetime.now(timezone.utc).isoformat(), log_holds(args.log))
+            if args.apply and refusals:
+                if filtered != text:
+                    args.drafts.write_text(filtered)
+                with args.log.open('a') as stream:
+                    for row in refusals:
+                        if row['action'] != 'hold_kept':
+                            stream.write(json.dumps(row) + '\n')
         for row in refusals:
             label = {'drop_draft': 'REFUSED', 'draft_held': 'HOLD RECORDED'}.get(row['action'], 'HELD')
             print(label + ' ' + ','.join(row['post_ids']) + ': ' + row['reason'])

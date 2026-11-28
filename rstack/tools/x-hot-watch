@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""Use Grok Bot to find fresh X posts and queue them for the existing reply reviewer."""
+import argparse
+from datetime import datetime, timedelta, timezone
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+from zoneinfo import ZoneInfo
+
+ET = ZoneInfo('America/New_York')
+ACCOUNT = 'rpinho_sci'
+FIXED_HANDLES = ('GuillaumeAIinSF', '1337isnot1337', 'Rob1Ham', 'majdiflow', 'exitcode0dev')
+HANDLE = r'[A-Za-z0-9_]{1,15}'
+POST_ID = r'[0-9]{15,20}'
+IDS = re.compile(r'(?<![0-9])' + POST_ID + r'(?![0-9])')
+POST_URL = re.compile(r'https?://(?:www\.)?(?:x|twitter)\.com/(' + HANDLE + r')/status/('
+                      + POST_ID + r')/?(?:[?#]\S*)?', re.I | re.ASCII)
+PENDING = re.compile(r'^## HOT \S+ @\w+ https://x\.com/\w+/status/(' + POST_ID + r')\n'
+                     r'Status: hot[ \t]*$', re.M)
+RELEVANT = re.compile(
+    r'\b(?:AI[- ]?math(?:ematics)?|lean(?:\s*4)?|mathlib|formali[sz]\w*|'
+    r'theorems?|proofs?|conjectures?|erd[őöo]s|open[- ]problems?|'
+    r'agents?\s+(?:for|in)\s+science|AI[- ](?:for[- ]science|scientists?)|autoresearch)\b', re.I)
+DAILY_LIMIT = 20
+
+
+def timestamp(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value[:-1] + '+00:00' if value.endswith('Z') else value)
+    except ValueError:
+        return None
+
+
+def utc(when):
+    return when.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def text_at(path):
+    try:
+        return path.read_text(encoding='utf-8', errors='replace')
+    except FileNotFoundError:
+        return ''
+
+
+def json_rows(raw):
+    for line in raw.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            yield row
+
+
+def append(path, row):
+    with path.open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps(row) + '\n')
+
+
+def command(env, default, *args):
+    argv = shlex.split(os.environ.get(env) or default)
+    if not argv:
+        raise ValueError(env + ' is empty')
+    return [os.path.expanduser(argv[0]), *argv[1:], *args]
+
+
+def capture(argv, timeout):
+    result = subprocess.run(argv, timeout=timeout, capture_output=True, encoding='utf-8', errors='replace')
+    if result.returncode:
+        raise ValueError('exit {}'.format(result.returncode))
+    return result.stdout
+
+
+def watchlist(targets):
+    block = re.search(r'^#+[ \t]+REPLY-EARLY\b[^\n]*\n(.*?)(?=^#|\Z)', targets, re.M | re.S | re.I)
+    handles = {}
+    if block:
+        # Some category notes list handles before the main comma-separated list. The
+        # search URLs disambiguate those bare names from the surrounding prose.
+        known = {h.casefold() for h in re.findall(r'from(?:%3A|:)(' + HANDLE + r')\b', block[1], re.I)}
+        for line in block[1].splitlines():
+            if line.startswith('Search URLs'):
+                break
+            if not line.startswith('- ') or 'https://' in line or re.match(r'- \d{2}-\d{2}', line):
+                continue
+            category = re.match(r'- ((?:[^():]|\([^)]*\))+):\s*', line)
+            prefix = category[1] if category else ''
+            listed = line[category.end():] if category else line[2:]
+            for word in re.findall(r'(?<!\w)@?' + HANDLE + r'\b', prefix):
+                handle = word.lstrip('@')
+                if word.startswith('@') or handle.casefold() in known:
+                    handles.setdefault(handle.casefold(), handle)
+            entries = re.findall(r'(?<!\w)@(' + HANDLE + r')\b|(?:^|,)\s*('
+                                 + HANDLE + r')(?=\s*(?:[,(.]|$))', listed)
+            for mention, bare in entries:
+                handle = mention or bare
+                handles.setdefault(handle.casefold(), handle)
+    return list({h.casefold(): h for h in (*list(handles.values())[:15], *FIXED_HANDLES)}.values())
+
+
+def answer_rows(raw):
+    try:
+        rows = json.loads(raw)
+    except ValueError:
+        # Accept one fenced or embedded array, skipping nested arrays once decoded.
+        chunks = re.findall(r'^[ \t]*```(?:json)?[ \t]*\r?\n(.*?)^[ \t]*```', raw, re.M | re.S | re.I)
+        if len(chunks) == 1:
+            rows = json.loads(chunks[0])
+        else:
+            arrays, end = [], 0
+            decode = json.JSONDecoder().raw_decode
+            for start in re.finditer(r'\[', raw):
+                if start.start() < end:
+                    continue
+                try:
+                    value, end = decode(raw, start.start())
+                except ValueError:
+                    continue
+                arrays.append(value)
+            if len(arrays) != 1:
+                raise ValueError('expected one JSON array')
+            rows = arrays[0]
+    if not isinstance(rows, list):
+        raise ValueError('expected a JSON array')
+    return rows
+
+
+def replies_since(log, since, now):
+    for row in json_rows(log):
+        when = timestamp(row.get('utc'))
+        if row.get('action') != 'reply' or not when or not when.tzinfo or not since <= when <= now:
+            continue
+        for key in ('in_reply_to', 'target_url'):
+            match = POST_URL.fullmatch(str(row.get(key, '')))
+            if match and match[1].casefold() != ACCOUNT:
+                yield match[1].casefold()
+                break
+        else:
+            author = str(row.get('author', '')).lstrip('@')
+            if re.fullmatch(HANDLE, author):
+                yield author.casefold()
+
+
+class Watch:
+    def __init__(self, args, now):
+        self.engage = Path(os.environ.get('X_ENGAGE_DIR') or '~/.local/share/x-engage').expanduser()
+        self.state = Path(os.environ.get('X_HOT_STATE') or '~/.local/state/x-hot-watch').expanduser()
+        self.drafts = self.engage / 'REPLY_DRAFTS.md'
+        self.now = now
+        self.since = now - timedelta(minutes=args.window_min)
+        self.day = now.astimezone(ET).date()
+        self.dry_run = args.dry_run
+        self.record = dict(utc=utc(now), dry_run=self.dry_run, decisions=[])
+
+    def decision(self, source, ident, decision, reason=''):
+        row = dict(source=source, id=ident, decision=decision)
+        if reason:
+            row['reason'] = reason
+        self.record['decisions'].append(row)
+        if self.dry_run:
+            print(f'{source} {ident} {decision}' + (f' {reason}' if reason else ''))
+
+    def call(self, env, default, timeout, *args):
+        try:
+            return capture(command(env, default, *args), timeout)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            # Raw tool output may contain arbitrary post text or account diagnostics.
+            self.record[env] = str(exc) if type(exc) is ValueError else type(exc).__name__
+            return None
+
+    def grok(self, handles, previous_streak):
+        query = (
+            f'Find public X posts from {utc(self.since)} through {utc(self.now)} inclusive. '
+            f'Find original posts by {", ".join("@" + h for h in handles)}, and replies to or '
+            f'mentions of @{ACCOUNT} from any other account. Return a single JSON array, newest first, '
+            'with one object per post: {"post_id":"decimal string","author":"handle","created_at":'
+            '"exact ISO-8601 UTC timestamp","url":"https://x.com/HANDLE/status/POST_ID","text":"verbatim",'
+            '"kind":"post"}. Use exactly "post" for the watchlist and "reply_to_us" only if the '
+            'post explicitly mentions us or the thread shows it replying to us. '
+            'Omit any post without a verified permalink and exact creation time. Return [] if none.'
+        )
+        raw = self.call('X_HOT_GROK', 'grok-ask', 125, '--host', 'm5', '--timeout', '120', query)
+        if raw is not None:
+            try:
+                rows = answer_rows(raw)
+            except (ValueError, RecursionError):
+                self.record['X_HOT_GROK'] = 'invalid JSON array'
+            else:
+                self.record['grok_streak'] = 0
+                return rows
+        streak = self.record['grok_streak'] = previous_streak + 1
+        if streak == 4 and not self.dry_run:
+            self.call('X_HOT_TELL', '~/.local/bin/tell-general', 15, 'fyi',
+                      'x-hot-watch: four consecutive Grok Bot reads from m5 failed; check the Grok Bot connection.')
+        return []
+
+    def notify(self, message, title):
+        self.call('X_HOT_NOTIFY', '~/.local/bin/notify-ricardo', 15, message, title, '3')
+
+    def append_draft(self, ident, author, url, text):
+        self.engage.mkdir(parents=True, exist_ok=True)
+        # Match the local lane filter and reviewer sync merge. The post is quoted data.
+        with (self.engage / '.reply-drafts.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            quoted = '\n'.join('> ' + line for line in text.splitlines())
+            with self.drafts.open('a', encoding='utf-8', errors='replace') as stream:
+                stream.write(f'\n\n## HOT {utc(self.now)} @{author} {url}\nStatus: hot\n\n{quoted}\n')
+            append(self.state / 'hot.jsonl', dict(post_id=ident, author=author, url=url, queued_utc=utc(self.now)))
+
+    def on_day(self, value):
+        when = timestamp(value)
+        return bool(when and when.tzinfo and when.astimezone(ET).date() == self.day)
+
+    def posts(self, rows, handles):
+        hot = list(json_rows(text_at(self.state / 'hot.jsonl')))
+        watched = {h.casefold() for h in handles}
+        log = text_at(self.engage / 'log.jsonl')
+        acted = self.acted_ids(log)
+        hot_ids = {str(row.get('post_id', '')) for row in hot}
+        seen = acted | set(IDS.findall(text_at(self.drafts))) | hot_ids
+        mentions = set(IDS.findall(text_at(self.engage / 'mentions.jsonl')))
+        push_log = self.state / 'mentions.jsonl'
+        mentions.update(hot_ids | set(IDS.findall(text_at(push_log))))
+        since = self.now - timedelta(hours=24)
+        recent = set(replies_since(log, since, self.now))
+        for row in hot:
+            when = timestamp(row.get('queued_utc'))
+            if when and when.tzinfo and since <= when <= self.now:
+                recent.add(str(row.get('author', '')).casefold())
+        queued = sum(self.on_day(row.get('queued_utc')) for row in hot)
+        for row in rows:
+            if not isinstance(row, dict):
+                self.decision('x', '?', 'skip', 'invalid row')
+                continue
+            ident = str(row.get('post_id', ''))
+            author = row.get('author')
+            author = author.lstrip('@') if isinstance(author, str) else ''
+            when = timestamp(row.get('created_at'))
+            link = POST_URL.fullmatch(str(row.get('url', '')))
+            text = row.get('text')
+            kind = row.get('kind')
+            reason = ''
+            if not re.fullmatch(POST_ID, ident):
+                reason = 'invalid post_id'
+            elif not when or not when.tzinfo:
+                reason = 'invalid created_at'
+            elif when < self.since:
+                reason = 'stale'
+            elif when > self.now:
+                reason = 'future'
+            elif not link or link[2] != ident or link[1].casefold() != author.casefold():
+                reason = 'invalid permalink'
+            elif author.casefold() == ACCOUNT:
+                reason = 'own post'
+            elif not isinstance(text, str) or not text.strip():
+                reason = 'invalid text'
+            elif kind == 'reply_to_us':
+                if ident in mentions:
+                    reason = 'mention already seen'
+            elif kind != 'post':
+                reason = 'invalid kind'
+            elif author.casefold() not in watched:
+                reason = 'outside watchlist'
+            elif ident in seen:
+                reason = 'duplicate'
+            elif not RELEVANT.search(text):
+                reason = 'irrelevant'
+            elif author.casefold() in recent:
+                reason = 'author cap'
+            elif queued >= DAILY_LIMIT:
+                reason = 'ET day cap'
+
+            if reason:
+                self.decision('x', ident if re.fullmatch(POST_ID, ident) else '?', 'skip', reason)
+                continue
+            url = f'https://x.com/{author}/status/{ident}'
+            if kind == 'reply_to_us':
+                self.decision('x', ident, 'push')
+                mentions.add(ident)
+                if not self.dry_run:
+                    append(push_log, dict(post_id=ident, notified_utc=utc(self.now)))
+                    self.notify(f'@{author} replied to or mentioned @{ACCOUNT}: {url}', 'X reply or mention')
+            else:
+                self.decision('x', ident, 'queue')
+                queued += 1
+                seen.add(ident)
+                mentions.add(ident)
+                recent.add(author.casefold())
+                if not self.dry_run:
+                    self.append_draft(ident, author, url, text)
+
+    def acted_ids(self, log=None):
+        if log is None:
+            log = text_at(self.engage / 'log.jsonl')
+        return set(IDS.findall(log + '\n' + text_at(self.engage / 'replied.json')))
+
+    def prs(self):
+        raw = self.call('X_HOT_GH', 'gh', 30, 'pr', 'list', '-R', 'rpinho/lean-golf',
+                        '--state', 'all', '--limit', '30', '--json', 'number,author,createdAt,url,title')
+        if raw is None:
+            return
+        try:
+            rows = json.loads(raw)
+            if not isinstance(rows, list):
+                raise ValueError
+        except (ValueError, RecursionError):
+            self.record['X_HOT_GH'] = 'invalid JSON array'
+            return
+        path = self.state / 'prs.jsonl'
+        history = list(json_rows(text_at(path)))
+        seen = {row['number'] for row in history if type(row.get('number')) is int}
+        first = not any('seeded_utc' in row for row in history)
+        for row in rows:
+            number = row.get('number') if isinstance(row, dict) else None
+            if type(number) is not int or number <= 0:
+                self.decision('pr', '?', 'skip', 'invalid PR number')
+                continue
+            if number in seen:
+                self.decision('pr', number, 'skip', 'PR already seen')
+                continue
+            seen.add(number)
+            if not self.dry_run:
+                append(path, dict(number=number))
+            author = row.get('author')
+            login = author.get('login') if isinstance(author, dict) else None
+            if first:
+                self.decision('pr', number, 'skip', 'first poll seed')
+            elif not isinstance(login, str) or not re.fullmatch(r'[A-Za-z0-9-]+(?:\[bot\])?', login):
+                self.decision('pr', number, 'skip', 'unknown PR author')
+            elif login.casefold() == 'rpinho':
+                self.decision('pr', number, 'skip', 'own PR')
+            else:
+                self.decision('pr', number, 'push')
+                if not self.dry_run:
+                    self.notify(f'Lean Golf PR #{number} by {login}: https://github.com/rpinho/lean-golf/pull/{number}',
+                                'New Lean Golf PR')
+        if first and not self.dry_run:
+            append(path, dict(seeded_utc=utc(self.now)))
+
+    def start_review(self):
+        if self.dry_run:
+            return
+        path = self.state / 'review.jsonl'
+        starts = list(json_rows(text_at(path)))
+        if sum(self.on_day(row.get('utc')) for row in starts) >= DAILY_LIMIT:
+            return
+        pending = set(PENDING.findall(text_at(self.drafts))) - self.acted_ids()
+        pending.difference_update(row.get('post_id') for row in starts)
+        # Only start one detached reviewer. A normal review can take all pending HOT blocks.
+        for row in json_rows(text_at(self.state / 'hot.jsonl')):
+            ident = row.get('post_id')
+            when = timestamp(row.get('queued_utc'))
+            if ident in pending and when and when.tzinfo and self.since <= when <= self.now:
+                break
+        else:
+            return
+        try:
+            found = subprocess.run(['pgrep', '-f', 'x-reply-review'], capture_output=True, timeout=5)
+            if found.returncode != 1:
+                self.record['review'] = 'busy' if found.returncode == 0 else 'pgrep failed'
+                return
+            append(path, dict(post_id=ident, utc=utc(self.now)))
+            subprocess.Popen(command('X_HOT_REVIEW', '~/.local/bin/x-reply-review', '--hot', ident),
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            self.record['review'] = ident
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            self.record['review'] = type(exc).__name__
+
+    def run(self):
+        self.state.mkdir(parents=True, exist_ok=True)
+        # Serializes overlapping launches and makes the run log the only dry-run write.
+        with (self.state / 'run.jsonl').open('a+', encoding='utf-8') as stream:
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+            stream.seek(0)
+            previous = 0
+            for row in json_rows(stream.read()):
+                if not row.get('dry_run') and 'grok_streak' in row:
+                    previous = row['grok_streak']
+            try:
+                handles = watchlist(text_at(self.engage / 'TARGETS.md'))
+                rows = self.grok(handles, previous)
+                self.posts(rows, handles)
+                self.start_review()
+                self.prs()
+            finally:
+                stream.write(json.dumps(self.record) + '\n')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--now', metavar='ISO', help='override current time; naive ISO times are Eastern')
+    parser.add_argument('--window-min', type=int, default=30)
+    parser.add_argument('--hours', default='8-23', help='Eastern hour range, start inclusive and end exclusive')
+    args = parser.parse_args()
+    hours = re.fullmatch(r'([0-9]{1,2})-([0-9]{1,2})', args.hours)
+    if not hours or not 0 <= int(hours[1]) < int(hours[2]) <= 24:
+        parser.error('--hours must be a range such as 8-23')
+    if args.window_min <= 0:
+        parser.error('--window-min must be positive')
+    now = timestamp(args.now) if args.now else datetime.now(timezone.utc)
+    if now is None:
+        parser.error('--now must be an ISO timestamp')
+    if not now.tzinfo:
+        now = now.replace(tzinfo=ET)
+    if not int(hours[1]) <= now.astimezone(ET).hour < int(hours[2]):
+        return 0
+    Watch(args, now.astimezone(timezone.utc)).run()
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
