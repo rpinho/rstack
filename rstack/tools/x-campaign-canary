@@ -107,10 +107,11 @@ def main(argv=None):
     p.add_argument('--summary-hour', type=int, default=21)
     p.add_argument('--name', default='Lean Golf replies')
     p.add_argument('--dry-run', action='store_true', help='print, do not push')
+    p.add_argument('--from', dest='start', default='', help='YYYY-MM-DD: the ramp applies from this local date (before it, only an unreadable X pages)')
     a = p.parse_args(argv)
     now = dt.datetime.now().astimezone()
     since = (now - dt.timedelta(hours=24)).astimezone(dt.timezone.utc)
-    want = expected(a.ramp, now.hour)
+    want = expected(a.ramp, now.hour) if not a.start or now.date().isoformat() >= a.start else 0
     record = {'utc': now.astimezone(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'expected': want}
     try:
         replies = campaign_replies(read_timeline(account_id(), since), a.link)

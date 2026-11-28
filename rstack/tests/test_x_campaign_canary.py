@@ -64,3 +64,11 @@ def test_an_unreadable_x_is_a_failure_push_not_a_skip(tmp_path):
     assert sent.read_text().count('CANNOT READ X') == 2
     row = json.loads((tmp_path / 'state/log.jsonl').read_text().splitlines()[-1])
     assert row['status'] == 'fail-read'
+
+
+def test_before_the_start_date_only_an_unreadable_x_pages(tmp_path):
+    env, sent = env_for(tmp_path, [])
+    done = run(env, '--ramp', '0:5', '--from', '2999-01-01', '--summary-hour', '99')
+    assert done.returncode == 0 and '0 of 0' in done.stdout and not sent.exists()
+    env, sent = env_for(tmp_path / 'b' if (tmp_path / 'b').mkdir() is None else tmp_path, fail=True)
+    assert run(env, '--from', '2999-01-01').returncode == 1 and 'CANNOT READ X' in sent.read_text()
