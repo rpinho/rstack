@@ -13,6 +13,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'harness'))
 from model_slugs import canon
+from run_costs import valid_cost
 
 
 def load_rows(path):
@@ -40,8 +41,9 @@ def load_rows(path):
         if row["layer"] not in {"model", "workflow", "route", "infrastructure"}:
             raise ValueError(f"line {line_no}: unknown failure layer")
         cost = row["cost_usd"]
-        if cost is not None and (type(cost) not in (int, float) or not math.isfinite(cost) or cost < 0):
-            raise ValueError(f"line {line_no}: cost must be null or finite nonnegative USD")
+        if cost is not None and not valid_cost(cost) and (
+                type(cost) not in (int, float) or not math.isfinite(cost) or cost < 0):
+            raise ValueError(f"line {line_no}: cost must be null, finite nonnegative USD or an estimate record")
         estimate = row.get("reported_list_cost_usd")
         if estimate is not None and (type(estimate) not in (int, float) or not math.isfinite(estimate) or estimate < 0):
             raise ValueError(f"line {line_no}: list-price estimate must be null or finite nonnegative USD")
@@ -69,7 +71,7 @@ def report(rows):
     for key, items in sorted(groups.items()):
         model, effort, route, role, task, layer = key
         scores = [str(r["score"]) for r in items if r["score"] is not None]
-        costs = [r["cost_usd"] for r in items if r["cost_usd"] is not None]
+        costs = [r["cost_usd"] for r in items if type(r["cost_usd"]) in (int, float)]
         money = f"${sum(costs):.6f} ({len(costs)}/{len(items)})" if costs else "unknown (0/" + str(len(items)) + ")"
         estimates = [r["reported_list_cost_usd"] for r in items if r.get("reported_list_cost_usd") is not None]
         list_money = f"${sum(estimates):.6f} ({len(estimates)}/{len(items)})" if estimates else "none (0/" + str(len(items)) + ")"

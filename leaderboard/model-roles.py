@@ -2,8 +2,8 @@
 """Local outcome ledger, conservative role ranking and a minimal Markdown export.
 
 No archive, account or transcript discovery. `ingest` reads explicitly configured
-idea histories, review receipts and draft outcomes. Public export selects model,
-role, score and date fields.
+idea histories, review receipts and draft outcomes. Public export includes
+aggregate cost estimates from grade rows and the scorer's cost sidecar.
 """
 import argparse
 import collections
@@ -15,6 +15,7 @@ import math
 import os
 from pathlib import Path
 import re
+import statistics
 import sys
 import tempfile
 
@@ -724,11 +725,13 @@ def feed_only(observation):
     return fed > 0 and fed >= observation.get('n', 0)
 
 
-def public_counts(pairs, historical, stamp, days):
+def public_counts(pairs, historical, stamp, days, costs=None):
     """Windowed observed work; aggregated routing evidence never supplies a grade."""
     import run_grades
     since = stamp - dt.timedelta(days=days)
+    costs = costs or {}
     totals, roles = collections.defaultdict(lambda: [0, 0, 0.0]), collections.defaultdict(dict)
+    passed = collections.defaultdict(lambda: {'n': 0, 'with_tokens': 0, 'api': [], 'plan': [], 'dates': set()})
     dropped = collections.Counter()
     drivers = [0, 0]
 
@@ -767,13 +770,27 @@ def public_counts(pairs, historical, stamp, days):
                 cell[1] += 1
                 cell[2] += GRADE[verdict]
             drivers[0] += int(driver)
+        if verdict == 'pass':
+            summary = passed[native]
+            summary['n'] += 1
+            cost = run_grades.estimate(run, grade, costs)
+            if run_grades.run_costs.breakdown(cost.get('tokens')):
+                summary['with_tokens'] += 1
+            for key in ('api', 'plan'):
+                value = cost.get(key)
+                if run_grades.run_costs.amount(value):
+                    summary[key].append(value)
+            if run_grades.run_costs.amount(cost.get('plan')):
+                date = run_grades.run_costs.valid_date(cost.get('plan_as_of'))
+                if date:
+                    summary['dates'].add(date)
 
     for run, record in pairs:
-        admit(run, record, parse_ts(run.get('utc')), True)
+        admit(run, record, parse_ts(run.get('started_at') or run.get('utc')), True)
     for record in historical:
         grade = record[0]
         admit({}, record, parse_ts(grade.get('utc') or grade.get('date')), False)
-    return totals, roles, dropped, drivers
+    return totals, roles, dropped, drivers, passed
 
 
 def owner_ranks(data, previous):
@@ -808,6 +825,12 @@ def interval(cell):
         100 * k / n, 100 * wilson_low(k, n), 100 * wilson_high(k, n), n)
 
 
+def cost_cell(values, passes):
+    if not values:
+        return 'unknown'
+    return '${:.4g} / ${:.4g} ({}/{})'.format(statistics.median(values), statistics.mean(values), len(values), passes)
+
+
 def public(data, path, observations=(), previous=None, days=30):
     """Render observed work separately from the owner's rank and the unchanged routing snapshot."""
     import run_grades
@@ -819,14 +842,22 @@ def public(data, path, observations=(), previous=None, days=30):
     old = snapshot_rows(previous)
     ranks = owner_ranks(data, previous)
     pairs, historical = run_grades.table()
-    totals, by_role, dropped, drivers = public_counts(pairs, historical, stamp, days)
+    estimates = run_grades.sidecar(run_grades.costs_path(LEDGER))
+    totals, by_role, dropped, drivers, passed = public_counts(pairs, historical, stamp, days, estimates)
+    dates = {date for summary in passed.values() for date in summary['dates']}
+    if not dates:
+        # Show when the calibration was evaluated even if plan dollars are unavailable.
+        dates = {run_grades.run_costs.valid_date(plan.get('calibration_as_of'))
+                 for plan in run_grades.run_costs.config('plans').values() if isinstance(plan, dict)} - {None}
     lines = ['# Model leaderboard', '',
              OWNER_RANK_LINE, '',
              "Everyday work over {} days: {} through {} (UTC). The window uses run start time when available and grade time or date for historical grades. This table uses eligible grades from the scorer's grade ledgers, including mirrors. The weighted score uses pass=1, partial=half and fail=0. The daily grades-feed tally uses observation dates and reports each verdict separately. Routing positions below may use inherited evidence. Each weighted score here uses grades for the displayed model version.".format(
                  days, (stamp - dt.timedelta(days=days)).date().isoformat(), stamp.date().isoformat()), '',
              'Runs includes ungraded work. The score denominator n counts eligible pass, partial and fail grades, including historical grades without a run record, so n can exceed Runs. Within-role ranks use the Wilson lower bound and require n>=20. Owner ranks retain taste + cost. The intervals describe these observations. Task mix, correlated jobs and subjective grades limit comparisons.', '',
-             '| Model | Rank (Ricardo: taste + cost) | Runs | Overall weighted score (Wilson 95%) | Role | Role weighted score (Wilson 95%) | Within-role rank |',
-             '|---|---:|---:|---|---|---|---|']
+             'Cost per passed task is a model-wide estimate. Cells give median / mean and the number of estimates over the number of passes. API-equivalent dollars use documented token rates. Plan dollars allocate the subscription by estimated weekly usage. Plan calibration date(s) {}.'.format(
+                 ', '.join(sorted(dates)) or 'unknown'), '',
+             '| Model | Rank (Ricardo: taste + cost) | Runs | Overall weighted score (Wilson 95%) | Role | Role weighted score (Wilson 95%) | Within-role rank | API-$ per pass (estimate) | Plan-$ per pass (estimate) |',
+             '|---|---:|---:|---|---|---|---|---|---|']
     for role, models in sorted(by_role.items()):
         ordered = sorted(models, key=lambda m: (-wilson_low(models[m][2], models[m][1]) if models[m][1] >= 20 else 1, m))
         eligible = [m for m in ordered if models[m][1] >= 20]
@@ -834,8 +865,10 @@ def public(data, path, observations=(), previous=None, days=30):
         for model in ordered:
             cell = models[model]
             rank = str(lows.index(wilson_low(cell[2], cell[1])) + 1) if cell[1] >= 20 else 'n<20, unranked'
-            lines.append('| {} | {} | {} | {} | {} | {} | {} |'.format(
-                model, ranks.get(canon(model), '-'), totals[model][0], interval(totals[model]), role, interval(cell), rank))
+            summary = passed[model]
+            lines.append('| {} | {} | {} | {} | {} | {} | {} | {} | {} |'.format(
+                model, ranks.get(canon(model), '-'), totals[model][0], interval(totals[model]), role, interval(cell), rank,
+                cost_cell(summary['api'], summary['n']), cost_cell(summary['plan'], summary['n'])))
     why = ', '.join('{}={}'.format(reason, n) for reason, n in sorted(dropped.items()) if n) or 'none'
     lines += ['', 'Dropped {} grade rows: {}. Ungraded runs remain in Runs; probes and bench runs are omitted.'.format(sum(dropped.values()), why), '',
               'Driver-session work (most Gemini Neon use) is ungraded until driver outputs are scored; {}/{} driver outputs have a grade.'.format(*drivers), '']

@@ -468,6 +468,8 @@ class Outcomes:
                                     f'everyday: {outcome}')
             observation.update(role=role, job=run['job'], source_kind='everyday', day=date,
                                link_kind='run_id' if not run['legacy'] else 'legacy_job')
+            if run_grades.run_costs.valid_cost(row.get('cost_usd')):
+                observation['cost_usd'] = row['cost_usd']
             self.observations[observation['id']] = observation
         # Receipts for older work can predate the run ledger entirely.
         for row, path, number in historical:

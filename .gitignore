@@ -16,6 +16,8 @@ __pycache__/
 !rstack/layers.example.json
 !rstack/vendor/kdense/manifest.json
 !docs/onboarding/tracks.json
+!leaderboard/prices.json
+!leaderboard/plans.json
 !rstack/example/jobs/*.json
 !rstack/tests/fixtures/x-api/usage.json
 *.jsonl

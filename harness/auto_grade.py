@@ -312,7 +312,8 @@ def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, ho
                     try:
                         summary = json.loads(line[len('EXECUTOR_RUN '):])
                         if summary.get('run_id') == run_id:
-                            metrics = {key: summary[key] for key in ('closed_at', 'wall_seconds', 'tokens', 'cost_usd', 'rc')
+                            metrics = {key: summary[key] for key in ('closed_at', 'wall_seconds', 'tokens', 'cost_usd',
+                                                                     'token_usage', 'rc')
                                        if key in summary}
                     except (ValueError, AttributeError):
                         continue
@@ -401,6 +402,7 @@ def grade(receipt_path, log, workdir, spec, roles_file=None, no_checks=False, ho
                grade_dir=str(workdir), missing_files=missing)
     if run_id:
         row['run_id'] = run_id
+        row['cost_usd'] = run_records.grade_cost(run_id, closed, local=not host)
     wm.log_record(ledger, '', row)
     wm.log_record(log, 'MODEL_GRADE', row)
     if result.startswith('void:') and receipt.get('source') == 'delegate' and grader not in ('harness', 'quota', 'launcher', 'probe'):

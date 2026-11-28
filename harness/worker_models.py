@@ -1208,6 +1208,7 @@ def main(argv=None):
                            note=(quota_failure(args.log, receipt) if args.log else None) or 'returned without a grade')
                 if receipt.get('run_id'):
                     row.update(run_id=receipt['run_id'], reason='quota' if row['note'].startswith('quota') else row['note'])
+                    row['cost_usd'] = run_records.grade_cost(row['run_id'], local=not receipt.get('host'))
                 if row['note'].startswith('quota'):
                     row['grade'] = 'void: quota'
                 log_record(args.receipt.with_name('everyday-grades.jsonl'), '', row)
@@ -1231,6 +1232,7 @@ def main(argv=None):
                                       else args.note).split())[:300])
             if receipt.get('run_id'):
                 row.update(run_id=receipt['run_id'], reason='quota' if quota else row['note'])
+                row['cost_usd'] = run_records.grade_cost(row['run_id'], local=not receipt.get('host'))
             if prior.get('grade_dir'):
                 row.update({key: prior[key] for key in ('grade_host', 'grade_dir', 'missing_files') if key in prior})
             if not quota and row.get('missing_files'):

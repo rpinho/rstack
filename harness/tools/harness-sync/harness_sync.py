@@ -46,7 +46,9 @@ LAUNCHER = {'tools/launch.sh': 'launcher/launch.sh', 'tools/RULES.md': 'launcher
             # RULE #1 (11-20): the gate registry every gate reads its class from at run time.
             'rstack/gates.json': 'rstack/gates.json',
             # 11-22: the grades feed between the owner's machines runs on the Mac that holds ~/handoff.
-            'leaderboard/grades_feed.py': 'leaderboard/grades_feed.py'}
+            'leaderboard/grades_feed.py': 'leaderboard/grades_feed.py',
+            'leaderboard/prices.json': 'leaderboard/prices.json',
+            'leaderboard/plans.json': 'leaderboard/plans.json'}
 CODE_SUFFIXES = {'.py', '.sh'}
 SKIP_DIRS = {'lanes', '__pycache__', 'alerts', '.pytest_cache'}
 HOST_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z')

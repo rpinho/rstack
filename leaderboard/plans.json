@@ -1,0 +1,23 @@
+{
+  "anthropic": {
+    "plan": "unknown",
+    "usd_per_month": null,
+    "tokens_per_weekly_percent": null,
+    "calibration_as_of": "2026-11-27",
+    "calibration_note": "Candidate 2,070,246 tokens/point from 2 paired points. 21 observed points lacked measured or logged usage. Current fee and tier are not verified."
+  },
+  "openai": {
+    "plan": "pro (rollout label)",
+    "usd_per_month": null,
+    "tokens_per_weekly_percent": null,
+    "calibration_as_of": "2026-11-27",
+    "calibration_note": "Candidate 15,007,996 tokens/point from 108 paired points in the specified local session store. 52 points fell in gaps or incomplete intervals. Exact tier and monthly fee are unverified."
+  },
+  "google": {
+    "plan": "unknown",
+    "usd_per_month": null,
+    "tokens_per_weekly_percent": null,
+    "calibration_as_of": "2026-11-27",
+    "calibration_note": "The supplied conversation snapshots do not record weekly percentage used."
+  }
+}

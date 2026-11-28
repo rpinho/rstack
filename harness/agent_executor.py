@@ -14,6 +14,7 @@ import time
 import uuid
 
 import run_records
+import run_costs
 
 
 def _kill_tree(proc):
@@ -585,18 +586,31 @@ def record_run(backend, model, effort, directory, output, rc, quota='', errors='
     try:
         existing = next((r for r in run_records.read_jsonl(run_records.runs_path()) if r.get('run_id') == run_id), None)
         if existing is None:
-            run_records.open_run(row)
+            existing = run_records.open_run(row)
         usage = reported_usage(output, errors)
+        closed_at = run_records.utc_now()
+        # Save the breakdown while the output still belongs to this attempt.
+        # For a remote run, forward the counters with the existing outcome summary.
+        candidate = dict(existing, **usage)
+        candidate.update(transcript=str(Path(output).absolute()), closed_at=closed_at)
+        if not run_records.is_probe(existing):
+            measured = run_costs.tokens_for(candidate)
+            if measured is not None:
+                usage['token_usage'] = measured
+        usage['transcript'] = candidate['transcript']
+        usage['closed_at'] = closed_at
         closed = run_records.close_run(run_id, rc=int(rc), reason='quota' if quota else '', **usage)
         if closed:
-            summary = {key: closed.get(key) for key in ('run_id', 'closed_at', 'wall_seconds', 'tokens', 'cost_usd', 'rc')}
+            summary = {key: closed.get(key) for key in
+                       ('run_id', 'closed_at', 'wall_seconds', 'tokens', 'cost_usd', 'token_usage', 'rc')}
             print('EXECUTOR_RUN ' + json.dumps(summary), file=sys.stderr)
         if quota:
             run_records.record_quota(dict(row, utc=existing['utc'] if existing else row['utc']), quota)
         if not launch_id or os.environ.get('RH_EXECUTOR_STANDALONE') == '1':
             probe = run_records.is_probe(closed or existing or row)
             reason = 'probe' if probe else 'quota' if quota else 'no launcher acceptance checks'
-            grade = run_records.grade_fields(run_id, row['job'], model, row['role'], 'void: ' + reason, reason)
+            grade = run_records.grade_fields(run_id, row['job'], model, row['role'], 'void: ' + reason, reason,
+                                             cost_usd=run_records.grade_cost(run_id, closed))
             run_records.append(run_records.grades_path(), grade)
     except OSError as exc:
         run_records.warn(exc)
@@ -723,7 +737,7 @@ def main(argv=None):
         run_records.open_run(dict(run_id=ident, utc=run_records.utc_now(),
             job=os.environ.get('RH_JOB') or os.environ.get('AGENT_JOB') or os.environ.get('RSTACK_LANE') or Path(a.directory).name,
             lane=os.environ.get('RSTACK_LANE', ''),
-            model=a.model, effort=a.effort, backend=a.backend, workdir=str(a.directory),
+            model=a.model, effort=a.effort, backend=a.backend, workdir=str(a.directory.resolve()),
             transcript=str(a.output), role=os.environ.get('RSTACK_CALL_ROLE') or 'batch',
             **{key: os.environ[env] for key, env in [('grade_ledger', 'RH_LAUNCH_GRADE_LEDGER'),
                 ('driver', 'RH_LAUNCH_DRIVER'), ('launch_group', 'RH_LAUNCH_GROUP')]

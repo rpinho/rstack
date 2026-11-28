@@ -1,0 +1,252 @@
+{
+ "openai/gpt-6.2-astra": {
+  "input": 8,
+  "cached_input": 0.4,
+  "cache_write": null,
+  "output": 40,
+  "source": "https://developers.openai.com/api/docs/models/gpt-6.2-astra",
+  "as_of": "2026-11-18"
+ },
+ "openai/gpt-6.2-sol": {
+  "input": 2,
+  "cached_input": 0.1,
+  "cache_write": null,
+  "output": 10,
+  "source": "https://developers.openai.com/api/docs/models/gpt-6.2-sol",
+  "as_of": "2026-11-18"
+ },
+ "anthropic/claude-opus-5.5": {
+  "input": 4,
+  "cached_input": 0.2,
+  "cache_write": 5,
+  "output": 20,
+  "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+  "as_of": "2026-11-27",
+  "note": "cache_write = 5m write; 1h write is 8. Flat across the 1M context. Fast mode 8/40. Batch 2/10."
+ },
+ "anthropic/claude-sonnet-5.5": {
+  "input": 2,
+  "cached_input": 0.1,
+  "cache_write": 2.5,
+  "output": 10,
+  "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+  "as_of": "2026-11-27",
+  "note": "cache_write = 5m write; 1h write is 4. Flat across the 1M context. Batch 1/5."
+ },
+ "anthropic/claude-fable-5.2": {
+  "input": 8,
+  "cached_input": 0.2,
+  "cache_write": 10,
+  "output": 40,
+  "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+  "as_of": "2026-11-27",
+  "note": "cache_write = 5m write; 1h write is 16. Flat across the 1M context. Fast mode 16/80. Batch 4/20."
+ },
+ "anthropic/claude-haiku-5.5": {
+  "input": 0.1,
+  "cached_input": 0.01,
+  "cache_write": 0.125,
+  "output": 0.5,
+  "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+  "as_of": "2026-11-27",
+  "note": "Standard tier = prompts up to 100K tokens (cache_write is the 5m write; 1h write is 0.20). Prompts over 100K: input 0.50, cached 0.05, 5m write 0.625, 1h write 1.00, output 2.50 (prompt length counts cache reads and writes)."
+ },
+ "openai/gpt-6.1-sol": {
+  "input": 2.0,
+  "cached_input": 0.1,
+  "cache_write": null,
+  "output": 10.0,
+  "source": "https://developers.openai.com/api/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Standard processing, context <=272K input tokens. Over 272K: input 4.00, cached 0.20, output 15.00. Batch and Flex 1/0.05/5. Fast 4/0.20/20. Ultrafast 12/0.60/60."
+ },
+ "openai/gpt-6-astra": {
+  "input": 10.0,
+  "cached_input": 1.0,
+  "cache_write": null,
+  "output": 50.0,
+  "source": "https://developers.openai.com/api/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Standard processing, context <=272K input tokens. Over 272K: input 20.00, cached 2.00, output 75.00. Batch and Flex 5/0.50/25. Fast 20/2.00/100. Ultrafast 60/6.00/300."
+ },
+ "google/gemini-4-neon": {
+  "input": 3.0,
+  "cached_input": 0.15,
+  "cache_write": null,
+  "output": 15.0,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. Output includes thinking tokens. Page lists one context-caching price (implicit caching only, no explicit cache or write price) and no context-length tiers. No scheduled price change shown. Page text was read to char 100000 of 118365."
+ },
+ "google/gemini-4-neon-low": {
+  "input": 3.0,
+  "cached_input": 0.15,
+  "cache_write": null,
+  "output": 15.0,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. Output includes thinking tokens. Page lists one context-caching price (implicit caching only, no explicit cache or write price) and no context-length tiers. No scheduled price change shown. Page text was read to char 100000 of 118365. (same rate for every effort tier)"
+ },
+ "google/gemini-4-neon-medium": {
+  "input": 3.0,
+  "cached_input": 0.15,
+  "cache_write": null,
+  "output": 15.0,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. Output includes thinking tokens. Page lists one context-caching price (implicit caching only, no explicit cache or write price) and no context-length tiers. No scheduled price change shown. Page text was read to char 100000 of 118365. (same rate for every effort tier)"
+ },
+ "google/gemini-4-neon-high": {
+  "input": 3.0,
+  "cached_input": 0.15,
+  "cache_write": null,
+  "output": 15.0,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. Output includes thinking tokens. Page lists one context-caching price (implicit caching only, no explicit cache or write price) and no context-length tiers. No scheduled price change shown. Page text was read to char 100000 of 118365. (same rate for every effort tier)"
+ },
+ "google/gemini-4-carbon": {
+  "input": 2.0,
+  "cached_input": 0.1,
+  "cache_write": null,
+  "output": 10.0,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. These rates apply only through 2026-11-30. From 2026-12-01: input 4.00, cached 0.20, output 20.00. Output includes thinking. Implicit caching only; no context-length tiers listed."
+ },
+ "google/gemini-4-carbon-low": {
+  "input": 2.0,
+  "cached_input": 0.1,
+  "cache_write": null,
+  "output": 10.0,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. These rates apply only through 2026-11-30. From 2026-12-01: input 4.00, cached 0.20, output 20.00. Output includes thinking. Implicit caching only; no context-length tiers listed. (same rate for every effort tier)"
+ },
+ "google/gemini-4-carbon-medium": {
+  "input": 2.0,
+  "cached_input": 0.1,
+  "cache_write": null,
+  "output": 10.0,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. These rates apply only through 2026-11-30. From 2026-12-01: input 4.00, cached 0.20, output 20.00. Output includes thinking. Implicit caching only; no context-length tiers listed. (same rate for every effort tier)"
+ },
+ "google/gemini-4-carbon-high": {
+  "input": 2.0,
+  "cached_input": 0.1,
+  "cache_write": null,
+  "output": 10.0,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. These rates apply only through 2026-11-30. From 2026-12-01: input 4.00, cached 0.20, output 20.00. Output includes thinking. Implicit caching only; no context-length tiers listed. (same rate for every effort tier)"
+ },
+ "google/gemini-4-argon": {
+  "input": 2.0,
+  "cached_input": 0.1,
+  "cache_write": null,
+  "output": 10.0,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. These rates apply only through 2026-11-30. From 2026-12-01: input 4.00, cached 0.20, output 20.00. Output includes thinking. Implicit caching only; no context-length tiers listed."
+ },
+ "google/gemini-4-argon-low": {
+  "input": 2.0,
+  "cached_input": 0.1,
+  "cache_write": null,
+  "output": 10.0,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. These rates apply only through 2026-11-30. From 2026-12-01: input 4.00, cached 0.20, output 20.00. Output includes thinking. Implicit caching only; no context-length tiers listed. (same rate for every effort tier)"
+ },
+ "google/gemini-4-argon-medium": {
+  "input": 2.0,
+  "cached_input": 0.1,
+  "cache_write": null,
+  "output": 10.0,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. These rates apply only through 2026-11-30. From 2026-12-01: input 4.00, cached 0.20, output 20.00. Output includes thinking. Implicit caching only; no context-length tiers listed. (same rate for every effort tier)"
+ },
+ "google/gemini-4-argon-high": {
+  "input": 2.0,
+  "cached_input": 0.1,
+  "cache_write": null,
+  "output": 10.0,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. These rates apply only through 2026-11-30. From 2026-12-01: input 4.00, cached 0.20, output 20.00. Output includes thinking. Implicit caching only; no context-length tiers listed. (same rate for every effort tier)"
+ },
+ "google/gemini-4-hydrogen": {
+  "input": 1.5,
+  "cached_input": 0.075,
+  "cache_write": null,
+  "output": 7.5,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. Output includes thinking. Implicit caching only; no context-length tiers listed; no scheduled price change shown."
+ },
+ "google/gemini-4-hydrogen-low": {
+  "input": 1.5,
+  "cached_input": 0.075,
+  "cache_write": null,
+  "output": 7.5,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. Output includes thinking. Implicit caching only; no context-length tiers listed; no scheduled price change shown. (same rate for every effort tier)"
+ },
+ "google/gemini-4-hydrogen-medium": {
+  "input": 1.5,
+  "cached_input": 0.075,
+  "cache_write": null,
+  "output": 7.5,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. Output includes thinking. Implicit caching only; no context-length tiers listed; no scheduled price change shown. (same rate for every effort tier)"
+ },
+ "google/gemini-4-hydrogen-high": {
+  "input": 1.5,
+  "cached_input": 0.075,
+  "cache_write": null,
+  "output": 7.5,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. Output includes thinking. Implicit caching only; no context-length tiers listed; no scheduled price change shown. (same rate for every effort tier)"
+ },
+ "google/gemini-3.8-flash": {
+  "input": 0.75,
+  "cached_input": 0.075,
+  "cache_write": null,
+  "output": 3.75,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. These rates apply only through 2026-12-31. From 2027-01-01: input 1.50, cached 0.15, output 7.50. Cache storage 0.50 per 1M tokens per hour through 2026-12-31. No context-length tiers listed."
+ },
+ "google/gemini-3.8-flash-low": {
+  "input": 0.75,
+  "cached_input": 0.075,
+  "cache_write": null,
+  "output": 3.75,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. These rates apply only through 2026-12-31. From 2027-01-01: input 1.50, cached 0.15, output 7.50. Cache storage 0.50 per 1M tokens per hour through 2026-12-31. No context-length tiers listed. (same rate for every effort tier)"
+ },
+ "google/gemini-3.8-flash-medium": {
+  "input": 0.75,
+  "cached_input": 0.075,
+  "cache_write": null,
+  "output": 3.75,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. These rates apply only through 2026-12-31. From 2027-01-01: input 1.50, cached 0.15, output 7.50. Cache storage 0.50 per 1M tokens per hour through 2026-12-31. No context-length tiers listed. (same rate for every effort tier)"
+ },
+ "google/gemini-3.8-flash-high": {
+  "input": 0.75,
+  "cached_input": 0.075,
+  "cache_write": null,
+  "output": 3.75,
+  "source": "https://aistudio.google.com/docs/pricing",
+  "as_of": "2026-11-27",
+  "note": "Paid tier, Standard. These rates apply only through 2026-12-31. From 2027-01-01: input 1.50, cached 0.15, output 7.50. Cache storage 0.50 per 1M tokens per hour through 2026-12-31. No context-length tiers listed. (same rate for every effort tier)"
+ }
+}

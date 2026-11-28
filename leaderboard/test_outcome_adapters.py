@@ -295,7 +295,7 @@ def test_daily_lands_only_page_in_worktree_and_skips_unchanged_page(setup_reader
     for name in ('daily.sh', 'model-roles.py', 'model-eval.py', 'outcome_adapters.py', 'grade_ledgers.py', 'run_grades.py', 'driver_grades.py', 'score_canary.py', 'job_cost.py'):
         shutil.copy2(HERE / name, repo / 'leaderboard' / name)
     (repo / 'harness').mkdir()
-    for name in ('run_records.py', 'agy_quota.py', 'model_slugs.py', 'score_verdicts.py'):
+    for name in ('run_records.py', 'run_costs.py', 'agy_quota.py', 'model_slugs.py', 'score_verdicts.py'):
         shutil.copy2(HERE.parent / 'harness' / name, repo / 'harness' / name)
     shutil.copy2(HERE.parent / 'rstack/tools/egress-gate', repo / 'rstack/tools/egress-gate')
     (repo / 'LEADERBOARD.md').write_text('Initial snapshot\n')

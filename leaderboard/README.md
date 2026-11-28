@@ -60,6 +60,24 @@ everyday task (`job_cost.py`). It now appears in the separate routing details.
 The existing cost tie-break, missing-source behavior and routing calculations
 are unchanged by the public table repair.
 
+The public work table also shows model-wide median and mean dollar estimates for
+eligible passes in its displayed window. Each cell shows the number of available
+estimates over all passes. API-equivalent estimates use the dated rates in
+`prices.json`. Subscription estimates allocate the weekly equivalent of the
+monthly fee using measured tokens and the calibration in `plans.json`. These
+figures describe the passes with cost evidence. Sparse coverage limits comparisons.
+
+The executor captures token breakdowns at close and grades carry the breakdown
+and estimates. Use `python3 leaderboard/backfill_costs.py` to append recent
+graded-run costs beside `MODEL_LEDGER` (by default, `MODEL_STATE/evaluations.jsonl`).
+Use a scratch state directory with a ledger copy for an offline trial. The
+backfill uses the normal run-to-grade join and reads execution telemetry locally.
+`RH_CODEX_SESSIONS` selects a colon-separated list of rollout directories,
+`RH_CLAUDE_PROJECTS` selects the Claude project log root, and
+`RH_AGY_USAGE_DECODER` and `RH_AGY_CONVERSATIONS` select the agy decoder and
+conversation directories. `python3 leaderboard/calibrate_costs.py` prints
+calibration evidence for review before changing the plan card.
+
 Since 2026-11-19 only subscription routes are served (`claude`, `codex`, `agy`); OpenRouter and Gemini API models are history only. The exclusion above applies to the Google API routes. Gemini 3.8 Flash on the Antigravity subscription (`agy`, tiers high, medium and low) and Gemini 4 Neon, Argon and Hydrogen (medium tier) enter every role except writing as candidates after the seeds, and move only by the Wilson rule like any other model.
 
 The Astra seed slot for review, judge and ideation is `gpt-6.2-astra`. This is the requested routing preference, not a claim of general superiority: the 11-17 v3.1 calibration has five overall winners, and GPT-6.2 Astra completed none of three ideation calls within 480 seconds. Existing Anthropic first picks remain in place.

@@ -9,6 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'harness'))
 import run_records  # noqa: E402
+import run_costs
 import grade_ledgers  # noqa: E402
 
 from model_slugs import canon
@@ -37,6 +38,33 @@ def job_key(value):
 
 def model_key(value):
     return canon(value) or value
+
+
+def costs_path(evaluations):
+    return Path(evaluations).with_name('costs.jsonl')
+
+
+def cost_key(run, grade):
+    return run.get('run_id'), grade.get('id'), model_key(run.get('model'))
+
+
+def sidecar(path):
+    out = {}
+    for row in run_costs.events(path):
+        key = row.get('run_id'), row.get('grade_id'), row.get('model')
+        if all(isinstance(value, str) and value for value in (key[0], key[2])) and (
+                key[1] is None or isinstance(key[1], str)) and run_costs.valid_cost(row.get('cost_usd')):
+            out[key] = row['cost_usd']
+    return out
+
+
+def estimate(run, grade, costs):
+    stored = grade.get('cost_usd')
+    filled = costs.get(cost_key(run, grade))
+    # A failed re-read should not erase telemetry captured by the executor.
+    if filled and (run_costs.breakdown(filled['tokens']) or not run_costs.valid_cost(stored)):
+        return filled
+    return stored if run_costs.valid_cost(stored) else {}
 
 
 def table(runs_file=None, ledgers=None, receipts=None):

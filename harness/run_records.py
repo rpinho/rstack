@@ -9,6 +9,7 @@ import sys
 
 import agy_quota
 from model_slugs import canon
+import run_costs
 import score_verdicts
 
 
@@ -39,6 +40,8 @@ def append(path, row):
     row = dict(row)
     if row.get('model'):
         row['model'] = canon(row['model']) or row['model']
+    if row.get('run_id') and 'grade' in row and not isinstance(row.get('cost_usd'), dict):
+        row['cost_usd'] = grade_cost(row['run_id'])
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open('a') as stream:
@@ -93,6 +96,22 @@ def record_quota(run, message):
 def grade_fields(run_id, job, model, role, grade, reason, **extra):
     return dict(id='grade-' + run_id, run_id=run_id, date=dt.date.today().isoformat(), source_kind='everyday',
                 job=job, model=canon(model) or model, role=role, grade=score_verdicts.validate(grade), note=reason, reason=reason, **extra)
+
+
+def grade_cost(run_id, run=None, *, local=True):
+    """Fail open even if the run ledger or the usage reader is unavailable."""
+    try:
+        if run is None and run_id:
+            for candidate in read_jsonl(runs_path()):
+                if candidate.get('run_id') == run_id:
+                    run = candidate
+        if not local and run and not run_costs.breakdown(run.get('token_usage')):
+            return dict(api='unknown', plan='unknown', tokens={'reason': 'execution-host usage unavailable'})
+        if run and is_probe(run):
+            return dict(api='unknown', plan='unknown', tokens={'reason': 'probe'})
+        return run_costs.cost_for(run)
+    except Exception as exc:
+        return dict(api='unknown', plan='unknown', tokens={'reason': 'grade cost failed ({})'.format(type(exc).__name__)})
 
 
 def warn(error):

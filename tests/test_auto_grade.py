@@ -262,3 +262,28 @@ def test_a_provider_safety_refusal_is_void_not_the_models_fail(tmp_path):
                    'MODEL_OUTCOME ' + json.dumps(dict(selection_id='sid1', exit_code=1)) + '\n')
     row = auto_grade.grade(receipt, log, work, spec)
     assert row['grade'] == 'void: provider refused'
+
+
+def test_grade_persists_executor_cost_and_fails_open(tmp_path, monkeypatch):
+    records = auto_grade.run_records
+    monkeypatch.setenv('RH_MODEL_RUNS_LOG', str(tmp_path / 'model-runs.jsonl'))
+    receipt, log, work, spec = returned(tmp_path, model='gpt-6.2-sol')
+    data = json.loads(receipt.read_text())
+    data.update(run_id='cost-run', executor='codex')
+    receipt.write_text(json.dumps(data))
+    records.open_run(dict(run_id='cost-run', utc=records.utc_now(), model='gpt-6.2-sol', backend='codex'))
+    tokens = dict(input=200, cached_input=100, cache_write=0, output=30, reasoning=10, source='fixture')
+    log.write_text('EXECUTOR_RUN ' + json.dumps(dict(run_id='cost-run', rc=0, token_usage=tokens)) + '\n')
+    row = auto_grade.grade(receipt, log, work, spec)
+    assert row['grade'] == 'pass'
+    assert row['cost_usd']['tokens'] == tokens
+    assert row['cost_usd']['api'] == 0.00051
+    assert graded(tmp_path)['cost_usd'] == row['cost_usd']
+
+    def unavailable(*args, **kwargs):
+        raise OSError('synthetic telemetry error')
+
+    monkeypatch.setattr(records.run_costs, 'cost_for', unavailable)
+    row = auto_grade.grade(receipt, log, work, spec)
+    assert row['grade'] == 'pass' and row['cost_usd']['api'] == 'unknown'
+    assert row['cost_usd']['tokens']['reason'] == 'grade cost failed (OSError)'
