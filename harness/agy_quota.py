@@ -101,11 +101,23 @@ def blocked(now=None, path=None):
     return {k: r for k, r in latest.items() if _utc(r['blocked_until']) > now}
 
 
+def pool(model):
+    """agy's quota pool for a model. Every Gemini model (Neon, Carbon, Argon, Hydrogen, Flash) draws on one weekly and one
+    5-hour limit (agy /usage, 11-27); agy's Claude/GPT models share the other."""
+    return 'gemini' if 'gemini' in str(model).lower() else 'other'
+
+
 def blocked_until(model, effort=None, now=None, path=None, table=None):
-    """The row blocking this model on agy now, or None. A row with no tier blocks every tier of the model."""
+    """The row blocking this model on agy now, or None. A row with no tier blocks every tier of the model, and a row for
+    any model in the same pool blocks this one too (11-28: Neon-high was blocked until 12-03 and the selector still sent
+    pyfaidx_gapfill_1127 to Neon-medium, which died in 3 s on a 429). The latest-ending block wins."""
     table = blocked(now, path) if table is None else table
     tier = tier_of(model, effort)
-    return table.get((model, tier)) or table.get((model, None))
+    exact = table.get((model, tier)) or table.get((model, None))
+    if exact:
+        return exact
+    shared = [row for (other, _), row in table.items() if pool(other) == pool(model)]
+    return max(shared, key=lambda row: _utc(row['blocked_until'])) if shared else None
 
 
 def skip_note(model, row):

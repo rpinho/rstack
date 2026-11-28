@@ -70,7 +70,9 @@ def test_only_resets_still_ahead_block_and_the_latest_wins(state):
     table = agy_quota.blocked(NOW + dt.timedelta(hours=6))
     assert set(table) == {('gemini-4-hydrogen-medium', 'medium')}   # the 5-hour window has passed
     assert agy_quota.blocked_until('gemini-4-hydrogen-medium', table=table)
-    assert agy_quota.blocked_until('gemini-4-hydrogen-low', table=table) is None
+    # 11-28: every Gemini model shares one pool, so the weekly block on Hydrogen-medium blocks Hydrogen-low too
+    assert agy_quota.blocked_until('gemini-4-hydrogen-low', table=table)['model'] == 'gemini-4-hydrogen-medium'
+    assert agy_quota.blocked_until('claude-opus-5-5-high', table=table) is None   # agy's other pool
     assert set(agy_quota.blocked(NOW)) == {('gemini-4-hydrogen-medium', 'medium'), ('claude-opus-5-5-high', 'high')}
     assert agy_quota.blocked(NOW + dt.timedelta(days=7)) == {}
 
@@ -213,3 +215,13 @@ def test_an_agy_run_that_hits_its_quota_is_rerun_on_codex(state):
     assert json.loads((jobs / 'fixture-r.log.selection.json').read_text())['executor'] == 'codex'
     assert 'agy hit its quota: rerunning' in (jobs / 'fixture-r.log').read_text()
 
+
+
+def test_a_block_on_one_gemini_model_routes_every_gemini_model_elsewhere(state):
+    # 11-28 (open-source): Neon-high was blocked until 12-03, the selector sent pyfaidx_gapfill_1127 to Neon-medium, and
+    # it died in 3 s on a 429. agy's Gemini models draw on one weekly pool.
+    write(state, quota_row('gemini-4-neon-high', '126h', utc=dt.datetime.now(dt.timezone.utc)))
+    for model in ('gemini-4-neon-medium', 'gemini-4-neon-low', 'gemini-4-carbon-high', 'gemini-4-hydrogen-high'):
+        assert agy_quota.blocked_until(model)['model'] == 'gemini-4-neon-high', model
+    receipt = wm.select('batch', 'codex', path=state / 'roles.json', job='j')
+    assert receipt['executor'] != 'agy' and any('agy quota until' in n for n in receipt.get('quota_skipped', []))
