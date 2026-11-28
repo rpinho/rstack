@@ -346,6 +346,18 @@ def awaiting_reply(row, text, everyone, lane):
 REFEREED_LINE = re.compile(r'^\s*(?:lean-checked|certificate)\b', re.I | re.M)
 
 
+def own_link(parsed):
+    """11-28 (Ricardo approved the Lean Golf launch post with its repo link): a link to the owner's own repos or pages
+    may sit in the main post, where X shows its card. RH_X_OWN_LINKS: comma-separated host/path prefixes, e.g.
+    github.com/OWNER/,OWNER.github.io/ (host env file); empty by default."""
+    if parsed.username or parsed.password or not parsed.hostname:
+        return False
+    here = (parsed.hostname.lower().removeprefix('www.') + (parsed.path or '/')).lower()
+    prefixes = [p.strip().lower().removeprefix('https://').removeprefix('www.')
+                for p in os.environ.get('RH_X_OWN_LINKS', '').split(',') if p.strip()]
+    return any(here.startswith(p if p.endswith('/') else p + '/') or here == p.rstrip('/') + '/' for p in prefixes)
+
+
 def refereed_result(row, text):
     """11-26: a bare math result whose referee HOLDS: a certificate line, not prose in the author's voice,
     so it needs no .cuts and carries its link in the post."""
@@ -616,8 +628,10 @@ def x_checks(row, text, everyone, clock, selected=(), cfg=None, posting=False):
             url = match.group().rstrip('.,;!?)]}')
             try:
                 parsed = urlsplit(url if '://' in url else 'https://' + url)
-                if (parsed.hostname != 'x.com' or parsed.username or parsed.password) and not refereed_result(row, text):
-                    failures.append('external URL in main post; put the link in a separate --self-reply-to ID row')
+                if ((parsed.hostname != 'x.com' or parsed.username or parsed.password) and not refereed_result(row, text)
+                        and not row.get('owner_wrote') and not own_link(parsed)):
+                    failures.append('external URL in main post; put the link in a separate --self-reply-to ID row '
+                                    '(allowed: owner-approved text, or a link under RH_X_OWN_LINKS)')
             except ValueError:
                 failures.append('invalid URL in main post')
         if mainly_question(text) and not MENTION.search(text):

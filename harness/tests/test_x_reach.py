@@ -230,6 +230,22 @@ def test_external_links_fail_main_post(state, url):
     assert result[0] == 1 and 'external URL' in result[1]
 
 
+@pytest.mark.parametrize('url, ok', [('https://github.com/owner/lean-golf', True), ('github.com/owner/lean-golf', True),
+                                     ('https://owner.github.io/lean-golf/', True), ('https://github.com/ownerx/repo', False),
+                                     ('https://github.com/other/repo', False), ('https://evil.test/github.com/owner/a', False),
+                                     ('https://owner@github.com/owner/a', False)])
+def test_the_owners_own_repo_link_may_sit_in_the_main_post(state, monkeypatch, url, ok):
+    # 11-28 (general 1128c): Ricardo approved the Lean Golf launch post with its repo link in the post (X shows the card).
+    monkeypatch.setenv('RH_X_OWN_LINKS', 'github.com/owner/,owner.github.io/')
+    ident, _ = draft(state, text='The result is here. ' + url)
+    assert ('external URL' in lint(state, ident)[1]) != ok
+
+
+def test_owner_approved_text_may_carry_a_link_in_the_main_post(state):
+    ident, _ = draft(state, text='The result is here. https://example.org/paper', owner_wrote='approved in chat, exact text')
+    assert 'external URL' not in lint(state, ident)[1]
+
+
 @pytest.mark.parametrize('url', ['https://x.com/alice/status/123', 'x.com/alice/status/123'])
 def test_x_com_link_allowed(state, url):
     ident, _ = draft(state, text='The result is here. ' + url)
