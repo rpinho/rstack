@@ -15,6 +15,9 @@ from zoneinfo import ZoneInfo
 ET = ZoneInfo('America/New_York')
 ACCOUNT = 'rpinho_sci'
 FIXED_HANDLES = ('GuillaumeAIinSF', '1337isnot1337', 'Rob1Ham', 'majdiflow', 'exitcode0dev')
+# 11-28 (general 1128k, Ricardo: "a fast reply to a new post is the move"): a NEW post by a priority account skips the
+# 1-per-person-per-24h cap; one reply per post still holds through the post-ID dedupe. X_HOT_PRIORITY overrides the list.
+WATCH_TOP = 30   # REPLY-EARLY handles watched (was 15)
 HANDLE = r'[A-Za-z0-9_]{1,15}'
 POST_ID = r'[0-9]{15,20}'
 IDS = re.compile(r'(?<![0-9])' + POST_ID + r'(?![0-9])')
@@ -102,7 +105,7 @@ def watchlist(targets):
             for mention, bare in entries:
                 handle = mention or bare
                 handles.setdefault(handle.casefold(), handle)
-    return list({h.casefold(): h for h in (*list(handles.values())[:15], *FIXED_HANDLES)}.values())
+    return list({h.casefold(): h for h in (*list(handles.values())[:WATCH_TOP], *FIXED_HANDLES)}.values())
 
 
 def answer_rows(raw):
@@ -230,6 +233,8 @@ class Watch:
         mentions.update(hot_ids | set(IDS.findall(text_at(push_log))))
         since = self.now - timedelta(hours=24)
         recent = set(replies_since(log, since, self.now))
+        priority = {h.strip().lstrip('@').casefold() for h in
+                    os.environ.get('X_HOT_PRIORITY', ','.join(FIXED_HANDLES)).split(',') if h.strip()}
         for row in hot:
             when = timestamp(row.get('queued_utc'))
             if when and when.tzinfo and since <= when <= self.now:
@@ -272,7 +277,7 @@ class Watch:
                 reason = 'duplicate'
             elif not RELEVANT.search(text):
                 reason = 'irrelevant'
-            elif author.casefold() in recent:
+            elif author.casefold() in recent and author.casefold() not in priority:
                 reason = 'author cap'
             elif queued >= DAILY_LIMIT:
                 reason = 'ET day cap'
@@ -401,7 +406,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--now', metavar='ISO', help='override current time; naive ISO times are Eastern')
-    parser.add_argument('--window-min', type=int, default=30)
+    parser.add_argument('--window-min', type=int, default=15)   # 11-28 (general 5th): was 30
     parser.add_argument('--hours', default='8-23', help='Eastern hour range, start inclusive and end exclusive')
     args = parser.parse_args()
     hours = re.fullmatch(r'([0-9]{1,2})-([0-9]{1,2})', args.hours)

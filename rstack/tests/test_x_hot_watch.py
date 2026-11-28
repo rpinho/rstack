@@ -13,7 +13,7 @@ import pytest
 TOOL = Path(__file__).resolve().parents[1] / 'tools/x-hot-watch'
 NOW = '2026-11-28T15:00:00Z'
 FRESH = '2026-11-28T14:53:00Z'
-OLD = '2026-11-28T14:29:59Z'
+OLD = '2026-11-28T14:44:59Z'
 FUTURE = '2026-11-28T15:00:01Z'
 
 
@@ -69,7 +69,7 @@ if mode in ("grok", "gh"):
 ''')
         fake.chmod(0o755)
         (root / 'pgrep').symlink_to(fake)
-        self.env = dict(os.environ, X_TEST_ROOT=str(root), X_ENGAGE_DIR=str(self.engage),
+        self.env = dict(os.environ, X_HOT_PRIORITY='nobody', X_TEST_ROOT=str(root), X_ENGAGE_DIR=str(self.engage),
                         X_HOT_STATE=str(self.state), PATH=str(root) + os.pathsep + os.environ['PATH'])
         for mode in ('grok', 'gh', 'tell', 'notify', 'review'):
             self.env['X_HOT_' + mode.upper()] = shlex.quote(str(fake)) + ' ' + mode
@@ -114,7 +114,7 @@ def watch(tmp_path):
 
 @pytest.mark.parametrize('deco', ['fenced', 'prose'])
 def test_single_grok_query_and_fresh_post_queues_once(watch, deco):
-    targets = ['Alpha', 'beta', 'ALPHA', 'Rob1Ham', *[f'target{i}' for i in range(1, 17)]]
+    targets = ['Alpha', 'beta', 'ALPHA', 'Rob1Ham', *[f'target{i}' for i in range(1, 32)]]
     (watch.engage / 'TARGETS.md').write_text(
         '# REPLY-EARLY 30\n- Math (adds: listedFirst): ' + ', '.join(targets)
         + '\nSearch URLs (latest):\n- A: https://x.com/search?q=%28from%3AlistedFirst%29\n'
@@ -125,9 +125,9 @@ def test_single_grok_query_and_fresh_post_queues_once(watch, deco):
     watch.review_call(1)
     [[*opts, query]] = watch.calls('grok')
     assert opts == ['--host', 'm5', '--timeout', '120']
-    assert '2026-11-28T14:30:00Z through ' + NOW in query
+    assert '2026-11-28T14:45:00Z through ' + NOW in query
     assert query.count('@Rob1Ham') == 1 and '@Alpha' in query and '@ALPHA' not in query
-    assert '@target11' in query and '@target12' not in query and '@otherHandle' not in query
+    assert '@target26' in query and '@target27' not in query and '@otherHandle' not in query
     assert 'mentions of @rpinho_sci' in query and '@exitcode0dev' in query
     assert watch.calls('pgrep') == [['-f', 'x-reply-review']]
     assert watch.drafts.read_text() == (
@@ -135,7 +135,7 @@ def test_single_grok_query_and_fresh_post_queues_once(watch, deco):
         'Status: hot\n\n> New proof in Lean\n> ## Heading inside the post\n> Status: ready\n')
     assert read_rows(watch.state / 'hot.jsonl') == [
         dict(post_id=pid(1), author='ListedFirst', url=post(1, 'ListedFirst')['url'], queued_utc=NOW)]
-    watch.run(now='2026-11-28T15:15:00Z')
+    watch.run(now='2026-11-28T15:05:00Z')   # still inside the 15-min window
     assert watch.run_log()['decisions'][0]['reason'] == 'duplicate'
     assert watch.drafts.read_text().count('## HOT ') == 1
     watch.review_call(1)
@@ -323,3 +323,17 @@ def test_dry_run_does_not_advance_the_live_grok_failure_streak(watch):
     assert watch.run_log()['grok_streak'] == 4 and not watch.calls('tell')
     watch.run()
     assert watch.run_log()['grok_streak'] == 4 and len(watch.calls('tell')) == 1
+
+
+def test_priority_account_new_post_skips_the_author_cap_but_not_the_post_dedupe(watch):
+    """11-28 (general 1128k): a new post by a priority account gets a fast reply even if we replied to them today."""
+    watch.env.pop('X_HOT_PRIORITY')
+    write_rows(watch.engage / 'log.jsonl',
+               dict(action='reply', utc=NOW, target_url=post(90, 'GuillaumeAIinSF')['url']),
+               dict(action='reply', utc=NOW, target_url=post(91, 'conjectures_io')['url']))
+    (watch.engage / 'replied.json').write_text(json.dumps([pid(2)]))
+    watch.grok([post(1), post(2), post(3, 'conjectures_io')])
+    watch.run()
+    assert [(row['decision'], row.get('reason')) for row in watch.run_log()['decisions']][:2] == [
+        ('queue', None), ('skip', 'duplicate')]
+    assert '## HOT' in watch.drafts.read_text()

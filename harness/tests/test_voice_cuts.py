@@ -250,3 +250,27 @@ def test_outreach_lint_refuses_plural_even_with_cuts_off(env, banks, tmp_path):
     assert 'VOICE_PLURAL' in cli(root, 'lint', 'test', ident)[1]
     ident, path = draft(env, NEW_ASK, to='@someone', channel='x_reply')
     assert 'VOICE_PLURAL' not in cli(root, 'lint', 'test', ident)[1]
+
+
+def test_low_coverage_is_best_effort_for_an_x_reply_only(env, banks, tmp_path, capsys):
+    """11-28 (Ricardo via general 1128k: "You try the best you can"): when the banks lack his words, an X reply with a
+    .cuts file whose coverage is low lints with a warning; email still fails, and a missing .cuts still fails."""
+    text = 'Fascinating work, I wonder how this generalizes to other settings.'
+    ident, path = draft(env, text, to='@someone', channel='x_reply')
+    assert 'VOICE_CUTS_MISSING' in cli(env[0], 'lint', 'test', ident)[1]
+    Path(str(path) + '.cuts').write_text('v2:2\n')
+    rc, out, _ = cli(env[0], 'lint', 'test', ident)
+    assert 'best effort (Ricardo 11-28), not a block: VOICE_CUTS_WORDS' in out
+    assert not any(line.startswith('FAIL') and 'VOICE_CUTS' in line for line in out.splitlines())
+    mail, mail_path = draft(env, text, to='Contact Alpha', channel='email')
+    Path(str(mail_path) + '.cuts').write_text('v2:2\n')
+    assert 'VOICE_CUTS_WORDS' in cli(env[0], 'lint', 'test', mail)[1]
+    # The voice-cuts command: --best-effort turns only low coverage into a WARN.
+    reply = tmp_path / 'reply.txt'
+    reply.write_text(text)
+    (tmp_path / 'reply.txt.cuts').write_text('v2:2')
+    assert voice_cuts.main([str(reply)]) == 1
+    assert voice_cuts.main([str(reply), '--best-effort']) == 0
+    assert 'WARN: VOICE_CUTS_WORDS' in capsys.readouterr().out
+    (tmp_path / 'reply.txt.cuts').unlink()
+    assert voice_cuts.main([str(reply), '--best-effort']) == 1

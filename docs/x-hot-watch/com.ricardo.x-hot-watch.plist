@@ -15,6 +15,6 @@
 	<key>StandardOutPath</key>
 	<string>/Users/ricardo/.local/state/x-hot-watch/launchd.out.log</string>
 	<key>StartInterval</key>
-	<integer>900</integer>
+	<integer>300</integer>
 </dict>
 </plist>

@@ -353,6 +353,9 @@ def refereed_result(row, text):
             and 'referee HOLDS' in row.get('purpose', '') and bool(REFEREED_LINE.search(text)))
 
 
+LOW_COVERAGE = ('VOICE_CUTS_WORDS', 'VOICE_CUTS_PAIRS')
+
+
 def cut_check(row, text, cfg, checks, cover=None):
     """Paper-cut (voice_cuts.py): the draft is built from the author's own messages, listed in
     DRAFT.cuts. On whenever banks are configured, unless the lane says voice_cuts = "off"."""
@@ -382,14 +385,19 @@ def cut_check(row, text, cfg, checks, cover=None):
             pass
     names = [n.strip() for n in os.environ.get('RH_SIGNATURE_NAMES', '').split(',') if n.strip()]
     found, stats = voice_cuts.check(text, cuts, incoming, banks, {k: cfg[k] for k in voice_cuts.defaults()}, names)
+    # 11-28 (Ricardo via general 1128k: "You try the best you can"): when the banks lack his words, an X reply's low
+    # coverage is a warning. A missing or unusable .cuts file still fails; near-duplicate and xlint stay hard.
+    low = [f for f in found if f.startswith(LOW_COVERAGE)] if row.get('channel') == 'x_reply' else []
+    found = [f for f in found if f not in low]
     checks['cuts'] += found
     if cover is not None and stats and not found:
         cover.update(word_cover=stats.get('word_cover', 0), pair_cover=stats.get('pair_cover', 0))
     if not found and stats.get('we_ok'):
         # xlint (here and in the email gate) has no .cuts file; it lets plural through only for a recorded WE-OK pass.
         voice_cuts.record_pass(row['draft_path'], text, stats)
-    return ['cuts: {} lines, {:.0%} of words and {:.0%} of pairs from them'.format(
-        stats['cuts'], stats['word_cover'], stats['pair_cover'])] if stats else []
+    return (['cuts: {} lines, {:.0%} of words and {:.0%} of pairs from them'.format(
+        stats['cuts'], stats['word_cover'], stats['pair_cover'])] if stats else []) + [
+        'best effort (Ricardo 11-28), not a block: ' + f for f in low]
 
 
 def voice(text, channel):

@@ -374,6 +374,8 @@ def main(argv=None):
     ap.add_argument('draft', type=Path)
     ap.add_argument('--incoming', type=Path, help='the message being answered (its words are subject swaps)')
     ap.add_argument('--banks', type=Path, help='banks JSON (default: $RH_VOICE_BANKS)')
+    ap.add_argument('--best-effort', action='store_true',
+                    help='X replies (Ricardo 11-28: "You try the best you can"): low word or pair coverage is a WARN')
     a = ap.parse_args(argv)
     banks = load_banks(a.banks)
     if not banks:
@@ -385,10 +387,17 @@ def main(argv=None):
                          signature_names=names, retired=load_retired(a.banks))
     if stats:
         print('cuts: ' + json.dumps(stats))
+    low = [f for f in fails if f.startswith(('VOICE_CUTS_WORDS', 'VOICE_CUTS_PAIRS'))] if a.best_effort else []
+    for f in low:
+        print('WARN: ' + f)
+    fails = [f for f in fails if f not in low]
     for f in fails:
         print('FAIL: ' + f)
     if fails:
         return 1
+    if low:
+        print('PASS (best effort): cut from {} of the author\'s messages; coverage is low'.format(stats['cuts']))
+        return 0
     record_pass(a.draft, text, stats)
     print('PASS: cut from {} of the author\'s messages'.format(stats['cuts']))
     return 0
