@@ -493,6 +493,12 @@ def reply_target(row):
     return post_id(row.get('in_reply_to')) or post_id(row.get('self_reply_to'))
 
 
+def reply_author(row):
+    """The handle (casefolded) of the post an x_reply answers, from its --in-reply-to URL, else None."""
+    found = re.match(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/([A-Za-z0-9_]+)/status/', str(row.get('in_reply_to') or ''), re.I)
+    return found[1].casefold() if found else None
+
+
 def original(row):
     return row.get('channel') == 'x_post' and not row.get('self_reply_to')
 
@@ -682,6 +688,18 @@ def x_checks(row, text, everyone, clock, selected=(), cfg=None, posting=False):
                     # them; one that is gone everywhere is a warning, not a block on all replies.
                     warnings.append('near-duplicate check skipped, draft gone and not archived: {}/{}'.format(
                         other['lane'], other['id']))
+        # 11-28 (general 1128e, the Lean Golf reply campaign): one reply per person per day within a campaign, so
+        # the wave reads as a person answering posts, not a link drop. Scoped to rows sharing a --project, so an
+        # ordinary back-and-forth thread is never held to it.
+        author = reply_author(row)
+        projects = set(row.get('projects') or [])
+        if author and projects:
+            for other in others:
+                if (other.get('channel') == 'x_reply' and not same_row(other, row) and recent_sent(other, 1, clock)
+                        and projects & set(other.get('projects') or []) and reply_author(other) == author):
+                    failures.append('already replied to @{} in the last 24 h for {}: {}/{}'.format(
+                        author, ', '.join(sorted(projects & set(other.get('projects') or []))), other['lane'], other['id']))
+                    break
     mentions = {m.casefold() for m in MENTION.findall(text)}
     credited = {h.lstrip('@').casefold() for h in row.get('credit', [])}
     target_author = re.match(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/([A-Za-z0-9_]+)/status/', row.get('in_reply_to', ''), re.I)

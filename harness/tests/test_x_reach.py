@@ -501,3 +501,18 @@ def test_a_refereed_math_result_still_says_i(math_lane):
     ident, _ = draft(math_lane, **dict(REFEREED, text='We prove it.\n\nCertificate: https://github.com/example/certs'))
     rc, out, _ = lint(math_lane, ident, 'math')
     assert rc == 1 and 'VOICE_PLURAL' in out and 'VOICE_CUTS_MISSING' not in out, out
+
+
+@pytest.mark.parametrize('age, projects, other_author, blocked', [
+    (3, ['lean-golf-wave'], 'anna', True),      # same campaign, same person, 3 h ago
+    (30, ['lean-golf-wave'], 'anna', False),    # more than a day ago
+    (3, ['lean-golf-wave'], 'bob', False),      # another person
+    (3, ['other-campaign'], 'anna', False),     # another campaign
+    (3, [], 'anna', False)])                    # an ordinary reply thread is never held to it
+def test_a_campaign_replies_to_each_person_at_most_once_a_day(state, age, projects, other_author, blocked):
+    # 11-28 (general 1128e): the Lean Golf wave answers posts as a person would, one reply per person per day.
+    history(state, ident='earlier', channel='x_reply', age=age, text='A different earlier reply about proofs.',
+            in_reply_to=f'https://x.com/{other_author}/status/999', projects=projects)
+    ident, _ = draft(state, text='Your agent could take this record.', channel='x_reply',
+                     in_reply_to='https://x.com/anna/status/123', project='lean-golf-wave')
+    assert ('already replied to @anna in the last 24 h' in lint(state, ident)[1]) == blocked
