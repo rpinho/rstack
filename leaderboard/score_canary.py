@@ -50,7 +50,10 @@ def report(pairs, now, owed=False):
                 counts[model]['void' if grade['grade'].startswith('void:') else grade['grade']] += 1
         if not grade and age > dt.timedelta(hours=24):
             overdue += 1
-        if not grade and age > dt.timedelta(hours=2):
+        # 11-28 (general: planets_tnodes_1127 flagged "missing grade 2.3 h" while its job was still running, waiting on
+        # purpose for a data window): a run that has not closed is not owed a grade yet. One still open after 24 h is
+        # flagged anyway, so a stuck run is not hidden.
+        if not grade and age > dt.timedelta(hours=2) and (run.get('closed_at') or age > dt.timedelta(hours=24)):
             gap('no-grade', run, 'missing grade')
         reason = grade.get('reason') or grade.get('note') or ''
         if grade.get('missing_files') or reason.startswith('workdir incomplete:'):

@@ -197,7 +197,8 @@ def test_owed_retains_existing_two_hour_failure_rule(capsys):
     now = dt.datetime.now(dt.timezone.utc)
     for ident, hours in [('three-hours', 3), ('graded', 1)]:
         run_records.append(run_records.runs_path(), dict(run_id=ident, job=ident, model='gemini-4-neon-high',
-                                                        utc=(now - dt.timedelta(hours=hours)).isoformat()))
+                                                        utc=(now - dt.timedelta(hours=hours)).isoformat(),
+                                                        closed_at=(now - dt.timedelta(hours=hours - .5)).isoformat()))
     run_records.append(run_records.grades_path(), run_records.grade_fields('graded', 'graded', 'gemini-4-neon-high',
                                                                           'builder', 'pass', 'checked'))
     assert score_canary.main(['--owed']) == 1
@@ -220,3 +221,14 @@ def test_auto_grade_harvests_remote_executor_metrics(tmp_path):
     auto_grade.grade(receipt, log, work, None)
     row = list(run_records.read_jsonl(run_records.runs_path()))[-1]
     assert {key: row[key] for key in summary} == summary
+
+
+def test_a_run_still_open_is_not_owed_a_grade_until_it_is_stuck(capsys):
+    # 11-28 (general): planets_tnodes_1127 was flagged "missing grade 2.3 h" while it waited, by design, for a data window.
+    now = dt.datetime.now(dt.timezone.utc)
+    for ident, hours in [('open-3h', 3), ('open-30h', 30)]:
+        run_records.append(run_records.runs_path(), dict(run_id=ident, job=ident, model='gemini-4-neon-high',
+                                                        utc=(now - dt.timedelta(hours=hours)).isoformat()))
+    score_canary.main([])
+    out = capsys.readouterr().out
+    assert 'missing grade: run_id=open-3h' not in out and 'missing grade: run_id=open-30h' in out
