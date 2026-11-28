@@ -5,13 +5,21 @@ import os
 import re
 import subprocess
 import sys
+import time
+
+QUEUED = '@launch_queued'   # set on a job-* session while its launch.sh waits for a slot (epoch seconds)
 
 
 def exempt(lane):
     return lane in ('games', 'open-source', 'bio') or lane.startswith('games_')
 
 
-def running_jobs(backend, provider, lane):
+def running_jobs(backend, provider, lane, queue=None):
+    """Codex job-* sessions that hold a slot: running ones, plus queued ones that queued before this one.
+
+    11-28 (math): four jobs launched together each counted the other three queued sessions as running and all
+    waited 2 h while one job ran. A queued session now marks itself, and only sessions ahead of it in the
+    queue count against it, so the queue drains first come, first served."""
     tmux = os.environ.get('LAUNCH_TMUX') or 'tmux'
 
     def run(args):
@@ -36,6 +44,23 @@ def running_jobs(backend, provider, lane):
         if any(s in result.stderr.lower() for s in ('no server running', 'no sessions', 'no such file or directory')):
             return 0
         raise ValueError('cannot list live tmux jobs')
+    marks = {}
+    listed = run(['list-sessions', '-F', '#{session_name}\t#{' + QUEUED + '}'])
+    for row in listed.stdout.splitlines() if not listed.returncode else ():
+        name, _, stamp = row.partition('\t')
+        try:
+            marks[name] = float(stamp)
+        except ValueError:
+            pass
+    mine = marks.get(current) or time.time()
+
+    def mark(waiting):
+        if not current.startswith('job-') or waiting == (current in marks):
+            return
+        run(['set-option', '-t', '=' + current, QUEUED, '{:.3f}'.format(mine)] if waiting
+            else ['set-option', '-u', '-t', '=' + current, QUEUED])
+    if queue is not None:
+        queue.append(mark)
     jobs = set()
     for row in result.stdout.splitlines():
         fields = row.split('\t', 5)
@@ -56,6 +81,8 @@ def running_jobs(backend, provider, lane):
         legacy_exempt = re.match(r'^job-(games|open-source|bio)(?:[_-]|$)', name)
         if selected in ('claude', 'agy') or route in ('openrouter', 'gemini') or exempt(tagged_lane) or legacy_exempt:
             continue
+        if name in marks and (marks[name], name) > (mine, current):
+            continue                                  # queued behind this job: it holds no slot yet
         jobs.add(name)
     return len(jobs)
 
@@ -78,8 +105,11 @@ def main(argv=None):
         # RULE #1 (11-20): a bad setting is the harness's error, not the job's; the default cap applies.
         message('WARNING: LAUNCH_MAX_CONCURRENT must be a positive integer; using 4')
         cap = '4'
+    queue = []
     try:
-        count = running_jobs(args.backend, args.provider, args.lane)
+        count = running_jobs(args.backend, args.provider, args.lane, queue)
+        if queue:
+            queue[0](capped and count >= int(cap))   # join the queue, keep its place, or leave it
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         # RULE #1: a count this guard cannot make is a warning, never a refusal (it refused every capped job).
         message('WARNING: cannot count tmux jobs ({}); not queued'.format(exc))
