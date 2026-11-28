@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""Check that a reply campaign is actually live on X, and page the owner when it is not.
+
+11-28 (Ricardo, on the Lean Golf reply wave: "How do I know that tomorrow I check in with you, and you're like, 'Oh,
+nothing went out because we hit a bug, like we always do'?"). The source of truth is X itself: @account's own timeline
+from the X API (xr GET /2/users/<id>/tweets, allowed by xurl-policy), never our logs. It counts replies from the last
+24 h whose links include the campaign link, compares them with a ramp (default: 3 by 12:00, 10 by 18:00, 15 by 23:00
+local), and on a shortfall pushes the owner's phone (notify-ricardo) and wakes the conductor (tell-general). If X can't
+be read, that is a failure push too, never a skip. At the summary hour (default 21) it also pushes a one-line OK, so
+silence is never the signal.
+
+  x-campaign-canary [--link github.com/rpinho/lean-golf] [--ramp 12:3,18:10,23:15] [--summary-hour 21] [--dry-run]
+
+Env: X_CANARY_XR (xr command, default xr), X_ROUTE_CONFIG (account_id), X_CANARY_NOTIFY / X_CANARY_TELL (commands),
+X_CANARY_ERRORS (x-engage logs to quote the last error from), X_CANARY_STATE (run log dir).
+"""
+import argparse
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+
+DEFAULT_LINK = 'github.com/rpinho/lean-golf'
+DEFAULT_RAMP = '12:3,18:10,23:15'
+
+
+def account_id():
+    path = Path(os.environ.get('X_ROUTE_CONFIG') or '~/.config/rstack/x-route.json').expanduser()
+    ident = str(json.loads(path.read_text()).get('account_id') or '')
+    if not ident.isdecimal():
+        raise ValueError('no numeric account_id in ' + str(path))
+    return ident
+
+
+def read_timeline(ident, since):
+    """Tweets from the account since `since` (UTC), from the X API. Raises on any failure (fail closed)."""
+    xr = shlex.split(os.environ.get('X_CANARY_XR') or 'xr')
+    query = ('/2/users/{}/tweets?max_results=100&start_time={}&exclude=retweets'
+             '&tweet.fields=created_at,entities,referenced_tweets,public_metrics,note_tweet').format(
+                 ident, since.strftime('%Y-%m-%dT%H:%M:%SZ'))
+    done = subprocess.run(xr + [query], capture_output=True, text=True, timeout=120)
+    if done.returncode:
+        raise RuntimeError('xr exit {}: {}'.format(done.returncode, (done.stderr or done.stdout).strip()[-300:]))
+    out = done.stdout
+    start = out.find('{')
+    if start < 0:
+        raise RuntimeError('X API returned no JSON: ' + out.strip()[-200:])
+    data = json.loads(out[start:])
+    if 'data' not in data and data.get('errors'):
+        raise RuntimeError('X API error: ' + json.dumps(data['errors'])[:300])
+    return data.get('data') or []
+
+
+def campaign_replies(tweets, link):
+    rows = []
+    for tweet in tweets:
+        if not any(ref.get('type') == 'replied_to' for ref in tweet.get('referenced_tweets') or []):
+            continue
+        urls = [u.get('expanded_url') or u.get('url') or '' for u in (tweet.get('entities') or {}).get('urls') or []]
+        text = (tweet.get('note_tweet') or {}).get('text') or tweet.get('text') or ''
+        if any(link in u for u in urls) or link in text:
+            rows.append(tweet)
+    return rows
+
+
+def expected(ramp, hour):
+    want = 0
+    for part in ramp.split(','):
+        at, count = part.split(':')
+        if hour >= int(at):
+            want = int(count)
+    return want
+
+
+def last_error():
+    paths = os.environ.get('X_CANARY_ERRORS') or '~/.local/share/x-engage/runs.log:~/.local/share/x-engage/log.jsonl'
+    best = ''
+    for raw in paths.split(':'):
+        path = Path(raw).expanduser()
+        try:
+            lines = path.read_text(errors='replace').splitlines()[-400:]
+        except OSError:
+            continue
+        for line in reversed(lines):
+            low = line.lower()
+            if any(k in low for k in ('input-fail', 'refus', 'error', 'failed', 'quota')):
+                best = best or line.strip()[:200]
+                break
+    return best or 'no error logged; the rounds may not have run'
+
+
+def run(cmd_env, default, args):
+    cmd = shlex.split(os.environ.get(cmd_env) or default) + args
+    try:
+        subprocess.run(cmd, timeout=60, capture_output=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print('x-campaign-canary: {} failed: {!r}'.format(cmd[0], exc), file=sys.stderr)
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--link', default=DEFAULT_LINK)
+    p.add_argument('--ramp', default=DEFAULT_RAMP)
+    p.add_argument('--summary-hour', type=int, default=21)
+    p.add_argument('--name', default='Lean Golf replies')
+    p.add_argument('--dry-run', action='store_true', help='print, do not push')
+    a = p.parse_args(argv)
+    now = dt.datetime.now().astimezone()
+    since = (now - dt.timedelta(hours=24)).astimezone(dt.timezone.utc)
+    want = expected(a.ramp, now.hour)
+    record = {'utc': now.astimezone(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'expected': want}
+    try:
+        replies = campaign_replies(read_timeline(account_id(), since), a.link)
+    except Exception as exc:                      # fail closed: an unreadable X is a FAIL push, not a skip
+        msg = '{}: CANNOT READ X ({}). Treat as 0 of {} expected; blocked by: {}'.format(
+            a.name, str(exc)[:200], want, last_error())
+        record.update(status='fail-read', error=str(exc)[:300])
+        return finish(a, record, msg, page=True)
+    n = len(replies)
+    got = sum((t.get('public_metrics') or {}).get('reply_count', 0) for t in replies)
+    likes = sum((t.get('public_metrics') or {}).get('like_count', 0) for t in replies)
+    record.update(count=n, replies_received=got, likes=likes, ids=[t.get('id') for t in replies][:50])
+    if n < want:
+        record['status'] = 'short'
+        return finish(a, record, '{}: {} of {} expected in the last 24 h; blocked by: {}'.format(
+            a.name, n, want, last_error()), page=True)
+    record['status'] = 'ok'
+    if now.hour == a.summary_hour:
+        return finish(a, record, '{} OK: {} live in the last 24 h (expected {}), {} replies and {} likes on them.'.format(
+            a.name, n, want, got, likes), page=False, push=True)
+    return finish(a, record, '{} OK: {} of {} expected'.format(a.name, n, want), page=False)
+
+
+def finish(a, record, msg, page, push=False):
+    print(msg)
+    state = Path(os.environ.get('X_CANARY_STATE') or '~/.local/state/x-campaign-canary').expanduser()
+    try:
+        state.mkdir(parents=True, exist_ok=True)
+        with (state / 'log.jsonl').open('a') as out:
+            out.write(json.dumps(dict(record, message=msg)) + '\n')
+    except OSError as exc:
+        print('x-campaign-canary: log write failed: {!r}'.format(exc), file=sys.stderr)
+    if a.dry_run:
+        return 1 if page else 0
+    if page or push:
+        run('X_CANARY_NOTIFY', '~/.local/bin/notify-ricardo'.replace('~', str(Path.home())),
+            [msg, 'X campaign' if not page else 'X campaign SHORT', '4' if page else '2'])
+    if page:
+        run('X_CANARY_TELL', str(Path.home() / '.local/bin/tell-general'), ['decision', msg])
+    return 1 if page else 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
